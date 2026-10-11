@@ -244,7 +244,7 @@ On the first page:
 
 1. copy the one-time setup token printed at the end of the install command and
    paste it into the field with the same name;
-2. create the owner email and a password of at least 6 characters;
+2. create the owner email and a password of at least 12 characters;
 3. sign in as that owner;
 4. connect one CLI provider at a time, **starting with OpenCode** — its
    starter model is the free Big Pickle (`opencode/big-pickle`). On first

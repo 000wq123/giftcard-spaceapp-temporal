@@ -197,7 +197,7 @@ export function SetupConnectionsWizard({
         </div>
 
         {guided ? <div className="setup-guide-tool-choice">
-          <p><strong>Recommended first tool: OpenCode</strong><br />Starts with the free DeepSeek V4 Flash model. Tools already set up stay ready.</p>
+          <p><strong>Recommended first tool: OpenCode</strong><br />Starts on a free OpenCode Zen model. Tools already set up stay ready.</p>
           <button type="button" onClick={() => setShowAllTools(!showAllTools)}>
             {showAllTools ? "Show recommended tool" : "Show all tools"}
           </button>
