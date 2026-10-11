@@ -137,7 +137,7 @@ services:
       - spaceapp
 
   headroom:
-    image: ghcr.io/oll4com/headroom-codex-lb:code
+    image: ghcr.io/oll4com/headroom-codex-lb:code-5b15319@sha256:491c856a8bd8205d45e980370c3ffe7ffe438b6444216c36ac7c60ad24308aa2
     profiles: ["companions"]
     restart: unless-stopped
     init: true

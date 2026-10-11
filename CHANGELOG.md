@@ -5,6 +5,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Pin the optional Headroom companion image to a reviewed digest (`headroom-codex-lb:code-5b15319@sha256:491c856a…`) instead of the moving `code` tag, so installs and updates with companions enabled run the same image every time.
+
 ## [1.1.1] - 2026-10-11
 
 - Respect the telemetry answer in the install wizard. The first-install ping is now sent only when the owner answers Yes (the default is No) or sets `SPACEAPP_TELEMETRY` to `1`, `true`, `yes` or `on`. Before, the ping was sent unless `SPACEAPP_TELEMETRY` disabled it, whatever the answer.

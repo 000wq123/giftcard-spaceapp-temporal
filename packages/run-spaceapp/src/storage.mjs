@@ -102,7 +102,7 @@ export async function inspectStoragePlan({ root, config, existingConfig, resourc
     ["postgres", "pgvector/pgvector:0.8.3-pg17-trixie"],
     ...(settings.browserEnabled ? [["browser", `ghcr.io/oll4com/spaceapp-browser:${config.version}`]] : []),
     ...(settings.temporalEnabled ? [["temporal", "temporalio/auto-setup:1.29.1"]] : []),
-    ...(config.companionsEnabled ? [["companion", "ghcr.io/soju06/codex-lb:1.22.0"], ["companion", "ghcr.io/oll4com/headroom-codex-lb:code"]] : [])
+    ...(config.companionsEnabled ? [["companion", "ghcr.io/soju06/codex-lb:1.22.0"], ["companion", "ghcr.io/oll4com/headroom-codex-lb:code-5b15319@sha256:491c856a8bd8205d45e980370c3ffe7ffe438b6444216c36ac7c60ad24308aa2"]] : [])
   ];
   let missingImageBytes = 0;
   const missingImages = [];
