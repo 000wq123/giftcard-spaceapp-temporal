@@ -50,6 +50,12 @@ export function withBootstrap(config) {
   }
   return next;
 }
+// Big Pickle is the default first-run model; other free models are tried only when it fails the tool-call check.
+export const DEFAULT_FREE_MODEL='opencode/big-pickle';
+export function preferDefault(candidates){
+  const first=candidates.filter(c=>c.id===DEFAULT_FREE_MODEL);
+  return [...first,...candidates.filter(c=>c.id!==DEFAULT_FREE_MODEL)];
+}
 // Catalog (20 s) plus selection stays under the 130 s OpenCode credential-smoke timeout in the API.
 const SELECTION_BUDGET_MS=100000;
 export async function selectWorkingFreeModel({env=process.env,executeNative=execute}={}) {
@@ -59,7 +65,7 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
     const deadline=Date.now()+SELECTION_BUDGET_MS;
     const listed=await executeNative(['models','opencode','--refresh','--verbose'],isolated,directory,20000);
     if(listed.code!==0)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
-    const candidates=parseCatalog(listed.stdout);
+    const candidates=preferDefault(parseCatalog(listed.stdout));
     const work=join(directory,'work');await mkdir(work);
     for(const candidate of candidates.slice(0,5)) {
       const remaining=deadline-Date.now(); if(remaining<10000)break;
