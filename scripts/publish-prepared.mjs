@@ -9,12 +9,14 @@ try {
  if(git(['branch','--show-current'])!=='main'||git(['status','--porcelain']))throw new Error('Prepared publication requires a clean main checkout');
  await checkReleaseEvidence();
  const pkg=JSON.parse(await readFile('packages/run-spaceapp/package.json','utf8'));
- const args=['scripts/public-release-readiness.mjs','--version',pkg.version,'--runtime-version',pkg.spaceappRuntimeVersion,'--release-mode','full','--npm-tag','next'];
+ // A launcher that keeps an already published runtime is a launcher-only release.
+ const mode=pkg.version===pkg.spaceappRuntimeVersion?'full':'launcher-only';
+ const args=['scripts/public-release-readiness.mjs','--version',pkg.version,'--runtime-version',pkg.spaceappRuntimeVersion,'--release-mode',mode,'--npm-tag','next'];
  run(process.execPath,args);
  if(!process.argv.includes('--publish')){console.log('Prepared candidate is publishable. Add --publish to push main and dispatch the gated workflow.');}
  else {
   run('git',['push','origin','main']);
-  run(process.env.SPACEAPP_GH_BIN||'gh',['workflow','run','release.yml','--repo','oll4com/spaceapp','--ref','main','-f',`version=${pkg.version}`,'-f',`runtime_version=${pkg.spaceappRuntimeVersion}`,'-f','release_mode=full','-f','npm_tag=next']);
+  run(process.env.SPACEAPP_GH_BIN||'gh',['workflow','run','release.yml','--repo','oll4com/spaceapp','--ref','main','-f',`version=${pkg.version}`,'-f',`runtime_version=${pkg.spaceappRuntimeVersion}`,'-f',`release_mode=${mode}`,'-f','npm_tag=next']);
   console.log('Dispatched immutable candidate. Environment review and npm latest promotion remain separate gates.');
  }
 }catch(e){console.error(e.message);process.exitCode=1;}
