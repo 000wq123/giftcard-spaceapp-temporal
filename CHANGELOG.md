@@ -10,6 +10,7 @@ Semantic Versioning.
 - Respect the telemetry answer in the install wizard. The first-install ping is now sent only when the owner answers Yes (the default is No) or sets `SPACEAPP_TELEMETRY` to `1`, `true`, `yes` or `on`. Before, the ping was sent unless `SPACEAPP_TELEMETRY` disabled it, whatever the answer.
 - Fix fresh installs with the small profile, which 1.0.36 and 1.1.0 rolled back after waiting 10 minutes: readiness again treats the deliberately disabled workflow worker as ready (restores the 1.0.31 fix that a later source export dropped).
 - Security: update `@modelcontextprotocol/sdk` to 1.32.1 and pin patched `proxy-addr` 2.0.8 (IP spoofing through IPv4-mapped IPv6 trust subnets), `@fastify/busboy` 3.2.2 (multipart denial of service and header injection), `source-map-js` 1.2.2 and `http-cache-semantics` 4.3.0. Runtime images are rebuilt with these versions.
+- Security: runtime images replace npm's bundled `postcss-selector-parser` with 7.1.6 (CVE-2026-104844). GHSA-2mjx-qc3c-rqvc in the rustls copy compiled into `@temporalio/core-bridge` 1.24.0 is ignored until a Temporal SDK release fixes it: SpaceApp reaches Temporal only over the private compose network without TLS.
 
 ## [1.1.0] - 2026-10-02
 
