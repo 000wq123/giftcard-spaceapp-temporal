@@ -64,12 +64,16 @@ when measurable and its availability is reported.
 
 ### First-install telemetry
 
-On a successful first install (not on upgrades or re-runs), the launcher sends
-one anonymous ping to `spaceapp.dev` with only: a random install ID, operating
-system and CPU architecture, launcher and runtime versions, and the install
-date. No personal data, files, or credentials are transmitted. Disable it with
-the environment variable `SPACEAPP_TELEMETRY=0` (or `false`); telemetry is
-otherwise on by default so the project can measure real adoption.
+Telemetry is off unless you turn it on. The install wizard asks "Enable
+anonymous usage telemetry?" and the default answer is No. Only when you answer
+Yes does a successful first install (not an upgrade or re-run) send one
+anonymous ping to `spaceapp.dev` with: a random install ID, operating system
+and CPU architecture, launcher and runtime versions, and the install date. No
+personal data, files, or credentials are transmitted.
+
+The environment variable `SPACEAPP_TELEMETRY` overrides the answer: `0`, `false`,
+`no` or `off` never send the ping; `1`, `true`, `yes` or `on` send it, which is
+how unattended installs opt in.
 
 Light mode retains every bundled CLI and the core data/workflow services while
 omitting managed Chromium. Resource limits are maximums, not immediate RAM or

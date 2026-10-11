@@ -3,13 +3,22 @@ import { randomUUID } from "node:crypto";
 export const INSTALL_PING_ENDPOINT = "https://spaceapp.dev/install-ping.php";
 export const INSTALL_PING_TIMEOUT_MS = 5_000;
 export const TELEMETRY_DISABLED_VALUES = new Set(["0", "false", "no", "off"]);
+export const TELEMETRY_ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 
-export function isTelemetryEnabled(env = process.env) {
+// Explicit SPACEAPP_TELEMETRY choice: true, false, or null when unset/unknown.
+export function telemetryEnvPreference(env = process.env) {
   const value = String(env.SPACEAPP_TELEMETRY ?? "").trim().toLowerCase();
-  if (value === "") {
-    return true;
-  }
-  return !TELEMETRY_DISABLED_VALUES.has(value);
+  if (TELEMETRY_DISABLED_VALUES.has(value)) return false;
+  if (TELEMETRY_ENABLED_VALUES.has(value)) return true;
+  return null;
+}
+
+// The owner's answer in the install wizard is the consent; an explicit
+// SPACEAPP_TELEMETRY value overrides it in either direction.
+export function isInstallPingAllowed({ consent, env = process.env }) {
+  const preference = telemetryEnvPreference(env);
+  if (preference !== null) return preference;
+  return consent === true;
 }
 
 export function normalizeOs(platform) {
@@ -72,6 +81,7 @@ export async function sendInstallPing(
 export async function reportFirstInstallPing(
   {
     existingConfig,
+    consent,
     env = process.env,
     platform,
     arch,
@@ -83,7 +93,7 @@ export async function reportFirstInstallPing(
   if (existingConfig) {
     return null;
   }
-  if (!isTelemetryEnabled(env)) {
+  if (!isInstallPingAllowed({ consent, env })) {
     return null;
   }
   const payload = buildInstallPing({ platform, arch, launcherVersion, runtimeVersion });

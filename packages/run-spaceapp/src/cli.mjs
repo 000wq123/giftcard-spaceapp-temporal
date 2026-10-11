@@ -948,6 +948,7 @@ async function installCommand(args, {
     try {
       await reportFirstInstallPing({
         existingConfig,
+        consent: telemetryEnabled,
         env,
         platform,
         arch,

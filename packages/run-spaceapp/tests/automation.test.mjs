@@ -36,6 +36,15 @@ test('explicit unattended install runs the runtime, opens browser, and leaves ow
   assert.equal(JSON.parse(await readFile(join(f.root,'config.json'),'utf8')).profile,'light');
   assert.match(f.out.text(), /One-time setup token/);
 });
+test('a first install sends the anonymous ping only when the owner answers yes', async(t)=>{
+  const answers=(telemetry)=>['install','--non-interactive','--answers',JSON.stringify({confirm:true,profile:'light',access:'isolated',companions:false,telemetry,open:false})];
+  const declined=await fixture(t); delete declined.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(answers(false),declined.options),0);
+  assert.ok(!declined.urls.some(x=>x.includes('install-ping')));
+  const agreed=await fixture(t); delete agreed.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(answers(true),agreed.options),0);
+  assert.equal(agreed.urls.filter(x=>x.includes('install-ping')).length,1);
+});
 test('noninteractive install without explicit confirm:true cannot mutate installation', async(t)=>{
   const f=await fixture(t);
   assert.equal(await run(['install','--non-interactive','--answers','{"profile":"light"}'],f.options),1);

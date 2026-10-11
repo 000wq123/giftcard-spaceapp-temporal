@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildInstallPing,
-  isTelemetryEnabled,
+  isInstallPingAllowed,
   normalizeOs,
   reportFirstInstallPing,
-  sendInstallPing
+  sendInstallPing,
+  telemetryEnvPreference
 } from "../src/telemetry.mjs";
 
 test("normalizeOs maps Node platform names to launcher names", () => {
@@ -33,13 +34,23 @@ test("buildInstallPing carries os, version, runtime, and install date", () => {
   assert.equal(ping.install_date, "2026-08-05");
 });
 
-test("telemetry is on by default and opt-out via SPACEAPP_TELEMETRY", () => {
-  assert.equal(isTelemetryEnabled({}), true);
-  assert.equal(isTelemetryEnabled({ SPACEAPP_TELEMETRY: "" }), true);
-  assert.equal(isTelemetryEnabled({ SPACEAPP_TELEMETRY: "0" }), false);
-  assert.equal(isTelemetryEnabled({ SPACEAPP_TELEMETRY: "false" }), false);
-  assert.equal(isTelemetryEnabled({ SPACEAPP_TELEMETRY: "OFF" }), false);
-  assert.equal(isTelemetryEnabled({ SPACEAPP_TELEMETRY: "1" }), true);
+test("SPACEAPP_TELEMETRY is an explicit preference or unset", () => {
+  assert.equal(telemetryEnvPreference({}), null);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "" }), null);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "maybe" }), null);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "0" }), false);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "false" }), false);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "OFF" }), false);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: "1" }), true);
+  assert.equal(telemetryEnvPreference({ SPACEAPP_TELEMETRY: " Yes " }), true);
+});
+
+test("the install ping needs consent; an explicit environment choice wins", () => {
+  assert.equal(isInstallPingAllowed({ consent: true, env: {} }), true);
+  assert.equal(isInstallPingAllowed({ consent: false, env: {} }), false);
+  assert.equal(isInstallPingAllowed({ consent: undefined, env: {} }), false);
+  assert.equal(isInstallPingAllowed({ consent: true, env: { SPACEAPP_TELEMETRY: "0" } }), false);
+  assert.equal(isInstallPingAllowed({ consent: false, env: { SPACEAPP_TELEMETRY: "1" } }), true);
 });
 
 test("sendInstallPing POSTs JSON and accepts a 204", async () => {
@@ -79,13 +90,14 @@ test("sendInstallPing returns false when no request implementation exists", asyn
   assert.equal(sent, false);
 });
 
-test("reportFirstInstallPing only pings fresh installs with telemetry on", async () => {
+test("reportFirstInstallPing only pings fresh installs whose owner agreed", async () => {
   const calls = [];
   const fakeRequest = async () => {
     calls.push(1);
     return { ok: true, status: 204 };
   };
   const base = {
+    consent: true,
     env: {},
     platform: "linux",
     arch: "x64",
@@ -101,6 +113,20 @@ test("reportFirstInstallPing only pings fresh installs with telemetry on", async
     { request: fakeRequest }
   );
   assert.equal(reinstall, null);
+  assert.equal(calls.length, 1);
+
+  const declined = await reportFirstInstallPing(
+    { ...base, consent: false },
+    { request: fakeRequest }
+  );
+  assert.equal(declined, null);
+  assert.equal(calls.length, 1);
+
+  const notAsked = await reportFirstInstallPing(
+    { ...base, consent: undefined },
+    { request: fakeRequest }
+  );
+  assert.equal(notAsked, null);
   assert.equal(calls.length, 1);
 
   const optedOut = await reportFirstInstallPing(
