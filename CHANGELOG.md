@@ -5,6 +5,7 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Choose the first-run free OpenCode model with a real tool call: each candidate must read a small file with its read tool and answer with the random token inside it. Before, a plain text reply was enough, so a model could be chosen that then failed upstream as soon as a task used tools.
 - Pin the optional Headroom companion image to a reviewed digest (`headroom-codex-lb:code-5b15319@sha256:491c856a…`) instead of the moving `code` tag, so installs and updates with companions enabled run the same image every time.
 
 ## [1.1.1] - 2026-10-11
