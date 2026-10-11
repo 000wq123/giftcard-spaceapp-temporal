@@ -62,21 +62,23 @@ before pausing writers. Existing data is kept in place; the launcher never delet
 images, backups or volumes to free space. Separate Docker disk capacity is checked
 when measurable and its availability is reported.
 
-### First-install telemetry
+### Telemetry
 
 Telemetry is off unless you turn it on. The install wizard asks "Enable
 anonymous usage telemetry?" and the default answer is No. Only when you answer
-Yes does a successful first install (not an upgrade or re-run) send one
-anonymous ping to `spaceapp.dev` with: a random install ID, operating system
-and CPU architecture, launcher and runtime versions, and the install date. No
-personal data, files, or credentials are transmitted.
+Yes (or pass `"telemetry": true` in `--answers`) does a successful first
+install (not an upgrade or re-run) send one ping to
+`https://spaceapp.dev/install-ping.php`. Its body contains only: a random ID
+generated for that ping, the operating system and CPU architecture, the
+launcher and runtime versions, and the install date. It contains no files,
+credentials, workspace paths, or account details.
 
 The environment variable `SPACEAPP_TELEMETRY` overrides the answer: `0`, `false`,
 `no` or `off` never send the ping; `1`, `true`, `yes` or `on` send it, which is
 how unattended installs opt in.
 
-Light mode retains every bundled CLI and the core data/workflow services while
-omitting managed Chromium. Resource limits are maximums, not immediate RAM or
+The legacy `light` profile runs the workflow service without managed Chromium;
+`standard` runs both. Resource limits are maximums, not immediate RAM or
 disk reservations. The launcher stores only non-secret configuration in the
 current user's platform config directory:
 
@@ -86,19 +88,18 @@ current user's platform config directory:
 
 Set `SPACEAPP_HOME` to an absolute path to use a dedicated installation root.
 
-The `0.1.15-hostroot.2` personal candidate tests the complete x64 Linux
-host-root path:
+On Linux, host-root access mounts the host `/` at `/host` (read/write in the
+CLI service), so CLI sessions can read and modify the entire host. Read the
+[security model](https://github.com/oll4com/spaceapp/blob/main/docs/security-model.md)
+before enabling it:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@latest install --access host-root
 ```
 
-This candidate publishes matching `core` and `cli` images for `linux/amd64`
-and reuses the existing signed browser manifest without rebuilding it. npm
-rejects the package on arm64. Host-root is supported only on Linux.
-
-Use the same `npx --yes run-spaceapp@personal` prefix for follow-up commands
-while this prerelease is installed.
+Host-root is supported only on Linux. Run
+`npx --yes run-spaceapp@latest install --access isolated` to remove the host
+mount while keeping SpaceApp data and volumes.
 
 Provider API keys are read from masked standard input and written to
 restrictive files outside Git. OAuth and device-code credentials remain in
@@ -143,7 +144,7 @@ npx --yes run-spaceapp@latest owner rotate-setup-token
 
 ```bash
 npx --yes run-spaceapp@latest status         # Check container health and port bindings
-npx --yes run-spaceapp@latest logs           # View or stream container logs
+npx --yes run-spaceapp@latest logs           # Show recent container log lines
 npx --yes run-spaceapp@latest doctor         # Verify system prerequisites and diagnose Docker
 npx --yes run-spaceapp@latest up             # Start containers in background
 npx --yes run-spaceapp@latest down           # Stop containers cleanly
@@ -151,10 +152,10 @@ npx --yes run-spaceapp@latest open           # Open web app in default browser
 npx --yes run-spaceapp@latest backup         # Create verified, portable backup archive
 npx --yes run-spaceapp@latest restore        # Restore state from a backup archive
 npx --yes run-spaceapp@latest update         # Pull latest images and upgrade stack
-npx --yes run-spaceapp@latest rollback       # Revert to previous stable version
+npx --yes run-spaceapp@latest rollback       # Return to the previously recorded image version
 npx --yes run-spaceapp@latest workspace add <path> # Register host folder for AI CLIs
 npx --yes run-spaceapp@latest workspace list       # List registered host folders
-npx --yes run-spaceapp@latest credentials list     # List configured AI providers
+npx --yes run-spaceapp@latest credentials list     # List provider names accepted by credentials set
 npx --yes run-spaceapp@latest credentials set <provider> # Set API key via masked input
 npx --yes run-spaceapp@latest uninstall      # Stop and remove containers (preserves data)
 ```

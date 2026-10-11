@@ -41,7 +41,7 @@ test("public command guards reject forbidden commands inside inline Markdown", (
   assert.match("Use `spaceapp doctor` to diagnose it.", globalFollowUpCommand);
 });
 
-test("active documentation routes host-root through the x64 personal candidate", async () => {
+test("active documentation routes host-root through the current launcher", async () => {
   for (const path of [
     "README.md",
     "packages/run-spaceapp/README.md",
@@ -52,9 +52,10 @@ test("active documentation routes host-root through the x64 personal candidate",
     const content = await readFile(join(root, path), "utf8");
     assert.match(
       content,
-      /npx --yes run-spaceapp@personal install --access host-root/,
+      /npx --yes run-spaceapp@latest install --access host-root/,
       path
     );
+    assert.doesNotMatch(content, /run-spaceapp@personal/, path);
     assert.doesNotMatch(
       content,
       /npx --yes run-spaceapp@0\.1\.15-hostroot\.0 install --access host-root/,
@@ -355,19 +356,15 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
   assert.match(gettingStarted, /group grants root-level privileges/i);
   assert.match(
     gettingStarted,
-    /npx --yes run-spaceapp@personal install --access host-root/
+    /npx --yes run-spaceapp@latest install --access host-root/
   );
   assert.match(gettingStarted, /--access isolated/);
   assert.match(gettingStarted, /equivalent to\s+host-root\s+file access/i);
   assert.match(
     packageReadme,
-    /run-spaceapp@personal install --access host-root/
+    /run-spaceapp@latest install --access host-root/
   );
-  assert.match(
-    packageReadme,
-    /matching `core` and `cli` images for `linux\/amd64`/i
-  );
-  assert.match(packageReadme, /rejects the package on arm64/i);
+  assert.match(packageReadme, /Host-root is supported only on Linux/);
   for (const command of [
     "provider install claude",
     "help",
@@ -387,10 +384,10 @@ test("public docs provide one-command installation for Linux, macOS, and Windows
       )
     );
   }
-  assert.match(readme, /run-spaceapp@personal owner rotate-setup-token/);
+  assert.match(readme, /run-spaceapp@latest owner rotate-setup-token/);
   assert.match(
     operations,
-    /run-spaceapp@personal rollback[\s\S]*run-spaceapp@personal status/
+    /run-spaceapp@latest rollback[\s\S]*run-spaceapp@latest status/
   );
   assert.match(cleanRoom, /id -u[\s\S]*\b0\b/);
   assert.match(securityModel, /host-root[\s\S]*\/host[\s\S]*destroy the operating system/i);

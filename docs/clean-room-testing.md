@@ -19,9 +19,9 @@ Maintain one disposable VM for release-candidate testing:
 
 The 40 GiB virtual size is a test-lab ceiling, not immediate host allocation.
 Use thin/sparse storage so the backing file or ZFS volume grows only with data.
-This VM intentionally exercises the automatically selected `light` profile.
-Run a separate 16 GB standard-profile cycle when managed browser sessions are
-part of the candidate.
+With these resources, automatic selection picks the `small` profile. Run a
+separate `large`-profile cycle (8 vCPUs, at least 15 GiB RAM) when managed
+browser sessions are part of the candidate.
 
 Use CI runners for the launcher OS matrix, but keep the real VM because it
 exercises long-running containers, disk ownership, backup/restore, browser
@@ -30,16 +30,17 @@ startup, and restart behavior.
 ## Source-checkout acceptance
 
 Before public artifacts exist, start from a fresh clone of the candidate source
-and build images locally:
+and build images locally. Replace `<version>` with `spaceappRuntimeVersion`
+from `packages/run-spaceapp/package.json`:
 
 ```bash
 npm ci
 npm run check
 npm test
 npm run build
-docker build --target core --tag ghcr.io/oll4com/spaceapp-core:0.1.0 .
-docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:0.1.0 .
-docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:0.1.0 .
+docker build --target core --tag ghcr.io/oll4com/spaceapp-core:<version> .
+docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:<version> .
+docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:<version> .
 npm install -g ./packages/run-spaceapp
 ```
 
@@ -91,11 +92,10 @@ permissions, and image architecture—not just the repository build.
 
 ## Pinned CachyOS host-root acceptance
 
-Use an isolated CachyOS VM snapshot, never a workstation with valuable data.
-Use the x64 `.2` personal candidate:
+Use an isolated CachyOS VM snapshot, never a workstation with valuable data:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@latest install --access host-root
 ```
 
 Confirm the generated configuration records `accessMode=host-root`, core sees
@@ -109,7 +109,7 @@ Run the same command a second time and confirm readiness and persistent state
 are unchanged. Then run:
 
 ```bash
-npx --yes run-spaceapp@personal install --access isolated
+npx --yes run-spaceapp@latest install --access isolated
 ```
 
 Recreate the stack and prove `/host` is no longer mounted while SpaceApp data,
@@ -127,8 +127,9 @@ For every candidate:
   while rerunning it after owner claim prints no token;
 - configuration and secret files have restrictive host permissions;
 - the default port is reachable only on loopback;
-- core, CLI, PostgreSQL, and Temporal become healthy/running in light mode;
-- the browser service also becomes healthy in a separate standard-profile
+- core, CLI, and PostgreSQL become healthy/running in the `small` profile,
+  and Temporal also in `medium`;
+- the browser service also becomes healthy in a separate `large`-profile
   cycle;
 - the first page requires the one-time setup claim;
 - invalid setup input does not create an owner;

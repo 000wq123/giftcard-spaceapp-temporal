@@ -98,11 +98,11 @@ npx --yes run-spaceapp@latest install
 npx --yes run-spaceapp@latest status
 ```
 
-An existing standard installation changes to light unless the managed browser
-profile is explicitly requested:
+An update keeps the installed profile. To change it, pass the profile
+explicitly, for example to add the managed browser:
 
 ```bash
-npx --yes run-spaceapp@latest install --profile standard
+npx --yes run-spaceapp@latest install --profile large
 ```
 
 Installing a global launcher with `npm install -g run-spaceapp` remains
@@ -114,32 +114,28 @@ first.
 
 ## Linux access mode
 
-The current `0.1.15-hostroot.2` personal candidate enables host-root on a
-disposable x64 Linux test machine:
+Host-root access is Linux-only and meant for a disposable, trusted
+single-owner machine; see the [security model](security-model.md):
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@latest install --access host-root
 ```
 
 To remove the `/host` mount without deleting SpaceApp state or volumes:
 
 ```bash
-npx --yes run-spaceapp@personal install --access isolated
+npx --yes run-spaceapp@latest install --access isolated
 ```
 
-Use the `@personal` prefix for `doctor`, `status`, `logs`, credentials, and
-recovery commands while this prerelease is installed. `light` and `standard`
-do not change the access mode. The candidate is x64-only: core and CLI are
-rebuilt for `linux/amd64`, while the existing signed browser manifest is reused
-without a browser build.
+Installation profiles do not change the access mode.
 
 ## Rollback
 
 If the new release fails its health or owner workflow checks:
 
 ```bash
-npx --yes run-spaceapp@personal rollback
-npx --yes run-spaceapp@personal status
+npx --yes run-spaceapp@latest rollback
+npx --yes run-spaceapp@latest status
 ```
 
 Rollback returns to the single previously recorded image version. It does not

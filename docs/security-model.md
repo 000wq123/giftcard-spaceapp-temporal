@@ -43,11 +43,10 @@ SaaS control plane.
 
 ## Explicit Linux host-root mode
 
-The x64-only `.2` personal candidate enables this mode through
-`npx --yes run-spaceapp@personal install --access host-root`. It mounts the
-host `/` at `/host`, read-only in `spaceapp-core` and read/write in
-`spaceapp-cli`, and runs CLI sessions as container root. With a normal rootful
-Docker Engine, this is equivalent to host-root file access.
+`npx --yes run-spaceapp@latest install --access host-root` enables this
+mode. It mounts the host `/` at `/host`, read-only in `spaceapp-core` and
+read/write in `spaceapp-cli`, and runs CLI sessions as container root. With a
+normal rootful Docker Engine, this is equivalent to host-root file access.
 
 This mode can disclose every host credential, overwrite boot and package
 configuration, delete user data, or destroy the operating system. Repository
@@ -58,7 +57,7 @@ filesystem policy inside this mode.
 Host-root is Linux-only, disabled by default, and never selected by a resource
 profile. New and migrated installations use `isolated`; omitting `--access`
 preserves the existing choice. Run
-`npx --yes run-spaceapp@personal install --access isolated` to remove the host
+`npx --yes run-spaceapp@latest install --access isolated` to remove the host
 root mount without deleting application data or persistent volumes.
 
 The host-root override does not mount the Docker socket and does not enable

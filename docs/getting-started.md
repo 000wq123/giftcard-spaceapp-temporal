@@ -7,18 +7,19 @@ automatically when it is missing.
 
 ## Requirements
 
-Minimum:
+Minimum (the `small` profile):
 
 - 4 CPU cores;
-- 8 GB system RAM;
-- 6.5 GiB free disk for the small fresh-install profile;
+- 8 GB-class system RAM (the launcher requires at least 7 GiB reported by the
+  operating system);
+- 6.5 GiB free disk for a fresh installation;
 - Node.js 20.11 or newer.
 
-Recommended for browser sessions and several simultaneous CLI panes:
+The `large` profile, which adds managed browser sessions, requires:
 
 - 8 CPU cores;
-- 16 GB RAM;
-- 25 GiB free disk.
+- 15 GiB RAM;
+- 11 GiB free disk.
 
 ## Linux
 
@@ -115,15 +116,14 @@ Limits are upper bounds, not memory reserved at startup.
 
 ## Linux host access
 
-Installation profiles do not control filesystem permissions. Both `light` and
-`standard` use isolated access by default, where only registered workspaces are
-mounted.
+Installation profiles do not control filesystem permissions. Every profile
+uses isolated access by default, where only registered workspaces are mounted.
 
-The `0.1.15-hostroot.2` personal candidate enables host-root on a disposable,
-trusted single-owner x64 Linux test machine:
+Host-root access is meant for a disposable, trusted single-owner Linux
+machine:
 
 ```bash
-npx --yes run-spaceapp@personal install --access host-root
+npx --yes run-spaceapp@latest install --access host-root
 ```
 
 That mode remains one Docker-based SpaceApp build across Linux distributions.
@@ -133,9 +133,7 @@ in this mode. On a normal rootful Docker Engine, this is equivalent to
 host-root file access: an agent can read credentials, change boot or package
 files, or destroy the operating system.
 
-The candidate publishes new `core` and `cli` images only for `linux/amd64` and
-reuses the existing signed browser manifest without rebuilding it. npm rejects
-the package on arm64. The mode does not mount the Docker socket and does not enable `privileged`,
+The mode does not mount the Docker socket and does not enable `privileged`,
 host PID, host network, host IPC, or host device access. Those omissions reduce
 the attack surface but do not make a writable host root safe from a malicious
 or mistaken CLI command.
@@ -145,11 +143,11 @@ default to `isolated`. To remove the host root mount while preserving SpaceApp
 data, credentials, workspaces, secrets, and persistent volumes, run:
 
 ```bash
-npx --yes run-spaceapp@personal install --access isolated
+npx --yes run-spaceapp@latest install --access isolated
 ```
 
-Use `npx --yes run-spaceapp@personal` for all follow-up commands while this
-prerelease is installed.
+Host-root is supported only on Linux; the launcher refuses it on macOS and
+Windows.
 
 The `npx` command is the universal one-command installer. To retain a global
 launcher for later operations, optionally run `npm install -g run-spaceapp`;
@@ -248,9 +246,11 @@ On the first page:
    paste it into the field with the same name;
 2. create the owner email and a password of at least 6 characters;
 3. sign in as that owner;
-4. connect one CLI provider at a time, **starting with OpenCode** — its default
-   model is the free DeepSeek V4 Flash (`opencode/deepseek-v4-flash-free`), so
-   no paid account or API key is required to get a working agent;
+4. connect one CLI provider at a time, **starting with OpenCode** — its
+   starter model is the free Big Pickle (`opencode/big-pickle`). On first
+   launch SpaceApp checks it with a real tool call and falls back to another
+   free model if it fails (see [CLI providers](cli-providers.md)), so no paid
+   account or API key is required to get a working agent;
 5. create a test room and verify the selected workspace;
 6. run `npx --yes run-spaceapp@latest backup` before the first update.
 
@@ -270,10 +270,11 @@ Rotation is refused after an owner exists.
 
 Open the CLI provider setup inside SpaceApp and use the provider's official
 OAuth, device-code, or login flow. **Connect OpenCode first**: the bundled
-OpenCode runtime defaults to the free DeepSeek V4 Flash model, which gives a
-working agent immediately without a paid plan or API key. Then continue with
-the other providers as needed. For providers that support direct API keys,
-the launcher also accepts a value from masked standard input:
+OpenCode runtime starts on the free Big Pickle model, or on another free model
+that passes the first-launch check, which gives a working agent without a paid
+plan or API key. Then continue with the other providers as needed. For
+providers that support direct API keys, the launcher also accepts a value from
+masked standard input:
 
 ```bash
 npx --yes run-spaceapp@latest credentials list
@@ -298,20 +299,21 @@ npx --yes run-spaceapp@latest logs
 `doctor` checks Node.js, Docker CLI, Docker Compose, Docker Engine, CPU,
 memory, and free disk exactly once each. It distinguishes a missing CLI or
 Compose plugin from an installed engine that is stopped or inaccessible.
-Light mode should show core, CLI, PostgreSQL, and Temporal running; standard
-mode also includes the browser service. If startup is still in progress, wait
-for the health checks and inspect bounded logs.
+The `small` profile should show core, CLI, and PostgreSQL running; `medium`
+adds Temporal, and `large` also adds the browser service. If startup is still
+in progress, wait for the health checks and inspect bounded logs.
 
 ## Source-checkout test path
 
 A clean-room operator can also build the three images from a verified source
-commit with the exact stable tag expected by the launcher:
+commit with the exact tag expected by the launcher. Replace `<version>` with
+`spaceappRuntimeVersion` from `packages/run-spaceapp/package.json`:
 
 ```bash
 npm ci
-docker build --target core --tag ghcr.io/oll4com/spaceapp-core:0.1.0 .
-docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:0.1.0 .
-docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:0.1.0 .
+docker build --target core --tag ghcr.io/oll4com/spaceapp-core:<version> .
+docker build --target browser --tag ghcr.io/oll4com/spaceapp-browser:<version> .
+docker build --target cli --tag ghcr.io/oll4com/spaceapp-cli:<version> .
 npm install -g ./packages/run-spaceapp
 ```
 
