@@ -1,18 +1,32 @@
 # CLI providers and credentials
 
-The public CLI image bundles pinned executables whose reviewed licenses permit
-redistribution. SpaceApp does not bundle provider accounts, API keys, OAuth
-grants, subscriptions, or usage credits.
+The public CLI image includes OpenCode. The other CLIs below are installed at
+their pinned versions into the CLI service's persistent volume on first use, or
+ahead of time with `npx --yes run-spaceapp@latest provider install <name>`.
+SpaceApp does not bundle provider accounts, API keys, OAuth grants,
+subscriptions, or usage credits.
 
-## Bundled inventory
+## Pinned inventory
 
-OpenCode is the pre-defined first CLI of the clean setup. Its default model is
-the free DeepSeek V4 Flash (`opencode/deepseek-v4-flash-free`), so a fresh
-install can connect a working agent without a paid subscription or API key.
+OpenCode is the pre-defined first CLI of the clean setup. It needs no API key
+for the free models of OpenCode Zen, and its starter model is the free Big
+Pickle (`opencode/big-pickle`).
+
+The first time OpenCode starts without a configured model, SpaceApp reads
+OpenCode's live model catalog and keeps only active, zero-cost models with
+tool support. It checks Big Pickle first with a real tool call: the model must
+read a small file and answer with the random token it contains. If Big Pickle
+is not in that list or fails the check, SpaceApp tries the other free models,
+newest first, up to five checks within a 100-second budget, and saves the first
+one that passes as OpenCode's default model. The check needs internet access.
+If no model passes, SpaceApp stays usable; retry OpenCode later or choose
+another provider in Settings. A model you have already configured is never
+replaced. The list of free models comes from OpenCode's live catalog and can
+change.
 
 | Runtime | Package and pinned version | Normal owner setup |
 | --- | --- | --- |
-| **OpenCode (first)** | `opencode-ai@1.18.4` | `opencode auth login` provider flow; default free model `deepseek-v4-flash-free` |
+| **OpenCode (first)** | `opencode-ai@1.18.4` (in the image) | no login for free models; starter model `opencode/big-pickle`, checked on first launch; `opencode auth login` for other providers |
 | Codex CLI | `@openai/codex@0.145.0` | official device-code login or API key |
 | Gemini CLI | `@google/gemini-cli@0.52.0` | official Google OAuth or API key |
 | Qwen Code | `@qwen-code/qwen-code@0.20.1` | official `/auth` provider menu or API key |
@@ -35,9 +49,8 @@ That command downloads `@anthropic-ai/claude-code@2.1.206` directly from npm
 as an owner-initiated action. Use remains subject to Anthropic's current terms.
 
 DeepSeek support is **community/experimental**. `run-deepseek-cli` is not an
-official DeepSeek CLI, and the current adapter uses its fixed
-`deepseek-v4-flash` text-chat path. Evaluate its package, behavior, license,
-and suitability before enabling it.
+official DeepSeek CLI. Evaluate its package, behavior, license, and
+suitability before enabling it.
 
 Provider names and trademarks belong to their respective owners. Each CLI and
 upstream service remains governed by its own license, terms, privacy policy,
@@ -109,7 +122,7 @@ from silently becoming a credential bundle.
 
 ## Updates
 
-Bundled provider versions change only through a reviewed SpaceApp CLI-image
+Pinned provider versions change only through a reviewed SpaceApp CLI-image
 release. Claude Code remains outside the distributed image; rerun
 `npx --yes run-spaceapp@latest provider install claude` only when deliberately
 installing the reviewed owner-managed version. Update SpaceApp images through
