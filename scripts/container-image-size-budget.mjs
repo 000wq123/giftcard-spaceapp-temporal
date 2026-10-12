@@ -4,9 +4,13 @@ import { pathToFileURL } from "node:url";
 
 const mebibyte = 1024 * 1024;
 
+// 1.1.3 raised core and browser (998.7 / 1670.6 MiB measured): the current
+// application adds production dependencies pdfjs-dist with @napi-rs/canvas
+// (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
+// js-tiktoken (22 MiB, Space Gateway token counting).
 export const containerImageSizeBudgets = Object.freeze({
-  core: 900 * mebibyte,
-  browser: 1600 * mebibyte,
+  core: 1050 * mebibyte,
+  browser: 1750 * mebibyte,
   cli: 2800 * mebibyte
 });
 
