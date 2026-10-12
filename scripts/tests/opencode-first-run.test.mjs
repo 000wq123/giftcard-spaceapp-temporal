@@ -1,8 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {mkdir,mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {parseCatalog,preferDefault,toolCycleSucceeded,selectWorkingFreeModel,withBootstrap} from '../../deploy/docker/opencode-first-run.mjs';
+import {parseCatalog,preferDefault,toolCycleSucceeded,selectWorkingFreeModel,withBootstrap,scratchDirectory,externalDirectoryDefault,configureFirstRun} from '../../deploy/docker/opencode-first-run.mjs';
+// The 2026-10-11 macOS first-agent run stopped at "Access external directory
+// /tmp" because nobody answered the prompt. The wrapper's private TMPDIR is
+// the only scratch directory authorized in advance; /tmp still asks.
+const PROVIDER_TMP='/var/lib/spaceapp-cli/providers/opencode/tmp';
+// OpenCode evaluates permission rules in order and the last matching rule wins.
+const decide=(rules,path)=>{
+ const match=(pattern,value)=>new RegExp('^'+pattern.replace(/[.+^${}()|[\]\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$').test(value);
+ return Object.entries(rules).filter(([pattern])=>match(pattern,path)).at(-1)?.[1];
+};
 const line=e=>JSON.stringify(e);
 const toolRun=token=>[line({type:'step_start'}),line({type:'tool_use',part:{type:'tool',tool:'read',state:{status:'completed'}}}),line({type:'step_finish'}),line({type:'step_start'}),line({type:'text',part:{text:token}}),line({type:'step_finish'})].join('\n');
 const entry=(id,cost=0)=>`opencode/${id}\n${JSON.stringify({id,providerID:'opencode',name:id,status:'active',cost:{input:cost,output:cost},capabilities:{toolcall:true},release_date:'2026-09-01'},null,2)}`;
@@ -44,11 +55,55 @@ test('bootstrap loads installation memory and authorizes only its external direc
  assert.deepEqual(withBootstrap(c),c);
 });
 test('an explicit owner permission policy is preserved, including global denial',()=>{
- for(const permission of ['deny',{'*':'deny'},{external_directory:'deny'},{external_directory:{'*':'deny'}}]){
-  const c=withBootstrap({model:'owner/model',permission});
+ for(const permission of ['deny',{'*':'deny'},{external_directory:'deny'},{external_directory:{'*':'deny'}},
+   {external_directory:{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'deny'}}]){
+  const c=withBootstrap({model:'owner/model',permission},{tmpdir:PROVIDER_TMP});
   assert.deepEqual(c.permission,permission);
  }
  assert.throws(()=>withBootstrap({instructions:'invalid'}),/existing settings were preserved/);
+});
+
+test('first run pre-authorizes only the provider scratch directory, never /tmp',()=>{
+ const rules=withBootstrap({}, {tmpdir:PROVIDER_TMP}).permission.external_directory;
+ assert.deepEqual(rules,{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow',
+  [PROVIDER_TMP]:'allow',[`${PROVIDER_TMP}/*`]:'allow'});
+ assert.equal(decide(rules,`${PROVIDER_TMP}/*`),'allow');
+ assert.equal(decide(rules,'/var/lib/spaceapp/memory/*'),'allow');
+ for(const path of ['/tmp/*','/tmp','/var/lib/spaceapp-cli/providers/opencode/*','/var/lib/spaceapp-cli/*','/workspaces/*','/root/*'])
+  assert.equal(decide(rules,path),'ask',path);
+});
+test('only the wrapper-owned provider TMPDIR becomes a scratch rule',()=>{
+ assert.equal(scratchDirectory(PROVIDER_TMP+'/'),PROVIDER_TMP);
+ for(const value of [undefined,'','/','/tmp','/tmp/','/var/tmp','relative/tmp','/var/lib/spaceapp-cli/providers/*/tmp',
+   '/var/lib/spaceapp-cli/providers/opencode','/var/lib/spaceapp-cli/providers/opencode/tmp/../../../../tmp'])
+  assert.equal(scratchDirectory(value),null,String(value));
+ assert.deepEqual(externalDirectoryDefault('/tmp'),{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'});
+});
+test('the unchanged 1.1.x default is upgraded once; the result is stable',()=>{
+ const legacy={model:'opencode/big-pickle',permission:{edit:'allow',external_directory:{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'}}};
+ const upgraded=withBootstrap(legacy,{tmpdir:PROVIDER_TMP});
+ assert.equal(upgraded.permission.edit,'allow');
+ assert.equal(upgraded.permission.external_directory[`${PROVIDER_TMP}/*`],'allow');
+ assert.deepEqual(withBootstrap(upgraded,{tmpdir:PROVIDER_TMP}),upgraded);
+});
+test('bootstrap instructions send temporary files to TMPDIR instead of /tmp',()=>{
+ for(const file of ['starter-memory/AGENTS.md','starter-memory/installation-guide.md']){
+  const text=readFileSync(join(import.meta.dirname,'../..',file),'utf8');
+  assert.match(text,/temporary file[\s\S]{0,120}`\$TMPDIR`/i,file);
+  assert.match(text,/not use `\/tmp`|never `\/tmp`/,file);
+ }
+});
+test('configureFirstRun writes the scratch rule for the wrapper TMPDIR',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'spaceapp-first-run-'));
+ try{
+  const config=join(root,'config');await mkdir(join(config,'opencode'),{recursive:true});
+  await writeFile(join(config,'opencode','opencode.json'),JSON.stringify({model:'owner/model'}));
+  await configureFirstRun({XDG_CONFIG_HOME:config,TMPDIR:PROVIDER_TMP});
+  const written=JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8'));
+  assert.equal(written.model,'owner/model');
+  assert.equal(written.permission.external_directory[`${PROVIDER_TMP}/*`],'allow');
+  assert.equal(decide(written.permission.external_directory,'/tmp/*'),'ask');
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test('Big Pickle is tried first, then the newest free models',async()=>{

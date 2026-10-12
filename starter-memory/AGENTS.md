@@ -42,6 +42,11 @@ observing it. Ask what the owner wants to do first and give one simple next acti
 
 ## Rules
 
+- Write temporary files (saved HTTP responses, scratch notes) only under
+  `$TMPDIR`, your provider's private scratch directory. It is already
+  authorized for OpenCode. Do not use `/tmp` or other directories outside
+  `/var/lib/spaceapp/memory`: OpenCode stops and waits for the owner's
+  permission there, and the owner may not be watching.
 - Never store credentials, session secrets, browser profiles, or backup
   encryption keys in memory files.
 - Register only the host workspaces the owner intends to share with agents.

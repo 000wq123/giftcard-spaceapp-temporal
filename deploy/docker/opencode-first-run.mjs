@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -35,18 +35,39 @@ export function toolCycleSucceeded(result,token) {
   const answer=list.findIndex((e,i)=>i>tool&&e.type==='text'&&e.part?.text?.includes(token));
   return answer>tool&&list.some((e,i)=>i>answer&&e.type==='step_finish');
 }
-export function withBootstrap(config) {
+const MEMORY_DIRECTORY='/var/lib/spaceapp/memory';
+// The 1.1.x default. Configs that still carry exactly this value get the new
+// default; any other value is an owner policy and is preserved.
+const LEGACY_EXTERNAL_DIRECTORY={'*':'ask',[MEMORY_DIRECTORY]:'allow',[`${MEMORY_DIRECTORY}/*`]:'allow'};
+// The CLI wrapper gives each provider a private TMPDIR under its state volume
+// (public-cli-wrapper.sh). Only that directory is pre-authorized for scratch
+// files; the shared /tmp and every other external path still ask.
+const PROVIDER_TMPDIR=/^\/var\/lib\/spaceapp-cli\/providers\/[a-z0-9-]+\/tmp$/;
+export function scratchDirectory(tmpdir) {
+  if(typeof tmpdir!=='string'||!isAbsolute(tmpdir))return null;
+  const path=normalize(tmpdir).replace(/\/+$/,'');
+  return PROVIDER_TMPDIR.test(path)?path:null;
+}
+export function externalDirectoryDefault(tmpdir) {
+  const scratch=scratchDirectory(tmpdir);
+  return {...LEGACY_EXTERNAL_DIRECTORY,...(scratch?{[scratch]:'allow',[`${scratch}/*`]:'allow'}:{})};
+}
+const sameRules=(left,right)=>left!==null&&typeof left==='object'&&!Array.isArray(left)&&
+  Object.keys(left).length===Object.keys(right).length&&Object.entries(right).every(([key,value])=>left[key]===value);
+export function withBootstrap(config,{tmpdir}={}) {
   if(config.instructions!==undefined&&!Array.isArray(config.instructions))throw new Error('OpenCode instructions must be an array; existing settings were preserved.');
   const instructions=[...new Set([...(config.instructions??[]),
-    '/etc/AGENTS.md','/etc/spaceapp-installation-guide.md','/var/lib/spaceapp/memory/*.md'])];
+    '/etc/AGENTS.md','/etc/spaceapp-installation-guide.md',`${MEMORY_DIRECTORY}/*.md`])];
   const next={...config,instructions};
   // Respect an owner's explicit permission policy. Fresh installs authorize
-  // only their shared private memory directory; other external paths still ask.
-  if(config.permission===undefined || (typeof config.permission==='object' &&
-      config.permission!==null && !('*' in config.permission) &&
-      !('external_directory' in config.permission))) {
-    next.permission={...(config.permission??{}),external_directory:{
-      '*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'}};
+  // only their shared private memory directory and the provider's private
+  // scratch directory; other external paths still ask.
+  const permission=config.permission;
+  const unset=permission===undefined || (typeof permission==='object' && permission!==null &&
+    !('*' in permission) && !('external_directory' in permission));
+  if(unset || (typeof permission==='object' && permission!==null &&
+      sameRules(permission.external_directory,LEGACY_EXTERNAL_DIRECTORY))) {
+    next.permission={...(permission??{}),external_directory:externalDirectoryDefault(tmpdir)};
   }
   return next;
 }
@@ -99,7 +120,7 @@ export async function configureFirstRun(env=process.env) {
     const previous=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
     const config=previous===null?{}:JSON.parse(previous);
     const model=config.model?null:await selectWorkingFreeModel({env});
-    const next=withBootstrap(model?{...config,model:model.id}:config);
+    const next=withBootstrap(model?{...config,model:model.id}:config,{tmpdir:env.TMPDIR});
     if(JSON.stringify(next)===JSON.stringify(config))return;
     const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
     if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');

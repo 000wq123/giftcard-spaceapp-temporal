@@ -60,6 +60,10 @@ volumes or run Docker system prune as routine troubleshooting.
 
 ## Durable completion record
 
+If a check needs a temporary file, for example a saved readiness response, write
+it under `$TMPDIR`, never `/tmp`: OpenCode asks the owner before touching other
+directories and the task waits until someone answers.
+
 After checking each item with the owner, create/update
 `/var/lib/spaceapp/memory/installation-completion.md` with date, installed runtime,
 platform, observed health, owner setup complete (boolean only), chosen model,
