@@ -111,4 +111,8 @@ RUN npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
       /workspaces \
       /run/spaceapp-cli \
     && printf '%s\n' "$TARGETARCH" > /usr/local/share/spaceapp-cli-architecture
+# The application's default room project is /opt/spaceapp. CLI sessions run in /etc, as
+# /etc/AGENTS.md documents, so that path resolves to /etc in this image. Without it, the
+# Getting Started OpenCode pane exits with "chdir(2) failed" before OpenCode starts.
+RUN ln -s /etc /opt/spaceapp
 ENTRYPOINT ["/app/deploy/docker/cli-entrypoint.sh"]
