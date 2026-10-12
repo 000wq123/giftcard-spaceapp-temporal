@@ -450,6 +450,42 @@ export function publicRootPackage(text, { hasFile, hasWorkspace }) {
   return { text: `${JSON.stringify(manifest, null, 2)}\n`, dropped: dropped.sort() };
 }
 
+// Markdown links and images: [text](target) / ![alt](target "title").
+const markdownLink = /(!?)\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+const htmlLink = /\b(?:href|src)="([^"]+)"/g;
+
+// Repository path a relative link points at, or null for URLs and in-page anchors.
+function linkedPath(document, target) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#") || target.startsWith("//")) return null;
+  const path = target.split("#")[0].split("?")[0];
+  if (!path) return null;
+  const resolved = path.startsWith("/") ? path.slice(1) : posix.join(posix.dirname(document), path);
+  return posix.normalize(resolved).replace(/\/$/, "");
+}
+
+/** Relative links in a Markdown document whose target the public tree lacks. */
+export function documentLinkProblems(document, text, hasFile) {
+  const problems = [];
+  const check = (target) => {
+    const path = linkedPath(document, target);
+    if (path !== null && !hasFile(path)) problems.push(`${document} links to missing file: ${target}`);
+  };
+  for (const match of text.matchAll(markdownLink)) check(match[3]);
+  for (const match of text.matchAll(htmlLink)) check(match[1]);
+  return problems;
+}
+
+/**
+ * Turns every Markdown link whose target the public tree lacks into its plain
+ * link text (an image becomes its alt text); URLs and anchors stay links.
+ */
+export function unlinkMissingTargets(document, text, hasFile) {
+  return text.replace(markdownLink, (whole, image, label, target) => {
+    const path = linkedPath(document, target);
+    return path === null || hasFile(path) ? whole : label;
+  });
+}
+
 /**
  * The contributor guide must only send people to commands and files that the
  * public tree has: `npm` commands in its code blocks and its relative links.
@@ -463,13 +499,7 @@ export function contributorGuideProblems(guide, scripts, hasFile) {
       if (script && !(script in scripts)) problems.push(`command needs missing script: ${line.trim()}`);
     }
   }
-  for (const link of guide.matchAll(/\]\(([^)\s#]+)(?:#[^)]*)?\)/g)) {
-    const target = link[1];
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
-    const path = posix.normalize(target.replace(/^\.\//, ""));
-    if (!hasFile(path)) problems.push(`link to missing file: ${target}`);
-  }
-  return problems;
+  return [...problems, ...documentLinkProblems("CONTRIBUTING.md", guide, hasFile)];
 }
 
 export function isPublicExportPath(path) {
@@ -536,7 +566,10 @@ export async function createPublicExport({
   outputRoot,
   trackedPaths,
   sourceCommit,
-  trackedMetadata = new Map()
+  trackedMetadata = new Map(),
+  // Files the public repository owns (tracked there, never exported). Unknown
+  // when null: README/CONTRIBUTING links may then only use the public policy.
+  publicRepositoryFiles = null
 }) {
   const source = resolve(sourceRoot);
   const output = resolve(outputRoot);
@@ -567,6 +600,13 @@ export async function createPublicExport({
       if (typeof name === "string") workspaces.add(name);
     }
     const packageContext = { hasFile, hasWorkspace: (name) => workspaces.has(name) };
+    // A document link resolves when the public tree has the file (or, for a
+    // directory link, any file below it): exported or owned by the public repo.
+    const publicTreeFiles = [...exportPaths, ...publicRepositoryScripts,
+      ...(publicRepositoryFiles ?? [...publicDocs, ...rootFiles])];
+    const publicTreeSet = new Set(publicTreeFiles);
+    const linkTargetExists = (path) => publicTreeSet.has(path) ||
+      publicTreeFiles.some((file) => file.startsWith(`${path}/`));
     let exportedScripts = null;
     for (const path of [...trackedPaths].sort()) {
       if (!isPublicExportPath(path)) continue;
@@ -604,6 +644,8 @@ export async function createPublicExport({
             sanitized = publicRootPackage(sanitized, packageContext).text;
             exportedScripts = JSON.parse(sanitized).scripts;
           }
+          // Internal documents stay private; README keeps their link text only.
+          if (normalized === "README.md") sanitized = unlinkMissingTargets(normalized, sanitized, linkTargetExists);
           exported = Buffer.from(sanitized, "utf8");
           if (!exported.equals(original)) transformations += 1;
         }
@@ -630,13 +672,17 @@ export async function createPublicExport({
       });
     }
 
-    if (exportedScripts && exportPaths.has("CONTRIBUTING.md")) {
-      const guide = await readFile(join(staging, "CONTRIBUTING.md"), "utf8");
-      const guideProblems = contributorGuideProblems(guide, exportedScripts,
-        (path) => hasFile(path) || publicDocs.has(path) || rootFiles.has(path));
-      if (guideProblems.length) {
-        throw new Error(`Public CONTRIBUTING.md points at what the public tree lacks:\n- ${guideProblems.join("\n- ")}`);
-      }
+    const documentProblems = [];
+    if (exportPaths.has("README.md")) {
+      documentProblems.push(...documentLinkProblems("README.md",
+        await readFile(join(staging, "README.md"), "utf8"), linkTargetExists));
+    }
+    if (exportPaths.has("CONTRIBUTING.md")) {
+      documentProblems.push(...contributorGuideProblems(
+        await readFile(join(staging, "CONTRIBUTING.md"), "utf8"), exportedScripts ?? {}, linkTargetExists));
+    }
+    if (documentProblems.length) {
+      throw new Error(`Public README.md/CONTRIBUTING.md point at what the public tree lacks:\n- ${documentProblems.join("\n- ")}`);
     }
 
     const manifest = {
@@ -793,6 +839,23 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * Files this public checkout owns: tracked here and not shipped by the previous
+ * export (its PUBLIC_EXPORT_MANIFEST.json). Same rule as the setup sync's
+ * stale-path removal, so a link never counts on a file the sync deletes.
+ */
+export async function publicRepositoryOwnedFiles(root) {
+  const tracked = git(["ls-files", "-z"], root).split("\0").filter(Boolean);
+  let previous = new Set();
+  try {
+    const manifest = JSON.parse(await readFile(join(root, "PUBLIC_EXPORT_MANIFEST.json"), "utf8"));
+    previous = new Set((manifest.files ?? []).map((file) => file.path));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return new Set(tracked.filter((path) => !previous.has(path)));
+}
+
 export async function runCli(argv) {
   const options = parseArgs(argv);
   const sourceRoot = options.source ?? repoRoot;
@@ -812,7 +875,8 @@ export async function runCli(argv) {
       outputRoot,
       trackedPaths: tree.paths,
       sourceCommit,
-      trackedMetadata: tree.metadata
+      trackedMetadata: tree.metadata,
+      publicRepositoryFiles: resolve(sourceRoot) === repoRoot ? null : await publicRepositoryOwnedFiles(repoRoot)
     });
     process.stdout.write(`${JSON.stringify({
       ok: true,

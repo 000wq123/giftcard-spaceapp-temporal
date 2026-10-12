@@ -7,10 +7,13 @@ import {
   applyPublicOverlay,
   auditPublicTree,
   contributorGuideProblems,
+  documentLinkProblems,
   createPublicExport,
   isPublicExportPath,
   publicRootPackage,
-  sanitizePublicText
+  publicRepositoryOwnedFiles,
+  sanitizePublicText,
+  unlinkMissingTargets
 } from "../public-export.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -355,7 +358,7 @@ test("public export fails when CONTRIBUTING sends contributors to a script or fi
   await assert.rejects(() => stat(outputRoot), /ENOENT/);
   assert.deepEqual(
     contributorGuideProblems("See [quality](docs/quality/README.md) and [reference](docs/configuration-reference.md).\n", {}, (path) => path === "docs/configuration-reference.md"),
-    ["link to missing file: docs/quality/README.md"]
+    ["CONTRIBUTING.md links to missing file: docs/quality/README.md"]
   );
 });
 
@@ -375,4 +378,74 @@ test("the documented contributor path is exported", () => {
   assert.equal(isPublicExportPath("docs/quality/README.md"), false);
   // The public repository keeps its own security model (host-root guidance).
   assert.equal(isPublicExportPath("docs/security-model.md"), false);
+});
+
+test("README links to files outside the public tree become their link text", () => {
+  const readme = [
+    "See [state ownership](docs/quality/state-ownership.md) and the",
+    "[trust boundaries in the\narchitecture](docs/architecture.md#trust-boundaries).",
+    "Read [CONTRIBUTING](CONTRIBUTING.md), the [guide](./docs/getting-started.md#install),",
+    "[the site](https://spaceapp.example/docs/architecture.md), [top](#top) and the [skills](agent-skills/).",
+    "![diagram](docs/images/internal.png)"
+  ].join("\n");
+  const has = (path) => ["CONTRIBUTING.md", "docs/getting-started.md", "agent-skills"].includes(path);
+  assert.equal(unlinkMissingTargets("README.md", readme, has), [
+    "See state ownership and the",
+    "trust boundaries in the\narchitecture.",
+    "Read [CONTRIBUTING](CONTRIBUTING.md), the [guide](./docs/getting-started.md#install),",
+    "[the site](https://spaceapp.example/docs/architecture.md), [top](#top) and the [skills](agent-skills/).",
+    "diagram"
+  ].join("\n"));
+  assert.deepEqual(documentLinkProblems("README.md", '<a href="LICENSE">x</a> [a](docs/architecture.md)', (path) => path === "LICENSE"),
+    ["README.md links to missing file: docs/architecture.md"]);
+});
+
+test("the exported README never links to internal documents and the export checks it", async () => {
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "README.md": "# SpaceApp\n\nSee the [architecture](docs/architecture.md#trust-boundaries), the\n[claims audit](docs/quality/claims-audit.md), the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n",
+    "CONTRIBUTING.md": "# Contributing\n\nSee the [README](README.md).\n",
+    "docs/architecture.md": "internal\n",
+    "docs/quality/claims-audit.md": "internal\n"
+  });
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-readme-output-")), "export");
+
+  const result = await createPublicExport({
+    sourceRoot,
+    outputRoot,
+    trackedPaths,
+    sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+    // docs/security-model.md is owned by the public repository.
+    publicRepositoryFiles: new Set(["docs/security-model.md", "packages/run-spaceapp/package.json"])
+  });
+
+  const readme = await readFile(join(outputRoot, "README.md"), "utf8");
+  assert.equal(readme, "# SpaceApp\n\nSee the architecture, the\nclaims audit, the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n");
+  const exported = new Set(result.manifest.files.map((file) => file.path));
+  assert.equal(exported.has("docs/architecture.md"), false);
+  assert.equal(exported.has("docs/quality/claims-audit.md"), false);
+  assert.deepEqual(documentLinkProblems("README.md", readme,
+    (path) => exported.has(path) || path === "docs/security-model.md"), []);
+});
+
+test("the export fails when README or CONTRIBUTING still links to a missing file", async () => {
+  for (const [file, text] of [
+    ["README.md", '# SpaceApp\n\n<a href="docs/quality/README.md">quality</a>\n'],
+    ["CONTRIBUTING.md", "# Contributing\n\nResults: [quality](docs/quality/README.md).\n"]
+  ]) {
+    const { sourceRoot, trackedPaths } = await writeSourceTree({ [file]: text });
+    const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-links-output-")), "export");
+    await assert.rejects(
+      () => createPublicExport({ sourceRoot, outputRoot, trackedPaths, sourceCommit: "0123456789abcdef0123456789abcdef01234567", publicRepositoryFiles: new Set() }),
+      new RegExp(`${file.replace(".", "\\.")} links to missing file: docs/quality/README\\.md`)
+    );
+    await assert.rejects(() => stat(outputRoot), /ENOENT/);
+  }
+});
+
+test("public-repository files are tracked files the previous export did not ship", async () => {
+  const owned = await publicRepositoryOwnedFiles(repoRoot);
+  const manifest = JSON.parse(await readFile(join(repoRoot, "PUBLIC_EXPORT_MANIFEST.json"), "utf8"));
+  assert.ok(owned.has("packages/run-spaceapp/package.json"));
+  assert.ok(owned.has("scripts/public-export.mjs"));
+  for (const file of manifest.files) assert.equal(owned.has(file.path), false, file.path);
 });
