@@ -367,7 +367,8 @@ test("the documented contributor path is exported", () => {
     "scripts/domain-boundaries.mjs",
     "scripts/tests/domain-boundaries.test.mjs",
     "docs/quality/domain-boundaries.json",
-    "docs/configuration-reference.md"
+    "docs/configuration-reference.md",
+    "eslint.config.mjs"
   ]) {
     assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
   }

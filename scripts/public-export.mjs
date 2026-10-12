@@ -45,6 +45,8 @@ const rootFiles = new Set([
   "SECURITY.md",
   "SUPPORT.md",
   "THIRD_PARTY_NOTICES.md",
+  // Configuration for the root `npm run lint` script.
+  "eslint.config.mjs",
   "package-lock.json",
   "package.json",
   "tsconfig.base.json"
