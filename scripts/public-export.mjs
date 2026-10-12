@@ -63,8 +63,9 @@ const publicDocs = new Set([
   "docs/legal/cli-distribution-policy.json",
   "docs/operations.md",
   "docs/installer-release-runbook.md",
-  "docs/public-release.md",
-  "docs/security-model.md"
+  "docs/public-release.md"
+  // docs/security-model.md is maintained here (installer and host-root
+  // guidance); the source file at that path is the internal model.
 ]);
 
 const publicScripts = new Set([

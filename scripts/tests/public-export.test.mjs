@@ -373,4 +373,6 @@ test("the documented contributor path is exported", () => {
     assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
   }
   assert.equal(isPublicExportPath("docs/quality/README.md"), false);
+  // The public repository keeps its own security model (host-root guidance).
+  assert.equal(isPublicExportPath("docs/security-model.md"), false);
 });
