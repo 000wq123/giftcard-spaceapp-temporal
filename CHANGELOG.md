@@ -5,6 +5,9 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-12
+
+- The setup wizard and Help no longer promise the retired DeepSeek V4 Flash model, and the documentation matches the launcher: the Big Pickle starter model with its first-launch check, profile sizes, `@latest` commands, the 12-character owner password, telemetry, and what stays on your machine when a remote model provider is used.
 - Check the first-run free OpenCode model with a real tool call: the model must read a small file with its read tool and answer with the random token inside it. Big Pickle is tried first; when it fails, the newest free tool-capable models are tried. Before, a plain text reply was enough, so a model could be chosen that then failed upstream as soon as a task used tools.
 - Pin the optional Headroom companion image to a reviewed digest (`headroom-codex-lb:code-5b15319@sha256:491c856a…`) instead of the moving `code` tag, so installs and updates with companions enabled run the same image every time.
 
