@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "78d789354567ad687825b1fcadb1bccda6539121bba1e8af16e274b9892e1514",
-  "sourceCommit": "2f17d96438dcce1d3855564a56d29ab3b00215ea",
-  "launcherVersion": "1.1.1",
-  "runtimeVersion": "1.1.1",
-  "createdAt": "2026-10-11T10:20:41.260Z",
+  "candidateDigest": "106d4ee26aa51eddbb92b721178739cb56446e35361cacda523934b94c101287",
+  "sourceCommit": "cce20163ea4124e335930a7a5488bdd4b8f7430d",
+  "launcherVersion": "1.1.2",
+  "runtimeVersion": "1.1.2",
+  "createdAt": "2026-10-12T06:03:24.206Z",
   "checks": [
     {
       "platform": "linux",
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-fresh-install.json",
-      "artifactSha256": "7a2e16a72be1510957cde603107bc34a82e74faeba3664e595edcf65019a1a9b",
+      "artifactSha256": "14f0f671ac91e2e84cd6563499e5d4d650f91ea6a759506571f64c6d3b30adfe",
       "ownerUi": true
     },
     {
@@ -25,7 +25,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-upgrade.json",
-      "artifactSha256": "4dc9c8059802de0e83d02b2c9f1502c849f95ec80aa41709cb517fedec468e98",
+      "artifactSha256": "3025c7465e2ba6f948ddabfc058c62b8c4807209cc60b415bd9147d50e5ddcc4",
       "dataPreserved": true
     },
     {
@@ -36,7 +36,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-repair.json",
-      "artifactSha256": "370d6ebb1b1347bcdb50b08c10e86b8d3a390b9a06fa4bcc2ede000f940f0687",
+      "artifactSha256": "716b753ac1240b754f7bd26eb83a703e2f9eed5f8f2135ac93292c3c37409478",
       "dataPreserved": true
     },
     {
@@ -47,7 +47,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-docker-stopped.json",
-      "artifactSha256": "a7376806b4599501a6934448d4f71b6614b3235ee136ca2dae92fad9300d0f81",
+      "artifactSha256": "09b2e46459794927972f0f13a5987ccad962d47b9bd60a5e447cfabde777d7de",
       "dataPreserved": true,
       "dockerInitiallyStopped": true
     },
@@ -59,13 +59,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ed625ac98ffeGQGYQLawoTA54t",
+      "nativeTaskId": "ses_ed1edef9bffesF6q0PAX0nB900",
       "responseObserved": true,
       "freeModel": true,
-      "modelId": "opencode/ling-3.1-flash-free",
+      "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "linux-first-agent.json",
-      "artifactSha256": "63be5c6ae69a55ab70a9bed01ad820ea47ec18c97d1a5948f295d542e789fea7"
+      "artifactSha256": "f00582484475105c5e0d856e7861b8b5b5a6608a5b900a589bd088583a8d0ff0"
     },
     {
       "platform": "linux",
@@ -82,7 +82,7 @@
       ],
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
-      "artifactSha256": "0f6a74b40dbe15e48d0f10989432ef6732435c69c8b7d3f099b6aff15968d0f1"
+      "artifactSha256": "09b3a135c04895bd859e2d69f63bab1800622f02034a30b62d346ce2244aacf4"
     },
     {
       "platform": "windows",
@@ -92,7 +92,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-fresh-install.json",
-      "artifactSha256": "4eeb972b95cf5c7e730f07e858f45c585e5f05bc257b5f89cd674b6c69cb7b10",
+      "artifactSha256": "089dac6f299385448c01781c475bb12db00e28fde43de720d2b99e0bd3d5bc1f",
       "ownerUi": true,
       "interactiveDesktop": true
     },
@@ -104,7 +104,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-upgrade.json",
-      "artifactSha256": "3c2c66bf41abf080b7249a2a34c1277682de7c9f9c59dbd126c8d670862794ff",
+      "artifactSha256": "8f8f993ad2ab2a3ef8c72f389367148bf24708556554a8eff20e23e0f3f292cc",
       "dataPreserved": true,
       "interactiveDesktop": true
     },
@@ -116,7 +116,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-repair.json",
-      "artifactSha256": "6669e5e494e1477fe320051af2453831825ed2d141e34cc58c08995306fe00d7",
+      "artifactSha256": "ef17379b3c4b12dce3ecba8918c6b2ee4aff54eaa63ee804aeba58afe865923e",
       "dataPreserved": true,
       "interactiveDesktop": true
     },
@@ -128,7 +128,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-docker-stopped.json",
-      "artifactSha256": "e05361a55f129957759aa8e83d52666d6c75fa61ffb676d9407af6bfabffd19a",
+      "artifactSha256": "370ce261b25550707e13c36fc676eccde0b2dcea292d6a5216207cf4ca8c22ca",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "interactiveDesktop": true
@@ -141,13 +141,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ed5aa07dfffeXyuylnh6F2JeSg",
+      "nativeTaskId": "ses_ed1770348ffeVBx93J3LwCbDHG",
       "responseObserved": true,
       "freeModel": true,
-      "modelId": "opencode/space-bunny-free",
+      "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "windows-first-agent.json",
-      "artifactSha256": "3e9c3645a2beccad505f81fd28ed063fb30079dd6817819383388bba3edfac63",
+      "artifactSha256": "9e8715e3b6d1f991e6cfccd23c16f2c6433481aef1ad589926696710fb9611bc",
       "interactiveDesktop": true
     },
     {
@@ -166,7 +166,7 @@
       "dataPreserved": true,
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
-      "artifactSha256": "c1bdbfe258dcf366ce4c25c8c55b0a1fb84c215b6287b94d30a23a99c91acf74"
+      "artifactSha256": "02d168f97e5abf39d3a473433c5f29fa1d82ad7d1699e1675c19add76f5f2780"
     },
     {
       "platform": "macos",
@@ -176,7 +176,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-fresh-install.json",
-      "artifactSha256": "3286dd1f8ce8136c8765087d6451fa10ccecd18b1ce8809cc2b45cdc5944811f",
+      "artifactSha256": "fa4fa8afcf2b3bd6e1852e8f491ff36c0db300bd60469866757395052f880c30",
       "ownerUi": true
     },
     {
@@ -187,7 +187,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-upgrade.json",
-      "artifactSha256": "62de70bfc9e1ce399e6c72bb369eec63f4026f2743156e91c3b169c923a7f835",
+      "artifactSha256": "6e1ba6de4e244937abfe01da3853d2a683a969485a194e77bc20beb84877b953",
       "dataPreserved": true
     },
     {
@@ -198,7 +198,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-repair.json",
-      "artifactSha256": "fa460d274fca29712429a61d12dcb203c9ea6baa2eb0900eb483d235a382dd17",
+      "artifactSha256": "03ad3d8a47238df10a48454212c5f760657aaf95a60d8d767da3778f0b228da7",
       "dataPreserved": true
     },
     {
@@ -209,7 +209,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-docker-stopped.json",
-      "artifactSha256": "36a61950116ceba1d64dace74951368aad7dc17cfd22fa4bd82439d64f2e74f8",
+      "artifactSha256": "002bce2b284fbc654a0c26cda25b447645dd8a65879e85876ea20830cda72ffd",
       "dataPreserved": true,
       "dockerInitiallyStopped": true
     },
@@ -221,13 +221,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ed5e20557ffe3ZIV2LZtGuvr4x",
+      "nativeTaskId": "ses_ed1d382e6fferDfwwHH24nQaOQ",
       "responseObserved": true,
       "freeModel": true,
-      "modelId": "opencode/ling-3.1-flash-free",
+      "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "macos-first-agent.json",
-      "artifactSha256": "8f09f7eeae754f705253d2982b9e5d0712954faed2002cb43ee8e21d470d09d2"
+      "artifactSha256": "12541f3f14c10416bfa21340b786b963b69613e4a6c100cc3468f046dcbd33d9"
     },
     {
       "platform": "macos",
@@ -244,7 +244,7 @@
       ],
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
-      "artifactSha256": "83f6795a02a5234baac4382c2ee4c3f20e939a545908d5f9280997b89fb796c2"
+      "artifactSha256": "470c3dbb21d22570a3e1576bf3c653f05821fb07c9c3423a21effbbe26a54544"
     }
   ],
   "supplementary": [
@@ -253,158 +253,160 @@
       "scenario": "automatic-browser-opening",
       "pass": true,
       "artifact": "linux-automatic-browser.json",
-      "artifactSha256": "3703dae3d329c61afa146ae142756653cc041c99b09ed61e6328c9bc916ea052"
+      "artifactSha256": "81f8406a925eee97e07162620cd1b1ba5bafdf6ba07fc986216b0129d095a732"
     },
     {
       "platform": "linux",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "linux-doctor-fix.json",
-      "artifactSha256": "c472266de7899ed912149d2093499194f2464fd3c5082d1dd6759b6281a83892"
+      "artifactSha256": "eb5494dfe2faaee80f71771ef7a60785ddf38ad558f5c0cad31a4a78326c2bd5"
     },
     {
       "platform": "linux",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "linux-two-native-panes.json",
-      "artifactSha256": "2c3703dbda02f6b9d1888ed1c50afb7173b9e6e82b4aeba36a3cbbd7e9dbe4fe"
+      "artifactSha256": "8920b8f79c58ea6b955e56007491f7b3aea921bc2d3cc7ca81e7235356f638f8"
     },
     {
       "platform": "linux",
       "scenario": "stopped-postgres-upgrade",
       "pass": true,
       "artifact": "linux-stopped-postgres-upgrade.json",
-      "artifactSha256": "09c7ab6bce7fd3ff4907eabd7a039c7604655c81c511d6294d99ac27987132fb"
+      "artifactSha256": "1759721860a3c146905967af11af029a66285135577a322637a8d6c75e9ac93f"
     },
     {
       "platform": "linux",
       "scenario": "actual-registry-pull-path",
       "pass": true,
       "artifact": "linux-actual-registry-pull-path.json",
-      "artifactSha256": "99dda6d82130d886407d06654e5a4aea97fa9149a3c4cae755c9a5af180b4a3d"
+      "artifactSha256": "27457e5d8f17a3894508b610d71a778b9083cfd8c4e93534360dbc0999099e9c"
     },
     {
       "platform": "linux",
       "scenario": "guest-reboot-immutable-core",
       "pass": true,
       "artifact": "linux-guest-reboot.json",
-      "artifactSha256": "962b7281e619e5db50b1a6d9389817c31af36fcc9b54f3d704e28162ba44836f"
+      "artifactSha256": "1c7ddc927a89ba31afd5cde2ad23f19c9109f3b274be15b8ee3df6091ce94970"
     },
     {
       "platform": "linux",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "linux-original-restored.json",
-      "artifactSha256": "ea23fd2f3e1b755a6ac2d825fa6dd5728c6ff70a7a41a0b72c6cf6cf87d126cf"
+      "artifactSha256": "7e2efcf98277d511b70078876abb7418de3dfe5255a3065cbda9fc34be42fc96"
     },
     {
       "platform": "windows",
       "scenario": "automatic-browser-opening",
       "pass": true,
       "artifact": "windows-automatic-browser.json",
-      "artifactSha256": "70da4031ba4af884c1da92b02a3a6242fc4f3a882a513a7b857a66cb8e895bce"
+      "artifactSha256": "e23c8ba4fc4999f78fd8b18b91f301faae6a881418ed3f8cb794cbb70aa5ff25"
     },
     {
       "platform": "windows",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "windows-doctor-fix.json",
-      "artifactSha256": "971b584e58cc88ef0db60c84e771851a8af94514be5b197bfa37d30fb6a3de35"
+      "artifactSha256": "687c1976f6f7554fefadb4fec61070e67714850169865f096ce9c5dd608f7b1e"
     },
     {
       "platform": "windows",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "windows-two-native-panes.json",
-      "artifactSha256": "84df71d6eb54a18039a4597616db3977a46aeda7affbfdc5fcdf27582f6b51c5"
+      "artifactSha256": "60390766e2b8696a5a6c7602daf1f557cf70491b7a9d328715f9bb4a7d9e3900"
     },
     {
       "platform": "windows",
       "scenario": "stopped-postgres-upgrade",
       "pass": true,
       "artifact": "windows-stopped-postgres-upgrade.json",
-      "artifactSha256": "691fd9dcf90a0c6ee4df80a646c580e16cd6a8ce4ba13e23665936de0a88b31d"
+      "artifactSha256": "ef2402a72324fc5e0c1e6a26da026e1395251e2d5d5c8c7b6e85a3b870a45e86"
     },
     {
       "platform": "windows",
       "scenario": "actual-registry-pull-path",
       "pass": true,
       "artifact": "windows-actual-registry-pull-path.json",
-      "artifactSha256": "d76f61da3a0a38cba5a4f69258b91d81ffd94a502762f9181b397017b2e691cf"
+      "artifactSha256": "ff25129d0e53818ef525fd9893113b7794b5a0913e9ced9974626c7891cd6e0e"
     },
     {
       "platform": "windows",
       "scenario": "guest-reboot-immutable-core",
       "pass": true,
       "artifact": "windows-guest-reboot.json",
-      "artifactSha256": "c3cbf7f7a3e83dda4176dc828bcb0e1236807a30cbc744e24167726cff0cd9ae"
+      "artifactSha256": "7f2dcca6419c4fc96cc062b96c442d28fc53019fec13f95175225ea8777a945f"
     },
     {
       "platform": "windows",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "windows-original-restored.json",
-      "artifactSha256": "ea23fd2f3e1b755a6ac2d825fa6dd5728c6ff70a7a41a0b72c6cf6cf87d126cf"
+      "artifactSha256": "7e2efcf98277d511b70078876abb7418de3dfe5255a3065cbda9fc34be42fc96"
     },
     {
       "platform": "macos",
       "scenario": "automatic-browser-opening",
       "pass": true,
       "artifact": "macos-automatic-browser.json",
-      "artifactSha256": "d85f6f02010e623aa1323b2f2358a6fb9f5fbe82bcabfe4f80905668d2a6a4d5"
+      "artifactSha256": "8a7f8ca269775b7d1f955d89da3359cdd1cdba0d30ecb6de8db9b4524ee98c36"
     },
     {
       "platform": "macos",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "macos-doctor-fix.json",
-      "artifactSha256": "65ab56d2fadd61016441269a0c2f394a2045e12e170b8a47e4233c8981caaa87"
+      "artifactSha256": "9a4159cc0be6b1737bc09bdb70900a3eee95ac4c2b498844715e57db1741d771"
     },
     {
       "platform": "macos",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "macos-two-native-panes.json",
-      "artifactSha256": "0bd81f0a7dde49db0e147370a066e948496f5d4a616110dc6f1ff3b4f5195527"
+      "artifactSha256": "a980ca6c104d8314a796e9e17a73cb2d6a2ef842b1b482c95dc0d527f8aa0d7e"
     },
     {
       "platform": "macos",
       "scenario": "stopped-postgres-upgrade",
       "pass": true,
       "artifact": "macos-stopped-postgres-upgrade.json",
-      "artifactSha256": "43fdc0cff4f3eec44dfa0ea9a81e5c12bb17e2ae739f07ad2c4eefec0598aef7"
+      "artifactSha256": "99ffaaa9b7d25c0a86890500e9930134f899268e6916ee6fed1b3f2f043e727a"
     },
     {
       "platform": "macos",
       "scenario": "actual-registry-pull-path",
       "pass": true,
       "artifact": "macos-actual-registry-pull-path.json",
-      "artifactSha256": "7ca8795116030effcda247e5bd7178bdf8ad51c297ce4ed9554358046ef0f59d"
+      "artifactSha256": "3cc41fce1c2fb0a480103b3a0ae569fe04ae1837978c5a2ade7dd19ab9435c0e"
     },
     {
       "platform": "macos",
       "scenario": "guest-reboot-immutable-core",
       "pass": true,
       "artifact": "macos-guest-reboot.json",
-      "artifactSha256": "bcc875cf33fd00596fff3a5c44c3c1ce82d35c9cbd8588b70aea4403deb6f705"
+      "artifactSha256": "c4438f322beb868915997e6fd84211d3d270630ded63738fe24d1e36dd1acb70"
     },
     {
       "platform": "macos",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "macos-original-restored.json",
-      "artifactSha256": "ea23fd2f3e1b755a6ac2d825fa6dd5728c6ff70a7a41a0b72c6cf6cf87d126cf"
+      "artifactSha256": "7e2efcf98277d511b70078876abb7418de3dfe5255a3065cbda9fc34be42fc96"
     }
   ],
   "limitations": [
-    "Candidate source is the public 1.1.0 release plus the telemetry consent fix, security dependency updates, npm bundled postcss-selector-parser patch, a narrow expiring ignore for the unreachable Temporal core-bridge rustls advisory and the restored small-profile readiness gate; it was not re-exported from the private production source.",
+    "Candidate source is the public 1.1.1 release plus the first-run free model tool-call check (Big Pickle first), the pinned Headroom companion image, accurate setup wizard and Help text, and README/docs corrections; it was not re-exported from the private production source.",
     "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
     "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
-    "Large profiles ran with temporary 16 GiB/8 CPU lab resources (and Docker Desktop 8 GiB/8 CPU on macOS/Windows); every runner was restored to 8 GiB/4 CPU afterwards.",
-    "macOS: in the previous candidate run a devtest file written about 30 s before the guest restart was lost (Docker Desktop did not flush it); reboot proofs now run after a filesystem sync on every platform.",
+    "Large profiles ran with temporary 16 GiB/8 CPU lab resources (and Docker Desktop/WSL 8 GiB/8 CPU on macOS/Windows); every runner was restored to 8 GiB/4 CPU afterwards.",
+    "macOS: as in 1.1.1, a devtest file written shortly before the guest restart was lost when only the macOS host filesystem was synced (evidence/macos-reboot-attempt1-without-container-sync-1.1.2.log); the accepted reboot proof synced inside the core container before the restart.",
+    "Linux: the first after-reboot read failed because the helper copy lived in /tmp, which the reboot cleared; it was rerun from the durable copy against the same before-state.",
+    "Windows: the first profile run stopped at seeding because the owned fixture had not been started after the resource change; it was rerun with the fixture running.",
     "Windows desktop commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
-    "First AI task: on Linux two attempts and on macOS one attempt stalled because the OpenCode Zen free model ling-3.1-flash-free returned repeated upstream request failures (recorded in evidence/*-first-agent-attempt*-stalled.json); each retry used a new pane in the same owned proof room and a new prompt marker, and the accepted proof is the completed native session.",
-    "The free model is chosen by the first-run check, which verifies a plain completion only; a model that passes it can still fail upstream on tool-call follow-ups. Tracked as a product follow-up.",
+    "First AI task: the first-run check selected opencode/big-pickle after a real tool call on all three systems and each native task completed on the first attempt.",
+    "Stopped-PostgreSQL upgrades started from retained 1.1.1 installations.",
     "npm next publication, environment approval and latest promotion have not yet completed."
   ]
 }
