@@ -89,16 +89,19 @@ test("public test command uses a portable one-file suite that imports every publ
     "@space/cli-host",
     "@space/codex-app-server",
     "@space/runtime",
-    "@space/db"
+    "@space/db",
+    "@space/gateway"
   ];
 
   assert.match(
     rootPackage.scripts["test:public"],
     /^node --test scripts\/tests\/public-suite\.test\.mjs && /
   );
-  assert.deepEqual([...publicBuildOrder].sort(), localApiDependencies);
+  // Every internal API dependency is built in dependency order before the
+  // public API tests; the API depends on @space/gateway since the gateway merge.
+  assert.deepEqual(localApiDependencies.filter((name) => !publicBuildOrder.includes(name)), []);
   let previousBuildIndex = -1;
-  for (const dependency of publicBuildOrder) {
+  for (const dependency of publicBuildOrder.filter((name) => localApiDependencies.includes(name))) {
     const buildIndex = rootPackage.scripts["test:public"].indexOf(
       `npm run build -w ${dependency}`
     );

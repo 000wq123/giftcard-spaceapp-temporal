@@ -53,6 +53,9 @@ const rootFiles = new Set([
 const publicDocs = new Set([
   "docs/clean-room-testing.md",
   "docs/cli-providers.md",
+  // Linked from CONTRIBUTING; the policy file drives npm run test:architecture.
+  "docs/configuration-reference.md",
+  "docs/quality/domain-boundaries.json",
   "docs/decisions/ADR-010-public-distribution.md",
   "docs/getting-started.md",
   "docs/legal/cli-distribution-policy.json",
@@ -98,8 +101,26 @@ const publicScripts = new Set([
   "scripts/tests/release-version.test.mjs",
   "scripts/tests/reset-owner-password.test.mjs",
   "scripts/tests/rotate-owner-setup-token.test.mjs",
-  "scripts/tests/trivy-report-summary.test.mjs"
+  "scripts/tests/trivy-report-summary.test.mjs",
+  // Contributor path documented in CONTRIBUTING: npm run check
+  // (test:architecture), npm run smoke:offline and npm run test:contributor.
+  "scripts/domain-boundaries.mjs",
+  "scripts/tests/domain-boundaries.test.mjs",
+  "scripts/contributor-smoke.mjs",
+  "scripts/fixtures/offline-cli.mjs",
+  "scripts/tests/contributor-smoke.test.mjs"
 ]);
+
+// Root package.json scripts may name only files in the public tree: exported
+// source files plus these files that the public repository maintains itself.
+const publicRepositoryScripts = new Set([
+  "scripts/public-export.mjs",
+  "scripts/tests/public-suite.test.mjs"
+]);
+const publicRepositoryWorkspaces = new Set(["run-spaceapp"]);
+// The public tree carries only the reviewed public tests, so its npm test is
+// the public suite that CI runs.
+const publicScriptOverrides = new Map([["test", "npm run test:public"]]);
 
 const byteStablePublicFiles = new Set([
   "scripts/public-export.mjs",
@@ -329,6 +350,125 @@ export function applyPublicOverlay(path, text) {
   return text;
 }
 
+const scriptFileReference = /(?:^|[\s=])((?:\.\/)?(?:scripts|deploy|docs|demos|starter-memory)\/[^\s"'&|;<>()]+)/g;
+const workspaceFlag = /(?:^|\s)(?:-w|--workspace)(?:=|\s+)(\S+)/g;
+const rootScriptStep = /^npm (?:run(?:-script)? ([\w:.-]+)|(test|start))(?:\s|$)/;
+
+function scriptSteps(command) {
+  return command.split("&&").map((step) => step.trim()).filter(Boolean);
+}
+
+function referencedFiles(step) {
+  return [...step.matchAll(scriptFileReference)].map((match) => match[1].replace(/^\.\//, ""));
+}
+
+function referencedWorkspaces(step) {
+  return [...step.matchAll(workspaceFlag)].map((match) => match[1]);
+}
+
+// A root-script step (`npm run x`, `npm test`) without -w names another root script.
+function referencedRootScript(step) {
+  if (referencedWorkspaces(step).length) return null;
+  const match = step.match(rootScriptStep);
+  return match ? match[1] ?? match[2] : null;
+}
+
+/** Problems that would make a public package.json script fail before it runs. */
+export function publicScriptProblems(scripts, { hasFile, hasWorkspace }) {
+  const problems = [];
+  for (const [name, command] of Object.entries(scripts)) {
+    for (const step of scriptSteps(command)) {
+      for (const path of referencedFiles(step)) {
+        if (!hasFile(path)) problems.push(`${name}: missing file ${path}`);
+      }
+      for (const workspace of referencedWorkspaces(step)) {
+        if (!hasWorkspace(workspace)) problems.push(`${name}: missing workspace ${workspace}`);
+      }
+      const script = referencedRootScript(step);
+      if (script && !(script in scripts)) problems.push(`${name}: missing script ${script}`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Rewrites the root package.json for the public tree. It applies the public
+ * overrides, keeps only `node --test` files that the public tree has, drops a
+ * script that needs any other missing file and removes `npm run <dropped>`
+ * steps from the remaining chains. It throws when a remaining script still
+ * names a missing file, script or workspace, so a public contributor never
+ * meets a command that cannot start.
+ */
+export function publicRootPackage(text, { hasFile, hasWorkspace }) {
+  const manifest = JSON.parse(text);
+  const scripts = { ...(manifest.scripts ?? {}) };
+  for (const [name, command] of publicScriptOverrides) {
+    if (name in scripts) scripts[name] = command;
+  }
+  const dropped = [];
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [name, command] of Object.entries(scripts)) {
+      const steps = [];
+      let unavailable = false;
+      for (const step of scriptSteps(command)) {
+        const nodeTest = step.match(/^node --test\s+(.+)$/);
+        if (nodeTest) {
+          const args = nodeTest[1].split(/\s+/);
+          const files = args.filter((arg) => !arg.startsWith("-"));
+          const kept = files.filter((file) => hasFile(file.replace(/^\.\//, "")));
+          if (kept.length) steps.push(`node --test ${[...args.filter((arg) => arg.startsWith("-")), ...kept].join(" ")}`);
+          continue;
+        }
+        const script = referencedRootScript(step);
+        if (script && !(script in scripts)) continue;
+        if (referencedFiles(step).some((path) => !hasFile(path))) {
+          unavailable = true;
+          break;
+        }
+        steps.push(step);
+      }
+      const next = unavailable || steps.length === 0 ? null : steps.join(" && ");
+      if (next === command) continue;
+      changed = true;
+      if (next === null) {
+        delete scripts[name];
+        dropped.push(name);
+      } else {
+        scripts[name] = next;
+      }
+    }
+  }
+  const problems = publicScriptProblems(scripts, { hasFile, hasWorkspace });
+  if (problems.length) {
+    throw new Error(`Public package.json scripts reference what the public tree lacks:\n- ${problems.join("\n- ")}`);
+  }
+  manifest.scripts = scripts;
+  return { text: `${JSON.stringify(manifest, null, 2)}\n`, dropped: dropped.sort() };
+}
+
+/**
+ * The contributor guide must only send people to commands and files that the
+ * public tree has: `npm` commands in its code blocks and its relative links.
+ */
+export function contributorGuideProblems(guide, scripts, hasFile) {
+  const problems = [];
+  for (const block of guide.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+    for (const line of block[1].split("\n")) {
+      const command = line.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+/, "");
+      const script = referencedRootScript(command);
+      if (script && !(script in scripts)) problems.push(`command needs missing script: ${line.trim()}`);
+    }
+  }
+  for (const link of guide.matchAll(/\]\(([^)\s#]+)(?:#[^)]*)?\)/g)) {
+    const target = link[1];
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+    const path = posix.normalize(target.replace(/^\.\//, ""));
+    if (!hasFile(path)) problems.push(`link to missing file: ${target}`);
+  }
+  return problems;
+}
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -415,6 +555,16 @@ export async function createPublicExport({
     const collisionKeys = new Map();
     const files = [];
     let transformations = 0;
+    const exportPaths = new Set([...trackedPaths].filter(isPublicExportPath));
+    const hasFile = (path) => exportPaths.has(path) || publicRepositoryScripts.has(path);
+    const workspaces = new Set(publicRepositoryWorkspaces);
+    for (const path of exportPaths) {
+      if (!/^(?:apps|packages)\/[^/]+\/package\.json$/.test(path)) continue;
+      const name = JSON.parse(await readFile(resolve(source, ...path.split("/")), "utf8")).name;
+      if (typeof name === "string") workspaces.add(name);
+    }
+    const packageContext = { hasFile, hasWorkspace: (name) => workspaces.has(name) };
+    let exportedScripts = null;
     for (const path of [...trackedPaths].sort()) {
       if (!isPublicExportPath(path)) continue;
       const normalized = normalizeTrackedPath(path);
@@ -446,7 +596,11 @@ export async function createPublicExport({
       let exported = original;
       if (isText(original)) {
         if (normalized !== "LICENSE" && !byteStablePublicFiles.has(normalized)) {
-          const sanitized = applyPublicOverlay(normalized, sanitizePublicText(original.toString("utf8")));
+          let sanitized = applyPublicOverlay(normalized, sanitizePublicText(original.toString("utf8")));
+          if (normalized === "package.json") {
+            sanitized = publicRootPackage(sanitized, packageContext).text;
+            exportedScripts = JSON.parse(sanitized).scripts;
+          }
           exported = Buffer.from(sanitized, "utf8");
           if (!exported.equals(original)) transformations += 1;
         }
@@ -471,6 +625,15 @@ export async function createPublicExport({
         sha256: hashBuffer(exported),
         size: exported.length
       });
+    }
+
+    if (exportedScripts && exportPaths.has("CONTRIBUTING.md")) {
+      const guide = await readFile(join(staging, "CONTRIBUTING.md"), "utf8");
+      const guideProblems = contributorGuideProblems(guide, exportedScripts,
+        (path) => hasFile(path) || publicDocs.has(path) || rootFiles.has(path));
+      if (guideProblems.length) {
+        throw new Error(`Public CONTRIBUTING.md points at what the public tree lacks:\n- ${guideProblems.join("\n- ")}`);
+      }
     }
 
     const manifest = {

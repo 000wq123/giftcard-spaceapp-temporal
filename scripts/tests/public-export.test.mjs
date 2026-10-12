@@ -6,8 +6,10 @@ import test from "node:test";
 import {
   applyPublicOverlay,
   auditPublicTree,
+  contributorGuideProblems,
   createPublicExport,
   isPublicExportPath,
+  publicRootPackage,
   sanitizePublicText
 } from "../public-export.mjs";
 
@@ -246,4 +248,128 @@ test('public audit rejects Google OAuth clients before publication', async () =>
   const findings=(await auditPublicTree(root)).findings.map(x=>x.rule);
   assert.ok(findings.includes('google-oauth-client-id'));
   assert.ok(findings.includes('google-oauth-client-secret'));
+});
+
+async function writeSourceTree(files) {
+  const sourceRoot = await mkdtemp(join(tmpdir(), "spaceapp-public-scripts-source-"));
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(join(sourceRoot, ...path.split("/").slice(0, -1)), { recursive: true });
+    await writeFile(join(sourceRoot, ...path.split("/")), typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`);
+  }
+  return { sourceRoot, trackedPaths: Object.keys(files) };
+}
+
+// Files the public repository maintains itself; root scripts may name them.
+const publicRepositoryFiles = ["scripts/public-export.mjs", "scripts/tests/public-suite.test.mjs"];
+const fileReferences = (command) => [...command.matchAll(/(?:^|\s)((?:scripts|deploy|docs|demos|starter-memory)\/[^\s"'&|;<>()]+)/g)].map((match) => match[1]);
+
+test("every file named by the exported package.json scripts exists in the export file list", async () => {
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "package.json": {
+      name: "space",
+      private: true,
+      scripts: {
+        check: "npm run test:architecture && npm run build -w @space/contracts && npm run check -w @space/api",
+        test: "npm run test:architecture && npm run test:deploy && npm run build -w @space/contracts && npm run test -w @space/contracts",
+        "test:architecture": "node --test scripts/tests/domain-boundaries.test.mjs && node scripts/domain-boundaries.mjs",
+        "test:deploy": "node --test scripts/tests/private-ops.test.mjs scripts/tests/contributor-smoke.test.mjs",
+        "test:public": "node --test scripts/tests/public-suite.test.mjs && npm test -w @space/api -- setup.test.ts && npm test -w run-spaceapp",
+        "public:export:verify": "node scripts/public-export.mjs --verify",
+        "live:verify": "node scripts/private-live-guard.mjs --require-live-main",
+        ops: "npm run live:verify && npm run hygiene:preflight",
+        "hygiene:preflight": "node scripts/space-hygiene-check.mjs --preflight"
+      }
+    },
+    "apps/api/package.json": { name: "@space/api" },
+    "packages/contracts/package.json": { name: "@space/contracts" },
+    "scripts/domain-boundaries.mjs": "export {};\n",
+    "scripts/tests/domain-boundaries.test.mjs": "export {};\n",
+    "scripts/tests/contributor-smoke.test.mjs": "export {};\n",
+    "scripts/tests/private-ops.test.mjs": "export {};\n",
+    "scripts/private-live-guard.mjs": "export {};\n",
+    "scripts/space-hygiene-check.mjs": "export {};\n"
+  });
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-scripts-output-")), "export");
+
+  const result = await createPublicExport({
+    sourceRoot,
+    outputRoot,
+    trackedPaths,
+    sourceCommit: "0123456789abcdef0123456789abcdef01234567"
+  });
+  const { scripts } = JSON.parse(await readFile(join(outputRoot, "package.json"), "utf8"));
+  const exported = new Set([...result.manifest.files.map((file) => file.path), ...publicRepositoryFiles]);
+
+  const missing = Object.entries(scripts).flatMap(([name, command]) =>
+    fileReferences(command).filter((path) => !exported.has(path)).map((path) => `${name}: ${path}`));
+  assert.deepEqual(missing, []);
+  // The public tree carries only the public tests, so npm test runs that suite.
+  assert.equal(scripts.test, "npm run test:public");
+  assert.equal(scripts["test:deploy"], "node --test scripts/tests/contributor-smoke.test.mjs");
+  assert.equal(scripts.check, "npm run test:architecture && npm run build -w @space/contracts && npm run check -w @space/api");
+  assert.equal(scripts["live:verify"], undefined);
+  assert.equal(scripts.ops, "npm run hygiene:preflight");
+  assert.equal(scripts["public:export:verify"], "node scripts/public-export.mjs --verify");
+});
+
+test("public package scripts keep node --test flags and drop steps of removed scripts", () => {
+  const { text, dropped } = publicRootPackage(JSON.stringify({ scripts: {
+    unit: "node --test --test-concurrency=1 scripts/tests/a.test.mjs scripts/tests/private.test.mjs",
+    private: "node scripts/private.mjs",
+    chain: "npm run private && npm run unit"
+  } }), { hasFile: (path) => !path.includes("private"), hasWorkspace: () => true });
+  assert.deepEqual(JSON.parse(text).scripts, {
+    unit: "node --test --test-concurrency=1 scripts/tests/a.test.mjs",
+    chain: "npm run unit"
+  });
+  assert.deepEqual(dropped, ["private"]);
+});
+
+test("public export fails instead of shipping a script for a workspace the public tree lacks", async () => {
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "package.json": { name: "space", scripts: { build: "npm run build -w @space/desktop" } },
+    "apps/desktop/package.json": { name: "@space/desktop" }
+  });
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-workspace-output-")), "export");
+
+  await assert.rejects(
+    () => createPublicExport({ sourceRoot, outputRoot, trackedPaths, sourceCommit: "0123456789abcdef0123456789abcdef01234567" }),
+    /missing workspace @space\/desktop/
+  );
+  await assert.rejects(() => stat(outputRoot), /ENOENT/);
+});
+
+test("public export fails when CONTRIBUTING sends contributors to a script or file the public tree lacks", async () => {
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "package.json": { name: "space", scripts: { "smoke:offline": "node scripts/private-smoke.mjs", check: "node scripts/space-hygiene-check.mjs" } },
+    "scripts/private-smoke.mjs": "export {};\n",
+    "scripts/space-hygiene-check.mjs": "export {};\n",
+    "CONTRIBUTING.md": "# Contributing\n\n```sh\nELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci\nnpm run check\nnpm run smoke:offline\n```\n"
+  });
+  const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-guide-output-")), "export");
+
+  await assert.rejects(
+    () => createPublicExport({ sourceRoot, outputRoot, trackedPaths, sourceCommit: "0123456789abcdef0123456789abcdef01234567" }),
+    /CONTRIBUTING[\s\S]*npm run smoke:offline/
+  );
+  await assert.rejects(() => stat(outputRoot), /ENOENT/);
+  assert.deepEqual(
+    contributorGuideProblems("See [quality](docs/quality/README.md) and [reference](docs/configuration-reference.md).\n", {}, (path) => path === "docs/configuration-reference.md"),
+    ["link to missing file: docs/quality/README.md"]
+  );
+});
+
+test("the documented contributor path is exported", () => {
+  for (const path of [
+    "scripts/contributor-smoke.mjs",
+    "scripts/fixtures/offline-cli.mjs",
+    "scripts/tests/contributor-smoke.test.mjs",
+    "scripts/domain-boundaries.mjs",
+    "scripts/tests/domain-boundaries.test.mjs",
+    "docs/quality/domain-boundaries.json",
+    "docs/configuration-reference.md"
+  ]) {
+    assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
+  }
+  assert.equal(isPublicExportPath("docs/quality/README.md"), false);
 });
