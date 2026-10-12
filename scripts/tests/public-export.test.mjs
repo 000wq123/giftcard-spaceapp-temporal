@@ -239,10 +239,12 @@ test("public overlay preserves dynamic model discovery and removes anonymous own
 
 test('public overlay replaces embedded Antigravity OAuth clients with owner environment settings', () => {
   const source=['export const ANTIGRAVITY_CLIENT_ID = "embedded-client";','export const ANTIGRAVITY_CLIENT_SECRET = "embedded-secret";'].join('\n');
-  const result=applyPublicOverlay('apps/api/src/antigravity-usage-services.ts',source);
-  assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_ID ?? ""'));
-  assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_SECRET ?? ""'));
-  assert.ok(!result.includes('embedded-'));
+  for(const path of ['apps/api/src/antigravity-usage-services.ts','packages/gateway/src/providers/antigravity/oauth.ts']){
+   const result=applyPublicOverlay(path,source);
+   assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_ID ?? ""'),path);
+   assert.ok(result.includes('process.env.ANTIGRAVITY_CLIENT_SECRET ?? ""'),path);
+   assert.ok(!result.includes('embedded-'),path);
+  }
 });
 
 test('public audit rejects Google OAuth clients before publication', async () => {

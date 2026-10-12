@@ -326,7 +326,7 @@ export function sanitizePublicText(input) {
 }
 
 export function applyPublicOverlay(path, text) {
-  if (path === "apps/api/src/antigravity-usage-services.ts") {
+  if (path === "apps/api/src/antigravity-usage-services.ts" || path === "packages/gateway/src/providers/antigravity/oauth.ts") {
     // Provider OAuth values must be owner-supplied; never export embedded clients.
     return text.replace(/(export const (ANTIGRAVITY_CLIENT_(?:ID|SECRET))\s*=\s*)["'][^"'\r\n]*["'](\s*;)/g,
       (_, declaration, name, suffix) => `${declaration}process.env.${name} ?? ""${suffix}`);
