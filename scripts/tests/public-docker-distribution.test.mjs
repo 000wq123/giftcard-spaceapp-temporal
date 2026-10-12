@@ -216,6 +216,17 @@ test("host-root CLI socket remains accessible to the non-root core service", asy
   assert.match(cliMain, /createCliHostServer\(\{ socketPath, socketMode: 0o660, registry \}\)/);
 });
 
+test("an OpenCode pane still starts when the first-run free-model check fails; credential smoke stays strict", async () => {
+  // 1.1.3 devtest (vm218): a failed check exited the wrapper (set -e) and left the
+  // Getting Started pane without a CLI ("CLI process exited with code 1").
+  const wrapper = await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8");
+  const launch = wrapper.slice(wrapper.lastIndexOf('if [ "$runtime_name" = "opencode" ]; then'));
+  assert.match(launch, /\*\) if ! node \/app\/deploy\/docker\/opencode-first-run\.mjs; then\s+echo "[^"]*OpenCode starts anyway[^"]*" >&2\s+fi ;;/);
+  const smoke = wrapper.match(/credential-smoke\)[\s\S]*?;;/)?.[0] || "";
+  assert.match(smoke, /^\s+node \/app\/deploy\/docker\/opencode-first-run\.mjs$/m);
+  assert.match(wrapper, /^set -euo pipefail$/m);
+});
+
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {
   const wrapper = await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8");
   const credentialStatusBlock = wrapper.match(/credential-status\)[\s\S]*?;;/)?.[0] || "";

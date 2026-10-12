@@ -173,7 +173,11 @@ ensure_optional_provider
 if [ "$runtime_name" = "opencode" ]; then
   case "${1:-}" in
     models|auth|--help|--version|version) ;;
-    *) node /app/deploy/docker/opencode-first-run.mjs ;;
+    # A free-model outage must not leave an empty pane: the owner still gets OpenCode
+    # and can pick a model. credential-smoke above stays strict.
+    *) if ! node /app/deploy/docker/opencode-first-run.mjs; then
+         echo "SpaceApp could not confirm a working free OpenCode model right now. OpenCode starts anyway: choose a model with /models, or reopen this pane later." >&2
+       fi ;;
   esac
 fi
 if ! command -v "$command_name" >/dev/null 2>&1; then
