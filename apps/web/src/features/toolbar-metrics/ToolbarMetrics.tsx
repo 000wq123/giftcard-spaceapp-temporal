@@ -1,5 +1,4 @@
 import type { HealthTelemetry } from "../system-health/use-health-telemetry.js";
-import { DEFAULT_AI_QUOTA_CONFIG } from "../desktop-widgets/widget-storage.js";
 import {
   formatAppDateTime,
   useDateTimeSettings,
@@ -14,10 +13,12 @@ import {
   useState,
   type FocusEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
+  ClaudeUsageAccountList,
   CliSessionReapResponse,
   CliSessionStats,
   CodexEnvironment,
@@ -36,13 +37,26 @@ import type {
 } from "@space/contracts";
 import type { SystemAnalyticsTab } from "../system-analytics/SystemAnalyticsWorkspace.js";
 import { api, SpaceApiError } from "../../api.js";
+import { measureHealthRtt } from "../system-health/measure-health-rtt.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { Activity, X } from "../ui-theme/app-icons.js";
 import { ResourcesDrawer } from "./ResourcesDrawer.js";
+import {
+  AccountQuotaCard,
+  AvailabilityCountChips,
+  AvailabilityFilterBar,
+  countAvailability,
+  type AccountQuotaEntry,
+} from "./AccountQuotaCards.js";
+import {
+  compareAvailability,
+  matchesAvailabilityFilter,
+  type AccountAvailabilityFilter,
+} from "./account-availability.js";
+import { antigravityAccountEntries, claudeAccountEntries, codexAccountEntries } from "./account-entries.js";
 import { ConfirmationDialog, MetricPopover } from "./MetricLayers.js";
 import {
-  CODEX_EXHAUSTION_THRESHOLD_PERCENT,
   QUOTA_EXHAUSTION_THRESHOLD_PERCENT,
   QUOTA_WARNING_THRESHOLD_PERCENT,
   QuotaTone,
@@ -50,7 +64,6 @@ import {
   isCodexAccountActive,
   quotaTone,
 } from "../system-health/health-model.js";
-import { AiQuotaGaugeCard, toggleDesktopWidget } from "../desktop-widgets/index.js";
 import "./toolbar-metrics.css";
 
 type PanelKey = "accounts" | "cli" | "memory" | "cpu" | "rtt" | "provider" | "models";
@@ -109,6 +122,7 @@ export interface ToolbarMetricsClient {
   analyticsCliSessions?(): Promise<SystemAnalyticsCliSessionsResponse>;
   analyticsModels?(): Promise<SystemAnalyticsModelsResponse>;
   antigravityAccounts?(): Promise<AntigravityUsageAccountList>;
+  claudeAccounts?(): Promise<ClaudeUsageAccountList>;
   apiProviderAccounts?(): Promise<ApiProviderAccountList>;
   reopenPane?(roomId: string, paneId: string): Promise<void>;
   reopenAllDetached?(): Promise<void>;
@@ -117,12 +131,11 @@ export interface ToolbarMetricsClient {
 const defaultClient: ToolbarMetricsClient = {
   roundTrip: async () => {
     if (getSpaceRuntimeKind() === "demo") return null;
-    const startedAt = performance.now();
-    await api.healthPing();
-    return Math.max(0, Math.round(performance.now() - startedAt));
+    return await measureHealthRtt();
   },
   usageAccounts: () => api.toolbarUsageAccounts(),
   antigravityAccounts: () => api.toolbarAntigravityUsageAccounts(),
+  claudeAccounts: () => api.toolbarClaudeUsageAccounts(),
   apiProviderAccounts: () => api.toolbarApiProviderAccounts(),
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
@@ -430,6 +443,10 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     },
     30_000, sharedTelemetry?.antigravityAccounts
   );
+  const claudeAccounts = useLazyResource(
+    () => client.claudeAccounts ? client.claudeAccounts() : api.toolbarClaudeUsageAccounts(),
+    60_000, sharedTelemetry?.claudeAccounts
+  );
   const apiProviderAccounts = useLazyResource(
     () => {
       if (client.apiProviderAccounts) return client.apiProviderAccounts();
@@ -448,17 +465,21 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     },
     30_000, sharedTelemetry?.apiProviderAccounts
   );
-  const [chartsVisible, setChartsVisible] = useState(false);
-  const [chartConfig, setChartConfig] = useState(DEFAULT_AI_QUOTA_CONFIG);
-  const [quotaWindow, setQuotaWindow] = useState<"5h" | "weekly">("weekly");
-  const [accountProviderFilter, setAccountProviderFilter] = useState<"all" | "antigravity" | "codex" | "api">(() => {
+  const [accountProviderFilter, setAccountProviderFilter] = useState<"all" | "antigravity" | "codex" | "claude" | "api">(() => {
     try { const value = getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:provider-filter");
-      if (value === "all" || value === "antigravity" || value === "codex" || value === "api") return value;
+      if (value === "all" || value === "antigravity" || value === "codex" || value === "claude" || value === "api") return value;
     } catch { /* Storage can be unavailable. */ }
     return "all";
   });
-  const [quotaFilter, setQuotaFilter] = useState(() => {
-    try { return getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:quota-filter") === "true"; } catch { return false; }
+  const [availabilityFilter, setAvailabilityFilter] = useState<AccountAvailabilityFilter>(() => {
+    try {
+      const storage = getSpaceRuntime().platform.localStorage;
+      const value = storage.getItem("space:health-accounts:availability-filter");
+      if (value === "all" || value === "available" || value === "soon" || value === "exhausted") return value;
+      // The former "5h & week > 1%" toggle meant "available now".
+      if (storage.getItem("space:health-accounts:quota-filter") === "true") return "available";
+    } catch { /* Storage can be unavailable. */ }
+    return "all";
   });
   const [proFilter, setProFilter] = useState(() => {
     try { return getSpaceRuntime().platform.localStorage.getItem("space:health-accounts:pro-filter") === "true"; } catch { return false; }
@@ -469,19 +490,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   useEffect(() => {
     try {
       getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:provider-filter", accountProviderFilter);
-      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:quota-filter", String(quotaFilter));
+      getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:availability-filter", availabilityFilter);
       getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:pro-filter", String(proFilter));
       getSpaceRuntime().platform.localStorage.setItem("space:health-accounts:gemini-filter", String(geminiFilter));
     } catch { /* Best effort persistence. */ }
-  }, [accountProviderFilter, quotaFilter, proFilter, geminiFilter]);
-  const hasQuota = (quota: { weeklyRemainingPercent?: number | null; fiveHourRemainingPercent?: number | null } | null | undefined) =>
-    quota?.weeklyRemainingPercent != null && quota.weeklyRemainingPercent >= 1 && (quota.fiveHourRemainingPercent == null || quota.fiveHourRemainingPercent >= 1);
-  const hasGemini = (account: { gemini?: { weeklyRemainingPercent?: number | null; fiveHourRemainingPercent?: number | null } | null }) =>
-    quotaFilter ? hasQuota(account.gemini) : Boolean(account.gemini && (account.gemini.weeklyRemainingPercent != null || account.gemini.fiveHourRemainingPercent != null));
-  const isProAccount = (account: { tier?: string | null }) =>
-    Boolean(account.tier && account.tier.toLowerCase().includes("pro"));
-  const isProCodexAccount = (account: { planType?: string | null }) =>
-    Boolean(account.planType && account.planType.toLowerCase().includes("pro"));
+  }, [accountProviderFilter, availabilityFilter, proFilter, geminiFilter]);
   const resetCredits = useLazyResource(() => client.resetCredits(), 60_000);
   const cli = useLazyResource(() => client.cliSessions(), 5_000, sharedTelemetry?.sessions);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
@@ -657,6 +670,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       case "accounts":
         void resetCredits.load();
         void antigravityAccounts.load();
+        void claudeAccounts.load();
         void apiProviderAccounts.load();
         return accounts.load();
       case "cli": return Promise.all([cli.load(), analyticsSessions.load()]);
@@ -721,9 +735,13 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       } else {
         const result = await client.reclaimMemory();
         const cliCount = result.cli.killedSessionIds.length;
+        const protectedCount = result.cli.protectedSessionCount ?? 0;
+        const kept = protectedCount > 0
+          ? ` ${protectedCount} CLI${protectedCount === 1 ? "" : "s"} of open panes kept running.`
+          : "";
         setActionMessage(result.status === "NOOP"
-          ? "Memory reclaim made no changes; no session or process was stopped."
-          : `Memory reclaim ${result.status.toLowerCase()}: ${cliCount} CLI session${cliCount === 1 ? "" : "s"} cleaned and ${formatBytes(result.kernelCache.reclaimedBytes)} page cache released.`);
+          ? `Memory reclaim made no changes; no session or process was stopped.${kept}`
+          : `Memory reclaim ${result.status.toLowerCase()}: ${cliCount} leftover CLI session${cliCount === 1 ? "" : "s"} of closed panes stopped and ${formatBytes(result.kernelCache.reclaimedBytes)} page cache released.${kept}`);
         await Promise.all([memory.load(true), cli.load(true)]);
       }
       await onChanged?.();
@@ -955,123 +973,122 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       </>
     );
     if (!canManage) return <p className="toolbar-metric-note">ADMIN access is required for detailed system telemetry and actions.</p>;
-    if (activePanel === "accounts") return (
+    if (activePanel === "accounts") {
+      const antigravityEntries = antigravityAccountEntries(antigravityAccounts.data?.data ?? [], clock, { proOnly: proFilter, geminiOnly: geminiFilter });
+      const codexEntries = codexAccountEntries(accounts.data?.data ?? [], clock, (account) => {
+        const reset = resetLabel(account.id);
+        return (
+          <button
+            type="button"
+            disabled={!allowChanges || reset.disabled}
+            title={reset.disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
+            onClick={() => void redeemReset(account.id)}
+          >{reset.label}</button>
+        );
+      });
+      const claudeEntries = claudeAccountEntries(claudeAccounts.data?.data ?? [], clock);
+      const scopedEntries = accountProviderFilter === "all"
+        ? [...antigravityEntries, ...codexEntries, ...claudeEntries]
+        : accountProviderFilter === "antigravity"
+          ? antigravityEntries
+          : accountProviderFilter === "codex"
+            ? codexEntries
+            : accountProviderFilter === "claude" ? claudeEntries : [];
+      const renderAccountSection = (section: {
+        provider: string;
+        title: string;
+        source: string;
+        entries: AccountQuotaEntry[];
+        loading: boolean;
+        error: string | null;
+        dataError: string | null | undefined;
+        hasData: boolean;
+        empty: string;
+        intro?: ReactNode;
+        footer?: ReactNode;
+      }) => {
+        const shown = section.entries
+          .filter((entry) => matchesAvailabilityFilter(entry.availability.state, availabilityFilter))
+          .sort(compareAvailability);
+        return (
+          <div className="toolbar-metric-provider-section" data-provider={section.provider}>
+            <header>
+              <strong>{section.title}</strong>
+              {section.hasData && section.entries.length ? <AvailabilityCountChips counts={countAvailability(section.entries)} /> : null}
+              <small>{section.source}</small>
+            </header>
+            {section.intro}
+            {section.loading && !section.hasData ? <p className="toolbar-metric-note">Loading {section.title} accounts…</p> : null}
+            {section.error ? <p className="toolbar-metric-error" role="alert">{section.error}</p> : null}
+            {section.dataError ? <p className="toolbar-metric-error">{section.dataError}</p> : null}
+            {section.hasData ? (
+              <ul className="toolbar-metric-list">
+                {shown.map((entry) => <AccountQuotaCard key={entry.id} entry={entry} clock={clock} settings={dateTimeSettings} />)}
+                {!shown.length ? <li><span>{section.entries.length ? "No accounts match the active filters." : section.empty}</span></li> : null}
+              </ul>
+            ) : null}
+            {section.footer}
+          </div>
+        );
+      };
+      const providerTabs: Array<{ key: typeof accountProviderFilter; label: string; name: string }> = [
+        { key: "all", label: "All", name: "All Providers" },
+        { key: "antigravity", label: "Antigravity", name: "Antigravity (Google)" },
+        { key: "codex", label: "Codex", name: "Codex" },
+        { key: "claude", label: "Claude", name: "Claude" },
+        { key: "api", label: "API", name: "API Providers" },
+      ];
+      return (
       <>
         {cooldown && <p role="status">Next Codex account available: {cooldown.accountLabel} in {cooldown.formatted}</p>}
         <div className="toolbar-metric-provider-tabs" role="tablist" aria-label="Account providers">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={accountProviderFilter === "all"}
-            className={`toolbar-metric-tab-btn ${accountProviderFilter === "all" ? "is-active" : ""}`}
-            onClick={() => setAccountProviderFilter("all")}
-          >All Providers</button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={accountProviderFilter === "antigravity"}
-            className={`toolbar-metric-tab-btn ${accountProviderFilter === "antigravity" ? "is-active" : ""}`}
-            onClick={() => setAccountProviderFilter("antigravity")}
-          >Antigravity (Google)</button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={accountProviderFilter === "codex"}
-            className={`toolbar-metric-tab-btn ${accountProviderFilter === "codex" ? "is-active" : ""}`}
-            onClick={() => setAccountProviderFilter("codex")}
-          >Codex</button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={accountProviderFilter === "api"}
-            className={`toolbar-metric-tab-btn ${accountProviderFilter === "api" ? "is-active" : ""}`}
-            onClick={() => setAccountProviderFilter("api")}
-          >API Providers</button>
+          {providerTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-label={tab.name}
+              title={tab.name}
+              aria-selected={accountProviderFilter === tab.key}
+              className={`toolbar-metric-tab-btn ${accountProviderFilter === tab.key ? "is-active" : ""}`}
+              onClick={() => setAccountProviderFilter(tab.key)}
+            >{tab.label}</button>
+          ))}
         </div>
 
-        <div className="resources-quota-window" role="group" aria-label="Quota period">
-          <button type="button" className={quotaWindow === "5h" ? "is-active" : ""} aria-pressed={quotaWindow === "5h"} onClick={() => setQuotaWindow("5h")}>5h</button>
-          <button type="button" className={quotaWindow === "weekly" ? "is-active" : ""} aria-pressed={quotaWindow === "weekly"} onClick={() => setQuotaWindow("weekly")}>Week</button>
-        </div>
-        <div className="resources-quota-filters" role="group" aria-label="Account filters">
-          <button type="button" className={quotaFilter ? "is-active" : ""} aria-pressed={quotaFilter} onClick={() => setQuotaFilter(value => !value)}>5h &amp; week &gt; 1%</button>
-          {accountProviderFilter === "antigravity" && (
-            <>
-              <button type="button" className={proFilter ? "is-active" : ""} aria-pressed={proFilter} onClick={() => setProFilter(value => !value)}>Pro accounts</button>
-              <button type="button" className={geminiFilter ? "is-active" : ""} aria-pressed={geminiFilter} onClick={() => setGeminiFilter(value => !value)}>Gemini only</button>
-            </>
-          )}
-        </div>
-        <details className="resources-charts" onToggle={e => setChartsVisible(e.currentTarget.open)}><summary>Charts & floating monitor</summary>
-          {chartsVisible && <AiQuotaGaugeCard embedded={true} hideScopeControls externalConfig={{ ...chartConfig, activeTab: accountProviderFilter, windowMode: quotaWindow }} onUpdateConfig={patch => { setChartConfig(config => ({ ...config, ...patch })); if (patch.activeTab) setAccountProviderFilter(patch.activeTab); if (patch.windowMode) setQuotaWindow(patch.windowMode); }} onOpenDesktopWidget={() => toggleDesktopWidget("ai-quota")} />}
-        </details>
-
-        {(accountProviderFilter === "all" || accountProviderFilter === "antigravity") && (
-          <div className="toolbar-metric-provider-section">
-            <header>
-              <strong>Antigravity (Google)</strong>
-              <small>{antigravityAccounts.data?.isStale ? "Stale sample" : "Source: space-gemini-profiles"}</small>
-            </header>
-            {antigravityAccounts.loading ? <p className="toolbar-metric-note">Loading Antigravity accounts…</p> : null}
-            {antigravityAccounts.error ? <p className="toolbar-metric-error" role="alert">{antigravityAccounts.error}</p> : null}
-            {antigravityAccounts.data?.error ? <p className="toolbar-metric-error">{antigravityAccounts.data.error}</p> : null}
-            {antigravityAccounts.data ? (
-              <ul className="toolbar-metric-list">
-                {antigravityAccounts.data.data
-                  .filter(account => !quotaFilter || (geminiFilter ? hasQuota(account.gemini) : (hasQuota(account.gemini) || hasQuota(account.claude))))
-                  .filter(account => !proFilter || isProAccount(account))
-                  .filter(account => !geminiFilter || hasGemini(account))
-                  .map((account) => (
-                  <li key={account.id} className="toolbar-metric-account-card">
-                    <div className="toolbar-metric-account-heading">
-                      <strong>{account.label || account.email}</strong>
-                      <span className={`toolbar-metric-badge ${account.status === "CONNECTED" ? "is-active" : account.status === "UNLICENSED" ? "is-warning" : "is-critical"}`}>
-                        {account.tier ? `${account.tier} · ` : ""}{account.status === "CONNECTED" ? "Connected" : account.status === "UNLICENSED" ? "Unlicensed" : account.status.toLowerCase() === "critical" ? "Unavailable" : account.status}
-                      </span>
-                    </div>
-                    {account.email && account.label !== account.email ? (
-                      <small className="toolbar-metric-subtext">{account.email}</small>
-                    ) : null}
-                    {account.status === "UNLICENSED" ? (
-                      <span className="toolbar-metric-dim">No quota allocation for unlicensed profile</span>
-                    ) : (
-                      <div className="toolbar-metric-quotas">
-                        {(!quotaFilter || hasQuota(account.gemini)) && <div className="toolbar-metric-quota-item is-gemini">
-                          <span>Gemini {quotaWindow === "5h" ? "5h" : "weekly"} remaining <QuotaIndicator value={quotaWindow === "5h" ? account.gemini?.fiveHourRemainingPercent : account.gemini?.weeklyRemainingPercent} label="Gemini remaining" /></span>
-                          {account.gemini?.fiveHourResetAt ? (
-                            <small className={`toolbar-metric-subtext${(account.gemini.fiveHourRemainingPercent ?? 100) <= QUOTA_EXHAUSTION_THRESHOLD_PERCENT ? " is-critical" : (account.gemini.fiveHourRemainingPercent ?? 100) <= QUOTA_WARNING_THRESHOLD_PERCENT ? " is-warning" : ""}`}>{formatAccountReset(account.gemini.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</small>
-                          ) : null}
-                          {account.gemini?.weeklyResetAt ? (
-                            <small className="toolbar-metric-subtext">{formatWeeklyReset(account.gemini.weeklyResetAt, dateTimeSettings)}</small>
-                          ) : null}
-                        </div>}
-                        {!geminiFilter && (!quotaFilter || hasQuota(account.claude)) && <div className="toolbar-metric-quota-item is-claude">
-                          <span>Claude {quotaWindow === "5h" ? "5h" : "weekly"} remaining <QuotaIndicator value={quotaWindow === "5h" ? account.claude?.fiveHourRemainingPercent : account.claude?.weeklyRemainingPercent} label="Claude remaining" /></span>
-                          {account.claude?.fiveHourResetAt ? (
-                            <small className={`toolbar-metric-subtext${(account.claude.fiveHourRemainingPercent ?? 100) <= QUOTA_EXHAUSTION_THRESHOLD_PERCENT ? " is-critical" : (account.claude.fiveHourRemainingPercent ?? 100) <= QUOTA_WARNING_THRESHOLD_PERCENT ? " is-warning" : ""}`}>{formatAccountReset(account.claude.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</small>
-                          ) : null}
-                          {account.claude?.weeklyResetAt ? (
-                            <small className="toolbar-metric-subtext">{formatWeeklyReset(account.claude.weeklyResetAt, dateTimeSettings)}</small>
-                          ) : null}
-                        </div>}
-                      </div>
-                    )}
-                  </li>
-                ))}
-                {!antigravityAccounts.data.data.filter(account => (!quotaFilter || (geminiFilter ? hasQuota(account.gemini) : (hasQuota(account.gemini) || hasQuota(account.claude)))) && (!proFilter || isProAccount(account)) && (!geminiFilter || hasGemini(account))).length ? (
-                  <li><span>{antigravityAccounts.data.data.length ? "No accounts match the active filters." : "No Antigravity accounts configured."}</span></li>
-                ) : null}
-              </ul>
-            ) : null}
+        {accountProviderFilter !== "api" ? (
+          <AvailabilityFilterBar counts={countAvailability(scopedEntries)} value={availabilityFilter} onChange={setAvailabilityFilter} />
+        ) : null}
+        {accountProviderFilter === "antigravity" && (
+          <div className="resources-quota-filters" role="group" aria-label="Account filters">
+            <button type="button" className={proFilter ? "is-active" : ""} aria-pressed={proFilter} onClick={() => setProFilter(value => !value)}>Pro accounts</button>
+            <button type="button" className={geminiFilter ? "is-active" : ""} aria-pressed={geminiFilter} onClick={() => setGeminiFilter(value => !value)}>Gemini only</button>
           </div>
         )}
 
-        {(accountProviderFilter === "all" || accountProviderFilter === "codex") && (
-          <div className="toolbar-metric-provider-section">
-            <header>
-              <strong>Codex usage</strong>
-              <small>{accounts.data?.isStale ? "Stale sample" : "On demand"}</small>
-            </header>
+        {(accountProviderFilter === "all" || accountProviderFilter === "antigravity") && renderAccountSection({
+          provider: "antigravity",
+          title: "Antigravity (Google)",
+          source: antigravityAccounts.data?.isStale ? "Stale sample" : "space-gemini-profiles",
+          entries: antigravityEntries,
+          loading: antigravityAccounts.loading,
+          error: antigravityAccounts.error,
+          dataError: antigravityAccounts.data?.error,
+          hasData: Boolean(antigravityAccounts.data),
+          empty: "No Antigravity accounts configured.",
+        })}
+
+        {(accountProviderFilter === "all" || accountProviderFilter === "codex") && renderAccountSection({
+          provider: "codex",
+          title: "Codex usage",
+          source: accounts.data?.isStale ? "Stale sample" : "On demand",
+          entries: codexEntries,
+          loading: accounts.loading,
+          error: accounts.error,
+          dataError: accounts.data?.error,
+          hasData: Boolean(accounts.data),
+          empty: "No enabled account samples.",
+          intro: (
             <div className="toolbar-metric-grid">
               <MetricRow
                 label="Routing capacity · all accounts"
@@ -1084,41 +1101,25 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
                 tone={quotaTone(environment?.lbUsage?.activeAccountsRemainingPercent)}
               />
             </div>
-            {accounts.loading ? <p className="toolbar-metric-note">Loading account details…</p> : null}
-            {accounts.error ? <p className="toolbar-metric-error" role="alert">{accounts.error}</p> : null}
-            {accounts.data?.error ? <p className="toolbar-metric-error">{accounts.data.error}</p> : null}
-            {accounts.data ? (
-              <ul className="toolbar-metric-list">
-                {accounts.data.data
-                  .filter(account => !quotaFilter || hasQuota(account))
-                  .map((account) => (
-                  <li key={account.id} className="toolbar-metric-account-card">
-                    <div className="toolbar-metric-account-heading">
-                      <strong>{account.label}</strong>
-                      <button
-                        type="button"
-                        disabled={!allowChanges || resetLabel(account.id).disabled}
-                        title={resetLabel(account.id).disabled ? undefined : `Use the earliest-expiring reset credit for ${account.label}`}
-                        onClick={() => void redeemReset(account.id)}
-                      >{resetLabel(account.id).label}</button>
-                    </div>
-                    <span>{quotaWindow === "5h" ? "5h remaining " : "Weekly remaining "}<QuotaIndicator value={quotaWindow === "5h" ? account.fiveHourRemainingPercent : account.weeklyRemainingPercent} label={quotaWindow} alwaysWrap={false} /></span>
-                    <span>{formatWeeklyReset(account.weeklyResetAt, dateTimeSettings)}</span>
-                    {account.fiveHourResetAt && (account.fiveHourRemainingPercent ?? 0) < CODEX_EXHAUSTION_THRESHOLD_PERCENT ? (
-                      <span>{formatAccountReset(account.fiveHourResetAt, clock, "5h resets", dateTimeSettings)}</span>
-                    ) : null}
-                  </li>
-                ))}
-                {!accounts.data.data.filter(account => !quotaFilter || hasQuota(account)).length ? <li><span>{accounts.data.data.length ? "No accounts match the active filters." : "No enabled account samples."}</span></li> : null}
-              </ul>
-            ) : null}
-            {resetFeedback ? (
-              <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
-                {resetFeedback.message}
-              </p>
-            ) : null}
-          </div>
-        )}
+          ),
+          footer: resetFeedback ? (
+            <p className="toolbar-metric-reset-status" role="status" aria-live="polite">
+              {resetFeedback.message}
+            </p>
+          ) : null,
+        })}
+
+        {(accountProviderFilter === "all" || accountProviderFilter === "claude") && renderAccountSection({
+          provider: "claude",
+          title: "Claude",
+          source: claudeAccounts.data?.isStale ? "Stale sample" : "space-claude-profiles",
+          entries: claudeEntries,
+          loading: claudeAccounts.loading,
+          error: claudeAccounts.error,
+          dataError: claudeAccounts.data?.error,
+          hasData: Boolean(claudeAccounts.data),
+          empty: "No Claude accounts configured.",
+        })}
 
         {(accountProviderFilter === "all" || accountProviderFilter === "api") && (
           <div className="toolbar-metric-provider-section">
@@ -1152,7 +1153,8 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
           </div>
         )}
       </>
-    );
+      );
+    }
     if (activePanel === "cli") {
       const detachedCount = cli.data?.summary.detached ?? 0;
       const detachedSessions = (analyticsSessions.data?.sessions ?? []).filter((s) => s.status === "RUNNING" && s.attachmentCount === 0);
@@ -1538,7 +1540,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       confirmLabel="Confirm memory reclaim"
       onCancel={closeConfirmation}
       onConfirm={() => void confirmAction()}
-    ><p>This rechecks live pressure, cleans eligible detached Space CLIs, and drops page cache only when safe. It never kills arbitrary processes.</p></ConfirmationDialog> : null}
+    ><p>This rechecks live pressure, stops detached Space CLIs whose pane is already closed, and drops page cache only when safe. CLIs of open panes keep running, even in other rooms or minimized. It never kills arbitrary processes.</p></ConfirmationDialog> : null}
     {actionMessage ? (
       <div className="toolbar-metric-action-status">
         <span role="status">{actionMessage}</span>

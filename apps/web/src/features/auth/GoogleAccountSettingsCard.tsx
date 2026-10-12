@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import type { AuthMe } from "@space/contracts";
-import { CheckCircle2, Shield, Unlink, Link2, Eye, EyeOff } from "lucide-react";
-import { api } from "../../api.js";
+import { CheckCircle2, Shield, Link2, Eye, EyeOff } from "../ui-theme/app-icons.js";
+import { GoogleAccountsManager } from "./GoogleAccountsManager.js";
 
 export function maskEmail(email: string): string {
   if (!email || !email.includes("@")) return "***";
@@ -74,24 +74,6 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
     }
   }
 
-  async function handleUnlink() {
-    if (!window.confirm("Are you sure you want to disconnect your Google account from this Space user?")) {
-      return;
-    }
-    setPending(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      await api.unlinkGoogleAccount();
-      await onAuthRefresh();
-      setSuccess("Google account disconnected successfully.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to unlink Google account");
-    } finally {
-      setPending(false);
-    }
-  }
-
   return (
     <section className="agent-settings-card settings-flat-card google-account-card" aria-label="Google account linking">
       <div className="agent-settings-section-title settings-flat-heading">
@@ -119,7 +101,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
         </span>
       </div>
 
-      <div className="settings-flat-row" style={{ alignItems: "center" }}>
+      <div className="settings-flat-row" style={{ alignItems: "center", gridTemplateColumns: "1fr auto" }}>
         <span className="settings-flat-row-copy">
           <strong>Space User</strong>
           <small style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
@@ -147,7 +129,6 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
                 {showFullEmail ? <EyeOff size={13} /> : <Eye size={13} />}
               </button>
             ) : null}
-            <span>&bull; Role: {user?.role ?? "USER"}</span>
           </small>
         </span>
         <span
@@ -161,7 +142,9 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
             fontWeight: 600,
             background: user?.role === "ADMIN" ? "rgba(59, 130, 246, 0.15)" : "rgba(107, 114, 128, 0.2)",
             color: user?.role === "ADMIN" ? "#60a5fa" : "#9ca3af",
-            border: "1px solid rgba(255, 255, 255, 0.08)"
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            justifySelf: "end",
+            whiteSpace: "nowrap"
           }}
         >
           <Shield size={12} />
@@ -169,7 +152,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
         </span>
       </div>
 
-      <div className="settings-flat-row" style={{ alignItems: "center" }}>
+      <div className="settings-flat-row" style={{ alignItems: "center", gridTemplateColumns: "1fr auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0, flex: 1 }}>
           {user?.avatarUrl ? (
             <img
@@ -203,7 +186,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
           )}
           <span className="settings-flat-row-copy" style={{ minWidth: 0 }}>
             <strong>{isLinked ? "Google Account Linked" : "Google Account Link"}</strong>
-            <small style={{ wordBreak: "break-all" }}>
+            <small style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {isLinked
                 ? (
                   <span data-sensitive-masked="manual">
@@ -217,29 +200,9 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
           </span>
         </div>
 
-        <div style={{ flexShrink: 0 }}>
+        <div style={{ flexShrink: 0, justifySelf: "end" }}>
           {isLinked ? (
-            <button
-              type="button"
-              className="button"
-              disabled={pending}
-              onClick={handleUnlink}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.4rem",
-                padding: "0.4rem 0.8rem",
-                fontSize: "0.82rem",
-                borderRadius: "6px",
-                background: "rgba(239, 68, 68, 0.12)",
-                color: "#f87171",
-                border: "1px solid rgba(239, 68, 68, 0.3)",
-                cursor: pending ? "not-allowed" : "pointer"
-              }}
-            >
-              <Unlink size={14} />
-              {pending ? "Disconnecting..." : "Disconnect Google"}
-            </button>
+            <span className="settings-flat-note">Manage linked accounts below</span>
           ) : (
             <a
               href={googleAuthEnabled ? "/api/auth/google/start?link=true" : "#"}
@@ -369,6 +332,8 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
           ) : null}
         </div>
       ) : null}
+
+      <GoogleAccountsManager enabled={googleAuthEnabled} onAuthRefresh={onAuthRefresh} />
 
       {error ? (
         <div className="validation-result bad" role="alert" style={{ marginTop: "0.5rem" }}>

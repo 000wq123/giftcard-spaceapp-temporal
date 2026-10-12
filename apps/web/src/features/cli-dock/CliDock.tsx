@@ -5,18 +5,23 @@ import {
   normalizeWarmRoomConnectedPaneLimit
 } from "../../warm-room-settings.js";
 import { CliRuntimeSettingsCard } from "../cli-runtime-settings/CliRuntimeSettingsCard.js";
+import { CliProvidersSettingsCard } from "../cli-providers-settings/CliProvidersSettingsCard.js";
+import { T3CodeServiceSettingsCard } from "../t3code-settings/T3CodeServiceSettingsCard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { Gauge, Images, Terminal } from "../ui-theme/app-icons.js";
+import { CodeXml, Gauge, GitBranch, Images } from "../ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "../settings/SettingsDisclosure.js";
+import { DockNotice } from "../dock-kit/DockKit.js";
 
 interface CliDockProps {
   canManage: boolean;
   cliImagePreviewLimit: number;
   warmRoomEnabled: boolean;
   warmConnectedPaneLimit: number;
+  defaultWorktreeEnabled?: boolean;
   onCliImagePreviewLimitChange: (limit: number) => void;
   onWarmRoomEnabledChange: (enabled: boolean) => void;
   onWarmConnectedPaneLimitChange: (limit: number) => void;
+  onDefaultWorktreeEnabledChange?: (enabled: boolean) => void;
   onOpenRestartAll: () => void;
   restartAllPending: boolean;
 }
@@ -26,23 +31,19 @@ export function CliDock({
   cliImagePreviewLimit,
   warmRoomEnabled,
   warmConnectedPaneLimit,
+  defaultWorktreeEnabled = true,
   onCliImagePreviewLimitChange,
   onWarmRoomEnabledChange,
   onWarmConnectedPaneLimitChange,
+  onDefaultWorktreeEnabledChange,
   onOpenRestartAll,
   restartAllPending
 }: CliDockProps) {
   return (
     <div className="dock-panel cli-dock">
       <SettingsSections>
-      <header className="settings-dock-title settings-flat-dock-title">
-        <Terminal aria-hidden="true" />
-        <span>
-          <h2>{canManage ? "CLI Tools" : "CLI runtimes"}</h2>
-          <small>{canManage ? "Runtime visibility, restart and VPN routing." : "Runtime visibility and coding preferences."}</small>
-        </span>
-      </header>
-      {!canManage ? <p className="dock-muted-text">The ADMIN role can manage CLI runtimes.</p> : null}
+      {/* The shell header already names this dock; only the role explanation stays here. */}
+      {!canManage ? <DockNotice tone="info">The ADMIN role can manage CLI runtimes.</DockNotice> : null}
 
       <CliRuntimeSettingsCard
         canManage={canManage}
@@ -51,6 +52,34 @@ export function CliDock({
         disclosures
       />
 
+      <CliProvidersSettingsCard canManage={canManage} />
+
+      {canManage ? (
+        <SettingsDisclosure title="T3 Code" description="Status, version, on/off and restart of the managed T3 Code service." scope="Installation" icon={CodeXml}>
+          <T3CodeServiceSettingsCard />
+        </SettingsDisclosure>
+      ) : null}
+
+      <SettingsDisclosure title="Git worktrees" description="Whether new CLI panes work on their own branch copy." scope="Your account" icon={GitBranch}>
+        <section className="agent-settings-card settings-flat-card cli-worktree-settings-card" aria-label="Git Worktrees default settings">
+          <div className="agent-settings-section-title settings-flat-heading">
+            <GitBranch aria-hidden="true" />
+            <span>
+              <strong>Git Worktrees</strong>
+              <small>{defaultWorktreeEnabled ? "New CLI panes start on their own branch copy." : "New CLI panes work directly in the project folder."}</small>
+            </span>
+          </div>
+          <SpaceToggle
+            className="settings-flat-row settings-flat-toggle-row default-worktree-toggle"
+            name="default-worktree-enabled"
+            ariaLabel="Enable isolated worktrees by default"
+            label="Isolated worktrees by default"
+            detail="In rooms with a project folder, each new CLI pane works in its own Git worktree (a separate branch copy), so it cannot change your main checkout until you merge it."
+            checked={Boolean(defaultWorktreeEnabled)}
+            onChange={(checked) => onDefaultWorktreeEnabledChange?.(checked)}
+          />
+        </section>
+      </SettingsDisclosure>
 
       <SettingsDisclosure title="Room cache" description="Keep recently used rooms ready for your account." scope="Your account" icon={Gauge}>
       <section className="agent-settings-card settings-flat-card warm-room-cache-settings-card" aria-label="Warm room cache settings">
@@ -101,19 +130,19 @@ export function CliDock({
       </section>
 
       </SettingsDisclosure>
-      <SettingsDisclosure title="Image previews" description="Choose how many uploaded images remain in the preview strip." scope="Your account" icon={Images}>
+      <SettingsDisclosure title="Image previews" description="How many uploaded images a CLI pane's preview strip shows at once." scope="Your account" icon={Images}>
       <section className="agent-settings-card settings-flat-card cli-upload-settings-card" aria-label="CLI photo preview settings">
         <div className="agent-settings-section-title settings-flat-heading">
           <Images aria-hidden="true" />
           <span>
             <strong>CLI photo previews</strong>
-            <small>{cliImagePreviewLimit} images retained in the floating preview strip.</small>
+            <small>{cliImagePreviewLimit} images shown at a time in the preview strip.</small>
           </span>
         </div>
         <label className="settings-flat-row">
           <span className="settings-flat-row-copy">
             <strong>Photo previews</strong>
-            <small>Images retained in the floating preview strip.</small>
+            <small>Images shown at once in a CLI pane&apos;s preview strip. Older images move to earlier pages.</small>
           </span>
           <input
             className="settings-flat-control"

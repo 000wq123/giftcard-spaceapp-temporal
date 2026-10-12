@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Keyboard, Volume2, RotateCcw } from "lucide-react";
+import { Keyboard, Volume2, RotateCcw } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
   defaultKeyboardAutocorrectSettings,
@@ -140,7 +140,7 @@ export function KeyboardAutocorrectSettingsCard() {
           <SpaceToggle
             className="settings-flat-row settings-flat-toggle-row language-toggle-el"
             name="language-toggle-el"
-            label="Greek (Ελληνικά)"
+            label="Greek"
             detail="Detects Greek typed on QWERTY and converts tonos & dialytika."
             checked={isGreekEnabled}
             onChange={(checked) => toggleLanguage("el", checked)}

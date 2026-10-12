@@ -11,17 +11,24 @@ export function createUnidentifiedLiveCommandOrigin(capture: () => LiveCommandRo
   const denied: LiveCommandRoom = () => undefined;
 
   return {
-    beginInput() {
+    beginInput(room: LiveCommandRoom = capture()) {
+      const priorRoom = pending ? pending() : undefined;
       const version = ++epoch;
-      const room = capture();
-      pending = pending ? denied : () => version === epoch ? room() : undefined;
+      const newRoom = room();
+      if (pending && priorRoom && newRoom && priorRoom === newRoom) {
+        pending = () => version === epoch ? room() : undefined;
+      } else {
+        pending = pending ? denied : () => version === epoch ? room() : undefined;
+      }
     },
     beginNotification() {
       epoch++;
       pending = denied;
     },
     capture(): LiveCommandRoom {
-      return pending ?? denied;
+      if (pending) return pending;
+      const current = capture();
+      return current() ? current : denied;
     },
     invalidate() {
       epoch++;

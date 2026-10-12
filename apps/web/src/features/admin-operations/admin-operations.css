@@ -917,19 +917,17 @@
   flex-wrap: wrap;
 }
 
-.unified-cli-checkbox-wrapper {
+.unified-cli-checkbox-wrapper,
+.unified-cli-toggle-wrapper {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   cursor: pointer;
 }
 
-.unified-cli-checkbox-wrapper input[type="checkbox"] {
-  width: 1.05rem;
-  height: 1.05rem;
-  accent-color: var(--accent, #4c8dff);
-  cursor: pointer;
-}
+.unified-cli-toggle-wrapper .space-toggle-track { width: 2.1rem; height: 1.2rem; }
+.unified-cli-toggle-wrapper .space-toggle-thumb { width: 0.8rem; height: 0.8rem; }
+.unified-cli-toggle-wrapper .space-toggle-state { display: none; }
 
 .unified-cli-title {
   display: flex;

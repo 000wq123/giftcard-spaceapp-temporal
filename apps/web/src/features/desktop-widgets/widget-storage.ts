@@ -8,10 +8,12 @@ import type {
   SpaceAppPromoWidgetConfig,
   AiQuotaWidgetConfig
 } from "./types.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 
 const WIDGETS_STATE_KEY = "space.desktop-widgets.state.v1";
 const WIDGET_CONFIG_PREFIX = "space.desktop-widgets.config.";
 const WIDGETS_CHANGED_EVENT = "space:desktop-widgets:changed";
+export const WIDGET_CONFIG_CHANGED_EVENT = "space:desktop-widgets:config-changed";
 
 const DEFAULT_CLOCK_CONFIG: ClockWidgetConfig = {
   is24Hour: true,
@@ -26,6 +28,7 @@ const DEFAULT_TIMER_CONFIG: CountdownTimerWidgetConfig = {
 };
 
 const DEFAULT_PUSHUP_CONFIG: PushupReminderWidgetConfig = {
+  reminderType: "pushups",
   intervalMinutes: 30, // 30m default per user request
   targetReps: 20,
   totalRepsToday: 0,
@@ -33,6 +36,8 @@ const DEFAULT_PUSHUP_CONFIG: PushupReminderWidgetConfig = {
   remainingSeconds: 30 * 60,
   isRunning: true,
   isAlertActive: false,
+  alertReason: "pushups",
+  soundEnabled: true,
   lastActiveDate: new Date().toISOString().slice(0, 10)
 };
 
@@ -43,13 +48,20 @@ const DEFAULT_PROMO_CONFIG: SpaceAppPromoWidgetConfig = {
   url: "https://spaceapp.dev"
 };
 
+// alertsEnabled stays unset here so the first load can adopt the former reminder's settings.
 const DEFAULT_AI_QUOTA_CONFIG: AiQuotaWidgetConfig = {
   activeTab: "all",
-  windowMode: "5h",
+  availabilityFilter: "all",
+  showAllAccounts: false,
   autoRefresh: true,
   refreshIntervalSeconds: 90,
-  miniCycleIntervalSeconds: 30
+  alertProvider: "all",
+  proOnly: false,
+  soundEnabled: true
 };
+
+// The AI Token Reminder widget was folded into AI Quota & Usage on 2026-10-11.
+const LEGACY_TOKEN_REMINDER_ID = "token-reminder";
 
 export const DOCK_WIDTH = 48;
 export const DOCK_MARGIN_RIGHT = 2;
@@ -106,6 +118,45 @@ export function getRailTopBoundary(): number {
     return maxBottom;
   }
   return 72;
+}
+
+export function getFloatingTopBoundary(): number {
+  if (typeof document !== "undefined") {
+    let topBoundary = 0;
+
+    const titlebar = document.querySelector(".desktop-window-titlebar");
+    if (titlebar) {
+      const rect = titlebar.getBoundingClientRect();
+      if (rect.height > 0 && rect.bottom > 0) {
+        topBoundary = Math.max(topBoundary, Math.ceil(rect.bottom));
+      }
+    }
+
+    const topbar = document.querySelector("header.topbar");
+    if (topbar) {
+      const rect = topbar.getBoundingClientRect();
+      if (rect.height > 0 && rect.bottom > 0) {
+        topBoundary = Math.max(topBoundary, Math.ceil(rect.bottom));
+      }
+    }
+
+    if (topBoundary === 0 && typeof getComputedStyle !== "undefined") {
+      const rootStyle = getComputedStyle(document.documentElement);
+      const titlebarHeight = parseFloat(rootStyle.getPropertyValue("--desktop-titlebar-height"));
+      if (!Number.isNaN(titlebarHeight) && titlebarHeight > 0) {
+        const isFullscreen = Boolean(
+          document.fullscreenElement ||
+          document.querySelector('[data-browser-fullscreen="true"]')
+        );
+        if (!isFullscreen) {
+          topBoundary = Math.max(topBoundary, Math.ceil(titlebarHeight));
+        }
+      }
+    }
+
+    return topBoundary;
+  }
+  return 0;
 }
 
 export function resolveRailDockCollisions(
@@ -234,57 +285,92 @@ export function resolveHeaderDockCollisions(
   return changed;
 }
 
-function getDefaultPositions(): Record<DesktopWidgetId, { x: number; y: number }> {
+export const ALL_DESKTOP_WIDGET_IDS: DesktopWidgetId[] = [
+  "clock",
+  "countdown-timer",
+  "pushup-reminder",
+  "spaceapp-promo",
+  "ai-quota",
+  "streaming-metrics"
+];
+
+export function getDefaultPositions(): Record<DesktopWidgetId, { x: number; y: number }> {
   const w = typeof window !== "undefined" ? window.innerWidth : 1200;
   return {
     clock: { x: Math.max(20, w - 280), y: 60 },
     "ai-quota": { x: Math.max(20, w - 460), y: 60 },
     "countdown-timer": { x: Math.max(20, w - 280), y: 260 },
-    "pushup-reminder": { x: Math.max(20, w - 460), y: 380 },
+    "pushup-reminder": { x: Math.max(20, w - 460), y: 220 },
     "spaceapp-promo": { x: Math.max(20, w - 320), y: 520 },
     "streaming-metrics": { x: Math.max(20, w - 460), y: 240 }
   };
 }
 
-export function loadWidgetStates(): Record<DesktopWidgetId, DesktopWidgetState> {
+export function normalizeWidgetStates(
+  raw?: unknown
+): Record<DesktopWidgetId, DesktopWidgetState> {
   const defaults = getDefaultPositions();
   const initial: Record<DesktopWidgetId, DesktopWidgetState> = {
     clock: { id: "clock", enabled: false, x: defaults.clock.x, y: defaults.clock.y, zIndex: 120 },
     "countdown-timer": { id: "countdown-timer", enabled: false, x: defaults["countdown-timer"].x, y: defaults["countdown-timer"].y, zIndex: 121 },
     "pushup-reminder": { id: "pushup-reminder", enabled: false, x: defaults["pushup-reminder"].x, y: defaults["pushup-reminder"].y, zIndex: 122 },
-    "spaceapp-promo": { id: "spaceapp-promo", enabled: false, x: defaults["spaceapp-promo"].x, y: defaults["spaceapp-promo"].y, zIndex: 123 },
-    "ai-quota": { id: "ai-quota", enabled: false, x: defaults["ai-quota"].x, y: defaults["ai-quota"].y, zIndex: 124 },
-    "streaming-metrics": { id: "streaming-metrics", enabled: false, x: defaults["streaming-metrics"].x, y: defaults["streaming-metrics"].y, zIndex: 125 }
+    "spaceapp-promo": { id: "spaceapp-promo", enabled: false, x: defaults["spaceapp-promo"].x, y: defaults["spaceapp-promo"].y, zIndex: 124 },
+    "ai-quota": { id: "ai-quota", enabled: false, x: defaults["ai-quota"].x, y: defaults["ai-quota"].y, zIndex: 125 },
+    "streaming-metrics": { id: "streaming-metrics", enabled: false, x: defaults["streaming-metrics"].x, y: defaults["streaming-metrics"].y, zIndex: 126 }
   };
 
-  try {
-    if (typeof localStorage === "undefined") return initial;
-    const raw = localStorage.getItem(WIDGETS_STATE_KEY);
-    if (!raw) return initial;
-    const parsed = JSON.parse(raw) as Partial<Record<DesktopWidgetId, DesktopWidgetState>>;
-    const result: Record<DesktopWidgetId, DesktopWidgetState> = {
-      clock: { ...initial.clock, ...parsed.clock },
-      "countdown-timer": { ...initial["countdown-timer"], ...parsed["countdown-timer"] },
-      "pushup-reminder": { ...initial["pushup-reminder"], ...parsed["pushup-reminder"] },
-      "spaceapp-promo": { ...initial["spaceapp-promo"], ...parsed["spaceapp-promo"] },
-      "ai-quota": { ...initial["ai-quota"], ...parsed["ai-quota"] },
-      "streaming-metrics": { ...initial["streaming-metrics"], ...parsed["streaming-metrics"] }
+  const parsed = raw && typeof raw === "object" ? (raw as Partial<Record<DesktopWidgetId, DesktopWidgetState>>) : {};
+  const result: Record<DesktopWidgetId, DesktopWidgetState> = {
+    clock: { ...initial.clock, ...parsed.clock, id: "clock" },
+    "countdown-timer": { ...initial["countdown-timer"], ...parsed["countdown-timer"], id: "countdown-timer" },
+    "pushup-reminder": { ...initial["pushup-reminder"], ...parsed["pushup-reminder"], id: "pushup-reminder" },
+    "spaceapp-promo": { ...initial["spaceapp-promo"], ...parsed["spaceapp-promo"], id: "spaceapp-promo" },
+    "ai-quota": { ...initial["ai-quota"], ...parsed["ai-quota"], id: "ai-quota" },
+    "streaming-metrics": { ...initial["streaming-metrics"], ...parsed["streaming-metrics"], id: "streaming-metrics" }
+  };
+  // An open reminder from before the merge reopens as AI Quota & Usage in its place.
+  const legacyReminder = (parsed as Record<string, Partial<DesktopWidgetState> | undefined>)[LEGACY_TOKEN_REMINDER_ID];
+  if (legacyReminder?.enabled && !parsed["ai-quota"]?.enabled) {
+    result["ai-quota"] = {
+      ...result["ai-quota"],
+      enabled: true,
+      minimized: legacyReminder.minimized ?? false,
+      dockedToRail: legacyReminder.dockedToRail ?? false,
+      dockPosition: legacyReminder.dockPosition,
+      x: typeof legacyReminder.x === "number" ? legacyReminder.x : result["ai-quota"].x,
+      y: typeof legacyReminder.y === "number" ? legacyReminder.y : result["ai-quota"].y
     };
-    if (typeof window !== "undefined") {
-      const maxX = Math.max(16, window.innerWidth - 180);
-      const maxY = Math.max(48, window.innerHeight - 100);
-      for (const key of Object.keys(result) as DesktopWidgetId[]) {
-        const item = result[key];
-        if (item.enabled && !item.dockedToRail) {
-          item.x = Math.min(Math.max(16, item.x), maxX);
-          item.y = Math.min(Math.max(48, item.y), maxY);
-        }
+  }
+
+  if (typeof window !== "undefined") {
+    const minTop = getFloatingTopBoundary();
+    const maxX = Math.max(0, window.innerWidth - 180);
+    const maxY = Math.max(minTop, window.innerHeight - 100);
+    for (const key of ALL_DESKTOP_WIDGET_IDS) {
+      const item = result[key];
+      if (item && item.enabled && !item.dockedToRail) {
+        item.x = Math.min(Math.max(0, item.x), maxX);
+        item.y = Math.min(Math.max(minTop, item.y), maxY);
       }
+    }
+  }
+
+  return result;
+}
+
+export function loadWidgetStates(): Record<DesktopWidgetId, DesktopWidgetState> {
+  try {
+    if (typeof localStorage === "undefined") return normalizeWidgetStates();
+    const raw = localStorage.getItem(WIDGETS_STATE_KEY);
+    if (!raw) return normalizeWidgetStates();
+    const parsed = JSON.parse(raw);
+    const result = normalizeWidgetStates(parsed);
+    if (typeof window !== "undefined") {
       enforceRailDockSlots(result, window.innerWidth, window.innerHeight);
     }
     return result;
   } catch {
-    return initial;
+    return normalizeWidgetStates();
   }
 }
 
@@ -293,20 +379,21 @@ export function saveWidgetStates(states: Record<DesktopWidgetId, DesktopWidgetSt
     if (typeof localStorage === "undefined") return;
     localStorage.setItem(WIDGETS_STATE_KEY, JSON.stringify(states));
     window.dispatchEvent(new CustomEvent(WIDGETS_CHANGED_EVENT, { detail: states }));
+    saveUserSettingDebounced("desktopWidgets", states);
   } catch {
     // Storage unavailable
   }
 }
 
 export function toggleDesktopWidget(id: DesktopWidgetId, forced?: boolean): void {
-  const currentStates = loadWidgetStates();
+  const currentStates = normalizeWidgetStates(loadWidgetStates());
   const current = currentStates[id];
-  if (!current) return;
   const targetEnabled = forced !== undefined ? forced : !current.enabled;
   let { x, y } = current;
   if (targetEnabled && typeof window !== "undefined") {
-    x = Math.min(Math.max(16, x), window.innerWidth - 180);
-    y = Math.min(Math.max(48, y), window.innerHeight - 120);
+    const minTop = getFloatingTopBoundary();
+    x = Math.min(Math.max(0, x), window.innerWidth - 180);
+    y = Math.min(Math.max(minTop, y), window.innerHeight - 120);
   }
   const maxZ = Object.values(currentStates).reduce((max, w) => Math.max(max, w.zIndex ?? 120), 120);
   const next: Record<DesktopWidgetId, DesktopWidgetState> = {
@@ -314,6 +401,7 @@ export function toggleDesktopWidget(id: DesktopWidgetId, forced?: boolean): void
     [id]: {
       ...current,
       enabled: targetEnabled,
+      minimized: targetEnabled && !current.dockedToRail ? false : current.minimized,
       x,
       y,
       zIndex: targetEnabled ? maxZ + 1 : current.zIndex
@@ -336,16 +424,60 @@ export function loadWidgetConfig<T>(id: DesktopWidgetId, defaults: T): T {
   }
 }
 
-export function saveWidgetConfig<T>(id: DesktopWidgetId, config: T): void {
+/**
+ * Persists a widget config locally and, unless `syncToServer` is false, to the
+ * user's server settings. Per-second countdown ticks pass false: they are
+ * device-local progress, and syncing them sent a settings PATCH every second.
+ */
+export function saveWidgetConfig<T>(id: DesktopWidgetId, config: T, options: { syncToServer?: boolean } = {}): void {
   try {
     if (typeof localStorage === "undefined") return;
     localStorage.setItem(`${WIDGET_CONFIG_PREFIX}${id}`, JSON.stringify(config));
+    window.dispatchEvent(new CustomEvent(WIDGET_CONFIG_CHANGED_EVENT, { detail: { id, config } }));
+    if (options.syncToServer !== false) saveUserSettingDebounced("desktopWidgets", { [`config:${id}`]: config });
   } catch {
     // Storage unavailable
   }
 }
 
-export { DEFAULT_CLOCK_CONFIG, DEFAULT_TIMER_CONFIG, DEFAULT_PUSHUP_CONFIG, DEFAULT_PROMO_CONFIG, DEFAULT_AI_QUOTA_CONFIG };
+/**
+ * Loads the AI Quota & Usage settings. The first load after the merge adopts the
+ * reset alert settings of the former AI Token Reminder and turns alerts on when
+ * that reminder was open.
+ */
+export function loadAiQuotaWidgetConfig(): AiQuotaWidgetConfig {
+  const config = loadWidgetConfig("ai-quota", DEFAULT_AI_QUOTA_CONFIG);
+  if (config.alertsEnabled !== undefined) return config;
+  let legacy: { tokenProvider?: string; proOnly?: boolean; soundEnabled?: boolean } = {};
+  let legacyOpen = false;
+  try {
+    if (typeof localStorage !== "undefined") {
+      legacy = JSON.parse(localStorage.getItem(`${WIDGET_CONFIG_PREFIX}${LEGACY_TOKEN_REMINDER_ID}`) ?? "{}") ?? {};
+      const states = JSON.parse(localStorage.getItem(WIDGETS_STATE_KEY) ?? "{}") ?? {};
+      legacyOpen = Boolean(states[LEGACY_TOKEN_REMINDER_ID]?.enabled);
+    }
+  } catch {
+    // Unreadable legacy settings fall back to the defaults.
+  }
+  const provider = legacy.tokenProvider === "codex" || legacy.tokenProvider === "gemini" ? legacy.tokenProvider : "all";
+  const migrated: AiQuotaWidgetConfig = {
+    ...config,
+    alertsEnabled: legacyOpen,
+    alertProvider: provider,
+    proOnly: legacy.proOnly ?? config.proOnly,
+    soundEnabled: legacy.soundEnabled ?? config.soundEnabled
+  };
+  saveWidgetConfig("ai-quota", migrated);
+  return migrated;
+}
+
+export {
+  DEFAULT_CLOCK_CONFIG,
+  DEFAULT_TIMER_CONFIG,
+  DEFAULT_PUSHUP_CONFIG,
+  DEFAULT_PROMO_CONFIG,
+  DEFAULT_AI_QUOTA_CONFIG
+};
 
 export function areWidgetStatesEqual(
   a: Record<DesktopWidgetId, DesktopWidgetState> | null | undefined,
@@ -386,7 +518,8 @@ export function useDesktopWidgets() {
     const handler = (e: Event) => {
       if (isInternalUpdateRef.current) return;
       const customEvent = e as CustomEvent<Record<DesktopWidgetId, DesktopWidgetState>>;
-      const nextStates = customEvent.detail ?? loadWidgetStates();
+      const rawDetail = customEvent.detail;
+      const nextStates = rawDetail ? normalizeWidgetStates(rawDetail) : loadWidgetStates();
       if (!areWidgetStatesEqual(widgetsRef.current, nextStates)) {
         setWidgets(nextStates);
       }
@@ -404,15 +537,15 @@ export function useDesktopWidgets() {
         resizeTimer = null;
         setWidgets((prev) => {
           let changed = false;
-          const next = { ...prev };
-          const maxX = Math.max(16, window.innerWidth - 180);
-          const maxY = Math.max(48, window.innerHeight - 100);
+          const next = normalizeWidgetStates(prev);
+          const maxX = Math.max(0, window.innerWidth - 180);
+          const maxY = Math.max(0, window.innerHeight - 100);
           for (const key of Object.keys(next) as DesktopWidgetId[]) {
             const w = next[key];
             if (w.enabled && !w.dockedToRail) {
-              if (w.x > maxX || w.y > maxY || w.x < 12 || w.y < 48) {
-                const clampedX = Math.min(Math.max(16, w.x), maxX);
-                const clampedY = Math.min(Math.max(48, w.y), maxY);
+              if (w.x > maxX || w.y > maxY || w.x < 0 || w.y < 0) {
+                const clampedX = Math.min(Math.max(0, w.x), maxX);
+                const clampedY = Math.min(Math.max(0, w.y), maxY);
                 if (clampedX !== w.x || clampedY !== w.y) {
                   next[key] = { ...w, x: clampedX, y: clampedY };
                   changed = true;
@@ -451,29 +584,31 @@ export function useDesktopWidgets() {
 
   const toggleWidget = useCallback((id: DesktopWidgetId, forced?: boolean) => {
     setWidgets((prev) => {
-      const current = prev[id];
-      if (!current) return prev;
+      const normalized = normalizeWidgetStates(prev);
+      const current = normalized[id];
       const targetEnabled = forced !== undefined ? forced : !current.enabled;
 
-      // When enabling, bring to front and ensure within viewport (only if floating)
+      // When enabling, bring to front, unminimize if floating, and ensure within viewport
       let { x, y } = current;
       if (targetEnabled && !current.dockedToRail && typeof window !== "undefined") {
-        x = Math.min(Math.max(16, x), window.innerWidth - 180);
-        y = Math.min(Math.max(48, y), window.innerHeight - 120);
+        const minTop = getFloatingTopBoundary();
+        x = Math.min(Math.max(0, x), window.innerWidth - 180);
+        y = Math.min(Math.max(minTop, y), window.innerHeight - 120);
       }
 
-      const maxZ = Object.values(prev).reduce((max, w) => Math.max(max, w.zIndex ?? 120), 120);
+      const maxZ = Object.values(normalized).reduce((max, w) => Math.max(max, w.zIndex ?? 120), 120);
       const next: Record<DesktopWidgetId, DesktopWidgetState> = {
-        ...prev,
+        ...normalized,
         [id]: {
           ...current,
           enabled: targetEnabled,
+          minimized: targetEnabled && !current.dockedToRail ? false : current.minimized,
           x,
           y,
           zIndex: targetEnabled ? maxZ + 1 : current.zIndex
         }
       };
-      if (targetEnabled && current.dockedToRail && current.minimized) {
+      if (targetEnabled && current.dockedToRail) {
         if (current.dockPosition === "header") {
           resolveHeaderDockCollisions(next, id);
         } else {
@@ -493,22 +628,24 @@ export function useDesktopWidgets() {
 
   const setPosition = useCallback((id: DesktopWidgetId, x: number, y: number, dockedToRail?: boolean, dockPosition?: "rail" | "header") => {
     setWidgets((prev) => {
-      const current = prev[id];
-      if (!current) return prev;
+      const normalized = normalizeWidgetStates(prev);
+      const current = normalized[id];
       const targetDocked = dockedToRail !== undefined ? dockedToRail : current.dockedToRail;
       const targetDockPos = targetDocked ? (dockPosition ?? current.dockPosition ?? "rail") : undefined;
-      if (current.x === x && current.y === y && Boolean(current.dockedToRail) === Boolean(targetDocked) && current.dockPosition === targetDockPos) return prev;
+      const nextMinimized = targetDocked ? true : current.minimized;
+      if (current.x === x && current.y === y && Boolean(current.dockedToRail) === Boolean(targetDocked) && current.dockPosition === targetDockPos && current.minimized === nextMinimized) return prev;
       const next: Record<DesktopWidgetId, DesktopWidgetState> = {
-        ...prev,
+        ...normalized,
         [id]: {
           ...current,
           x,
           y,
           dockedToRail: targetDocked,
-          dockPosition: targetDockPos
+          dockPosition: targetDockPos,
+          minimized: nextMinimized
         }
       };
-      if (targetDocked && current.minimized) {
+      if (targetDocked) {
         if (targetDockPos === "header") {
           resolveHeaderDockCollisions(next, id);
         } else {
@@ -520,8 +657,8 @@ export function useDesktopWidgets() {
             if (Math.abs(next[id].x - next[key].x) < 80 && Math.abs(next[id].y - next[key].y) < 40) {
               const viewW = typeof window !== "undefined" ? window.innerWidth : 1200;
               const viewH = typeof window !== "undefined" ? window.innerHeight : 800;
-              next[id].x = Math.min(Math.max(12, viewW - 280 - 12), next[id].x + 32);
-              next[id].y = Math.min(Math.max(48, viewH - 160 - 12), next[id].y + 32);
+              next[id].x = Math.min(Math.max(0, viewW - 280 - 12), next[id].x + 32);
+              next[id].y = Math.min(Math.max(0, viewH - 160 - 12), next[id].y + 32);
             }
           }
         }
@@ -539,11 +676,11 @@ export function useDesktopWidgets() {
 
   const toggleMinimize = useCallback((id: DesktopWidgetId) => {
     setWidgets((prev) => {
-      const current = prev[id];
-      if (!current) return prev;
+      const normalized = normalizeWidgetStates(prev);
+      const current = normalized[id];
       const nextMinimized = !current.minimized;
       const next: Record<DesktopWidgetId, DesktopWidgetState> = {
-        ...prev,
+        ...normalized,
         [id]: { ...current, minimized: nextMinimized }
       };
       if (current.dockedToRail && nextMinimized) {
@@ -566,12 +703,12 @@ export function useDesktopWidgets() {
 
   const bringToFront = useCallback((id: DesktopWidgetId) => {
     setWidgets((prev) => {
-      const current = prev[id];
-      if (!current) return prev;
-      const maxZ = Object.values(prev).reduce((max, w) => Math.max(max, w.zIndex ?? 120), 120);
+      const normalized = normalizeWidgetStates(prev);
+      const current = normalized[id];
+      const maxZ = Object.values(normalized).reduce((max, w) => Math.max(max, w.zIndex ?? 120), 120);
       if (current.zIndex === maxZ) return prev;
       const next = {
-        ...prev,
+        ...normalized,
         [id]: { ...current, zIndex: maxZ + 1 }
       };
       if (areWidgetStatesEqual(prev, next)) return prev;

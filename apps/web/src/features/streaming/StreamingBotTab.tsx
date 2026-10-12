@@ -5,10 +5,9 @@ import type {
   StreamingPlatformAccount
 } from "@space/contracts";
 import {
-  Bot,
-  Loader2,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   Save,
   Send,
@@ -17,6 +16,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SpaceApiError, api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { DockButton, DockIconButton, DockNotice, DockState } from "../dock-kit/DockKit.js";
+import { readableCode } from "./streaming-labels.js";
 
 const PLATFORM_LABEL: Record<StreamingBotPlatform, string> = { YOUTUBE: "YouTube", TWITCH: "Twitch" };
 
@@ -76,6 +77,8 @@ export function StreamingBotTab() {
   const [testReply, setTestReply] = useState<string | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [dirty, setDirty] = useState(false);
+  /** Shows "saved" after a settings save until the next edit. */
+  const [justSaved, setJustSaved] = useState(false);
   const mounted = useRef(true);
 
   const load = useCallback(async (message?: string) => {
@@ -116,6 +119,7 @@ export function StreamingBotTab() {
   function updateSettings(updater: (settings: StreamingBotSettings) => StreamingBotSettings) {
     setState((current) => current ? { ...current, settings: updater(current.settings) } : current);
     setDirty(true);
+    setJustSaved(false);
     setError(null);
     setNotice(null);
   }
@@ -158,7 +162,7 @@ export function StreamingBotTab() {
       });
       setState((current) => current ? { ...current, settings: saved } : current);
       setDirty(false);
-      setNotice("Streaming bot settings were saved.");
+      setJustSaved(true);
     } catch (saveError) {
       if (saveError instanceof SpaceApiError && saveError.status === 409) {
         await load("A newer bot settings version was loaded. Review it before saving again.");
@@ -178,7 +182,7 @@ export function StreamingBotTab() {
     setTestReply(null);
     try {
       const result = await api.testStreamingBot({ platform: testPlatform, message: testMessage });
-      setTestReply(result.errorCode ? `No reply (${result.errorCode})` : result.reply);
+      setTestReply(result.errorCode ? `No reply: ${readableCode(result.errorCode)}` : result.reply);
       await load();
     } catch (testError) {
       setError(testError instanceof Error ? testError.message : "The bot test could not run.");
@@ -188,40 +192,60 @@ export function StreamingBotTab() {
   }
 
   if (loading && !state) {
-    return <div className="streaming-bot-loading" role="status"><Loader2 className="spin" aria-hidden="true" /> Loading bot settings…</div>;
+    return <DockState kind="loading" title="Loading bot settings…" className="streaming-bot-loading" />;
   }
 
   if (!state) {
     return (
-      <div className="streaming-bot-loading">
-        {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
-        <button type="button" onClick={() => void load()}><RefreshCw aria-hidden="true" /> Retry</button>
-      </div>
+      <DockState
+        kind="error"
+        title="Bot settings could not be loaded"
+        detail={error ?? "Try again in a moment."}
+        action={{ label: "Try again", icon: RefreshCw, onClick: () => void load() }}
+      />
     );
   }
 
   const { settings, status } = state;
+  const saving = pendingAction === "save";
 
   return (
     <div className="streaming-bot-tab">
+      <div className="streaming-status-stack">
+        {saving ? (
+          <DockNotice tone="info" className="streaming-save-status">Saving bot settings…</DockNotice>
+        ) : dirty ? (
+          <DockNotice tone="warning" className="streaming-save-status">
+            <span>Unsaved bot settings</span>
+            <DockButton icon={Save} className="streaming-save-now" onClick={() => void save()} disabled={pendingAction !== null}>
+              Save now
+            </DockButton>
+          </DockNotice>
+        ) : justSaved ? (
+          <DockNotice tone="success" className="streaming-save-status" onDismiss={() => setJustSaved(false)}>Bot settings saved.</DockNotice>
+        ) : null}
+        {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+        {notice ? <DockNotice tone="info" onDismiss={() => setNotice(null)}>{notice}</DockNotice> : null}
+      </div>
+
       <section className="streaming-section" aria-labelledby="streaming-bot-overview-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Live Q&A</span><h3 id="streaming-bot-overview-heading"><Bot aria-hidden="true" /> Bot</h3></div>
-          <span className={`streaming-bot-enabled status-${status.enabled ? "ready" : "error"}`}>{status.enabled ? "Active" : "Paused"}</span>
+          <h3 id="streaming-bot-overview-heading" className="dock-kit-section-title">Live Q&amp;A bot</h3>
+          <span className={`dock-kit-badge ${status.enabled ? "is-success" : "is-warning"}`}>{status.enabled ? "Active" : "Paused"}</span>
         </div>
         <div className="streaming-bot-overview-grid">
           <div className="streaming-bot-overview-card">
-            <span className="streaming-eyebrow">Language model</span>
+            <span className="streaming-bot-card-label">Language model</span>
             <strong>{status.llmConfigured ? (status.model ?? "Configured") : "Not configured"}</strong>
             <small>{status.llmConfigured ? "Dedicated Streaming model" : "Connect a dedicated Streaming API key and select a model"}</small>
           </div>
           <div className="streaming-bot-overview-card">
-            <span className="streaming-eyebrow">YouTube quota</span>
+            <span className="streaming-bot-card-label">YouTube quota</span>
             <strong>{status.youtubeQuota.unitsConsumed} / {status.youtubeQuota.budget}</strong>
             <small>Daily reply unit budget · {status.youtubeQuota.day || "today"}</small>
           </div>
           <div className="streaming-bot-overview-card">
-            <span className="streaming-eyebrow">Memory</span>
+            <span className="streaming-bot-card-label">Memory</span>
             <strong>{state.memoryCount} entr{state.memoryCount === 1 ? "y" : "ies"}</strong>
             <small>Separate reviewed Streaming memory</small>
           </div>
@@ -235,8 +259,8 @@ export function StreamingBotTab() {
                 <div className="streaming-account-heading">
                   <div><strong>{PLATFORM_LABEL[platform]}</strong><span>{platformSettings.enabled ? "Enabled" : "Disabled"}</span></div>
                   <div className="streaming-inline-actions">
-                    <span className={`streaming-bot-badge ${platformStatus.connected ? "ok" : ""}`}>{platformStatus.connected ? "Connected" : "Not connected"}</span>
-                    <span className={`streaming-bot-badge ${platformStatus.live ? "ok" : ""}`}>{platformStatus.live ? "Live" : "Offline"}</span>
+                    <span className={`dock-kit-badge ${platformStatus.connected ? "is-success" : ""}`}>{platformStatus.connected ? "Connected" : "Not connected"}</span>
+                    <span className={`dock-kit-badge ${platformStatus.live ? "is-success" : ""}`}>{platformStatus.live ? "Live" : "Offline"}</span>
                   </div>
                 </div>
                 <SpaceToggle
@@ -249,7 +273,7 @@ export function StreamingBotTab() {
                 />
                 <label className="streaming-bot-field">
                   <span>Connected account</span>
-                  <select aria-label={`${PLATFORM_LABEL[platform]} bot account`} value={platformSettings.accountId ?? ""}
+                  <select className="dock-kit-select" aria-label={`${PLATFORM_LABEL[platform]} bot account`} value={platformSettings.accountId ?? ""}
                     onChange={event => updateSettings(settings => ({ ...settings, platforms: {
                       ...settings.platforms, [platform]: { ...settings.platforms[platform], accountId: event.target.value || null }
                     } }))}>
@@ -257,7 +281,7 @@ export function StreamingBotTab() {
                     {state.accounts.filter(account => account.provider === platform).map(account => <option key={account.id} value={account.id}>{account.displayName}</option>)}
                   </select>
                 </label>
-                {platformStatus.live ? <small className="streaming-bot-last-poll">Last polled {platformStatus.lastPollAt ? new Date(platformStatus.lastPollAt).toLocaleTimeString() : "never"} · {platformStatus.pendingCount} pending</small> : null}
+                {platformStatus.live ? <small className="streaming-hint">Last checked {platformStatus.lastPollAt ? new Date(platformStatus.lastPollAt).toLocaleTimeString() : "never"} · {platformStatus.pendingCount} waiting</small> : null}
               </div>
             );
           })}
@@ -266,39 +290,36 @@ export function StreamingBotTab() {
           <SpaceToggle
             checked={settings.enabled}
             label="Bot active"
-            detail="Worker polls live chats and replies"
+            detail="Reads live chats and replies"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, enabled: checked }))}
           />
           <SpaceToggle
             checked={settings.memoryEnabled}
             label="Bot memory"
-            detail="New facts wait for operator review"
+            detail="New facts wait for your review"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, memoryEnabled: checked }))}
           />
           <SpaceToggle checked={settings.moderationEnabled} label="Moderation active"
             detail="Separate from bot replies; uses verified platform permissions"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, moderationEnabled: checked }))} />
-          <SpaceToggle checked={settings.jevEnabled} label="Jev fast classification"
-            detail="Optional advisory classifier; uncertain messages go to review"
+          <SpaceToggle checked={settings.jevEnabled} label="Fast message screening"
+            detail="Optional quick classifier for chat messages; unclear ones go to review"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, jevEnabled: checked }))} />
           <SpaceToggle
             checked={settings.overlayTickerEnabled}
             label="Overlay ticker"
-            detail="Show recent Q&A in the streaming overlay (OBS)"
+            detail="Show recent questions and answers in the streaming overlay (OBS)"
             onChange={(checked) => updateSettings((settings) => ({ ...settings, overlayTickerEnabled: checked }))}
           />
         </div>
       </section>
 
-      {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
-      {notice ? <div className="streaming-message notice" role="status">{notice}</div> : null}
-
       <section className="streaming-section" aria-labelledby="streaming-bot-model-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Response engine</span><h3 id="streaming-bot-model-heading">Provider &amp; model</h3></div></div>
-        <input aria-label="Search streaming models" maxLength={120} value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="Search providers and models…" />
+        <div className="streaming-section-heading"><h3 id="streaming-bot-model-heading" className="dock-kit-section-title">Provider &amp; model</h3></div>
+        <input className="dock-kit-field" aria-label="Search streaming models" maxLength={120} value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="Search providers and models…" />
         <div className="streaming-bot-field-row">
           <label className="streaming-bot-field"><span>Primary model</span>
-            <select aria-label="Streaming primary model" value={settings.modelSelection ? `${settings.modelSelection.kind}|${settings.modelSelection.providerId}|${settings.modelSelection.modelId}` : ""}
+            <select className="dock-kit-select" aria-label="Streaming primary model" value={settings.modelSelection ? `${settings.modelSelection.kind}|${settings.modelSelection.providerId}|${settings.modelSelection.modelId}` : ""}
               onChange={event => updateSettings(settings => ({ ...settings, modelSelection: event.target.value ? (() => {
                 const [kind, providerId, modelId] = event.target.value.split("|");
                 return { kind: kind as "API" | "CLI", providerId: providerId!, modelId: modelId! };
@@ -311,7 +332,7 @@ export function StreamingBotTab() {
             </select>
           </label>
           <label className="streaming-bot-field"><span>Fallback model (optional)</span>
-            <select aria-label="Streaming fallback model" value={settings.fallbackModelSelection ? `${settings.fallbackModelSelection.kind}|${settings.fallbackModelSelection.providerId}|${settings.fallbackModelSelection.modelId}` : ""}
+            <select className="dock-kit-select" aria-label="Streaming fallback model" value={settings.fallbackModelSelection ? `${settings.fallbackModelSelection.kind}|${settings.fallbackModelSelection.providerId}|${settings.fallbackModelSelection.modelId}` : ""}
               onChange={event => updateSettings(settings => ({ ...settings, fallbackModelSelection: event.target.value ? (() => {
                 const [kind, providerId, modelId] = event.target.value.split("|");
                 return { kind: kind as "API" | "CLI", providerId: providerId!, modelId: modelId! };
@@ -325,15 +346,16 @@ export function StreamingBotTab() {
           </label>
         </div>
         {state.models.filter(model => !model.available && model.label.toLowerCase().includes(modelQuery.toLowerCase())).slice(0, 3)
-          .map(model => <small key={`${model.kind}|${model.providerId}|${model.modelId}`}>{model.label}: {model.reason}</small>)}
+          .map(model => <small className="streaming-hint" key={`${model.kind}|${model.providerId}|${model.modelId}`}>{model.label}: {model.reason}</small>)}
       </section>
 
       <section className="streaming-section" aria-labelledby="streaming-bot-persona-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Identity</span><h3 id="streaming-bot-persona-heading">Persona</h3></div></div>
+        <div className="streaming-section-heading"><h3 id="streaming-bot-persona-heading" className="dock-kit-section-title">Persona</h3></div>
         <div className="streaming-bot-field-row">
           <label className="streaming-bot-field">
             <span>Name</span>
             <input
+              className="dock-kit-field"
               aria-label="Bot name"
               maxLength={40}
               value={settings.persona.name}
@@ -343,6 +365,7 @@ export function StreamingBotTab() {
           <label className="streaming-bot-field">
             <span>Tone (English only)</span>
             <input
+              className="dock-kit-field"
               aria-label="Bot tone"
               maxLength={200}
               value={settings.persona.tone}
@@ -354,22 +377,22 @@ export function StreamingBotTab() {
 
       <section className="streaming-section" aria-labelledby="streaming-bot-facts-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">What the bot knows</span><h3 id="streaming-bot-facts-heading">Facts</h3></div>
-          <button type="button" onClick={() => updateSettings((settings) => ({ ...settings, facts: [...settings.facts, { key: "", value: "" }] }))}>Add fact</button>
+          <h3 id="streaming-bot-facts-heading" className="dock-kit-section-title">Facts</h3>
+          <DockButton icon={Plus} onClick={() => updateSettings((settings) => ({ ...settings, facts: [...settings.facts, { key: "", value: "" }] }))}>Add fact</DockButton>
         </div>
-        {settings.facts.length === 0 ? <p className="streaming-empty">No facts yet. Add key-value pairs the bot can answer with.</p> : (
+        {settings.facts.length === 0 ? <p className="streaming-hint">No facts yet. Add short facts the bot can answer with, such as the stream schedule.</p> : (
           <ul className="streaming-bot-pair-list">
             {settings.facts.map((fact, index) => (
-              <li key={`${fact.key}:${index}`} className="streaming-bot-pair">
-                <input aria-label={`Fact key ${index + 1}`} maxLength={80} placeholder="key" value={fact.key} onChange={(event) => updateSettings((settings) => ({
+              <li key={`fact:${index}`} className="streaming-bot-pair">
+                <input className="dock-kit-field" aria-label={`Fact key ${index + 1}`} maxLength={80} placeholder="Topic" value={fact.key} onChange={(event) => updateSettings((settings) => ({
                   ...settings,
                   facts: settings.facts.map((entry, entryIndex) => entryIndex === index ? { ...entry, key: event.target.value } : entry)
                 }))} />
-                <input aria-label={`Fact value ${index + 1}`} maxLength={500} placeholder="value" value={fact.value} onChange={(event) => updateSettings((settings) => ({
+                <input className="dock-kit-field" aria-label={`Fact value ${index + 1}`} maxLength={500} placeholder="Answer" value={fact.value} onChange={(event) => updateSettings((settings) => ({
                   ...settings,
                   facts: settings.facts.map((entry, entryIndex) => entryIndex === index ? { ...entry, value: event.target.value } : entry)
                 }))} />
-                <button type="button" className="danger" aria-label={`Remove fact ${index + 1}`} onClick={() => updateSettings((settings) => ({ ...settings, facts: settings.facts.filter((_, entryIndex) => entryIndex !== index) }))}><Trash2 aria-hidden="true" /></button>
+                <DockIconButton tone="danger" icon={Trash2} label={`Remove fact ${index + 1}`} onClick={() => updateSettings((settings) => ({ ...settings, facts: settings.facts.filter((_, entryIndex) => entryIndex !== index) }))} />
               </li>
             ))}
           </ul>
@@ -378,22 +401,22 @@ export function StreamingBotTab() {
 
       <section className="streaming-section" aria-labelledby="streaming-bot-faq-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Common questions</span><h3 id="streaming-bot-faq-heading">FAQ</h3></div>
-          <button type="button" onClick={() => updateSettings((settings) => ({ ...settings, faq: [...settings.faq, { question: "", answer: "" }] }))}>Add FAQ</button>
+          <h3 id="streaming-bot-faq-heading" className="dock-kit-section-title">FAQ</h3>
+          <DockButton icon={Plus} onClick={() => updateSettings((settings) => ({ ...settings, faq: [...settings.faq, { question: "", answer: "" }] }))}>Add FAQ</DockButton>
         </div>
-        {settings.faq.length === 0 ? <p className="streaming-empty">No FAQ pairs yet.</p> : (
+        {settings.faq.length === 0 ? <p className="streaming-hint">No questions yet. Add common viewer questions and their answers.</p> : (
           <ul className="streaming-bot-pair-list">
             {settings.faq.map((entry, index) => (
-              <li key={`${entry.question}:${index}`} className="streaming-bot-pair">
-                <input aria-label={`FAQ question ${index + 1}`} maxLength={200} placeholder="Question" value={entry.question} onChange={(event) => updateSettings((settings) => ({
+              <li key={`faq:${index}`} className="streaming-bot-pair">
+                <input className="dock-kit-field" aria-label={`FAQ question ${index + 1}`} maxLength={200} placeholder="Question" value={entry.question} onChange={(event) => updateSettings((settings) => ({
                   ...settings,
                   faq: settings.faq.map((faqEntry, entryIndex) => entryIndex === index ? { ...faqEntry, question: event.target.value } : faqEntry)
                 }))} />
-                <input aria-label={`FAQ answer ${index + 1}`} maxLength={1000} placeholder="Answer" value={entry.answer} onChange={(event) => updateSettings((settings) => ({
+                <input className="dock-kit-field" aria-label={`FAQ answer ${index + 1}`} maxLength={1000} placeholder="Answer" value={entry.answer} onChange={(event) => updateSettings((settings) => ({
                   ...settings,
                   faq: settings.faq.map((faqEntry, entryIndex) => entryIndex === index ? { ...faqEntry, answer: event.target.value } : faqEntry)
                 }))} />
-                <button type="button" className="danger" aria-label={`Remove FAQ ${index + 1}`} onClick={() => updateSettings((settings) => ({ ...settings, faq: settings.faq.filter((_, entryIndex) => entryIndex !== index) }))}><Trash2 aria-hidden="true" /></button>
+                <DockIconButton tone="danger" icon={Trash2} label={`Remove FAQ ${index + 1}`} onClick={() => updateSettings((settings) => ({ ...settings, faq: settings.faq.filter((_, entryIndex) => entryIndex !== index) }))} />
               </li>
             ))}
           </ul>
@@ -401,11 +424,12 @@ export function StreamingBotTab() {
       </section>
 
       <section className="streaming-section" aria-labelledby="streaming-bot-guardrails-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Safety</span><h3 id="streaming-bot-guardrails-heading">Guardrails</h3></div></div>
+        <div className="streaming-section-heading"><h3 id="streaming-bot-guardrails-heading" className="dock-kit-section-title">Guardrails</h3></div>
         <div className="streaming-bot-field-row">
           <label className="streaming-bot-field">
             <span>Cooldown (seconds)</span>
             <input
+              className="dock-kit-field"
               aria-label="Reply cooldown seconds"
               type="number" min={0} max={300}
               value={settings.guardrails.cooldownSeconds}
@@ -415,6 +439,7 @@ export function StreamingBotTab() {
           <label className="streaming-bot-field">
             <span>Max replies per minute</span>
             <input
+              className="dock-kit-field"
               aria-label="Max replies per minute"
               type="number" min={1} max={60}
               value={settings.guardrails.maxRepliesPerMinute}
@@ -431,50 +456,52 @@ export function StreamingBotTab() {
       </section>
 
       <section className="streaming-section" aria-labelledby="streaming-bot-instructions-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Policy</span><h3 id="streaming-bot-instructions-heading">Instructions</h3></div></div>
+        <div className="streaming-section-heading"><h3 id="streaming-bot-instructions-heading" className="dock-kit-section-title">Instructions</h3></div>
         <textarea
+          className="dock-kit-field"
           aria-label="Streaming bot instructions"
           rows={4} maxLength={4000}
           value={settings.instructions}
           onChange={(event) => updateSettings((settings) => ({ ...settings, instructions: event.target.value }))}
           placeholder="Optional free-text rules the bot must follow (English only)."
         />
-        <small>{settings.instructions.length}/4000</small>
+        <small className="dock-kit-counter">{settings.instructions.length}/4000</small>
       </section>
 
       <section className="streaming-section" aria-labelledby="streaming-bot-test-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Try it</span><h3 id="streaming-bot-test-heading">Test reply</h3></div></div>
+        <div className="streaming-section-heading"><h3 id="streaming-bot-test-heading" className="dock-kit-section-title">Test reply</h3></div>
         <div className="streaming-bot-test-row">
-          <select aria-label="Test platform" value={testPlatform} onChange={(event) => setTestPlatform(event.target.value as StreamingBotPlatform)}>
+          <select className="dock-kit-select" aria-label="Test platform" value={testPlatform} onChange={(event) => setTestPlatform(event.target.value as StreamingBotPlatform)}>
             <option value="YOUTUBE">YouTube</option>
             <option value="TWITCH">Twitch</option>
           </select>
           <input
+            className="dock-kit-field"
             aria-label="Test message"
             maxLength={500}
             value={testMessage}
             onChange={(event) => setTestMessage(event.target.value)}
             placeholder="Ask the bot something…"
           />
-          <button type="button" onClick={() => void test()} disabled={pendingAction !== null || !testMessage.trim()}>
-            {pendingAction === "test" ? <Loader2 className="spin" aria-hidden="true" /> : <Send aria-hidden="true" />} Test
-          </button>
+          <DockButton icon={Send} busy={pendingAction === "test"} onClick={() => void test()} disabled={pendingAction !== null || !testMessage.trim()}>
+            Test
+          </DockButton>
         </div>
         {testReply ? <p className="streaming-bot-test-reply" role="status">{testReply}</p> : null}
       </section>
 
       <div className="streaming-bot-actions">
-        <button type="button" className="streaming-save-button" onClick={() => void save()} disabled={pendingAction !== null || !dirty}>
-          {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save settings
-        </button>
+        <DockButton tone="primary" icon={Save} busy={saving} className="streaming-save-button" onClick={() => void save()} disabled={pendingAction !== null || !dirty}>
+          Save settings
+        </DockButton>
         {settings.enabled ? (
-          <button type="button" className="danger" onClick={() => void runAction("pause", () => api.pauseStreamingBot(), "Bot paused.")} disabled={pendingAction !== null}>
-            <Pause aria-hidden="true" /> Pause
-          </button>
+          <DockButton icon={Pause} busy={pendingAction === "pause"} onClick={() => void runAction("pause", () => api.pauseStreamingBot(), "Bot paused.")} disabled={pendingAction !== null}>
+            Pause
+          </DockButton>
         ) : (
-          <button type="button" onClick={() => void runAction("resume", () => api.resumeStreamingBot(), "Bot resumed.")} disabled={pendingAction !== null}>
-            <Play aria-hidden="true" /> Resume
-          </button>
+          <DockButton icon={Play} busy={pendingAction === "resume"} onClick={() => void runAction("resume", () => api.resumeStreamingBot(), "Bot resumed.")} disabled={pendingAction !== null}>
+            Resume
+          </DockButton>
         )}
       </div>
     </div>

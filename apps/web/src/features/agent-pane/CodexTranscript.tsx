@@ -92,16 +92,18 @@ function CodexRunningIndicator({ elapsedSeconds, providerName, runStatus }: { el
   );
 }
 
-function RoomAgentWelcome({ onAsk, onSetGoal }: { onAsk?: () => void; onSetGoal?: () => void }) {
+export interface WelcomeIdentity { name: string; artwork: string }
+
+function RoomAgentWelcome({ onAsk, onSetGoal, identity }: { onAsk?: () => void; onSetGoal?: () => void; identity?: WelcomeIdentity | null }) {
   return (
     <section className="codex-transcript-empty room-agent-welcome" aria-label="Start a conversation">
-      <div className="room-agent-welcome-art" aria-hidden="true">
+      <div className={`room-agent-welcome-art${identity ? " has-dot" : ""}`} aria-hidden="true">
         <span className="room-agent-welcome-orbit room-agent-welcome-orbit-outer" />
         <span className="room-agent-welcome-orbit room-agent-welcome-orbit-inner" />
-        <AgentOrbit />
+        {identity ? <img className="room-agent-welcome-dot" src={identity.artwork} alt="" width="84" height="84" /> : <AgentOrbit />}
       </div>
       <div className="room-agent-welcome-copy">
-        <span className="room-agent-welcome-eyebrow"><span className="room-agent-ready-dot" /> Room Agent is ready</span>
+        <span className="room-agent-welcome-eyebrow"><span className="room-agent-ready-dot" /> {identity ? `${identity.name} is ready` : "Room Agent is ready"}</span>
         <h2>What would you like to get done?</h2>
         <p>Ask a question or set a goal. Your work stays in this conversation.</p>
       </div>
@@ -126,7 +128,8 @@ export function CodexTranscript({
   failureMessage,
   runStatus = "RUNNING",
   onAsk,
-  onSetGoal
+  onSetGoal,
+  welcomeIdentity
 }: {
   items: CodexThreadItem[];
   messages: AgentPaneMessage[];
@@ -139,13 +142,14 @@ export function CodexTranscript({
   failureMessage?: string | null;
   runStatus?: string;
   onAsk?: () => void;
+  welcomeIdentity?: WelcomeIdentity | null;
   onSetGoal?: () => void;
 }) {
   const visibleItems = visibleChatMessages(items, messages).filter((item) => !(failureMessage && item.role === "assistant" && (item.content.trim() === failureMessage.trim() || item.content.startsWith("Codex App Server turn timed out"))));
   return (
     <main className="codex-transcript" aria-live="polite">
       {loading && !visibleItems.length ? <div className="codex-transcript-state" role="status"><Loader2 aria-hidden="true" /><span>Loading task</span></div> : null}
-      {!loading && !visibleItems.length && !isRunning ? <RoomAgentWelcome onAsk={onAsk} onSetGoal={onSetGoal} /> : null}
+      {!loading && !visibleItems.length && !isRunning ? <RoomAgentWelcome onAsk={onAsk} onSetGoal={onSetGoal} identity={welcomeIdentity} /> : null}
       {goal ? <div className="room-agent-goal-strip"><Sparkles aria-hidden="true" /><div><strong>{goal.objective}</strong><span>Goal · {goal.status.toLowerCase().replaceAll("_", " ")}</span></div></div> : null}
       {visibleItems.map((item) => (
         <article className={`codex-message ${item.role ?? "assistant"}`} key={item.id}>

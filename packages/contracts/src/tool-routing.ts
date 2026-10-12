@@ -27,9 +27,12 @@ export const toolRoutingStateSchema = z.object({
     actorId: z.string().min(1).max(160), expiresAt: z.string().datetime()
   }).strict()).max(50).default([])
 }).strict();
+/** Runtimes with verified native shell, filesystem and image input: they start without Space MCP. */
+export const nativeToolRoutingRuntimeIds = ["cli:codex", "cli:claude"] as const;
 export const updateToolRoutingSchema = z.object({
   expectedRevision: z.number().int().nonnegative(),
-  enabledRuntimeIds: z.array(z.literal("cli:codex")).max(1),
+  enabledRuntimeIds: z.array(z.enum(nativeToolRoutingRuntimeIds)).max(nativeToolRoutingRuntimeIds.length)
+    .refine((ids) => new Set(ids).size === ids.length, "Duplicate routing runtime."),
   overrides: z.array(toolRoutingOverrideSchema).max(500)
 }).strict().superRefine((input, ctx) => {
   const keys = input.overrides.map((entry) => `${entry.toolId}\0${entry.runtimeId}\0${entry.modelId}`);
@@ -55,9 +58,45 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
+/**
+ * Native agents (Chat Dots, runtime ids `native:*`) reach only allowlisted
+ * dispatcher servers. Repository rule: tests and deploy are never exposed to
+ * Native agents; Space Control and the managed browser go through the
+ * attributed Dot gateway; production business systems stay operator tools.
+ */
+export const nativeAgentAllowedMcpServers: ReadonlySet<string> = new Set(["devtools", "playwright", "scrapling", "summary_tools", "capturelab", "vision"]);
+const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
+  space_ops: "Tests and deploys are never available to Native agents.",
+  "space-control": "Space Control is available through the Dot gateway with Dot attribution.",
+  space_browser: "The managed browser is available through the Dot gateway with Dot attribution.",
+  space_services: "Service restarts are operator operations.",
+  olla: "Storefront administration is an operator tool.",
+  mission_control: "Mission Control changes are operator operations."
+};
+export function isNativeAgentRuntime(runtimeId: string | null | undefined): boolean {
+  return typeof runtimeId === "string" && runtimeId.startsWith("native:");
+}
+/** Reason a Native agent may not use this server, or null when it is allowlisted. */
+export function nativeAgentServerDenial(serverId: string, runtimeId: string | null | undefined): string | null {
+  if (!isNativeAgentRuntime(runtimeId) || nativeAgentAllowedMcpServers.has(serverId)) return null;
+  return nativeAgentDenialReasons[serverId] ?? "This server is not available to Native agents.";
+}
+
 export const defaultToolRoutingState = (): ToolRoutingStateV1 => ({
-  version: 1, revision: 0, enabledRuntimeIds: ["cli:codex"], overrides: [], profiles: [], visionExceptions: []
+  version: 1, revision: 0, enabledRuntimeIds: [...nativeToolRoutingRuntimeIds], overrides: [], profiles: [], visionExceptions: []
 });
+/**
+ * Claude Code capabilities come from its runtime, not from a model catalog: every Claude model it
+ * runs accepts images, and Bash/Read/Edit/Write are built-in tools.
+ */
+export function claudeCodeRuntimeCapabilities(checkedAt: string): ModelCapabilityProfileV1["capabilities"] {
+  const available = (evidence: string) => ({ state: "AVAILABLE" as const, source: "RUNTIME" as const, evidence, checkedAt });
+  return {
+    shell: available("Space Claude Code Bash tool"),
+    filesystem: available("Space Claude Code Read/Edit/Write tools"),
+    vision: available("Claude Code native image input for every Claude model")
+  };
+}
 export interface EffectiveToolRoute {
   toolId: string;
   route: "NATIVE" | "ON_DEMAND" | "UNAVAILABLE" | "DISABLED";
@@ -102,7 +141,7 @@ export function buildEffectiveToolPlan(state: ToolRoutingStateV1, profile: Model
     version: 1, runtimeId: profile.runtimeId, modelId: profile.modelId, revision: state.revision,
     managed: state.enabledRuntimeIds.includes(profile.runtimeId),
     registration: !state.enabledRuntimeIds.includes(profile.runtimeId) ? "LEGACY_CONFIG" :
-      profile.runtimeId === "cli:codex" ? "NONE" : "LAZY_DISPATCHER",
+      (nativeToolRoutingRuntimeIds as readonly string[]).includes(profile.runtimeId) ? "NONE" : "LAZY_DISPATCHER",
     routes: spaceToolPolicies.map((policy) => resolveToolRoute(policy, profile, state.overrides))
   };
 }

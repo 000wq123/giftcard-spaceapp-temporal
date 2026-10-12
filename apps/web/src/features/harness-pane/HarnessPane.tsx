@@ -134,13 +134,16 @@ export function HarnessPane({ pane, workspaceTextSize, isVisible = true }: Harne
       const frameWindow = iframeRef.current?.contentWindow as
         | (Window & {
             __ModuleLoader__?: { mode?: string };
+            __SPACE_HARNESS_DEBUG__?: { failedResources?: string[]; errors?: unknown[] };
           })
         | null;
       const frameDocument = iframeRef.current?.contentDocument;
       const loaderLive = frameWindow?.__ModuleLoader__?.mode === "live";
       const loadingPlugins =
         frameDocument?.body?.innerText.includes("Loading plugins...") === true;
-      if (!loaderLive && loadingPlugins && frameRevision === 0) {
+      const hasFailedResources =
+        (frameWindow?.__SPACE_HARNESS_DEBUG__?.failedResources?.length ?? 0) > 0;
+      if (((!loaderLive && loadingPlugins) || hasFailedResources) && frameRevision < 3) {
         setFrameRevision((revision) => revision + 1);
       }
     }, 10_000);

@@ -13,6 +13,8 @@ const voiceToolDescriptions: Record<string, string> = {
   space_maximize_panes: "Maximize the selected pane.",
   space_restore_panes: "Restore selected minimized or maximized panes.",
   space_send_prompt: "Submit the user's task to selected CLI and Chat panes; targetGroup:lastOpened selects the exact group opened by this Live session. Submission is not task completion; inspect or watch its result.",
+  space_ask_dot: "Hand a request to one of the user's Dots in its own conversation, answer its waiting Goal or steer its active Goal. Report the receipt's status; the result is announced when it finishes.",
+  space_dot_status: "Read what one of the user's Dots is doing in this room: last answer, Goal and approvals waiting in Space.",
   space_sort_panes: "Sort room panes by the requested criterion and inspect the resulting order.",
   space_snapshot_and_close_all: "Save a room layout snapshot and close all panes only when explicitly requested.",
   space_restore_panes_snapshot: "Restore a saved room pane snapshot; verify restored state before reporting completion.",
@@ -31,6 +33,8 @@ const voiceToolDescriptions: Record<string, string> = {
 };
 
 const parameterDescriptions: Record<string, string> = {
+  paneNames: "Array of exact target pane names from current room state, e.g. ['Andy', 'Bob'].",
+  paneName: "Exact target pane name from current room state, e.g. Andy, Bob, Cody, Dana, Emma, Finn, Hugo, Iris, Jack, Kate, Leo, Max, Nik, Oscar, Paul, Zoe (or Greek transliterations like Άντι, Μπομπ, Νικ).",
   paneIds: "Exact pane IDs from a current room inspection, not pane titles or guesses.",
   paneId: "Exact target pane ID from current room state.",
   roomId: "Exact authorized Space room ID.",

@@ -59,6 +59,25 @@ function appendTask(
 }
 
 describe("UnifiedCliTaskRegistry", () => {
+  it("preserves the filtered store total on later and empty pages", async () => {
+    const store = new InMemorySpaceStore();
+    for (const [runtimeId, providerId, title] of [
+      ["cli:codex", "codex", "Visible A"],
+      ["cli:codex", "codex", "Visible B"],
+      ["cli:claude", "anthropic", "Hidden runtime"]
+    ]) appendTask(store, { runtimeId: runtimeId!, providerId: providerId!, title: title!,
+      firstUserMessage: "Inspect pagination", response: "Fixture response" });
+    const registry = new UnifiedCliTaskRegistry(store);
+    const first = await registry.listAllTasks({ page: 1, pageSize: 1, runtimeIds: ["cli:codex"] });
+    const second = await registry.listAllTasks({ page: 2, pageSize: 1, runtimeIds: ["cli:codex"] });
+    const empty = await registry.listAllTasks({ page: 3, pageSize: 1, runtimeIds: ["cli:codex"] });
+    expect(first.total).toBe(2);
+    expect(second.total).toBe(2);
+    expect(empty).toMatchObject({ tasks: [], total: 2, page: 3, pageSize: 1 });
+    expect(new Set([...first.tasks, ...second.tasks].map(item => item.taskId)).size).toBe(2);
+    expect([...first.tasks, ...second.tasks].every(item => item.runtimeId === "cli:codex")).toBe(true);
+  });
+
   it("lists provider-neutral tasks from Space-owned CLI sessions", async () => {
     const store = new InMemorySpaceStore();
     const codex = appendTask(store, {

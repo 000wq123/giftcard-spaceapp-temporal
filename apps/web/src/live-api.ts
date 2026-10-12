@@ -1,6 +1,7 @@
+import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionControlRequest, PlanStageOverrideRequest } from "@space/contracts";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { LiveRoomContext } from "@space/contracts";
-import type { MaintenancePlanRequest, MaintenanceApplyRequest } from "@space/contracts";
+import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
 import type {
@@ -19,10 +20,47 @@ import type {
   DemoTestRunListResponse,
   DemoVariantFileContent,
   DemoVariantFilesResponse,
-  DemoLogsResponse
+  DemoLogsResponse,
+  CliProviderSettingsResponse,
+  T3CodeAdminResult,
+  T3CodeBindingUpdate,
+  T3CodePaneMetadata,
+  T3CodeServiceStatus,
+  RestartT3CodeInput,
+  UpdateT3CodeEnabledInput
 } from "@space/contracts";
 import type { SystemHealthSnapshot, SystemHealthHistory, SystemHealthRange, SystemTopologySnapshot, SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
+import type {
+  DatabaseCatalog,
+  DatabaseConnection,
+  DatabaseDiscoveryItem,
+  DatabaseExecuteSqlRequest,
+  DatabaseExecuteSqlResponse,
+  DatabaseTableDataQuery,
+  DatabaseTableDataResponse,
+  CreateDatabaseConnectionInput,
+  UpdateDatabaseConnectionInput
+} from "@space/contracts";
 import type { YouTubeAccounts, YouTubeAccountSelection } from "./features/browser-pane/youtube-accounts.js";
+export interface GoogleAccountSummary {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  isPrimary: boolean;
+  browserStatus: GoogleBrowserStatus;
+  /** Why the browser state is what it is; only a Google check yields CONNECTED. */
+  browserStatusReason?: string;
+  browserCheckedAt?: string | null;
+  browserConnectedAt?: string | null;
+}
+export type GoogleBrowserStatus = "NOT_CONNECTED" | "CONNECTED" | "REAUTHENTICATION_REQUIRED" | "UNKNOWN";
+export interface GoogleBrowserCheckSummary {
+  status: GoogleBrowserStatus;
+  reason: string;
+  checkedAt: string | null;
+  connectedAt: string | null;
+}
 import type { YouTubePlayback } from "./features/browser-pane/youtube-playback.js";
 import type {
   Artifact,
@@ -33,6 +71,7 @@ import type {
   AppDiagnosticsSegmentListQuery,
   AppDiagnosticsSegmentMetadata,
   AppDiagnosticsStatus,
+  DeployQueueReport,
   AppDiagnosticsVideoLease,
   CollaborationMode,
   AgentRuntimeRegistry,
@@ -117,6 +156,7 @@ import type {
   CreateCliAccountProfileInput,
   CreateCliAccountProfileResponse,
   CliAccountProfileDetailsResponse,
+  CliAccountIdentitiesResponse,
   ListCliAccountProfilesResponse,
   RemoveCliAccountProfileResponse,
   UpdateCliAccountProfileInput,
@@ -143,8 +183,22 @@ import type {
   CodexResetCreditRedemptionResponse,
   CodexLbSpeedDefaultsResponse,
   CodexLbSpeedTier,
+  GatewayAccount,
+  GatewayAccountList,
+  GatewayApiKey,
+  GatewayApiKeyCreateRequest,
+  GatewayApiKeyCreatedResponse,
+  GatewayApiKeyList,
+  GatewayApiKeyUpdateRequest,
+  GatewayRequestLogList,
+  GatewayReport,
+  GatewayCompressionStats,
+  GatewaySettings,
+  GatewaySettingsUpdateRequest,
+  GatewayStatus,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
+  ClaudeUsageAccountList,
   ApiProviderAccountList,
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
@@ -175,6 +229,9 @@ import type {
   MemoryChangeKind,
   MemoryChangeSet,
   MemoryChangeSetSummary,
+  MemoryCalendarQuery,
+  MemoryCalendarRecord,
+  MemoryCalendarResponse,
   MemoryChangeStatus,
   MemoryConsolidationCommandResponse,
   MemoryConsolidationDetail,
@@ -311,7 +368,7 @@ import type {
   DiskStats
 } from "@space/contracts";
 import { SpaceApiError } from "./runtime/SpaceRuntime.js";
-import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-availability.js";
+import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-state.js";
 import { consumeAuthBootstrap } from "./auth-bootstrap-cache.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
@@ -489,6 +546,12 @@ export interface MemoryGraphOverviewResponse {
   data: MemoryGraphOverviewPayload;
 }
 
+export interface MemoryCalendarResponseEnvelope {
+  data: MemoryCalendarResponse;
+}
+
+export type { MemoryCalendarQuery, MemoryCalendarRecord, MemoryCalendarResponse };
+
 export interface MemoryGraphIssuesResponse extends Paginated<MemoryGraphIssue> {}
 
 export interface MemoryChangeSetListResponse {
@@ -553,6 +616,8 @@ export interface ConfigurationInspectResult {
     cliRuntimeSettingsCount: number;
     hasCodexCliModeDefaults: boolean;
     providersCount: number;
+    apiKeysCount?: number;
+    credentialsCount?: number;
   };
   rooms: Array<{
     id: string;
@@ -713,7 +778,7 @@ async function fetchCsrfToken(): Promise<string> {
   const payload = await readResponsePayload(response);
   reportCoreApiResponse(response, payload, requestStartedAt);
   if (!response.ok) {
-    throw new Error(formatHttpFailure(response.status, payload));
+    throw new SpaceApiError(formatHttpFailure(response.status, payload), { status: response.status });
   }
   const parsed = payload as CsrfPayload;
   csrfHeaderName = parsed.headerName;
@@ -1020,13 +1085,23 @@ function loadActiveCliSession(
   if (!includeTranscript) params.set("includeTranscript", "false");
   if (compactTranscript) params.set("compactTranscript", "true");
   const query = params.toString();
-  const flight = request<PaneCliSessionResponse | null>(
-    `/api/panes/${encodeURIComponent(paneId)}/cli/session${query ? `?${query}` : ""}`
+  const flight = requestWithTimeout<PaneCliSessionResponse | null>(
+    `/api/panes/${encodeURIComponent(paneId)}/cli/session${query ? `?${query}` : ""}`,
+    8_000,
+    "Active CLI session request timed out."
   ).finally(() => {
     if (activeCliSessionFlights.get(key) === flight) activeCliSessionFlights.delete(key);
   });
   activeCliSessionFlights.set(key, flight);
   return flight;
+}
+
+function clearActiveCliSessionFlight(paneId: string): void {
+  for (const key of activeCliSessionFlights.keys()) {
+    if (key.startsWith(`${paneId}\u0000`)) {
+      activeCliSessionFlights.delete(key);
+    }
+  }
 }
 
 function createDeduplicatedFlight<T>(fetcher: () => Promise<T>, ttlMs = 15_000) {
@@ -1053,6 +1128,7 @@ function createDeduplicatedFlight<T>(fetcher: () => Promise<T>, ttlMs = 15_000) 
 const fetchCodexEnvironment = createDeduplicatedFlight(() => request<CodexEnvironment>("/api/codex/environment"), 15_000);
 const fetchToolbarUsageAccounts = createDeduplicatedFlight(() => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"), 15_000);
 const fetchToolbarAntigravityUsageAccounts = createDeduplicatedFlight(() => request<AntigravityUsageAccountList>("/api/admin/antigravity-usage-accounts"), 15_000);
+const fetchToolbarClaudeUsageAccounts = createDeduplicatedFlight(() => request<ClaudeUsageAccountList>("/api/admin/claude-usage-accounts"), 15_000);
 const fetchToolbarApiProviderAccounts = createDeduplicatedFlight(() => request<ApiProviderAccountList>("/api/admin/api-provider-accounts"), 15_000);
 const fetchToolbarCliSessions = createDeduplicatedFlight(() => request<CliSessionStats>("/api/admin/cli-sessions"), 10_000);
 
@@ -1062,6 +1138,8 @@ export const api = {
   systemHealthHistory: (range: SystemHealthRange) => request<SystemHealthHistory>(`/api/admin/system-analytics/health/history?range=${encodeURIComponent(range)}`),
   systemTopology: () => request<SystemTopologySnapshot>("/api/admin/system-analytics/topology", { cache: "no-store" }),
   readyz: () => request<ReadyzPayload>("/readyz"),
+  ensureProject: (input: { name?: string; path?: string }) =>
+    request<{ ok: boolean; path: string; name: string }>("/api/projects/ensure", { method: "POST", body: JSON.stringify(input) }),
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
   harnessHealth: () => singleFlightRequest("harness-health", () => request<HarnessHealth>("/api/harness/healthz")),
   harnessUrl: "/api/harness/",
@@ -1126,6 +1204,14 @@ export const api = {
     request<{ ok: true }>("/api/auth/google/unlink", {
       method: "POST"
     }),
+  listGoogleAccounts: () => request<{ accounts: GoogleAccountSummary[] }>("/api/auth/google/accounts"),
+  setPrimaryGoogleAccount: (id: string) => request<{ account: GoogleAccountSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}`, {
+    method: "PATCH", body: JSON.stringify({ isPrimary: true })
+  }),
+  removeGoogleAccount: (id: string) => request<{ ok: true }>(`/api/auth/google/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  checkGoogleAccountBrowser: (id: string) => request<{ account: GoogleAccountSummary; check: GoogleBrowserCheckSummary }>(`/api/auth/google/accounts/${encodeURIComponent(id)}/browser-check`, {
+    method: "POST", body: JSON.stringify({})
+  }),
   listAdminUsers: () =>
     request<AdminUserListResponse>("/api/admin/users"),
   updateUserRole: (userId: string, role: AuthUser["role"]) =>
@@ -1133,11 +1219,12 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ role })
     }),
-  clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; page?: number; pageSize?: number } = {}) => {
+  clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
     if (query.source) params.set("source", query.source);
     if (query.includeCompleted !== undefined) params.set("includeCompleted", String(query.includeCompleted));
+    if (query.paneId) params.set("paneId", query.paneId);
     if (query.page !== undefined) params.set("page", String(query.page));
     if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
     const suffix = params.toString();
@@ -1152,6 +1239,22 @@ export const api = {
     request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}`, {
       method: "PATCH",
       body: JSON.stringify({ completed })
+    }),
+  panePlanExecution: (paneId: string) =>
+    request<ManagedPlanExecution | null>(`/api/panes/${encodeURIComponent(paneId)}/plan-executions`),
+  planExecution: (executionId: string) =>
+    request<ManagedPlanExecution>(`/api/plan-executions/${encodeURIComponent(executionId)}`),
+  startPlanExecution: (paneId: string, input: StartPlanExecutionRequest) =>
+    request<ManagedPlanExecution>(`/api/panes/${encodeURIComponent(paneId)}/plan-executions`, {
+      method: "POST", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
+    }),
+  controlPlanExecution: (executionId: string, input: PlanExecutionControlRequest, paneId: string) =>
+    request<ManagedPlanExecution>(`/api/plan-executions/${encodeURIComponent(executionId)}/control`, {
+      method: "POST", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
+    }),
+  overridePlanExecutionStage: (executionId: string, stageId: string, input: PlanStageOverrideRequest, paneId: string) =>
+    request<ManagedPlanExecution>(`/api/plan-executions/${encodeURIComponent(executionId)}/stages/${encodeURIComponent(stageId)}/override`, {
+      method: "PATCH", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
     }),
   updatePlanProgress: (clipboardItemId: string, input: UpdatePlanProgressRequest) =>
     request<ClipboardItem>(`/api/clipboard-items/${encodeURIComponent(clipboardItemId)}/progress`, {
@@ -1262,7 +1365,12 @@ export const api = {
     const suffix = params.toString();
     return request<Paginated<Room>>(`/api/rooms${suffix ? `?${suffix}` : ""}`);
   },
-  dashboardAgents: (roomId: string) => requestWithTimeout<{ data: Pane[]; activity: Record<string, "working" | "waiting" | "done" | "idle"> }>(`/api/rooms/${encodeURIComponent(roomId)}/dashboard-agents`, 15_000, "Agent activity refresh timed out."),
+  dashboardAgents: (roomId: string) => requestWithTimeout<{
+    data: Pane[];
+    activity: Record<string, "working" | "waiting" | "done" | "idle">;
+    details?: Record<string, { status: "working" | "waiting" | "done" | "idle"; reason?: string | null; since?: string | null; modelId?: string | null; source?: "native" | "screen" | "session" | "run" }>;
+    sampledAt?: string;
+  }>(`/api/rooms/${encodeURIComponent(roomId)}/dashboard-agents`, 15_000, "Agent activity refresh timed out."),
   roomCliActivity: (query: { all?: boolean; ownerUserId?: string } = {}) => {
     const params = new URLSearchParams();
     if (query.all !== undefined) params.set("all", String(query.all));
@@ -1270,10 +1378,15 @@ export const api = {
     const suffix = params.toString();
     return request<RoomCliActivityResponse>(`/api/rooms/cli-activity${suffix ? `?${suffix}` : ""}`);
   },
-  createRoom: (name: string, initialPaneCount: number, reason?: string) =>
+  createRoom: (name: string, initialPaneCount: number, reason?: string, projectPath?: string | null) =>
     request<Room>("/api/rooms", {
       method: "POST",
-      body: JSON.stringify({ name, initialPaneCount, reason: reason?.trim() || undefined })
+      body: JSON.stringify({
+        name,
+        initialPaneCount,
+        reason: reason?.trim() || undefined,
+        projectPath: projectPath ?? "/opt/spaceapp"
+      })
     }),
   reorderRooms: (roomIds: string[]) =>
     request<Room[]>("/api/rooms/reorder", {
@@ -1409,7 +1522,11 @@ export const api = {
       body: JSON.stringify(unit ? { unit } : {})
     }),
   recoveryCliTask: (paneId: string) =>
-    request<CliTaskHistoryResponse>(`/api/panes/${encodeURIComponent(paneId)}/cli/recovery-task`),
+    requestWithTimeout<CliTaskHistoryResponse>(
+      `/api/panes/${encodeURIComponent(paneId)}/cli/recovery-task`,
+      8_000,
+      "Recovery CLI task request timed out."
+    ),
   codexThread: (threadId: string, presentation?: CodexThreadPresentation) =>
     request<CodexThreadResponse>(
       `/api/codex/threads/${encodeURIComponent(threadId)}${presentation ? `?presentation=${encodeURIComponent(presentation)}` : ""}`
@@ -1417,6 +1534,7 @@ export const api = {
   codexEnvironment: (force?: boolean) => fetchCodexEnvironment(force),
   toolbarUsageAccounts: (force?: boolean) => fetchToolbarUsageAccounts(force),
   toolbarAntigravityUsageAccounts: (force?: boolean) => fetchToolbarAntigravityUsageAccounts(force),
+  toolbarClaudeUsageAccounts: (force?: boolean) => fetchToolbarClaudeUsageAccounts(force),
   toolbarApiProviderAccounts: (force?: boolean) => fetchToolbarApiProviderAccounts(force),
   toolbarResetCredits: () => request<CodexResetCreditAvailability>("/api/admin/codex-reset-credits"),
   redeemToolbarResetCredit: (accountId: string, idempotencyKey: string) =>
@@ -1470,6 +1588,58 @@ export const api = {
     method: "POST",
     body: JSON.stringify({})
   }),
+  gatewayStatus: () => request<GatewayStatus>("/api/admin/gateway/status"),
+  gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),
+  setGatewayAccountPaused: (accountId: string, paused: boolean) =>
+    request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
+  gatewayApiKeys: () => request<GatewayApiKeyList>("/api/admin/gateway/keys"),
+  createGatewayApiKey: (input: Partial<GatewayApiKeyCreateRequest> & { name: string }) =>
+    request<GatewayApiKeyCreatedResponse>("/api/admin/gateway/keys", { method: "POST", body: JSON.stringify(input) }),
+  updateGatewayApiKey: (keyId: string, patch: GatewayApiKeyUpdateRequest) =>
+    request<GatewayApiKey>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteGatewayApiKey: (keyId: string) =>
+    request<{ id: string; deleted: true }>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }),
+  gatewayRequestLogs: (query: { limit?: number; cursor?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (query.limit) params.set("limit", String(query.limit));
+    if (query.cursor) params.set("cursor", query.cursor);
+    const suffix = params.toString();
+    return request<GatewayRequestLogList>(`/api/admin/gateway/logs${suffix ? `?${suffix}` : ""}`);
+  },
+  gatewaySettings: () => request<GatewaySettings>("/api/admin/gateway/settings"),
+  gatewayCompressionStats: (hours = 24) => request<GatewayCompressionStats>(`/api/admin/gateway/compression-stats?hours=${hours}`),
+  gatewayReport: (from: string, to: string) =>
+    request<GatewayReport>(`/api/admin/gateway/reports?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  startGatewayCodexDeviceSignIn: () => request<{ flowId: string; verificationUrl: string; userCode: string; intervalSeconds: number; expiresInSeconds: number }>(
+    "/api/admin/gateway/codex/device", { method: "POST", body: JSON.stringify({}) }),
+  pollGatewayCodexDeviceSignIn: (flowId: string) => request<{ status: "PENDING" | "EXPIRED" | "CONNECTED"; account?: { id: string; label: string } }>(
+    `/api/admin/gateway/codex/device/${encodeURIComponent(flowId)}/poll`, { method: "POST", body: JSON.stringify({}) }),
+  startGatewayCodexBrowserSignIn: () => request<{ flowId: string; authorizationUrl: string }>(
+    "/api/admin/gateway/codex/browser", { method: "POST", body: JSON.stringify({}) }),
+  completeGatewayCodexBrowserSignIn: (flowId: string, callbackUrl: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+    `/api/admin/gateway/codex/browser/${encodeURIComponent(flowId)}/complete`, { method: "POST", body: JSON.stringify({ callbackUrl }) }),
+  startGatewayClaudeSignIn: () => request<{ flowId: string; authorizationUrl: string }>(
+    "/api/admin/gateway/claude/browser", { method: "POST", body: JSON.stringify({}) }),
+  completeGatewayClaudeSignIn: (flowId: string, code: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+    `/api/admin/gateway/claude/browser/${encodeURIComponent(flowId)}/complete`, { method: "POST", body: JSON.stringify({ code }) }),
+  gatewayAntigravityProfiles: () => request<{ data: Array<{ profileId: string; email: string | null; inGateway: boolean }> }>(
+    "/api/admin/gateway/antigravity/profiles"),
+  importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+    "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
+  addGatewayOpenAiApiKey: (input: { apiKey?: string; useSpaceKey?: boolean; label?: string }) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+    "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
+  importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+    "/api/admin/gateway/codex/import", { method: "POST", body: JSON.stringify({ authJson }) }),
+  refreshGatewayAccountUsage: (accountId: string) => request<{ status: string }>(
+    `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/usage`, { method: "POST", body: JSON.stringify({}) }),
+  testGatewayAccount: (accountId: string, model?: string) => request<{ ok: boolean; model: string; status: number; latencyMs: number; error: string | null }>(
+    `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/test`, { method: "POST", body: JSON.stringify(model ? { model } : {}) }),
+  useGatewayResetCredit: (accountId: string, idempotencyKey: string) => request<{ outcome: string; windowsReset: number }>(
+    `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/reset-credit`, { method: "POST", body: JSON.stringify({ idempotencyKey }) }),
+  deleteGatewayAccount: (accountId: string) => request<{ id: string; deleted: true }>(
+    `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
+  updateGatewaySettings: (patch: GatewaySettingsUpdateRequest) =>
+    request<GatewaySettings>("/api/admin/gateway/settings", { method: "PATCH", body: JSON.stringify(patch) }),
   codexLbSpeedDefaults: () => request<CodexLbSpeedDefaultsResponse>("/api/admin/codex-lb-speed-defaults"),
   updateCodexLbSpeedDefault: (
     modelId: CodexLbSpeedDefaultsResponse["models"][number]["modelId"],
@@ -1615,6 +1785,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  maintenanceAutopilotStatus: () => request<MaintenanceAutopilotStatus>("/api/admin/maintenance-autopilot"),
+  startMaintenanceAutopilot: () => request<MaintenanceAutopilotStatus>("/api/admin/maintenance-autopilot/runs", { method: "POST", body: JSON.stringify({}) }),
+  updateMaintenanceAutopilotSchedule: (input: MaintenanceAutopilotScheduleUpdate) =>
+    request<MaintenanceAutopilotStatus>("/api/admin/maintenance-autopilot/schedule", { method: "PUT", body: JSON.stringify(input) }),
   createMaintenancePlan: (input: MaintenancePlanRequest) => request<AdminOperationRun>("/api/admin/cli-maintenance/plans", { method: "POST", body: JSON.stringify(input) }),
   applyMaintenancePlan: (planId: string, input: MaintenanceApplyRequest) => request<AdminOperationRun>(`/api/admin/cli-maintenance/plans/${encodeURIComponent(planId)}/apply`, { method: "POST", body: JSON.stringify(input) }),
   detectCliUpdateAll: () =>
@@ -1705,9 +1879,90 @@ export const api = {
       method: "DELETE"
     }),
   agentSession: (paneId: string) => request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent-session`),
+  dots: () => request<{ dots: import("@space/contracts").DotProfile[] }>("/api/dots"),
+  dotCollection: (dotId: string, resource: import("@space/contracts").DotResource) =>
+    request<import("@space/contracts").DotCollection>(`/api/dots/${encodeURIComponent(dotId)}/collections/${resource}`),
+  dotTools: (dotId: string, roomId?: string | null) =>
+    request<{ dotId: string; tools: import("@space/contracts").DotToolSummary[]; total: number; available: number }>(
+      `/api/dots/${encodeURIComponent(dotId)}/tools${roomId ? `?roomId=${encodeURIComponent(roomId)}` : ""}`),
+  dotApprovals: (dotId: string, sessionId: string) =>
+    request<{ dotId: string; items: import("@space/contracts").DotToolInvocation[] }>(
+      `/api/dots/${encodeURIComponent(dotId)}/approvals?sessionId=${encodeURIComponent(sessionId)}`),
+  decideDotApproval: (dotId: string, invocationId: string, decision: "APPROVE" | "DECLINE") =>
+    request<{ invocation: import("@space/contracts").DotToolInvocation; continued: boolean }>(
+      `/api/dots/${encodeURIComponent(dotId)}/approvals/${encodeURIComponent(invocationId)}`, { method: "POST", body: JSON.stringify({ decision }) }),
+  dotGoals: (dotId: string, sessionId?: string | null) =>
+    request<{ dotId: string; items: import("@space/contracts").DotGoal[] }>(
+      `/api/dots/${encodeURIComponent(dotId)}/goals${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`),
+  createDotGoal: (dotId: string, input: { sessionId: string; objective: string; milestones: string[]; criteria: string[]; budget: { maxSteps: number; maxMinutes: number } }) =>
+    request<{ goal: import("@space/contracts").DotGoal }>(`/api/dots/${encodeURIComponent(dotId)}/goals`, { method: "POST", body: JSON.stringify(input) }),
+  controlDotGoal: (dotId: string, goalId: string, action: "PAUSE" | "RESUME" | "CANCEL") =>
+    request<{ goal: import("@space/contracts").DotGoal }>(`/api/dots/${encodeURIComponent(dotId)}/goals/${encodeURIComponent(goalId)}/control`,
+      { method: "POST", body: JSON.stringify({ action }) }),
+  steerDotGoal: (dotId: string, goalId: string, text: string) =>
+    request<{ goal: import("@space/contracts").DotGoal }>(`/api/dots/${encodeURIComponent(dotId)}/goals/${encodeURIComponent(goalId)}/steer`,
+      { method: "POST", body: JSON.stringify({ text }) }),
+  dotSchedules: (dotId: string) =>
+    request<{ dotId: string; items: import("@space/contracts").DotSchedule[] }>(`/api/dots/${encodeURIComponent(dotId)}/schedules`),
+  createDotSchedule: (dotId: string, input: import("@space/contracts").CreateDotScheduleInput) =>
+    request<{ schedule: import("@space/contracts").DotSchedule }>(`/api/dots/${encodeURIComponent(dotId)}/schedules`, { method: "POST", body: JSON.stringify(input) }),
+  controlDotSchedule: (dotId: string, scheduleId: string, action: "CONFIRM" | "PAUSE" | "RESUME" | "CANCEL") =>
+    request<{ schedule: import("@space/contracts").DotSchedule }>(`/api/dots/${encodeURIComponent(dotId)}/schedules/${encodeURIComponent(scheduleId)}/control`,
+      { method: "POST", body: JSON.stringify({ action }) }),
+  updateDot: (dotId: string, input: import("@space/contracts").UpdateDotProfile) =>
+    request<{ dot: import("@space/contracts").DotProfile }>(`/api/dots/${encodeURIComponent(dotId)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  dotMemories: (dotId: string, query: { scope?: import("@space/contracts").DotMemoryScope; q?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.scope) params.set("scope", query.scope);
+    if (query.q?.trim()) params.set("q", query.q.trim());
+    return request<{ dotId: string; items: import("@space/contracts").DotMemory[] }>(
+      `/api/dots/${encodeURIComponent(dotId)}/memories${params.size ? `?${params}` : ""}`);
+  },
+  createDotMemory: (dotId: string, input: { text: string; scope: import("@space/contracts").DotMemoryScope; roomId?: string }) =>
+    request<{ memory: import("@space/contracts").DotMemory }>(`/api/dots/${encodeURIComponent(dotId)}/memories`, { method: "POST", body: JSON.stringify(input) }),
+  updateDotMemory: (dotId: string, memoryId: string, text: string) =>
+    request<{ memory: import("@space/contracts").DotMemory }>(`/api/dots/${encodeURIComponent(dotId)}/memories/${encodeURIComponent(memoryId)}`,
+      { method: "PATCH", body: JSON.stringify({ text }) }),
+  deleteDotMemory: (dotId: string, memoryId: string) =>
+    request<{ memoryId: string; deleted: boolean }>(`/api/dots/${encodeURIComponent(dotId)}/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
+  connectors: () => request<import("@space/contracts").ConnectorsStatus>("/api/connectors"),
+  channels: () => request<import("@space/contracts").ChannelsStatus>("/api/channels"),
+  askDotFromLive: (input: { roomId: string; dot: string; text: string; liveSessionId: string; requestId: string }) =>
+    request<{ status: string; dot?: string; paneId?: string; watchId?: string | null; message: string }>("/api/dots/live/requests",
+      { method: "POST", body: JSON.stringify(input) }),
+  dotLiveStatus: (roomId: string, dot: string) =>
+    request<{ status: string; dot?: string; message: string }>(`/api/dots/live/status?roomId=${encodeURIComponent(roomId)}&dot=${encodeURIComponent(dot)}`),
+  createChannelLinkCode: () => request<{ code: string; expiresAt: string }>("/api/channels/link-codes", { method: "POST", body: "{}" }),
+  unlinkChannelIdentity: (identityId: string) =>
+    request<{ identityId: string; unlinked: boolean }>(`/api/channels/identities/${encodeURIComponent(identityId)}`, { method: "DELETE" }),
+  disconnectConnector: (accountId: string) =>
+    request<{ accountId: string; disconnected: boolean }>(`/api/connectors/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
+  dotWorkspace: (dotId: string, folder = "") =>
+    request<import("@space/contracts").DotWorkspaceFolder>(`/api/dots/${encodeURIComponent(dotId)}/workspace${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`),
+  dotDeliverables: (dotId: string) =>
+    request<{ dotId: string; items: import("@space/contracts").DotDeliverable[] }>(`/api/dots/${encodeURIComponent(dotId)}/deliverables`),
+  publishDotDeliverable: (dotId: string, input: { path: string; roomId: string }) =>
+    request<{ deliverable: import("@space/contracts").DotDeliverable; unchanged: boolean }>(`/api/dots/${encodeURIComponent(dotId)}/deliverables`,
+      { method: "POST", body: JSON.stringify(input) }),
+  dotComputer: (dotId: string) => request<import("@space/contracts").DotComputer>(`/api/dots/${encodeURIComponent(dotId)}/computer`),
+  stopDotComputer: (dotId: string, sessionId?: string | null) =>
+    request<import("@space/contracts").DotComputerStopResult>(`/api/dots/${encodeURIComponent(dotId)}/computer/stop`,
+      { method: "POST", body: JSON.stringify(sessionId ? { sessionId } : {}) }),
+  dotEvalRuns: (dotId: string) => request<{ runs: import("@space/contracts").DotEvalRunSummary[] }>(`/api/dots/${encodeURIComponent(dotId)}/evals`),
+  startDotEval: (dotId: string, input: { dataset: "dots-v1"; split: "tuning" | "holdout" | "all"; roomId: string; modelConfigId?: string }) =>
+    request<{ evalRunId: string; paneId: string; cases: number; skipped: number }>(`/api/dots/${encodeURIComponent(dotId)}/evals`,
+      { method: "POST", body: JSON.stringify(input) }),
+  dotEvalReport: (dotId: string, evalRunId: string) =>
+    request<import("@space/contracts").DotEvalReport>(`/api/dots/${encodeURIComponent(dotId)}/evals/${encodeURIComponent(evalRunId)}`),
+  stopDotEval: (dotId: string, evalRunId: string) =>
+    request<{ stopped: boolean }>(`/api/dots/${encodeURIComponent(dotId)}/evals/${encodeURIComponent(evalRunId)}/stop`, { method: "POST", body: "{}" }),
+  dotToolInvocations: (dotId: string) =>
+    request<{ dotId: string; items: import("@space/contracts").DotToolInvocation[]; limit: number; offset: number }>(
+      `/api/dots/${encodeURIComponent(dotId)}/tool-invocations?limit=20`),
   createAgentSession: (
     paneId: string,
     input: {
+      dotId?: string;
       title?: string;
       sessionId?: string | null;
       threadId?: string | null;
@@ -1719,11 +1974,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[], clientRequestId?: string, acceptance?: import("@space/contracts").TaskAcceptance) =>
+  sendAgentMessage: (paneId: string, content: string, selectedModelConfigId?: string | null, selectedToolIds?: string[], artifactIds?: string[], clientRequestId?: string, acceptance?: import("@space/contracts").TaskAcceptance, context?: { sessionId?: string; dotId?: string }) =>
     request<AgentPaneSession>(`/api/panes/${encodeURIComponent(paneId)}/agent/messages`, {
       method: "POST",
       body: JSON.stringify({
         content,
+        ...context,
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(acceptance ? { acceptance } : {}),
         ...(selectedModelConfigId ? { selectedModelConfigId } : {}),
@@ -1772,6 +2028,17 @@ export const api = {
   warmCliRuntimeSettings,
   invalidateCliRuntimeSettings,
   resetCliRuntimeSettingsCache,
+  cliProviderSettings: () => request<CliProviderSettingsResponse>("/api/cli/providers"),
+  updateCliProviderSetting: (providerId: string, enabled: boolean) =>
+    request<CliProviderSettingsResponse>(`/api/cli/providers/${encodeURIComponent(providerId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled })
+    }),
+  updateAllCliProviders: (enabled: boolean) =>
+    request<CliProviderSettingsResponse>("/api/cli/providers/toggle-all", {
+      method: "POST",
+      body: JSON.stringify({ enabled })
+    }),
   cliRuntimeRestart: async (runtimeId: string) => {
     const result = await request<CliRuntimeRestartSessionsResult>(`/api/admin/cli/runtime/${encodeURIComponent(runtimeId)}/restart`, {
       method: "POST"
@@ -1820,6 +2087,8 @@ export const api = {
     invalidateCliRuntimeSettings();
     return result;
   },
+  cliAccountIdentities: (refresh = false) =>
+    request<CliAccountIdentitiesResponse>(`/api/cli/account-identities${refresh ? "?refresh=1" : ""}`),
   getCliAccountProfileDetails: (runtimeId: string, profileId: string) =>
     request<CliAccountProfileDetailsResponse>(
       `/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles/${encodeURIComponent(profileId)}/details`
@@ -1921,6 +2190,7 @@ export const api = {
     return result;
   },
   appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
+  deployQueue: () => request<DeployQueueReport>("/api/admin/deploy-queue", { cache: "no-store" }),
   updateAppDiagnosticsStatus: (isEnabled: boolean) =>
     request<AppDiagnosticsStatus>("/api/admin/app-diagnostics", {
       method: "PATCH",
@@ -2071,10 +2341,15 @@ export const api = {
     paneId: string,
     options: { includeTranscript?: boolean; compactTranscript?: boolean } = {}
   ) => loadActiveCliSession(paneId, options),
+  clearActiveCliSessionFlight: (paneId: string) => clearActiveCliSessionFlight(paneId),
   cliModelSettings: (paneId: string) =>
     request<PaneCliModelSettings>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings`),
   cliModelSettingsStatus: (paneId: string) =>
-    request<PaneCliModelSettingsStatus>(`/api/panes/${encodeURIComponent(paneId)}/cli/model-settings/status`),
+    requestWithTimeout<PaneCliModelSettingsStatus>(
+      `/api/panes/${encodeURIComponent(paneId)}/cli/model-settings/status`,
+      8_000,
+      "CLI model settings status request timed out."
+    ),
   setCliTerminalControlLease: (paneId: string, leaseId: string | null) => {
     if (leaseId) cliTerminalControlLeaseByPane.set(paneId, leaseId);
     else cliTerminalControlLeaseByPane.delete(paneId);
@@ -2096,6 +2371,10 @@ export const api = {
   cliTurnActivity: (paneId: string, marker: string) =>
     request<PaneCliTurnActivityResponse>(
       `/api/panes/${encodeURIComponent(paneId)}/cli/turn-activity?marker=${encodeURIComponent(marker)}`
+    ),
+  paneWorkingTime: (paneId: string) =>
+    request<{ paneId: string; cumulativeWorkingMs: number; isWorking: boolean; state: string }>(
+      `/api/panes/${encodeURIComponent(paneId)}/working-time`
     ),
   createCliSession: (
     paneId: string,
@@ -2194,10 +2473,10 @@ export const api = {
   browserStatus: () => request<BrowserStatusPayload>("/api/browser/status"),
   youtubeAccounts: (paneId: string) => request<YouTubeAccounts>(`/api/panes/${encodeURIComponent(paneId)}/youtube/accounts`),
   browserAccounts: (paneId: string) => request<YouTubeAccounts>(`/api/panes/${encodeURIComponent(paneId)}/browser/accounts`),
-  selectBrowserAccount: (paneId: string, profileId: string | null) =>
-    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/browser/accounts`, { method: "PUT", body: JSON.stringify({ profileId }) }),
-  selectYouTubeAccount: (paneId: string, profileId: string | null) =>
-    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/youtube/accounts`, { method: "PUT", body: JSON.stringify({ profileId }) }),
+  selectBrowserAccount: (paneId: string, profileId: string | null, options: { signIn?: boolean } = {}) =>
+    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/browser/accounts`, { method: "PUT", body: JSON.stringify(options.signIn ? { profileId, signIn: true } : { profileId }) }),
+  selectYouTubeAccount: (paneId: string, profileId: string | null, options: { signIn?: boolean } = {}) =>
+    request<YouTubeAccountSelection>(`/api/panes/${encodeURIComponent(paneId)}/youtube/accounts`, { method: "PUT", body: JSON.stringify(options.signIn ? { profileId, signIn: true } : { profileId }) }),
   youtubePlayback: (paneId: string) => request<{ playback: YouTubePlayback | null }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`),
   saveYouTubePlayback: (paneId: string, playback: YouTubePlayback) =>
     request<{ ok: true }>(`/api/panes/${encodeURIComponent(paneId)}/youtube/playback`, { method: "PUT", body: JSON.stringify(playback), keepalive: true }),
@@ -2479,6 +2758,14 @@ export const api = {
     if (query.relationMode) params.set("relationMode", query.relationMode);
     const suffix = params.toString();
     return request<MemoryGraphOverviewResponse>(`/api/admin/memory/graph/overview${suffix ? `?${suffix}` : ""}`);
+  },
+  memoryCalendar: (query: MemoryCalendarQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.year) params.set("year", String(query.year));
+    if (query.month) params.set("month", query.month);
+    if (query.date) params.set("date", query.date);
+    const suffix = params.toString();
+    return request<MemoryCalendarResponseEnvelope>(`/api/admin/memory/calendar${suffix ? `?${suffix}` : ""}`);
   },
   memoryGraphNode: (nodeId: string) =>
     request<MemoryGraphNodeDetail>(`/api/admin/memory/nodes/${encodeURIComponent(nodeId)}`),
@@ -3185,6 +3472,20 @@ export const api = {
       `/api/demo-projects/tests${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`,
       { cache: "no-store" }
     ),
+  // T3 Code pane: binding endpoints inside the authenticated pane namespace.
+  t3CodeStatus: (paneId: string) =>
+    request<T3CodeServiceStatus>(`/api/t3code/panes/${encodeURIComponent(paneId)}/app/__space/status`, { cache: "no-store" }),
+  t3CodeBinding: (paneId: string) =>
+    request<{ version: 1; paneId: string; metadata: T3CodePaneMetadata | null }>(
+      `/api/t3code/panes/${encodeURIComponent(paneId)}/app/__space/binding`, { cache: "no-store" }),
+  t3CodeSaveSelection: (paneId: string, input: T3CodeBindingUpdate) =>
+    request<{ version: 1; paneId: string; metadata: T3CodePaneMetadata }>(
+      `/api/t3code/panes/${encodeURIComponent(paneId)}/app/__space/binding/selection`, { method: "POST", body: JSON.stringify(input) }),
+  t3CodeAdminStatus: () => request<T3CodeAdminResult>("/api/admin/t3code/service", { cache: "no-store" }),
+  updateT3CodeEnabled: (input: UpdateT3CodeEnabledInput) =>
+    request<T3CodeAdminResult>("/api/admin/t3code/enabled", { method: "PATCH", body: JSON.stringify(input) }),
+  restartT3Code: (input: RestartT3CodeInput = {}) =>
+    request<T3CodeAdminResult>("/api/admin/t3code/restart", { method: "POST", body: JSON.stringify(input) }),
   launchReadiness: () => request<LaunchReadiness>("/api/admin/launch-readiness"),
   observability: () => request<ObservabilitySnapshot>("/api/admin/observability"),
   worker: () => request<WorkerReadiness>("/api/admin/worker"),
@@ -3246,15 +3547,138 @@ export const api = {
       body: formData
     }),
   exportConfigurationUrl: "/api/configuration/export",
-  exportConfiguration: () => request<SpaceConfigBundle>("/api/configuration/export", { cache: "no-store" }),
+  exportConfiguration: (options?: { includeClosedPanes?: boolean; includeApiKeys?: boolean; includeCredentials?: boolean }) =>
+    options && (options.includeClosedPanes || options.includeApiKeys || options.includeCredentials)
+      ? request<SpaceConfigBundle>("/api/configuration/export", {
+          method: "POST",
+          body: JSON.stringify(options)
+        })
+      : request<SpaceConfigBundle>("/api/configuration/export", { cache: "no-store" }),
   inspectConfiguration: (bundle: unknown) =>
     request<ConfigurationInspectResult>("/api/configuration/inspect", {
       method: "POST",
       body: JSON.stringify({ bundle })
     }),
-  importConfiguration: (input: { bundle: unknown; mode?: ImportConfigMode; targetUserId?: string }) =>
+  importConfiguration: (input: {
+    bundle: unknown;
+    mode?: ImportConfigMode;
+    targetUserId?: string;
+    importApiKeys?: boolean;
+    importCredentials?: boolean;
+    secretsDir?: string;
+    credentialsDir?: string;
+  }) =>
     request<ImportConfigResult>("/api/configuration/import", {
       method: "POST",
       body: JSON.stringify(input)
-    })
+    }),
+  // Database Manager API methods
+  databasesListConnections: (options?: { projectPath?: string | null; mode?: "user" | "admin" }) => {
+    const params = new URLSearchParams();
+    if (options?.projectPath) params.set("projectPath", options.projectPath);
+    if (options?.mode) params.set("mode", options.mode);
+    return request<{ ok: boolean; connections: DatabaseConnection[] }>(`/api/databases/connections?${params.toString()}`);
+  },
+  databasesGetConnection: (id: string, mode?: "user" | "admin") =>
+    request<{ ok: boolean; connection: DatabaseConnection }>(`/api/databases/connections/${encodeURIComponent(id)}${mode ? `?mode=${mode}` : ""}`),
+  databasesCreateConnection: (input: CreateDatabaseConnectionInput) =>
+    request<{ ok: boolean; connection: DatabaseConnection }>("/api/databases/connections", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  databasesUpdateConnection: (id: string, input: UpdateDatabaseConnectionInput, mode?: "user" | "admin") =>
+    request<{ ok: boolean; connection: DatabaseConnection }>(`/api/databases/connections/${encodeURIComponent(id)}${mode ? `?mode=${mode}` : ""}`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  databasesDeleteConnection: (id: string, mode?: "user" | "admin") =>
+    request<{ ok: boolean }>(`/api/databases/connections/${encodeURIComponent(id)}${mode ? `?mode=${mode}` : ""}`, {
+      method: "DELETE"
+    }),
+  databasesTestConnection: (input: CreateDatabaseConnectionInput) =>
+    request<{ ok: boolean; version?: string; error?: string }>("/api/databases/connections/test", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  databasesDiscover: (roomId?: string, projectPath?: string) => {
+    const params = new URLSearchParams();
+    if (projectPath) params.set("projectPath", projectPath);
+    const url = roomId ? `/api/rooms/${encodeURIComponent(roomId)}/databases/discover?${params.toString()}` : `/api/rooms/any/databases/discover?${params.toString()}`;
+    return request<{ ok: boolean; discovered: DatabaseDiscoveryItem[] }>(url);
+  },
+  databasesGetCatalog: (connectionId: string, database?: string, mode?: "user" | "admin") => {
+    const params = new URLSearchParams();
+    if (database) params.set("database", database);
+    if (mode) params.set("mode", mode);
+    return request<{ ok: boolean; catalog: DatabaseCatalog }>(`/api/databases/connections/${encodeURIComponent(connectionId)}/catalog?${params.toString()}`);
+  },
+  databasesGetTableData: (connectionId: string, tableName: string, query: DatabaseTableDataQuery & { mode?: "user" | "admin" }) => {
+    const params = new URLSearchParams();
+    if (query.schema) params.set("schema", query.schema);
+    if (query.page) params.set("page", String(query.page));
+    if (query.pageSize) params.set("pageSize", String(query.pageSize));
+    if (query.sortColumn) params.set("sortColumn", query.sortColumn);
+    if (query.sortDirection) params.set("sortDirection", query.sortDirection);
+    if (query.search) params.set("search", query.search);
+    if (query.filterColumn) params.set("filterColumn", query.filterColumn);
+    if (query.filterValue) params.set("filterValue", query.filterValue);
+    if (query.filterOp) params.set("filterOp", query.filterOp);
+    if (query.mode) params.set("mode", query.mode);
+    return request<{ ok: boolean } & DatabaseTableDataResponse>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}/data?${params.toString()}`
+    );
+  },
+  databasesInsertRow: (connectionId: string, tableName: string, body: { schema?: string; values: Record<string, unknown>; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; affectedRows: number; newRow?: Record<string, unknown> }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}/rows${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  databasesUpdateRow: (connectionId: string, tableName: string, body: { schema?: string; keys: Record<string, unknown>; values: Record<string, unknown>; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; affectedRows: number; newRow?: Record<string, unknown> }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}/rows${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  databasesDeleteRow: (connectionId: string, tableName: string, body: { schema?: string; keys: Record<string, unknown>; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; affectedRows: number }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}/rows${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "DELETE", body: JSON.stringify(body) }
+    ),
+  databasesCreateTable: (connectionId: string, body: { schema?: string; tableName: string; columns: Array<{ name: string; type: string; nullable?: boolean; defaultValue?: string; isPrimaryKey?: boolean }>; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; message?: string }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  databasesAlterTable: (connectionId: string, tableName: string, body: { action: "ADD_COLUMN" | "DROP_COLUMN" | "ADD_INDEX" | "DROP_INDEX"; schema?: string; column?: { name: string; type: string; nullable?: boolean; defaultValue?: string }; columnName?: string; index?: { name: string; columns: string[]; unique?: boolean }; indexName?: string; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; message?: string }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}/structure${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "PUT", body: JSON.stringify(body) }
+    ),
+  databasesDropTable: (connectionId: string, tableName: string, schema?: string, mode?: "user" | "admin") => {
+    const params = new URLSearchParams();
+    if (schema) params.set("schema", schema);
+    if (mode) params.set("mode", mode);
+    return request<{ ok: boolean; message?: string }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/tables/${encodeURIComponent(tableName)}?${params.toString()}`,
+      { method: "DELETE" }
+    );
+  },
+  databasesExecuteSql: (body: DatabaseExecuteSqlRequest & { mode?: "user" | "admin" }) =>
+    request<DatabaseExecuteSqlResponse>(`/api/databases/sessions/execute${body.mode ? `?mode=${body.mode}` : ""}`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    }),
+  databasesCancelSql: (sessionId: string, connectionId: string) =>
+    request<{ ok: boolean }>(`/api/databases/sessions/${encodeURIComponent(sessionId)}/cancel?connectionId=${encodeURIComponent(connectionId)}`, {
+      method: "POST"
+    }),
+  databasesImport: (connectionId: string, body: { format: "SQL" | "CSV"; table?: string; schema?: string; content: string; mode?: "user" | "admin" }) =>
+    request<{ ok: boolean; importedRows: number; message?: string }>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/transfers/import${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  databasesExport: (connectionId: string, body: { format: "SQL" | "CSV"; table?: string; schema?: string; includeStructure?: boolean; includeData?: boolean; mode?: "user" | "admin" }) =>
+    request<string>(
+      `/api/databases/connections/${encodeURIComponent(connectionId)}/transfers/export${body.mode ? `?mode=${body.mode}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) }
+    )
 };

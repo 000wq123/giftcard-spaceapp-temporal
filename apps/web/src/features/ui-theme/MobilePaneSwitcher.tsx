@@ -15,8 +15,8 @@ export function MobilePaneSwitcher({ panes, activePaneId, onSelect }: {
     </button>
     <label>
       <span aria-hidden="true">{index + 1} / {panes.length}</span>
-      <select aria-label="Choose pane" title={active.title} value={active.id} onChange={event => onSelect(event.target.value)}>
-        {panes.map((pane, position) => <option key={pane.id} value={pane.id}>{position + 1}. {pane.title}</option>)}
+      <select aria-label="Choose pane" title={active.paneName ? `${active.paneName} · ${active.title}` : active.title} value={active.id} onChange={event => onSelect(event.target.value)}>
+        {panes.map((pane, position) => <option key={pane.id} value={pane.id}>{position + 1}. {pane.paneName ? `${pane.paneName} · ` : ""}{pane.title}</option>)}
       </select>
     </label>
     <button type="button" aria-label="Next pane" onClick={() => onSelect(panes[(index + 1) % panes.length]!.id)}>

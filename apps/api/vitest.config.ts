@@ -1,6 +1,19 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@space/cli-host": resolve(__dirname, "../../packages/cli-host/src/index.ts"),
+      "@space/db": resolve(__dirname, "../../packages/db/src/index.ts"),
+      "@space/contracts": resolve(__dirname, "../../packages/contracts/src/index.ts"),
+      "@space/runtime": resolve(__dirname, "../../packages/runtime/src/index.ts")
+    }
+  },
   test: {
     exclude: [
       "**/node_modules/**",

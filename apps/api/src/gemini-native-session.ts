@@ -1,5 +1,9 @@
-import { mkdir, readFile, readdir, readlink, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdir, readFile, readdir, readlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export const geminiNativeConversationIdPattern =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -34,6 +38,7 @@ export async function writeGeminiPaneConversation(paneId: string, conversationId
       if (prior?.conversationId === conversationId && prior?.paneId === `pane:${cleanId}` && prior?.sessionId && prior?.pid) continue;
       const data = JSON.stringify({ conversationId, paneId: `pane:${cleanId}`, timestamp: Date.now() });
       await writeFile(filePath, data, { mode: 0o666 }).catch(() => {});
+      await chmod(filePath, 0o666).catch(() => {});
     }
   } catch {
     // Non-blocking write failure
@@ -123,3 +128,34 @@ export async function readGeminiNativeConversationIdFromProcessTree(
     return null;
   }
 }
+
+export async function findLatestGeminiConversationIdForWorkspace(
+  workspaceCwd: string,
+  accountProfileId?: string | null
+): Promise<string | null> {
+  if (!workspaceCwd || workspaceCwd === "/") return null;
+  const geminiCliHome = process.env.SPACE_GEMINI_CLI_HOME || "/var/lib/spaceapp-user/.codex/space-gemini";
+  const candidateDbs: string[] = [];
+  if (accountProfileId && accountProfileId !== "main") {
+    candidateDbs.push(join(geminiCliHome, "profiles", accountProfileId, "home", ".gemini", "antigravity-cli", "conversation_summaries.db"));
+  }
+  candidateDbs.push(join(geminiCliHome, "home", ".gemini", "antigravity-cli", "conversation_summaries.db"));
+  candidateDbs.push(join(geminiCliHome, "shared-history", "conversation_summaries.db"));
+
+  const escapedCwd = workspaceCwd.replaceAll("'", "''");
+  const sql = `SELECT conversation_id FROM conversation_summaries WHERE workspace_uris LIKE '%${escapedCwd}%' ORDER BY CASE WHEN last_modified_time IS NOT NULL AND last_modified_time != '' THEN last_modified_time ELSE last_user_input_time END DESC LIMIT 1;`;
+
+  for (const dbPath of candidateDbs) {
+    try {
+      const { stdout } = await execFileAsync("sqlite3", ["-readonly", dbPath, sql], { timeout: 3000 });
+      const cid = stdout.trim();
+      if (cid && geminiNativeConversationIdPattern.test(cid)) {
+        return cid;
+      }
+    } catch {
+      // Continue to next DB
+    }
+  }
+  return null;
+}
+

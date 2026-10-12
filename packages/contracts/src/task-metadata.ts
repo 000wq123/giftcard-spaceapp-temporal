@@ -14,6 +14,7 @@ export const taskMetadataSchema = z.object({
   providerId: z.string().max(160).nullable().default(null),
   modelId: z.string().max(200).nullable().default(null),
   preferredCandidateId: z.string().max(320).nullable().optional(),
+  planId: z.string().max(160).nullable().optional(),
   updatedAt: z.string().datetime({ offset: true }),
 });
 export type TaskMetadata = z.infer<typeof taskMetadataSchema>;

@@ -23,10 +23,22 @@
 .space-shell[data-workspace-rail="true"] {
   padding-right: calc(64px + env(safe-area-inset-right));
 }
-.space-shell .room-toolbar-collapsed {
+.space-shell {
   --toolbar-control-size: 44px;
   --toolbar-icon-size: 20px;
-  width: 56px;
+  --rail-width: 50px;
+}
+.space-shell:not([data-rail-downscaled="true"]) .health-indicator-rail {
+  --toolbar-control-size: 44px;
+  --toolbar-icon-size: 20px;
+  --rail-width: 50px;
+}
+.space-shell:not([data-rail-downscaled="true"]) .room-toolbar-collapsed {
+  --toolbar-control-size: 44px;
+  --toolbar-icon-size: 20px;
+  --rail-width: 50px;
+  width: 50px;
+  width: var(--rail-width, 50px);
   right: max(4px, env(safe-area-inset-right));
   top: auto;
   bottom: max(8px, env(safe-area-inset-bottom));
@@ -38,16 +50,21 @@
   overflow-x: hidden;
   scrollbar-width: none;
 }
-/* All rail action buttons in the collapsed floating rail share a consistent 3D elevated card style */
-.space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+/* All rail action buttons in the collapsed floating rail and upper health rail share a consistent 3D elevated card style */
+.space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ) {
   width: var(--toolbar-control-size, 44px);
   height: var(--toolbar-control-size, 44px);
   min-width: var(--toolbar-control-size, 44px);
   min-height: var(--toolbar-control-size, 44px);
+  max-width: var(--toolbar-control-size, 44px);
+  max-height: var(--toolbar-control-size, 44px);
   flex: 0 0 var(--toolbar-control-size, 44px);
   padding: 0;
   display: inline-grid;
@@ -58,15 +75,21 @@
   transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
 
-.space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+.space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ) > svg,
-.space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+.space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ) svg {
   width: var(--toolbar-icon-size, 20px);
   height: var(--toolbar-icon-size, 20px);
@@ -75,15 +98,21 @@
 }
 
 /* Light mode 3D elevated card style for rail buttons */
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ),
-.space-shell[data-color-mode="light"] .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+.space-shell[data-color-mode="light"] :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ) {
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.09);
@@ -91,15 +120,21 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):hover:not(:disabled),
-.space-shell[data-color-mode="light"] .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+.space-shell[data-color-mode="light"] :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):hover:not(:disabled) {
   background: #ffffff;
   border-color: rgba(0, 0, 0, 0.16);
@@ -107,37 +142,61 @@
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12), 0 2px 5px rgba(0, 0, 0, 0.06), inset 0 1px 0 #ffffff;
 }
 
-:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+:is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):active:not(:disabled),
-.space-shell[data-color-mode="light"] .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+.space-shell[data-color-mode="light"] :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):active:not(:disabled) {
   transform: translateY(1px);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08), inset 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 /* Dark mode 3D elevated card style for rail buttons */
-body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+body:not([data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ) {
-  background: rgba(22, 28, 32, 0.94);
+  background: rgb(22, 28, 32);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #e8eef5;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+/* Idle rail buttons are opaque, so they skip the backdrop blur. Translucent active
+   states and the minimized-pane toggle keep it. */
+body:not([data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
+):is(.is-active, [aria-pressed="true"], [aria-expanded="true"], .minimized-pane-bar-toggle) {
   backdrop-filter: blur(10px);
 }
 
-body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+body:not([data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):hover:not(:disabled) {
   background: rgba(28, 36, 42, 0.98);
   border-color: rgba(255, 255, 255, 0.2);
@@ -146,10 +205,13 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
   color: #ffffff;
 }
 
-body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
-  > button:not(.room-live-rail-button),
-  .desktop-create-rail > button,
-  .room-toolbar-visibility-button:not(.room-live-rail-button)
+body:not([data-color-mode="light"]) .space-shell :is(
+  .health-indicator-rail .health-rail-expander,
+  .room-toolbar-collapsed :is(
+    > button:not(.room-live-rail-button),
+    .desktop-create-rail > button,
+    .room-toolbar-visibility-button:not(.room-live-rail-button)
+  )
 ):active:not(:disabled) {
   transform: translateY(1px);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), inset 0 1px 2px rgba(0, 0, 0, 0.2);
@@ -317,26 +379,29 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
   filter: drop-shadow(0 0 5px var(--rail-sticky-glow));
 }
 
-/* Active / Expanded states */
-.space-shell .room-toolbar-collapsed button[data-rail-id="layout"]:is(.is-active, [aria-expanded="true"]) {
-  border-color: var(--rail-layout-border);
-  box-shadow: 0 0 0 1px var(--rail-layout-border), 0 4px 12px rgba(0, 0, 0, 0.15);
+/* Active / Expanded states - Red border invariant for rail icons */
+.space-shell .room-toolbar-collapsed button[data-rail-id]:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]),
+.space-shell .room-toolbar-collapsed .room-toolbar-visibility-button:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]),
+.space-shell .desktop-rooms-toggle:is(.is-active, [aria-pressed="true"]) {
+  border: 1.5px solid var(--active-icon-border, #ff4d5e) !important;
+  border-radius: 6px;
+  background: var(--active-icon-background, rgba(92, 15, 28, 0.42)) !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 1px rgba(255, 77, 94, 0.25), inset 0 0 0 1px rgba(255, 77, 94, 0.2) !important;
 }
 
-.space-shell .room-toolbar-collapsed button[data-rail-id="docks"]:is(.is-active, [aria-expanded="true"]) {
-  border-color: var(--rail-docks-border);
-  box-shadow: 0 0 0 1px var(--rail-docks-border), 0 4px 12px rgba(0, 0, 0, 0.15);
+.space-shell .room-toolbar-collapsed button[data-rail-id]:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]):hover:not(:disabled),
+.space-shell .room-toolbar-collapsed .room-toolbar-visibility-button:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]):hover:not(:disabled),
+.space-shell .desktop-rooms-toggle:is(.is-active, [aria-pressed="true"]):hover:not(:disabled) {
+  border-color: #ff6b7a !important;
+  background: rgba(140, 20, 38, 0.55) !important;
+  box-shadow: 0 0 0 2px rgba(255, 77, 94, 0.35) !important;
 }
 
-.space-shell .room-toolbar-collapsed button[data-rail-id="rooms"]:is(.is-active, [aria-pressed="true"]),
-.space-shell .desktop-rooms-toggle[aria-pressed="true"] {
-  border-color: var(--rail-rooms-border);
-  box-shadow: 0 0 0 1px var(--rail-rooms-border), 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.space-shell .room-toolbar-collapsed button[data-rail-id="sticky"]:is(.is-active, [aria-pressed="true"], [aria-expanded="true"]) {
-  border-color: var(--rail-sticky-border);
-  box-shadow: 0 0 0 1px var(--rail-sticky-border), 0 4px 12px rgba(0, 0, 0, 0.15);
+.space-shell .room-toolbar-collapsed button[data-rail-id]:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]) svg,
+.space-shell .room-toolbar-collapsed .room-toolbar-visibility-button:not(.room-live-rail-button):is(.is-active, [aria-pressed="true"], [aria-expanded="true"]) svg,
+.space-shell .desktop-rooms-toggle:is(.is-active, [aria-pressed="true"]) svg {
+  color: #ffffff !important;
 }
 
 .rail-visibility-menu button {
@@ -424,6 +489,12 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 }
 .space-shell:has(.health-indicator-rail) .room-toolbar-collapsed .room-live-rail-button {
   --live-rail-top-edge: calc(max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
+}
+.space-shell:has(.health-indicator-rail) .room-toolbar-collapsed .live-pane-orb-button {
+  --live-rail-top-edge: calc(max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
+}
+.space-shell:has(.desktop-window-titlebar):not([data-browser-fullscreen="true"]):has(.health-indicator-rail) .room-toolbar-collapsed :is(.room-live-rail-button, .live-pane-orb-button) {
+  --live-rail-top-edge: calc(32px + max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px));
 }
 .space-shell .room-toolbar-collapsed .room-live-rail-button:hover,
 .space-shell .room-toolbar-collapsed .room-live-rail-button:focus-visible {
@@ -772,8 +843,10 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 .live-rail-message.is-user { background: rgba(84, 216, 137, 0.12); }
 .live-rail-message strong { font-size: 11px; color: var(--room-muted, #9fa8a5); }
 .live-rail-session-controls { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--room-border, #394144); }
-.live-rail-session-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
-.live-rail-session-controls input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; }
+.live-rail-session-controls .live-rail-room-toggle { font-size: 11px; gap: 6px; }
+.live-rail-session-controls .live-rail-room-toggle .space-toggle-track { width: 2.2rem; height: 1.25rem; }
+.live-rail-session-controls .live-rail-room-toggle .space-toggle-thumb { width: 0.85rem; height: 0.85rem; }
+.live-rail-session-controls .live-rail-room-toggle .space-toggle-state { display: none; }
 .live-rail-session-controls [role="alert"] { flex-basis: 100%; margin: 0; }
 .live-rail-message small { font-size: 10px; opacity: 0.75; overflow-wrap: anywhere; }
 
@@ -1813,16 +1886,29 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 }
 .space-shell .health-indicator-rail,
 .space-shell .health-indicator-rail.is-offset {
+  display: flex;
+  flex-direction: column;
   top: max(8px, env(safe-area-inset-top));
   right: max(4px, env(safe-area-inset-right));
-  width: 56px;
-  padding: 4px;
+  width: var(--rail-width, 50px);
+  padding: 1px;
+  gap: 2px;
   max-height: calc(100dvh - 24px);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
 }
-.space-shell .health-indicator { width: 48px; height: 44px; min-height: 44px; }
+.space-shell .health-indicator {
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-width: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
+  max-width: var(--toolbar-control-size, 44px);
+  max-height: var(--toolbar-control-size, 44px);
+  flex: 0 0 var(--toolbar-control-size, 44px);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
 .space-shell:has(.room-toolbar-collapsed) .health-indicator-rail { max-height: min(460px, calc(100dvh - 360px)); }
 .space-shell:has(.health-indicator-rail) .room-toolbar-collapsed {
   top: auto;
@@ -1832,29 +1918,38 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 .space-shell .health-indicator-rail::-webkit-scrollbar,
 .space-shell .room-toolbar-collapsed::-webkit-scrollbar { display: none; }
 .space-shell .health-rail-expander {
-  display: grid;
+  display: inline-grid;
   place-items: center;
-  width: 48px;
-  min-height: 44px;
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-width: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
+  max-width: var(--toolbar-control-size, 44px);
+  max-height: var(--toolbar-control-size, 44px);
+  box-sizing: border-box;
+  margin: 0;
 }
-.space-shell .health-rail-expander svg { width: 20px; height: 20px; }
+.space-shell .health-rail-expander svg {
+  width: var(--toolbar-icon-size, 20px);
+  height: var(--toolbar-icon-size, 20px);
+}
 .space-shell .health-rail-expander { display: none; }
 .space-shell .room-rail-more { display: none; }
-@media (max-height: 850px), (max-width: 768px) {
-  .space-shell .health-rail-expander { display: grid; }
+@media (max-height: 900px), (max-width: 768px) {
+  .space-shell .health-rail-expander { display: inline-grid; }
   .space-shell .health-indicator-rail:not(.is-expanded) .health-rail-items { display: none; }
 }
 @media (max-height: 520px) {
   .space-shell:not([data-shell-mode="mobile"]) .room-toolbar-collapsed > .room-rail-secondary,
   .space-shell:not([data-shell-mode="mobile"]) .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Show docks"]),
-  .space-shell:not([data-shell-mode="mobile"]) .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Workspace tools"]) { display: none; }
+  .space-shell:not([data-shell-mode="mobile"]) .room-toolbar-collapsed > .desktop-create-rail:has([data-rail-id="tools"]) { display: none; }
   .space-shell:not([data-shell-mode="mobile"]) .room-rail-more { display: contents; }
 }
 .space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed > .room-rail-secondary {
   display: inline-grid;
 }
 .space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Show docks"]),
-.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Workspace tools"]) {
+.space-shell[data-shell-mode="mobile"] .room-toolbar-collapsed > .desktop-create-rail:has([data-rail-id="tools"]) {
   display: contents;
 }
 .space-shell[data-shell-mode="mobile"] .room-rail-more {
@@ -1865,7 +1960,7 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
     display: inline-grid;
   }
   .space-shell .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Show docks"]),
-  .space-shell .room-toolbar-collapsed > .desktop-create-rail:has([aria-label="Workspace tools"]) {
+  .space-shell .room-toolbar-collapsed > .desktop-create-rail:has([data-rail-id="tools"]) {
     display: contents;
   }
   .space-shell .room-rail-more {
@@ -1878,7 +1973,7 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 .pane-title-details,
 .space-shell .pane-title-details {
   position: relative;
-  min-width: 0;
+  min-width: 2.2rem;
   width: fit-content;
   max-width: 100%;
   flex: 0 1 auto;
@@ -1892,6 +1987,7 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
   align-items: center;
   width: fit-content;
   max-width: 100%;
+  min-width: 0;
 }
 .pane-title-details > summary::-webkit-details-marker,
 .space-shell .pane-title-details > summary::-webkit-details-marker { display: none; }
@@ -1939,16 +2035,6 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
   }
   .space-shell .pane-card > header > .pane-actions { display: none; }
 }
-@container pane-card (max-width: 300px) {
-  .space-shell .pane-card > header:not(:has(.pane-title-form)),
-  .space-shell .pane-card > header.is-actions-stacked:not(:has(.pane-title-form)) {
-    grid-template-columns: auto 1fr;
-    grid-template-areas: "badge fixed";
-  }
-  .space-shell .pane-card > header .pane-title-block:not(:has(.pane-title-form)) {
-    display: none;
-  }
-}
 
 .space-shell .board-toolbar { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding: 8px; }
 .space-shell .board-toolbar-main { flex: 1 1 auto; min-width: 0; }
@@ -1976,11 +2062,11 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
 }
 
 /* Fullscreen pane navigation is a primary control even in a narrow pane. */
-.space-shell .pane-card > header:has(.pane-fullscreen-nav) {
+.space-shell .pane-card > header[data-fullscreen-nav] {
   grid-template-areas: "badge title fixed" "actions actions actions";
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
-.space-shell .pane-card > header > .pane-actions:has(.pane-fullscreen-nav) { display: flex; }
+.space-shell .pane-card > header[data-fullscreen-nav] > .pane-actions { display: flex; }
 
 /* Keep the mobile room heading and its icon controls on one row. */
 .space-shell[data-shell-mode="mobile"] .board-toolbar,
@@ -2053,7 +2139,7 @@ body:not([data-color-mode="light"]) .space-shell .room-toolbar-collapsed :is(
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.space-shell .pane-card > header > .pane-actions:has(.pane-fullscreen-nav) > button { display: none; }
+.space-shell .pane-card > header[data-fullscreen-nav] > .pane-actions > button { display: none; }
 
 /* A scrolled grid must size rows to its cards, including tall tablet chat panes. */
 .space-shell .pane-grid { min-height: 0; overflow: auto; }
@@ -2094,7 +2180,6 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 
 .surface-load-error { margin: 16px; padding: 20px; border: 1px solid var(--modern-border, #454545); border-radius: 12px; background: var(--modern-surface, #171717); color: var(--modern-text, #f5f5f5); font: 14px/1.5 system-ui, sans-serif; }
 .surface-load-error button { min-height: 44px; margin: 4px 8px 0 0; padding: 8px 16px; border: 1px solid #555; border-radius: 8px; background: #292929; color: #fff; cursor: pointer; }
-.action-disabled-reason { display: block; margin-top: 4px; font-size: 11px; line-height: 1.4; white-space: normal; color: var(--modern-muted, #aaa); }
 
 /* Classic keeps mobile pane navigation on tablets; its dock need not cover the board. */
 @media (min-width: 768px) {
@@ -2107,8 +2192,17 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   }
 }
 
-/* Task metadata stays inside the existing pane header; terminal hosts are untouched. */
-.space-shell .pane-title-details .pane-title-text { font-size: .8125rem; font-weight: 600; line-height: 1.3; }
+.space-shell .pane-title-details .pane-title-text {
+  font-size: .8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+}
 .space-shell .task-title-popover { position: fixed; margin: 0; inset: auto; width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); box-sizing: border-box; max-height: min(65vh, 560px); overflow-y: auto; color: inherit; }
 .task-title-body { flex: 1; min-width: 0; user-select: text; overflow-wrap: anywhere; }
 .task-title-body p { margin: 0 0 .65rem; white-space: normal; }
@@ -2138,9 +2232,9 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 .room-toolbar-floating-controls button[data-drop-position="after"] { box-shadow: 0 3px 0 var(--room-accent, #79b8ff); }
 
 .health-indicator-rail .minimized-pane-bar-toggle {
-  width: 52px;
-  height: 52px;
-  min-height: 52px;
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2156,9 +2250,13 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   box-sizing: border-box;
 }
 .space-shell .health-indicator-rail .minimized-pane-bar-toggle {
-  width: 48px;
-  height: 44px;
-  min-height: 44px;
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-width: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
+  max-width: var(--toolbar-control-size, 44px);
+  max-height: var(--toolbar-control-size, 44px);
+  box-sizing: border-box;
 }
 
 /* AI Live Real-time Debug Indicator Toast */
@@ -2242,6 +2340,7 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 .space-shell:is([data-shell-mode="desktop"], [data-shell-mode="tablet"], [data-shell-mode="mobile"]) .health-indicator-rail,
 .space-shell:is([data-shell-mode="desktop"], [data-shell-mode="tablet"], [data-shell-mode="mobile"]) .health-indicator-rail.is-offset {
   width: 50px;
+  width: var(--rail-width, 50px);
   right: max(1px, env(safe-area-inset-right));
   padding: 1px;
   gap: 2px;
@@ -2263,7 +2362,20 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   top: calc(32px + max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)));
 }
 
-/* Fullscreen mode: zero top padding and standard top rail positioning so panes fill the screen without losing any lines */
+/* When minimized pane bar is present, align health indicator rail precisely on the same horizontal line */
+.space-shell:has(#minimized-pane-bar):not([data-browser-fullscreen="true"]) .health-indicator-rail,
+.space-shell:has(#minimized-pane-bar):not([data-browser-fullscreen="true"]) .health-indicator-rail.is-offset {
+  top: max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top));
+  padding-top: 1px;
+}
+
+.space-shell:has(.desktop-window-titlebar):has(#minimized-pane-bar):not([data-browser-fullscreen="true"]) .health-indicator-rail,
+.space-shell:has(.desktop-window-titlebar):has(#minimized-pane-bar):not([data-browser-fullscreen="true"]) .health-indicator-rail.is-offset {
+  top: calc(32px + max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)));
+  padding-top: 1px;
+}
+
+/* Fullscreen mode: zero top padding and flush top rail positioning so panes and minimized bar fill the screen and align perfectly */
 :fullscreen,
 :-webkit-full-screen,
 [data-browser-fullscreen="true"],
@@ -2281,7 +2393,8 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 :-webkit-full-screen .health-indicator-rail,
 .space-shell[data-browser-fullscreen="true"] .health-indicator-rail,
 .space-shell[data-browser-fullscreen="true"] .health-indicator-rail.is-offset {
-  top: max(calc(var(--workspace-board-padding, 0.375rem) - 1px), env(safe-area-inset-top)) !important;
+  top: max(0px, env(safe-area-inset-top)) !important;
+  padding-top: 0 !important;
 }
 
 /* Mobile shares the same outer inset while retaining its touch controls. */
@@ -2289,3 +2402,210 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
 .space-shell[data-shell-mode="mobile"] .pane-card[data-pane-mode="TERMINAL"] .pane-body { padding: 2px; }
 .space-shell[data-shell-mode="mobile"] .terminal-xterm .xterm,
 .space-shell[data-shell-mode="mobile"] .terminal-viewport:not(.live) { padding: 3px; }
+
+/* Dynamic downscaled right rail when indicators & toolbar require more vertical space than available */
+:is(
+  .space-shell[data-rail-downscaled="true"],
+  .space-shell[data-resource-rail-expanded="true"][data-rail-downscaled="true"]
+)[data-workspace-rail="true"] {
+  padding-right: calc(var(--rail-padding-right, 46px) + env(safe-area-inset-right));
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator-rail,
+.space-shell[data-rail-downscaled="true"] .health-indicator-rail.is-offset {
+  --toolbar-control-size: var(--toolbar-control-size, 31px) !important;
+  --toolbar-icon-size: var(--toolbar-icon-size, 14px) !important;
+  --rail-width: var(--rail-width, 36px) !important;
+  width: var(--rail-width, 36px) !important;
+  max-width: var(--rail-width, 36px) !important;
+  padding: 1px !important;
+  gap: 2px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-rail-items {
+  gap: 2px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-rail-expander {
+  width: var(--toolbar-control-size, 31px) !important;
+  height: var(--toolbar-control-size, 31px) !important;
+  min-width: var(--toolbar-control-size, 31px) !important;
+  min-height: var(--toolbar-control-size, 31px) !important;
+  max-width: var(--toolbar-control-size, 31px) !important;
+  max-height: var(--toolbar-control-size, 31px) !important;
+  flex: 0 0 var(--toolbar-control-size, 31px) !important;
+  flex-shrink: 0 !important;
+  border-radius: 6px !important;
+  margin-bottom: 2px !important;
+  padding: 0 !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-rail-expander svg {
+  width: var(--toolbar-icon-size, 14px) !important;
+  height: var(--toolbar-icon-size, 14px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator {
+  width: var(--toolbar-control-size, 31px) !important;
+  height: var(--toolbar-control-size, 31px) !important;
+  min-width: var(--toolbar-control-size, 31px) !important;
+  min-height: var(--toolbar-control-size, 31px) !important;
+  max-width: var(--toolbar-control-size, 31px) !important;
+  max-height: var(--toolbar-control-size, 31px) !important;
+  flex: 0 0 var(--toolbar-control-size, 31px) !important;
+  flex-shrink: 0 !important;
+  border-radius: 6px !important;
+  padding: 2px 1px !important;
+  gap: 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator > svg {
+  width: var(--rail-indicator-svg, 11px) !important;
+  height: var(--rail-indicator-svg, 11px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator > strong {
+  font-size: var(--rail-indicator-font, 9px) !important;
+  line-height: calc(var(--rail-indicator-font, 9px) + 1px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator .health-indicator-provider-tag {
+  font-size: var(--rail-tag-font, 6.5px) !important;
+  line-height: calc(var(--rail-tag-font, 6.5px) + 0.5px) !important;
+  margin-top: 0 !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator > .health-dot {
+  right: 2px !important;
+  top: 2px !important;
+  width: 3px !important;
+  height: 3px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator.agents-dashboard-rail-btn {
+  padding: 2px 1px !important;
+  gap: 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-rail-header {
+  min-height: 10px !important;
+  gap: 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-rail-header .agents-rail-icon {
+  width: 10px !important;
+  height: 10px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-live-badge-group {
+  gap: 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-live-badge {
+  height: 9px !important;
+  font-size: 7px !important;
+  padding: 0 1.5px !important;
+  border-radius: 4px !important;
+  gap: 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-badge-dot {
+  width: 2.5px !important;
+  height: 2.5px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-dashboard-rail-btn > strong {
+  font-size: var(--rail-indicator-font, 9px) !important;
+  line-height: calc(var(--rail-indicator-font, 9px) + 1px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .agents-rail-bar {
+  width: 24px !important;
+  height: 2px !important;
+  margin-top: 0 !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator-rail .minimized-pane-bar-toggle {
+  width: var(--toolbar-control-size, 31px) !important;
+  height: var(--toolbar-control-size, 31px) !important;
+  min-width: var(--toolbar-control-size, 31px) !important;
+  min-height: var(--toolbar-control-size, 31px) !important;
+  max-width: var(--toolbar-control-size, 31px) !important;
+  max-height: var(--toolbar-control-size, 31px) !important;
+  flex: 0 0 var(--toolbar-control-size, 31px) !important;
+  flex-shrink: 0 !important;
+  border-radius: 6px !important;
+  padding: 2px 1px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .health-indicator-rail .health-rail-tooltip {
+  right: calc(var(--rail-width, 36px) + 10px);
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed {
+  --toolbar-control-size: var(--toolbar-control-size, 31px) !important;
+  --toolbar-icon-size: var(--toolbar-icon-size, 14px) !important;
+  width: var(--rail-width, 36px) !important;
+  max-width: var(--rail-width, 36px) !important;
+  padding: 1px !important;
+  gap: 2px !important;
+  bottom: max(6px, env(safe-area-inset-bottom)) !important;
+  max-height: calc(100dvh - var(--resource-rail-height, 228px) - 44px - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed :is(
+  > button:not(.room-live-rail-button),
+  .desktop-create-rail > button,
+  .room-toolbar-visibility-button:not(.room-live-rail-button)
+) {
+  width: var(--toolbar-control-size, 31px) !important;
+  height: var(--toolbar-control-size, 31px) !important;
+  min-width: var(--toolbar-control-size, 31px) !important;
+  min-height: var(--toolbar-control-size, 31px) !important;
+  max-width: var(--toolbar-control-size, 31px) !important;
+  max-height: var(--toolbar-control-size, 31px) !important;
+  flex: 0 0 var(--toolbar-control-size, 31px) !important;
+  border-radius: 6px !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed svg {
+  width: var(--toolbar-icon-size, 14px) !important;
+  height: var(--toolbar-icon-size, 14px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button,
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .live-pane-orb-button {
+  width: var(--rail-live-btn, 34px) !important;
+  height: var(--rail-live-btn, 34px) !important;
+  min-width: var(--rail-live-btn, 34px) !important;
+  min-height: var(--rail-live-btn, 34px) !important;
+  max-width: var(--rail-live-btn, 34px) !important;
+  max-height: var(--rail-live-btn, 34px) !important;
+  right: max(1px, env(safe-area-inset-right)) !important;
+  top: clamp(
+    calc(var(--live-rail-top-edge) + 26px),
+    var(--live-rail-midpoint),
+    calc(var(--live-rail-bottom-edge) - 26px)
+  ) !important;
+}
+
+.space-shell[data-rail-downscaled="true"]:has(.desktop-window-titlebar):not([data-browser-fullscreen="true"]):has(.health-indicator-rail) .room-toolbar-collapsed :is(.room-live-rail-button, .live-pane-orb-button) {
+  --live-rail-top-edge: calc(32px + max(8px, env(safe-area-inset-top)) + var(--resource-rail-height, 252px)) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button .room-live-rail-sphere,
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .live-pane-orb-button .room-live-rail-sphere {
+  width: var(--rail-live-sphere, 20px) !important;
+  height: var(--rail-live-sphere, 20px) !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .room-live-rail-button::before,
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .live-pane-orb-button::before {
+  inset: -3px !important;
+  filter: blur(5px) !important;
+  opacity: 0.3 !important;
+}
+
+.space-shell[data-rail-downscaled="true"] .room-toolbar-collapsed .minimized-pane-bar-toggle .minimized-pane-bar-toggle-count {
+  font-size: var(--rail-indicator-font, 9px) !important;
+}

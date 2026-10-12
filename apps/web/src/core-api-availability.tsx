@@ -1,62 +1,12 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import { X } from "./features/ui-theme/app-icons.js";
 
-export const CORE_API_RECOVERY_WINDOW_MS = 10_000;
+export { CORE_API_RECOVERY_WINDOW_MS, reportCoreApiFailure, reportCoreApiSuccess, resetCoreApiAvailability } from "./core-api-state.js";
+import { getCoreApiUnavailable, subscribeCoreApiAvailability } from "./core-api-state.js";
 export const ACTION_ERROR_DISMISS_MS = 10_000;
 
 const outageMessage =
   "UPSTREAM_UNAVAILABLE: Space API has been unavailable for more than 10 seconds. Room state may be stale; active CLI sessions continue running.";
-const listeners = new Set<(unavailable: boolean) => void>();
-let failureTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-let failureStarted = false;
-let lastSuccessAt = Number.NEGATIVE_INFINITY;
-let unavailable = false;
-
-function publish(nextUnavailable: boolean) {
-  if (unavailable === nextUnavailable) return;
-  unavailable = nextUnavailable;
-  for (const listener of listeners) listener(unavailable);
-}
-
-function clearFailureTimer() {
-  if (failureTimer === null) return;
-  globalThis.clearTimeout(failureTimer);
-  failureTimer = null;
-}
-
-export function reportCoreApiFailure(requestStartedAt = Date.now()) {
-  if (requestStartedAt < lastSuccessAt) return;
-  if (failureStarted) return;
-  failureStarted = true;
-  failureTimer = globalThis.setTimeout(() => {
-    failureTimer = null;
-    if (failureStarted) publish(true);
-  }, CORE_API_RECOVERY_WINDOW_MS);
-}
-
-export function reportCoreApiSuccess() {
-  lastSuccessAt = Date.now();
-  failureStarted = false;
-  clearFailureTimer();
-  publish(false);
-}
-
-export function resetCoreApiAvailability() {
-  lastSuccessAt = Number.NEGATIVE_INFINITY;
-  failureStarted = false;
-  clearFailureTimer();
-  publish(false);
-}
-
-function subscribe(listener: (nextUnavailable: boolean) => void) {
-  listeners.add(listener);
-  listener(unavailable);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) resetCoreApiAvailability();
-  };
-}
-
 function ErrorBanner({ message, autoDismiss, onDismiss }: {
   message: string;
   autoDismiss: boolean;
@@ -100,8 +50,8 @@ export function GlobalApiErrorAlert({ actionError, onDismissActionError }: {
   actionError: string | null;
   onDismissActionError?: () => void;
 }) {
-  const [coreApiUnavailable, setCoreApiUnavailable] = useState(unavailable);
-  useEffect(() => subscribe(setCoreApiUnavailable), []);
+  const [coreApiUnavailable, setCoreApiUnavailable] = useState(getCoreApiUnavailable());
+  useEffect(() => subscribeCoreApiAvailability(setCoreApiUnavailable), []);
   const message = actionError ?? (coreApiUnavailable ? outageMessage : null);
   return message ? <ErrorBanner key={`${actionError !== null ? "action" : "outage"}:${message}`}
     message={message} autoDismiss={actionError !== null}

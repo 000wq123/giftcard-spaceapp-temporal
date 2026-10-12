@@ -1108,9 +1108,9 @@
 }
 .health-indicator {
   position: relative;
-  width: 52px;
-  height: 52px;
-  min-height: 52px;
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1118,10 +1118,10 @@
   gap: 2px;
   border: 1px solid var(--health-border);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--health-surface) 95%, transparent);
+  /* --health-surface is opaque in every theme; no backdrop blur is needed. */
+  background: var(--health-surface);
   color: var(--health-text);
   box-shadow: 0 5px 16px #0003;
-  backdrop-filter: blur(10px);
   cursor: pointer;
   padding: 4px;
 }
@@ -1488,13 +1488,18 @@ body:has(.health-resources) .health-indicator-rail {
     padding: 10px 8px;
   }
   .health-indicator-rail {
-    width: 44px;
+    width: var(--rail-width, 50px);
   }
   .health-rail-expander {
-    display: grid;
+    display: inline-grid;
     place-items: center;
-    width: 44px;
-    height: 44px;
+    width: var(--toolbar-control-size, 44px);
+    height: var(--toolbar-control-size, 44px);
+    min-width: var(--toolbar-control-size, 44px);
+    min-height: var(--toolbar-control-size, 44px);
+    max-width: var(--toolbar-control-size, 44px);
+    max-height: var(--toolbar-control-size, 44px);
+    box-sizing: border-box;
     border: 1px solid var(--health-border);
     border-radius: 8px;
     background: var(--health-surface);
@@ -1502,8 +1507,8 @@ body:has(.health-resources) .health-indicator-rail {
     margin-bottom: 6px;
   }
   .health-rail-expander svg {
-    width: 18px;
-    height: 18px;
+    width: var(--toolbar-icon-size, 20px);
+    height: var(--toolbar-icon-size, 20px);
   }
   .health-rail-items {
     display: none;
@@ -1512,9 +1517,9 @@ body:has(.health-resources) .health-indicator-rail {
     display: flex;
   }
   .health-indicator {
-    width: 44px;
-    height: 44px;
-    min-height: 44px;
+    width: var(--toolbar-control-size, 44px);
+    height: var(--toolbar-control-size, 44px);
+    min-height: var(--toolbar-control-size, 44px);
   }
   .health-indicator-rail.is-offset {
     right: calc(max(0.55rem, env(safe-area-inset-right)) + 60px);
@@ -2022,6 +2027,9 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
   cursor: pointer;
   user-select: none;
 }
+.topology-autorefresh-toggle .space-toggle-track { width: 2.1rem; height: 1.2rem; }
+.topology-autorefresh-toggle .space-toggle-thumb { width: 0.8rem; height: 0.8rem; }
+.topology-autorefresh-toggle .space-toggle-state { display: none; }
 
 .topology-refresh-btn {
   display: flex;
@@ -3283,7 +3291,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 }
 .resources-unified .system-analytics-workspace { position:static; inset:auto; width:auto; height:auto; max-height:none; min-width:0; overflow:visible; border:0; box-shadow:none; }
 .resources-unified .system-analytics-body,.resources-unified .system-analytics-content{overflow:visible;max-height:none}
-.resources-unified .health-window-footer>span:nth-child(2){display:none}.resources-unified .toolbar-metric-list{max-height:none;overflow:visible}.resources-unified .toolbar-metric-provider-tabs{display:flex;flex-wrap:wrap}.resources-unified .toolbar-metric-tab-btn{flex:1 1 80px}
+.resources-unified .health-window-footer>span:nth-child(2){display:none}.resources-unified .toolbar-metric-list{max-height:none;overflow:visible}.resources-unified .toolbar-metric-provider-tabs{display:flex;flex-wrap:wrap}.resources-unified .toolbar-metric-tab-btn{flex:1 1 auto;padding-inline:0.4rem;white-space:nowrap}
 .resources-quota-window { display:flex; gap:6px; margin:12px 0 8px; }.resources-quota-window button{padding:6px 14px;font-size:12px;color:inherit;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:6px;cursor:pointer;transition:all 0.15s ease}.resources-quota-window button:hover{background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.28)}.resources-quota-window button[aria-pressed=true],.resources-quota-window button.is-active{border:1.5px solid #53cbb5;box-shadow:0 0 0 1.5px #53cbb5;background:rgba(83,203,181,0.16);color:#53cbb5;font-weight:600}
 .resources-quota-filters { display:flex; gap:6px; margin:0 0 12px; flex-wrap:wrap; }.resources-quota-filters button{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;font-size:12px;font-weight:500;color:#c9d1d9;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:6px;cursor:pointer;transition:all 0.15s ease;white-space:nowrap}.resources-quota-filters button:hover{background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.28);color:#fff}.resources-quota-filters button[aria-pressed=true],.resources-quota-filters button.is-active{border:1.5px solid #53cbb5;box-shadow:0 0 0 1.5px #53cbb5;background:rgba(83,203,181,0.16);color:#53cbb5;font-weight:600}
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .resources-quota-window button,
@@ -3364,10 +3372,15 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 
 /* Shell mode mobile: support expander and collapsed rail items */
 :is(.health-theme-root[data-shell-mode="mobile"], [data-shell-mode="mobile"]) .health-rail-expander {
-  display: grid !important;
+  display: inline-grid !important;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: var(--toolbar-control-size, 44px);
+  height: var(--toolbar-control-size, 44px);
+  min-width: var(--toolbar-control-size, 44px);
+  min-height: var(--toolbar-control-size, 44px);
+  max-width: var(--toolbar-control-size, 44px);
+  max-height: var(--toolbar-control-size, 44px);
+  box-sizing: border-box;
   border: 1px solid var(--health-border);
   border-radius: 8px;
   background: var(--health-surface);
@@ -3380,7 +3393,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 
 /* Virtual keyboard open on mobile: collapse indicator items, keep expander icon visible and toggleable */
 :is(html[data-virtual-keyboard-open="true"], body[data-virtual-keyboard-open="true"], [data-virtual-keyboard-open="true"]) .health-indicator-rail .health-rail-expander {
-  display: grid !important;
+  display: inline-grid !important;
 }
 :is(html[data-virtual-keyboard-open="true"], body[data-virtual-keyboard-open="true"], [data-virtual-keyboard-open="true"]) .health-indicator-rail:not(.is-expanded) .health-rail-items {
   display: none !important;
@@ -3393,7 +3406,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
 
 @media (max-width: 768px), (pointer: coarse) {
   :is(body, .space-shell, html):has(:focus:is(input, textarea, [contenteditable="true"], .xterm-helper-textarea)) .health-indicator-rail .health-rail-expander {
-    display: grid !important;
+    display: inline-grid !important;
   }
   :is(body, .space-shell, html):has(:focus:is(input, textarea, [contenteditable="true"], .xterm-helper-textarea)) .health-indicator-rail:not(.is-expanded) .health-rail-items {
     display: none !important;

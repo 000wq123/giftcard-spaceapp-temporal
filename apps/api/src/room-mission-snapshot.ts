@@ -7,8 +7,11 @@ export function roomMissionSnapshot(mission: RoomAgentMissionRecord | null, acti
     mission,
     objective: typeof mission.executionState.objective === "string" ? mission.executionState.objective : null,
     source: mission.executionState.source === "LIVE" ? "LIVE" : "ROOM_AGENT",
+    // A task whose quality evaluation failed (LOW_QUALITY) or never produced a score
+    // (no readable result, evaluator unavailable) is not verified success.
     completionVerified: mission.status === "COMPLETED" && actions.length > 0 &&
-      actions.every(action => action.status === "COMPLETED") && taskRuns.every(run => run.status === "COMPLETED"),
+      actions.every(action => action.status === "COMPLETED") &&
+      taskRuns.every(run => run.status === "COMPLETED" && run.qualityScore !== null),
     actionCount: actions.length,
     actionsTruncated: actions.length > 200,
     actions: actions.slice(-200).map(action => ({

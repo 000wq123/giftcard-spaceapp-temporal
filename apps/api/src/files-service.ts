@@ -1,8 +1,11 @@
-import { lstat, readdir, readFile, writeFile, mkdir, rename, chmod, rm } from "node:fs/promises";
+import { lstat, readdir, open, writeFile, mkdir, rename, chmod, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import os from "node:os";
+import { constants } from "node:fs";
+import { FilesystemError, filesystemError } from "./filesystem-error.js";
+import { openWorkspacePath, descriptorPath, readBoundedText } from "./workspace-filesystem.js";
+export { FilesystemError } from "./filesystem-error.js";
 import type { AuthUser, FileItem } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
@@ -98,15 +101,6 @@ const MIME_TYPE_MAP: Record<string, string> = {
   ".tgz": "application/gzip"
 };
 
-export class FilesystemError extends Error {
-  statusCode: number;
-  constructor(message: string, statusCode = 400) {
-    super(message);
-    this.name = "FilesystemError";
-    this.statusCode = statusCode;
-  }
-}
-
 export function detectMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const basename = path.basename(filePath).toLowerCase();
@@ -159,7 +153,33 @@ export function formatOctalPermissions(mode: number): string {
 export function isPathInWorkspace(targetPath: string, workspaceRoot: string = WORKSPACE_ROOT): boolean {
   const resolvedTarget = path.resolve(targetPath);
   const resolvedRoot = path.resolve(workspaceRoot);
-  return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path.sep);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+let hostModeEnabled = true;
+
+/** Server-side switch for Admin (host) Mode, set by the composition root from
+ * SPACE_FILES_HOST_MODE. Disabled means no role can browse outside User Mode. */
+export function configureFilesHostMode(enabled: boolean): void {
+  hostModeEnabled = enabled;
+}
+
+/** Top-level install directories that hold secrets, backups or other users'
+ * runtime data (artifacts, uploads, diagnostics). User Mode never reaches them. */
+const userModeRestrictedTopLevel = new Set(["var", "secrets", "backups", ".git"]);
+const environmentFilePattern = /^\.env(\..+)?$/;
+
+/** True when User Mode must not read, list or search this workspace path:
+ * restricted install directories and environment files (except examples). */
+export function isUserModeRestricted(targetPath: string, workspaceRoot: string = WORKSPACE_ROOT): boolean {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(targetPath));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep);
+  // Managed worktrees are code checkouts that worktree panes browse in User Mode.
+  const managedWorktree = segments[0] === "var" && segments[1] === "worktrees";
+  if (userModeRestrictedTopLevel.has(segments[0]!) && !managedWorktree) return true;
+  return segments.some((segment) => environmentFilePattern.test(segment) && segment !== ".env.example");
 }
 
 export function assertAccessAllowed(
@@ -172,6 +192,9 @@ export function assertAccessAllowed(
   const hasAdminRole = Boolean(user && (user.role === "ADMIN" || user.role === "OPERATOR"));
 
   if (mode === "admin") {
+    if (!hostModeEnabled) {
+      throw new FilesystemError("Admin Mode filesystem access is disabled on this server.", 403, "HOST_MODE_DISABLED");
+    }
     if (!hasAdminRole) {
       throw new FilesystemError("Admin role required for Admin Mode filesystem access.", 403);
     }
@@ -184,6 +207,9 @@ export function assertAccessAllowed(
       `Access outside workspace root (${workspaceRoot}) requires Admin Mode.`,
       403
     );
+  }
+  if (isUserModeRestricted(resolvedPath, workspaceRoot)) {
+    throw new FilesystemError("This location holds server secrets or runtime data and requires Admin Mode.", 403, "RESTRICTED_PATH");
   }
 
   return { resolvedPath, isAdmin: false };
@@ -200,74 +226,89 @@ export async function listDirectory(options: {
   const requestedPath = options.targetPath || root;
   const { resolvedPath, isAdmin } = assertAccessAllowed(requestedPath, options.mode, options.user, root);
 
-  let dirStats;
+  const handle = isAdmin ? await open(resolvedPath, constants.O_RDONLY | constants.O_DIRECTORY)
+    : await openWorkspacePath(root, resolvedPath, true);
   try {
-    dirStats = await lstat(resolvedPath);
+    const accessPath = descriptorPath(handle);
+    const rawEntries = await readdir(accessPath, { withFileTypes: true });
+    const entries: FileItem[] = [];
+
+    for (const dirent of rawEntries) {
+      if (!options.showHidden && dirent.name.startsWith(".")) {
+        continue;
+      }
+
+      const fullPath = path.join(resolvedPath, dirent.name);
+      if (!isAdmin && isUserModeRestricted(fullPath, root)) continue;
+      try {
+        const stats = await lstat(path.join(accessPath, dirent.name));
+        const isDirectory = stats.isDirectory();
+        const isSymbolicLink = stats.isSymbolicLink();
+        const mimeType = isDirectory ? "inode/directory" : detectMimeType(fullPath);
+        const extension = isDirectory ? "" : path.extname(dirent.name).toLowerCase();
+        const birthtime = stats.birthtime ? stats.birthtime.toISOString() : stats.ctime.toISOString();
+        const size = isDirectory ? 0 : stats.size;
+
+        entries.push({
+          name: dirent.name,
+          path: fullPath,
+          isDirectory,
+          isSymbolicLink,
+          size,
+          mtime: stats.mtime.toISOString(),
+          birthtime,
+          mode: stats.mode,
+          permissions: formatPermissions(stats.mode),
+          octalPermissions: formatOctalPermissions(stats.mode),
+          owner: String(stats.uid),
+          mimeType,
+          extension
+        });
+      } catch {
+        // Ignore unreadable entries (e.g. broken symlinks or permission denied)
+      }
+    }
+
+    // Sort: directories first, then alphabetical
+    entries.sort((a, b) => {
+      if (a.isDirectory && !b.isDirectory) return -1;
+      if (!a.isDirectory && b.isDirectory) return 1;
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    });
+
+    const parentPath = resolvedPath === "/" ? null : path.dirname(resolvedPath);
+    const canGoUp = Boolean(parentPath && (isAdmin || isPathInWorkspace(parentPath, root)));
+
+    return {
+      currentPath: resolvedPath,
+      parentPath: canGoUp ? parentPath : null,
+      workspaceRoot: root,
+      isAdminMode: isAdmin,
+      canGoUp,
+      entries,
+      totalCount: entries.length
+    };
+  } catch (error) { throw filesystemError(error); }
+  finally { await handle.close(); }
+}
+
+export async function openFileForRead(options: {
+  targetPath: string;
+  mode?: "user" | "admin";
+  user?: AuthUser | null;
+  workspaceRoot?: string;
+}) {
+  const root = options.workspaceRoot || WORKSPACE_ROOT;
+  const { resolvedPath, isAdmin } = assertAccessAllowed(options.targetPath, options.mode, options.user, root);
+  if (!isAdmin) return openWorkspacePath(root, resolvedPath);
+  const handle = await open(resolvedPath, constants.O_RDONLY | constants.O_NONBLOCK).catch((error) => { throw filesystemError(error); });
+  try {
+    if (!(await handle.stat()).isFile()) throw new FilesystemError("Only regular files can be read.", 400);
+    return handle;
   } catch (error) {
-    throw new FilesystemError(`Directory not found: ${resolvedPath}`, 404);
+    await handle.close();
+    throw error;
   }
-
-  if (!dirStats.isDirectory()) {
-    throw new FilesystemError(`Path is not a directory: ${resolvedPath}`, 400);
-  }
-
-  const rawEntries = await readdir(resolvedPath, { withFileTypes: true });
-  const entries: FileItem[] = [];
-
-  for (const dirent of rawEntries) {
-    if (!options.showHidden && dirent.name.startsWith(".")) {
-      continue;
-    }
-
-    const fullPath = path.join(resolvedPath, dirent.name);
-    try {
-      const stats = await lstat(fullPath);
-      const isDirectory = stats.isDirectory();
-      const isSymbolicLink = stats.isSymbolicLink();
-      const mimeType = isDirectory ? "inode/directory" : detectMimeType(fullPath);
-      const extension = isDirectory ? "" : path.extname(dirent.name).toLowerCase();
-      const birthtime = stats.birthtime ? stats.birthtime.toISOString() : stats.ctime.toISOString();
-      const size = isDirectory ? 0 : stats.size;
-
-      entries.push({
-        name: dirent.name,
-        path: fullPath,
-        isDirectory,
-        isSymbolicLink,
-        size,
-        mtime: stats.mtime.toISOString(),
-        birthtime,
-        mode: stats.mode,
-        permissions: formatPermissions(stats.mode),
-        octalPermissions: formatOctalPermissions(stats.mode),
-        owner: String(stats.uid),
-        mimeType,
-        extension
-      });
-    } catch {
-      // Ignore unreadable entries (e.g. broken symlinks or permission denied)
-    }
-  }
-
-  // Sort: directories first, then alphabetical
-  entries.sort((a, b) => {
-    if (a.isDirectory && !b.isDirectory) return -1;
-    if (!a.isDirectory && b.isDirectory) return 1;
-    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-  });
-
-  const parentPath = resolvedPath === "/" ? null : path.dirname(resolvedPath);
-  const canGoUp = Boolean(parentPath && (isAdmin || isPathInWorkspace(parentPath, root)));
-
-  return {
-    currentPath: resolvedPath,
-    parentPath: canGoUp ? parentPath : null,
-    workspaceRoot: root,
-    isAdminMode: isAdmin,
-    canGoUp,
-    entries,
-    totalCount: entries.length
-  };
 }
 
 export async function readFileContent(options: {
@@ -279,41 +320,34 @@ export async function readFileContent(options: {
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const { resolvedPath, isAdmin } = assertAccessAllowed(options.targetPath, options.mode, options.user, root);
 
-  let stats;
+  const handle = await openFileForRead(options);
   try {
-    stats = await lstat(resolvedPath);
-  } catch {
-    throw new FilesystemError(`File not found: ${resolvedPath}`, 404);
-  }
+    const stats = await handle.stat();
+    const mimeType = detectMimeType(resolvedPath);
+    const isBinary = !isTextFile(mimeType, resolvedPath);
+    const MAX_TEXT_SIZE = 10 * 1024 * 1024; // 10MB limit for text editor
 
-  if (stats.isDirectory()) {
-    throw new FilesystemError(`Cannot read directory as file: ${resolvedPath}`, 400);
-  }
-
-  const mimeType = detectMimeType(resolvedPath);
-  const isBinary = !isTextFile(mimeType, resolvedPath);
-  const MAX_TEXT_SIZE = 10 * 1024 * 1024; // 10MB limit for text editor
-
-  let content: string | null = null;
-  if (!isBinary) {
-    if (stats.size > MAX_TEXT_SIZE) {
-      throw new FilesystemError(`File is too large for editor (${Math.round(stats.size / 1024 / 1024)}MB). Max 10MB.`, 400);
+    let content: string | null = null;
+    if (!isBinary) {
+      if (stats.size > MAX_TEXT_SIZE) {
+        throw new FilesystemError(`File is too large for editor (${Math.round(stats.size / 1024 / 1024)}MB). Max 10MB.`, 400);
+      }
+      content = await readBoundedText(handle, MAX_TEXT_SIZE);
     }
-    content = await readFile(resolvedPath, "utf-8");
-  }
 
-  return {
-    path: resolvedPath,
-    name: path.basename(resolvedPath),
-    size: stats.size,
-    mimeType,
-    isBinary,
-    content,
-    permissions: formatPermissions(stats.mode),
-    octalPermissions: formatOctalPermissions(stats.mode),
-    mtime: stats.mtime.toISOString(),
-    editable: !isBinary && isAdmin
-  };
+    return {
+      path: resolvedPath,
+      name: path.basename(resolvedPath),
+      size: stats.size,
+      mimeType,
+      isBinary,
+      content,
+      permissions: formatPermissions(stats.mode),
+      octalPermissions: formatOctalPermissions(stats.mode),
+      mtime: stats.mtime.toISOString(),
+      editable: !isBinary && isAdmin
+    };
+  } finally { await handle.close(); }
 }
 
 export async function writeFileContent(options: {
@@ -462,6 +496,22 @@ export async function deleteEntry(options: {
   };
 }
 
+/**
+ * A successful search states its outcome explicitly: OK (matches) or
+ * EMPTY_RESULT (the search ran and matched nothing). Every failure is a thrown
+ * FilesystemError with TOOL_UNAVAILABLE, TIMEOUT, PERMISSION_DENIED or
+ * SEARCH_FAILED, so callers can never mistake a broken tool for no matches.
+ */
+function searchResult(query: string, results: FileItem[], truncated: boolean) {
+  return {
+    query,
+    results,
+    totalCount: results.length,
+    code: results.length ? ("OK" as const) : ("EMPTY_RESULT" as const),
+    truncated
+  };
+}
+
 export async function searchFiles(options: {
   targetPath?: string;
   query: string;
@@ -472,17 +522,43 @@ export async function searchFiles(options: {
 }) {
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const searchRoot = options.targetPath || root;
-  const { resolvedPath } = assertAccessAllowed(searchRoot, options.mode, options.user, root);
+  const { resolvedPath, isAdmin } = assertAccessAllowed(searchRoot, options.mode, options.user, root);
   const limit = options.limit || 50;
 
-  // Use ripgrep --files with case-insensitive glob if available
+  if (!isAdmin) {
+    const results: FileItem[] = [];
+    const pending = [resolvedPath];
+    const deadline = Date.now() + 5000;
+    let scanned = 0;
+    let truncated = false;
+    while (pending.length && results.length < limit) {
+      if (Date.now() > deadline || scanned > 10_000) throw new FilesystemError("File search exceeded its scan budget.", 504, "TIMEOUT");
+      const directory = pending.pop()!;
+      const listing = await listDirectory({ ...options, targetPath: directory, workspaceRoot: root });
+      for (const entry of listing.entries) {
+        scanned++;
+        if (scanned > 10_000 || Date.now() > deadline) throw new FilesystemError("File search exceeded its scan budget.", 504, "TIMEOUT");
+        if (entry.isSymbolicLink) continue;
+        if (entry.isDirectory) {
+          if (entry.name !== "node_modules" && entry.name !== ".git") pending.push(entry.path);
+        } else if (path.matchesGlob(options.query.includes("/") ? path.relative(resolvedPath, entry.path) : entry.name, `*${options.query}*`)) {
+          results.push(entry);
+          if (results.length === limit) { truncated = true; break; }
+        }
+      }
+    }
+    return searchResult(options.query, results, truncated);
+  }
+
+  // Host mode intentionally retains the operator's unrestricted search.
   try {
     const { stdout } = await execFileAsync(
       "rg",
       ["--files", "--glob", `*${options.query}*`, resolvedPath],
-      { maxBuffer: 10 * 1024 * 1024 }
+      { maxBuffer: 10 * 1024 * 1024, timeout: 5000 }
     );
-    const lines = stdout.trim().split("\n").filter(Boolean).slice(0, limit);
+    const allLines = stdout.trim().split("\n").filter(Boolean);
+    const lines = allLines.slice(0, limit);
     const results: FileItem[] = [];
 
     for (const filePath of lines) {
@@ -507,17 +583,14 @@ export async function searchFiles(options: {
       }
     }
 
-    return {
-      query: options.query,
-      results,
-      totalCount: results.length
-    };
-  } catch {
-    // If rg fails or produces nothing, return empty
-    return {
-      query: options.query,
-      results: [],
-      totalCount: 0
-    };
+    return searchResult(options.query, results, allLines.length > limit);
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; stderr?: string };
+    // ripgrep exits 1 with no stderr only when the search ran and matched nothing.
+    if ((failure.code as unknown) === 1 && !failure.stderr?.trim()) return searchResult(options.query, [], false);
+    if (failure.code === "ENOENT") throw new FilesystemError("File search tool is unavailable.", 503, "TOOL_UNAVAILABLE");
+    if (failure.killed || failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new FilesystemError("File search exceeded its time or output limit.", 504, "TIMEOUT");
+    if (failure.code === "EACCES" || /permission denied/i.test(failure.stderr ?? "")) throw new FilesystemError("File search permission denied.", 403, "PERMISSION_DENIED");
+    throw new FilesystemError("File search failed.", 502, "SEARCH_FAILED");
   }
 }

@@ -4,6 +4,7 @@ import { MessageSquare, Mic, Network, X } from "../ui-theme/app-icons.js";
 import { useLayoutEffect, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { CHAT_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
 export { CHAT_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 const VIEWPORT_MARGIN = 8;
 const ANCHOR_GAP = 8;
@@ -18,8 +19,10 @@ interface ChatLauncherMenuProps {
   onSelectLive?: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
   chatDisabled?: boolean;
+  chatHidden?: boolean;
   harnessDisabled?: boolean;
   liveDisabled?: boolean;
+  liveHidden?: boolean;
   harnessHidden?: boolean;
 }
 
@@ -35,8 +38,10 @@ export function ChatLauncherMenu({
   onSelectLive,
   triggerRef,
   chatDisabled,
+  chatHidden,
   harnessDisabled,
   liveDisabled,
+  liveHidden,
   harnessHidden,
 }: ChatLauncherMenuProps) {
   const embedded = useWorkspaceSurface();
@@ -84,6 +89,7 @@ export function ChatLauncherMenu({
   useEffect(() => {
     if (mobile || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       closeIntentRef.current = "dismissal";
@@ -140,20 +146,22 @@ export function ChatLauncherMenu({
 
   const content = (
     <>
-      <button
-        type="button"
-        role={mobile ? undefined : "menuitem"}
-        className={mobile ? "mobile-action-sheet-main" : undefined}
-        aria-label="Add chat pane"
-        disabled={Boolean(chatDisabled)}
-        onClick={() => runAction(onSelectChat)}
-      >
-        <MessageSquare aria-hidden="true" />
-        <span>
-          <strong>Add chat pane</strong>
-          <small>Chat pane</small>
-        </span>
-      </button>
+      {!chatHidden ? (
+        <button
+          type="button"
+          role={mobile ? undefined : "menuitem"}
+          className={mobile ? "mobile-action-sheet-main" : undefined}
+          aria-label="Add chat pane"
+          disabled={Boolean(chatDisabled)}
+          onClick={() => runAction(onSelectChat)}
+        >
+          <MessageSquare aria-hidden="true" />
+          <span>
+            <strong>Add chat pane</strong>
+            <small>Chat pane</small>
+          </span>
+        </button>
+      ) : null}
       {!harnessHidden ? (
         <button
           type="button"
@@ -170,7 +178,7 @@ export function ChatLauncherMenu({
           </span>
         </button>
       ) : null}
-      {onSelectLive ? (
+      {onSelectLive && !liveHidden ? (
         <button
           type="button"
           role={mobile ? undefined : "menuitem"}

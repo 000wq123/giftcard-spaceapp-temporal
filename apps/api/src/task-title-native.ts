@@ -9,6 +9,8 @@ const metadataSchema = z.object({
   requests: z.array(z.string().max(3000)).max(12).optional(),
 });
 export type NativeTaskMetadata = z.infer<typeof metadataSchema>;
+/** Qwen Code session ids (`qwen --resume <id>`); the wrapper and sudoers admit only this form. */
+export const qwenNativeSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const commands: Record<string, string> = {
   "cli:qwen": "/opt/spaceapp/bin/qwen-vscode-parity",
   "cli:hermes": "/opt/spaceapp/bin/hermes-vscode-parity",

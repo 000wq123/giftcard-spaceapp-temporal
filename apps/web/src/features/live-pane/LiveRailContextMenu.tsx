@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 export function LiveRailContextMenu({
   x,
@@ -31,6 +32,7 @@ export function LiveRailContextMenu({
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       if (!ref.current?.contains(event.target as Node)) onClose();
     };
     const escape = (event: KeyboardEvent) => {

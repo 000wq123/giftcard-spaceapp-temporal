@@ -1,6 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createReadStream } from "node:fs";
-import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   fileListQuerySchema,
@@ -10,7 +8,8 @@ import {
   fileRenameRequestSchema,
   fileChmodRequestSchema,
   fileDeleteRequestSchema,
-  fileSearchQuerySchema
+  fileSearchQuerySchema,
+  categorizeFailureCode
 } from "@space/contracts";
 import {
   listDirectory,
@@ -23,32 +22,46 @@ import {
   searchFiles,
   assertAccessAllowed,
   detectMimeType,
+  openFileForRead,
   FilesystemError,
-  WORKSPACE_ROOT
+  WORKSPACE_ROOT,
+  configureFilesHostMode
 } from "./files-service.js";
+import type {} from "./request-context.js";
+import { applyFileResponsePolicy } from "./file-response-policy.js";
+import { acquireFileUpload, stageFileUpload, fileUploadLimits, type StagedUpload } from "./file-upload.js";
 import { initFilesCache, getDiskUsageAndCache } from "./files-cache.js";
 
 function handleFileError(error: unknown, reply: FastifyReply) {
+  const requestId = reply.request?.requestIdForSpace ?? reply.request?.id;
   if (error instanceof FilesystemError) {
     return reply.status(error.statusCode).send({
       ok: false,
       error: {
-        code: "FILESYSTEM_ERROR",
-        message: error.message
+        code: error.code,
+        message: error.message,
+        // Additive: bounded category and the request id that correlates logs.
+        category: categorizeFailureCode(error.code),
+        requestId
       }
     });
   }
-  const message = error instanceof Error ? error.message : "Internal filesystem error";
+  // Unexpected errors can carry host paths or file content in their message:
+  // log them server-side under the request id and return a fixed message.
+  reply.request?.log?.error({ err: error, requestId }, "filesystem request failed");
   return reply.status(500).send({
     ok: false,
     error: {
       code: "INTERNAL_ERROR",
-      message
+      message: "Internal filesystem error.",
+      category: "INTERNAL",
+      requestId
     }
   });
 }
 
-export function registerFilesRoutes(app: FastifyInstance) {
+export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEnabled?: boolean } = {}) {
+  configureFilesHostMode(options.hostModeEnabled ?? true);
   // Initialize background 24h disk & folder size cache
   initFilesCache();
 
@@ -101,25 +114,16 @@ export function registerFilesRoutes(app: FastifyInstance) {
   app.get("/api/files/raw", async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const query = fileReadQuerySchema.parse(request.query);
-      const { resolvedPath } = assertAccessAllowed(query.path, query.mode, request.user, WORKSPACE_ROOT);
-      const stats = await lstat(resolvedPath);
-      if (stats.isDirectory()) {
-        return reply.status(400).send({ ok: false, error: "Cannot stream directory." });
+      const handle = await openFileForRead({ targetPath: query.path, mode: query.mode, user: request.user });
+      try {
+        const stats = await handle.stat();
+        applyFileResponsePolicy(reply, detectMimeType(query.path), path.basename(query.path), query.raw === "true");
+        reply.header("content-length", stats.size);
+        return reply.send(handle.createReadStream());
+      } catch (error) {
+        await handle.close();
+        throw error;
       }
-
-      const mimeType = detectMimeType(resolvedPath);
-      const filename = path.basename(resolvedPath);
-
-      reply.header("Content-Type", mimeType);
-      reply.header("Content-Length", stats.size);
-      if (query.raw === "true") {
-        reply.header("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
-      } else {
-        reply.header("Content-Disposition", `inline; filename="${encodeURIComponent(filename)}"`);
-      }
-
-      const stream = createReadStream(resolvedPath);
-      return reply.send(stream);
     } catch (error) {
       return handleFileError(error, reply);
     }
@@ -224,51 +228,39 @@ export function registerFilesRoutes(app: FastifyInstance) {
 
   // 10. File upload (multipart)
   app.post("/api/files/upload", async (request: FastifyRequest, reply: FastifyReply) => {
+    const staged: StagedUpload[] = [];
+    let release: (() => void) | undefined;
+    const abort = new AbortController();
+    const onAbort = () => abort.abort();
+    request.raw.once("aborted", onAbort);
     try {
       if (!request.isMultipart()) {
         return reply.status(400).send({ ok: false, error: "Upload must be multipart/form-data" });
       }
-
+      release = acquireFileUpload();
       let targetDir = WORKSPACE_ROOT;
       let mode: "user" | "admin" = "user";
-      const uploadedFiles: string[] = [];
-
+      const budget = { bytes: 0 };
       for await (const part of request.parts()) {
         if (part.type === "field") {
-          if (part.fieldname === "targetDir" && typeof part.value === "string") {
-            targetDir = part.value;
-          }
-          if (part.fieldname === "mode" && (part.value === "user" || part.value === "admin")) {
-            mode = part.value;
-          }
+          if (part.fieldname === "targetDir" && typeof part.value === "string") targetDir = part.value;
+          if (part.fieldname === "mode" && (part.value === "user" || part.value === "admin")) mode = part.value;
           continue;
         }
-
-        if (part.type === "file") {
-          if (mode !== "admin") {
-            throw new FilesystemError("File upload strictly requires Admin Mode.", 403);
-          }
-          const { resolvedPath: dirPath } = assertAccessAllowed(targetDir, mode, request.user, WORKSPACE_ROOT);
-          const safeFilename = path.basename(part.filename);
-          const destination = path.join(dirPath, safeFilename);
-
-          const chunks: Buffer[] = [];
-          for await (const chunk of part.file) {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-          }
-          const buffer = Buffer.concat(chunks);
-          await writeFile(destination, buffer);
-          uploadedFiles.push(destination);
-        }
+        if (mode !== "admin") throw new FilesystemError("File upload strictly requires Admin Mode.", 403);
+        if (staged.length >= fileUploadLimits.files) throw new FilesystemError("Too many files in one upload.", 413, "UPLOAD_LIMIT_EXCEEDED");
+        const { resolvedPath: directory } = assertAccessAllowed(targetDir, mode, request.user, WORKSPACE_ROOT);
+        staged.push(await stageFileUpload({ directory, filename: part.filename, source: part.file, budget, signal: abort.signal }));
       }
-
-      return reply.send({
-        ok: true,
-        uploadedCount: uploadedFiles.length,
-        files: uploadedFiles
-      });
+      // Validation and parsing failures never publish partial or truncated data.
+      for (const file of staged) await file.commit();
+      return reply.send({ ok: true, uploadedCount: staged.length, files: staged.map((file) => file.destination) });
     } catch (error) {
       return handleFileError(error, reply);
+    } finally {
+      request.raw.off("aborted", onAbort);
+      await Promise.allSettled(staged.map((file) => file.cleanup()));
+      release?.();
     }
   });
 }

@@ -8,6 +8,7 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { roomActionSummary } from "./room-action-summary.js";
+import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
 
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
   // Count the entire mission, including synchronous actions. Background roots
@@ -42,9 +43,19 @@ export type BackgroundContinuationResult =
   | { state: "WAITING" | "DONE" }
   | { state: "READY"; item: RoomAgentSupervisorQueueItem };
 
+interface MissionTokenUsage { usedTokens: number; countedThroughRunId: string }
+
+function recordedTokenUsage(executionState: Record<string, unknown>): MissionTokenUsage | null {
+  const value = executionState.tokenUsage as Partial<MissionTokenUsage> | undefined;
+  return value && Number.isSafeInteger(value.usedTokens) && (value.usedTokens as number) >= 0 && typeof value.countedThroughRunId === "string"
+    ? { usedTokens: value.usedTokens as number, countedThroughRunId: value.countedThroughRunId }
+    : null;
+}
+
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
-}, store: SpaceStore): Promise<BackgroundContinuationResult> {
+}, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,
+maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promise<BackgroundContinuationResult> {
   const runId = `agent_run:bg-${input.continuationId}`;
   // The workflow supplies an ID recorded in activity history. A lost reply after
   // commit retrieves exactly that transaction, including its original evidence.
@@ -59,12 +70,44 @@ export async function prepareBackgroundContinuation(input: {
   const actions = await store.listRoomAgentActions(input.missionId);
   if (actions.some((action) => ["QUEUED", "RUNNING"].includes(action.status))) return { state: "WAITING" };
   const generation = (source.queueItem.turn.roomAgentContinuation?.generation ?? 0) + 1;
-  if (generation > 16) {
+  if (generation > maxContinuations) {
+    const completedAt = new Date().toISOString();
+    // executionState keeps a structured record of which budget ended the mission.
     await store.updateRoomAgentMission(input.missionId, {
-      status: "FAILED", completedAt: new Date().toISOString(), currentPaneId: null,
-      statusReason: "Room Agent reached its background continuation limit without verified completion."
+      status: "FAILED", completedAt, currentPaneId: null,
+      executionState: { ...mission.executionState, limit: { code: ROOM_AGENT_CONTINUATION_LIMIT, limit: maxContinuations,
+        continuationsUsed: generation - 1, reachedAt: completedAt } },
+      statusReason: `Room Agent reached its limit of ${maxContinuations} automatic continuations without verified completion.`
     }, undefined, { expectedRunId: source.run.runId, expectedStatus: mission.status });
     return { state: "DONE" };
+  }
+  // Measured tokens of this operator request's turns. Counting is idempotent per
+  // source run, so a retried preparation never adds the same turn twice.
+  const sourceUsage = source.run.ledger?.usage;
+  const sourceTokens = sourceUsage?.status === "MEASURED" ? sourceUsage.totalTokens : 0;
+  const recorded = recordedTokenUsage(mission.executionState);
+  const usedTokens = recorded?.countedThroughRunId === source.run.runId
+    ? recorded.usedTokens
+    : (source.queueItem.turn.roomAgentContinuation ? recorded?.usedTokens ?? 0 : 0) + sourceTokens;
+  if (maxMissionTokens !== null && usedTokens >= maxMissionTokens) {
+    const completedAt = new Date().toISOString();
+    await store.updateRoomAgentMission(input.missionId, {
+      status: "FAILED", completedAt, currentPaneId: null,
+      executionState: { ...mission.executionState, tokenUsage: { usedTokens, countedThroughRunId: source.run.runId },
+        limit: { code: ROOM_AGENT_TOKEN_LIMIT, limit: maxMissionTokens, usedTokens, reachedAt: completedAt } },
+      statusReason: `Room Agent used ${usedTokens.toLocaleString("en-US")} measured tokens, reaching its budget of ${maxMissionTokens.toLocaleString("en-US")}, without verified completion.`
+    }, undefined, { expectedRunId: source.run.runId, expectedStatus: mission.status });
+    return { state: "DONE" };
+  }
+  if (usedTokens > 0 && recorded?.countedThroughRunId !== source.run.runId) {
+    try {
+      await store.updateRoomAgentMission(input.missionId, {
+        executionState: { ...mission.executionState, tokenUsage: { usedTokens, countedThroughRunId: source.run.runId } }
+      }, undefined, { expectedRunId: source.run.runId, expectedStatus: mission.status });
+    } catch (error) {
+      if (error instanceof SpaceConflictError) return { state: "WAITING" };
+      throw error;
+    }
   }
   const request = source.queueItem.turn.roomAgentOperatorRequest ?? source.queueItem.turn.prompt;
   const instructions = [

@@ -29,6 +29,27 @@ async function waitForControlDom(check:()=>boolean){
  do{await new Promise(resolve=>setTimeout(resolve,50));if(check())return true;}while(Date.now()<until);
  return false;
 }
+// Read geometry after the browser has had a paint opportunity. Room effects
+// run while sibling panes still mutate DOM; reading here would flush them all.
+function waitForControlPaint(signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise(resolve => {
+    let frame: number | null = null;
+    let timer: number | null = null;
+    const finish = (ready: boolean) => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      if (timer !== null) window.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      resolve(ready);
+    };
+    const abort = () => finish(false);
+    signal.addEventListener("abort", abort, { once: true });
+    frame = window.requestAnimationFrame(() => {
+      frame = null;
+      timer = window.setTimeout(() => finish(true), 0);
+    });
+  });
+}
 export function paneElements(roomId:string){return [...document.querySelectorAll<HTMLElement>("[data-space-pane-id]")].filter(e=>e.dataset.spaceRoomId===roomId&&(e.offsetWidth>0||e.getBoundingClientRect().width>0));}
 function applyControlAppearance(input: Record<string, unknown>): { ok: boolean; evidence: Record<string, unknown> } {
   const storage = getSpaceRuntime().platform.localStorage;
@@ -84,6 +105,7 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
  useEffect(()=>{
   if(!roomId||!enabled||getSpaceRuntime().kind!=="live")return;
   let disposed=false,running=false;
+  const pollAbort = new AbortController();
   const isCurrent=(expiresAt:number)=>!disposed&&expiresAt>Date.now()&&document.visibilityState==="visible"&&document.hasFocus();
   const run=async(action:ControlAction,expiresAt:number):Promise<any>=>{
    if (!isCurrent(expiresAt)&&action.kind==="pane"&&action.operation==="visual_audit")return {ok:false,evidence:{observation:null,reason:"CLIENT_CHANGED",capture:action.captureScreenshot?"UNAVAILABLE":"NOT_REQUESTED"}};
@@ -130,6 +152,8 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
    if(document.visibilityState!=="visible"||!document.hasFocus()){release();return;}
    running=true;
    try{
+    if (!await waitForControlPaint(pollAbort.signal) || disposed) return;
+    if (document.visibilityState !== "visible" || !document.hasFocus()) { release(); return; }
     const geometry=paneElements(roomId).slice(0,64).map(e=>{const b=e.getBoundingClientRect();return {paneId:e.dataset.spacePaneId!,x:b.x,y:b.y,width:b.width,height:b.height};});
     const {commands,layout}=await controlRequest<{commands:Array<{id:string;roomId:string;expiresAt:number;action:ControlAction}>;layout:ControlLayout|null}>("client",{roomId,clientId:id.current,targets:inspectPlaybackTargets(roomId),geometry,...(retainedTerminalRender(roomId).length?{terminalRender:retainedTerminalRender(roomId)}:{})});
     if(disposed)return;
@@ -153,7 +177,7 @@ export function useSpaceControlClient(roomId:string|null,enabled:boolean,activat
   };
   void poll();const timer=setInterval(()=>void poll(),pollIntervalMs);
   window.addEventListener("blur",release);
-  return ()=>{disposed=true;clearInterval(timer);window.removeEventListener("blur",release);release();};
+  return ()=>{disposed=true;pollAbort.abort();clearInterval(timer);window.removeEventListener("blur",release);release();};
  },[roomId,enabled,pollIntervalMs]);
  return layouts;
 }

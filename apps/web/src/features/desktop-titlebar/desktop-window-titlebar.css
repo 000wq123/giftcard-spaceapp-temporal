@@ -25,12 +25,24 @@ body:has([data-browser-fullscreen="true"]),
   max-height: 32px;
   background: var(--room-surface-raised, #161b22);
   border-bottom: 1px solid var(--room-border, #30363d);
-  padding: 0 0 0 10px;
+  padding: 0;
   user-select: none;
   -webkit-app-region: drag;
   z-index: 99999;
   flex: 0 0 32px;
   box-sizing: border-box;
+  width: 100%;
+}
+
+/* Ensure the titlebar spans the full window width flush to the far right edge even when workspace rail is active */
+.space-shell[data-workspace-rail="true"] .desktop-window-titlebar {
+  width: calc(100% + 64px + env(safe-area-inset-right));
+  margin-right: calc(-64px - env(safe-area-inset-right));
+}
+
+.space-shell:is([data-shell-mode="desktop"], [data-shell-mode="tablet"], [data-shell-mode="mobile"])[data-workspace-rail="true"] .desktop-window-titlebar {
+  width: calc(100% + 52px + env(safe-area-inset-right));
+  margin-right: calc(-52px - env(safe-area-inset-right));
 }
 
 :fullscreen .desktop-window-titlebar,
@@ -50,6 +62,7 @@ body:has([data-browser-fullscreen="true"]),
   color: var(--room-text-muted, #8b949e);
   -webkit-app-region: drag;
   flex-shrink: 0;
+  padding-left: 10px;
 }
 
 .desktop-window-titlebar-left .desktop-display-controls,
@@ -102,6 +115,9 @@ body:has([data-browser-fullscreen="true"]),
   display: flex;
   align-items: center;
   height: 100%;
+  margin-left: auto;
+  margin-right: 0;
+  padding: 0;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
 }
@@ -118,6 +134,50 @@ body:has([data-browser-fullscreen="true"]),
   height: 32px;
   flex: 0 0 140px;
   display: block;
+}
+
+/* Custom Frameless Window Controls (Linux / CSD) - flush to far right */
+.desktop-window-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-window-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  color: var(--room-text-muted, #8b949e);
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  transition: background-color 0.12s ease, color 0.12s ease;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-window-control-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--room-text, #e6edf3);
+}
+
+.desktop-window-control-btn.desktop-window-control-close:hover {
+  background: #e81123 !important;
+  color: #ffffff !important;
+}
+
+.desktop-window-control-btn.desktop-window-control-close:active {
+  background: #bf0f1d !important;
+  color: #ffffff !important;
 }
 
 /* SpaceApp Menu Trigger & Version Tag */
@@ -982,11 +1042,15 @@ body:has([data-browser-fullscreen="true"]),
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 22px;
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  box-sizing: border-box;
+  line-height: 1;
   padding: 0 8px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
+  border-radius: 4px;
   color: var(--room-text, #e6edf3);
   font-size: 0.72rem;
   font-weight: 600;

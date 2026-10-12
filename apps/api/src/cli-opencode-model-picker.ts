@@ -198,6 +198,9 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
       if (heading.test(screen)) return screen;
       await wait(50);
     }
+    if (heading.source.includes('Commands')) {
+      throw new OpenCodeNativeInputNotReadyError();
+    }
     const menuType = heading === modelMenu ? 'model' : heading === variantMenu ? 'reasoning' : 'command';
     throw new SpaceConflictError(`OpenCode did not open its native ${menuType} menu.`);
   };
@@ -210,9 +213,26 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
     if (variantMenu.test(current)) return;
     if (modelMenu.test(current) || /Commands/.test(current)) {
       await send('\u001b');
+      await wait(60);
       current = await observe();
     }
-    await send('\u0010'); await awaitMenu(/Commands/);
+    let commandMenuFound = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await send('\u0010');
+      for (let i = 0; i < 15; i++) {
+        current = await observe();
+        if (/Commands/.test(current)) {
+          commandMenuFound = true;
+          break;
+        }
+        await wait(60);
+      }
+      if (commandMenuFound) break;
+      await wait(100);
+    }
+    if (!commandMenuFound) {
+      throw new OpenCodeNativeInputNotReadyError();
+    }
     await send('Switch model variant');
     current = await observe();
     if (/No (?:matching )?commands/i.test(current)) {
@@ -277,7 +297,19 @@ export async function switchOpenCodeTuiSettings(input: Control & { model: Model;
         await send('\u001b');
       }
     }
-    if (input.model.reasoningOptions?.length) {
+    const needsVariantSelection = Boolean(
+      input.model.reasoningOptions?.length &&
+      (input.skipModelStep || (input.effort !== 'default' && input.effort !== (input.model.defaultReasoningEffort ?? 'default')))
+    );
+    if (needsVariantSelection) {
+      if (!input.skipModelStep) {
+        await wait(150);
+        let settleScreen = await observe();
+        for (let i = 0; i < 20 && !openCodeComposerLine(settleScreen); i++) {
+          await wait(100);
+          settleScreen = await observe();
+        }
+      }
       await openVariants();
       await choose(await filter(variantMenu, input.effort === 'default' ? 'Default' : input.effort), input.effort === 'default' ? 'Default' : input.effort);
     }

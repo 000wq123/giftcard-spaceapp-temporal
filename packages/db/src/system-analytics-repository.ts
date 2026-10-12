@@ -84,6 +84,73 @@ function bucketStart(at: string, seconds: number): string {
   return new Date(Math.floor(ms / bucketMs) * bucketMs).toISOString();
 }
 
+const hourMs = 60 * 60 * 1000;
+
+/**
+ * Fixed lookbacks of the original rollup. They are still used for the first
+ * rollup after process start, so samples written before a restart or during a
+ * gap without successful rollups are aggregated once.
+ */
+const rollupCatchUpLookbackMs = { 60: 3 * hourMs, 900: 72 * hourMs } as const;
+
+/**
+ * Target buckets re-aggregated before the previous successful rollup. They
+ * cover samples that were taken before that rollup but committed after its
+ * snapshot (10 s samples are inserted asynchronously), and the 60 s buckets the
+ * 10 s -> 60 s step rewrites in the same transaction.
+ */
+const rollupMarginBuckets = { 60: 5, 900: 2 } as const;
+
+export interface SystemAnalyticsRollupWindows {
+  /** Lower bound (inclusive) of 10 s source rows aggregated into 60 s buckets. */
+  since60: string;
+  /** Lower bound (inclusive) of 60 s source rows aggregated into 900 s buckets. */
+  since900: string;
+}
+
+function alignDown(ms: number, seconds: number): number {
+  const bucketMs = seconds * 1000;
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+
+/**
+ * Source windows for one rollup. Without a previous successful rollup in this
+ * process it returns the original catch-up windows (3 h / 3 days). Otherwise it
+ * returns only whole target buckets that can still change: those overlapping
+ * the period since `lastRollupAt`, minus a safety margin. Windows start on a
+ * target-bucket boundary, so every re-aggregated target bucket sees all of its
+ * source rows and produces the same aggregate as the full-window rollup.
+ */
+export function systemAnalyticsRollupWindows(at: string, lastRollupAt: string | null): SystemAnalyticsRollupWindows {
+  const atMs = Date.parse(at);
+  const lastMs = lastRollupAt === null ? Number.NaN : Date.parse(lastRollupAt);
+  if (!Number.isFinite(lastMs)) {
+    return {
+      since60: new Date(atMs - rollupCatchUpLookbackMs[60]).toISOString(),
+      since900: new Date(atMs - rollupCatchUpLookbackMs[900]).toISOString()
+    };
+  }
+  // A clock step backwards must never skip buckets.
+  const fromMs = Math.min(lastMs, atMs);
+  const since60 = alignDown(fromMs, 60) - rollupMarginBuckets[60] * 60_000;
+  // 900 s buckets also change when the 60 s rows rewritten above change.
+  const since900 = Math.min(alignDown(fromMs, 900) - rollupMarginBuckets[900] * 900_000, alignDown(since60, 900));
+  return { since60: new Date(since60).toISOString(), since900: new Date(since900).toISOString() };
+}
+
+/** Splits a batch so no statement upserts the same bucket key twice; order per key is kept. */
+function uniqueKeyRounds<T>(items: T[], keyOf: (item: T) => string): T[][] {
+  const rounds: T[][] = [];
+  const seen = new Map<string, number>();
+  for (const item of items) {
+    const key = keyOf(item);
+    const round = seen.get(key) ?? 0;
+    seen.set(key, round + 1);
+    (rounds[round] ??= []).push(item);
+  }
+  return rounds;
+}
+
 export class InMemorySystemAnalyticsRepository implements SystemAnalyticsRepository {
   private readonly modelEvents = new Map<string, SystemAnalyticsModelEventRecord>();
   private readonly samples: SystemAnalyticsResourceSample[] = [];
@@ -243,6 +310,9 @@ function mapResourceBucket(row: ResourceBucketRow): SystemAnalyticsResourceBucke
 }
 
 export class PostgresSystemAnalyticsRepository implements SystemAnalyticsRepository {
+  /** `at` of the last committed rollup in this process; null until the first catch-up commits. */
+  private lastRollupAt: string | null = null;
+
   constructor(private readonly pool: PgPoolLike, private readonly ownsPool = false) {}
 
   static fromConnectionString(
@@ -326,9 +396,37 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
     }));
   }
 
+  /**
+   * One multi-row upsert per sampling tick instead of one statement (and one
+   * implicit transaction) per entity. Rows are applied with the same per-row
+   * semantics as before; a repeated bucket key within one batch goes into a
+   * later statement so it accumulates instead of conflicting with itself.
+   */
   async insertResourceSamples(samples: SystemAnalyticsResourceSample[]): Promise<void> {
-    for (const sample of samples) {
-      const at = bucketStart(sample.sampledAt, 10);
+    const rows = samples.map((sample) => ({
+      bucket_at: bucketStart(sample.sampledAt, 10),
+      entity_type: sample.entityType,
+      entity_id: sample.entityId,
+      room_id: sample.roomId,
+      room_name: sample.roomName,
+      pane_id: sample.paneId,
+      pane_title: sample.paneTitle,
+      session_id: sample.sessionId,
+      runtime_id: sample.runtimeId,
+      runtime_name: sample.runtimeName,
+      provider_id: sample.providerId,
+      model_id: sample.modelId,
+      process_count: sample.processCount,
+      cpu: sample.cpuOneCorePercent,
+      rss: sample.rssBytes,
+      memory_total_bytes: sample.memoryTotalBytes,
+      memory_available_bytes: sample.memoryAvailableBytes,
+      swap_total_bytes: sample.swapTotalBytes,
+      swap_used_bytes: sample.swapUsedBytes,
+      page_cache_bytes: sample.pageCacheBytes,
+      pressure: sample.pressure
+    }));
+    for (const round of uniqueKeyRounds(rows, (row) => `${row.bucket_at}\u0000${row.entity_type}\u0000${row.entity_id}`)) {
       await this.pool.query(
         `
           INSERT INTO system_analytics_resource_buckets (
@@ -337,12 +435,21 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
             process_count, cpu_min, cpu_sum, cpu_max, rss_min, rss_sum, rss_max,
             memory_total_bytes, memory_available_bytes, swap_total_bytes, swap_used_bytes,
             page_cache_bytes, pressure
-          ) VALUES (
-            10, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1,
-            $13::integer,
-            $14::double precision, $14::double precision, $14::double precision,
-            $15::bigint, $15::numeric, $15::bigint,
-            $16::bigint, $17::bigint, $18::bigint, $19::bigint, $20::bigint, $21::boolean
+          )
+          SELECT
+            10, s.bucket_at, s.entity_type, s.entity_id, s.room_id, s.room_name, s.pane_id,
+            s.pane_title, s.session_id, s.runtime_id, s.runtime_name, s.provider_id, s.model_id, 1,
+            s.process_count,
+            s.cpu, s.cpu, s.cpu,
+            s.rss::bigint, s.rss::numeric, s.rss::bigint,
+            s.memory_total_bytes, s.memory_available_bytes, s.swap_total_bytes, s.swap_used_bytes,
+            s.page_cache_bytes, s.pressure
+          FROM jsonb_to_recordset($1::jsonb) AS s(
+            bucket_at timestamptz, entity_type text, entity_id text, room_id text, room_name text,
+            pane_id text, pane_title text, session_id text, runtime_id text, runtime_name text,
+            provider_id text, model_id text, process_count integer, cpu double precision, rss numeric,
+            memory_total_bytes bigint, memory_available_bytes bigint, swap_total_bytes bigint,
+            swap_used_bytes bigint, page_cache_bytes bigint, pressure boolean
           )
           ON CONFLICT (resolution_seconds, bucket_at, entity_type, entity_id) DO UPDATE SET
             room_name = EXCLUDED.room_name,
@@ -362,13 +469,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
             page_cache_bytes = EXCLUDED.page_cache_bytes,
             pressure = EXCLUDED.pressure
         `,
-        [
-          at, sample.entityType, sample.entityId, sample.roomId, sample.roomName, sample.paneId,
-          sample.paneTitle, sample.sessionId, sample.runtimeId, sample.runtimeName, sample.providerId,
-          sample.modelId, sample.processCount, sample.cpuOneCorePercent, sample.rssBytes,
-          sample.memoryTotalBytes, sample.memoryAvailableBytes, sample.swapTotalBytes,
-          sample.swapUsedBytes, sample.pageCacheBytes, sample.pressure
-        ]
+        [JSON.stringify(round)]
       );
     }
   }
@@ -396,11 +497,12 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
   }
 
   async rollupAndSweep(at: string): Promise<void> {
+    const windows = systemAnalyticsRollupWindows(at, this.lastRollupAt);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await this.rollup(client, 10, 60, at, "3 hours");
-      await this.rollup(client, 60, 900, at, "3 days");
+      await this.rollup(client, 10, 60, windows.since60);
+      await this.rollup(client, 60, 900, windows.since900);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 10 AND bucket_at < $1::timestamptz - interval '2 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 60 AND bucket_at < $1::timestamptz - interval '48 hours'`, [at]);
       await client.query(`DELETE FROM system_analytics_resource_buckets WHERE resolution_seconds = 900 AND bucket_at < $1::timestamptz - interval '31 days'`, [at]);
@@ -411,6 +513,9 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
         [at]
       );
       await client.query("COMMIT");
+      // Advance only after a committed rollup; a failed run is retried from
+      // the previous watermark by the next one.
+      if (this.lastRollupAt === null || Date.parse(at) > Date.parse(this.lastRollupAt)) this.lastRollupAt = at;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -423,8 +528,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
     client: { query(sql: string, values?: unknown[]): Promise<unknown> },
     sourceResolution: 10 | 60,
     targetResolution: 60 | 900,
-    at: string,
-    lookback: string
+    since: string
   ): Promise<void> {
     await client.query(
       `
@@ -450,7 +554,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           (array_agg(model_id ORDER BY bucket_at DESC))[1],
           sum(sample_count)::integer,
           (array_agg(process_count ORDER BY bucket_at DESC))[1],
-          min(cpu_min), sum(cpu_sum), max(cpu_max), min(rss_min), sum(rss_sum), max(rss_max),
+          min(cpu_min), sum(cpu_sum ORDER BY bucket_at DESC), max(cpu_max), min(rss_min), sum(rss_sum), max(rss_max),
           (array_agg(memory_total_bytes ORDER BY bucket_at DESC))[1],
           (array_agg(memory_available_bytes ORDER BY bucket_at DESC))[1],
           (array_agg(swap_total_bytes ORDER BY bucket_at DESC))[1],
@@ -458,7 +562,7 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           (array_agg(page_cache_bytes ORDER BY bucket_at DESC))[1],
           bool_or(pressure)
         FROM system_analytics_resource_buckets
-        WHERE resolution_seconds = $2::integer AND bucket_at >= $3::timestamptz - $4::interval
+        WHERE resolution_seconds = $2::integer AND bucket_at >= $3::timestamptz
         GROUP BY 2, entity_type, entity_id
         ON CONFLICT (resolution_seconds, bucket_at, entity_type, entity_id) DO UPDATE SET
           room_id = EXCLUDED.room_id, room_name = EXCLUDED.room_name,
@@ -473,8 +577,29 @@ export class PostgresSystemAnalyticsRepository implements SystemAnalyticsReposit
           memory_available_bytes = EXCLUDED.memory_available_bytes,
           swap_total_bytes = EXCLUDED.swap_total_bytes, swap_used_bytes = EXCLUDED.swap_used_bytes,
           page_cache_bytes = EXCLUDED.page_cache_bytes, pressure = EXCLUDED.pressure
+        WHERE (
+          system_analytics_resource_buckets.room_id, system_analytics_resource_buckets.room_name,
+          system_analytics_resource_buckets.pane_id, system_analytics_resource_buckets.pane_title,
+          system_analytics_resource_buckets.session_id, system_analytics_resource_buckets.runtime_id,
+          system_analytics_resource_buckets.runtime_name, system_analytics_resource_buckets.provider_id,
+          system_analytics_resource_buckets.model_id, system_analytics_resource_buckets.sample_count,
+          system_analytics_resource_buckets.process_count, system_analytics_resource_buckets.cpu_min,
+          system_analytics_resource_buckets.cpu_sum, system_analytics_resource_buckets.cpu_max,
+          system_analytics_resource_buckets.rss_min, system_analytics_resource_buckets.rss_sum,
+          system_analytics_resource_buckets.rss_max, system_analytics_resource_buckets.memory_total_bytes,
+          system_analytics_resource_buckets.memory_available_bytes, system_analytics_resource_buckets.swap_total_bytes,
+          system_analytics_resource_buckets.swap_used_bytes, system_analytics_resource_buckets.page_cache_bytes,
+          system_analytics_resource_buckets.pressure
+        ) IS DISTINCT FROM (
+          EXCLUDED.room_id, EXCLUDED.room_name, EXCLUDED.pane_id, EXCLUDED.pane_title,
+          EXCLUDED.session_id, EXCLUDED.runtime_id, EXCLUDED.runtime_name, EXCLUDED.provider_id,
+          EXCLUDED.model_id, EXCLUDED.sample_count, EXCLUDED.process_count, EXCLUDED.cpu_min,
+          EXCLUDED.cpu_sum, EXCLUDED.cpu_max, EXCLUDED.rss_min, EXCLUDED.rss_sum, EXCLUDED.rss_max,
+          EXCLUDED.memory_total_bytes, EXCLUDED.memory_available_bytes, EXCLUDED.swap_total_bytes,
+          EXCLUDED.swap_used_bytes, EXCLUDED.page_cache_bytes, EXCLUDED.pressure
+        )
       `,
-      [targetResolution, sourceResolution, at, lookback]
+      [targetResolution, sourceResolution, since]
     );
   }
 

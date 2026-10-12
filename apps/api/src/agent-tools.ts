@@ -65,7 +65,7 @@ interface ResolvedRuntimeLayout {
   mcpConfigPath: string | null;
   mcpFormat: "object" | "array" | "toml" | "unsupported";
   skillsConfigPath: string | null;
-  skillsFormat: "codex-toml" | "opencode-permission" | "unsupported";
+  skillsFormat: "codex-toml" | "opencode-permission" | "claude-skill-overrides" | "unsupported";
 }
 
 function stateRootFor(runtimeId: string, options: AgentToolsOptions): string {
@@ -97,6 +97,9 @@ function resolveRuntimeLayout(runtimeId: string, options: AgentToolsOptions): Re
     case "cli:claude":
       mcpConfigPath = `${stateRoot}/settings.json`;
       mcpFormat = "object";
+      // The wrapper passes this canonical file with --settings; Space owns its skillOverrides.
+      skillsConfigPath = join(options.canonicalRoot ?? defaultOptions.canonicalRoot, "claude-space-settings.json");
+      skillsFormat = "claude-skill-overrides";
       break;
     case "cli:opencode":
       mcpConfigPath = `${configHome}/opencode.json`;
@@ -662,6 +665,16 @@ export async function discoverAgentTools(store: SpaceStore, options: AgentToolsO
       skillEntries = parseTomlSkills(raw).map((entry) => ({ name: skillDirName(entry.path), path: entry.path, enabled: entry.enabled }));
     }
 
+    if (runtime.skillsConfigPath && runtime.skillsFormat === "claude-skill-overrides") {
+      skillPaths = await readSkillsFiles(effective.skillsRoot);
+      const overrides = claudeSkillOverrides(await readJsonFile(runtime.skillsConfigPath));
+      skillEntries = skillPaths.map((skillPath) => ({
+        name: skillDirName(skillPath),
+        path: skillPath,
+        enabled: overrides[skillDirName(skillPath)] !== "off"
+      }));
+    }
+
     if (runtime.runtimeId === "cli:codex" || runtime.runtimeId === "cli:grok") {
       skillPaths = await readSkillsFiles(effective.skillsRoot);
     } else if (runtime.runtimeId === "cli:opencode") {
@@ -702,6 +715,48 @@ export async function discoverAgentTools(store: SpaceStore, options: AgentToolsO
 
 function skillDirName(path: string): string {
   return basename(dirname(path));
+}
+
+function claudeSkillOverrides(config: JsonObject | null): JsonObject {
+  const overrides = config?.skillOverrides;
+  return isJsonObject(overrides) ? { ...overrides } : {};
+}
+
+/** Claude reads skillOverrides from the --settings file: "off" hides a skill like Codex enabled = false. */
+async function applyClaudeSkillOverrides(input: {
+  rootWriterCommand: string | null;
+  settingsPath: string;
+  runtimeId: string;
+  catalog: AgentToolsCatalogResponse;
+  assignments: AgentToolAssignment[];
+  tools: DiscoveredRuntimeTools[];
+  enabledSkillIds: string[];
+}): Promise<AgentToolApplyFile | null> {
+  const raw = await rootReadFile(input.rootWriterCommand, input.settingsPath);
+  const config = raw === null ? null : safeJsonParse(raw);
+  // Without the installed Claude settings file there is no Claude runtime to configure.
+  if (!isJsonObject(config)) return null;
+  const current = claudeSkillOverrides(config);
+  const skills = input.catalog.entries.filter((entry) => entry.kind === "SKILL" && entry.skillPath);
+  const managedNames = new Set(skills.map((entry) => entry.name));
+  const next: JsonObject = {};
+  for (const [name, value] of Object.entries(current)) {
+    if (!managedNames.has(name)) next[name] = value;
+  }
+  for (const entry of skills) {
+    const assignment = assignmentFor(input.assignments, entry.toolId);
+    const enabled = applyEnabled(assignment, input.runtimeId) ??
+      (await onDiskToolEnabled(input.tools, input.runtimeId, "SKILL", entry.name, entry.skillPath));
+    if (!enabled) next[entry.name] = "off";
+    else if (current[entry.name] !== undefined && current[entry.name] !== "off") next[entry.name] = current[entry.name];
+    if (applyEnabled(assignment, input.runtimeId) === true) input.enabledSkillIds.push(entry.toolId);
+  }
+  // Keep an empty object: it records that Space owns the set, so deploys never re-seed it.
+  const sorted = Object.fromEntries(Object.entries(next).sort(([left], [right]) => left.localeCompare(right)));
+  const content = jsonContent({ ...config, skillOverrides: sorted });
+  if (content === raw) return { path: input.settingsPath, action: "UNCHANGED", changed: false };
+  const write = await rootWriteBackedUpFileAtomic(input.rootWriterCommand, input.settingsPath, content);
+  return { path: input.settingsPath, action: write.createdBackup ? "BACKUP_CREATED" : "UPDATED", changed: write.changed };
 }
 
 function skillToolName(path: string): string {
@@ -1050,6 +1105,19 @@ export async function applyAgentTools(
       }
     } else {
       files.push({ path: "", action: "UNCHANGED", changed: false });
+    }
+
+    if (runtimeLayout.skillsFormat === "claude-skill-overrides" && runtimeLayout.skillsConfigPath) {
+      const file = await applyClaudeSkillOverrides({
+        rootWriterCommand: effective.rootWriterCommand,
+        settingsPath: runtimeLayout.skillsConfigPath,
+        runtimeId: runtimeLayout.runtimeId,
+        catalog,
+        assignments,
+        tools,
+        enabledSkillIds
+      });
+      if (file) files.push(file);
     }
 
     results.push({

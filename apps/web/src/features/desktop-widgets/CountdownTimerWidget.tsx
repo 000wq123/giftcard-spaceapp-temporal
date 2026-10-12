@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pause, Play, RotateCcw, Timer } from "lucide-react";
+import { Pause, Play, RotateCcw, Timer } from "../ui-theme/app-icons.js";
 import { playChime } from "./audio-chime.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
 import type { CountdownTimerWidgetConfig, DesktopWidgetState } from "./types.js";
@@ -74,7 +74,8 @@ export function CountdownTimerWidget({
           remainingSeconds: prev.remainingSeconds - 1,
           isCompleted: false
         };
-        saveWidgetConfig("countdown-timer", next);
+        // Local-only: completion above and user actions sync the config.
+        saveWidgetConfig("countdown-timer", next, { syncToServer: false });
         return next;
       });
     }, 1000);

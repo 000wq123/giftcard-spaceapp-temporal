@@ -2,9 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { accessSync, constants, createReadStream } from "node:fs";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { nanoid } from "nanoid";
 import type { BrowserHostActorContext, BrowserHostCaptureMetrics } from "@space/browser-host";
 import {
@@ -40,6 +40,20 @@ import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, make
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
 import { youTubeAdBlockScript } from "./youtube-ad-block.js";
+import {
+  classifyGoogleBrowserEvidence,
+  googleBrowserCheckPageUrl,
+  googleListAccountsExpression,
+  isGoogleAuthenticationUrl,
+  parseGoogleBrowserEvidence,
+  googleSignInCookieState,
+  readAdoptionProbe,
+  readGoogleBrowserCheck,
+  writeAdoptionProbe,
+  writeGoogleBrowserCheck,
+  type GoogleBrowserCheck,
+  type GoogleBrowserEvidence
+} from "./google-browser-session-check.js";
 
 interface ViewportSize {
   width: number;
@@ -181,7 +195,22 @@ interface BrowserStreamSubscriber {
   onFrame: (frame: BrowserBinaryFrame) => void | Promise<void>;
 }
 
+interface BrowserProfileRuntime {
+  process: ChildProcessWithoutNullStreams;
+  xvfb?: ChildProcessWithoutNullStreams;
+  display?: number;
+  client: CdpClient;
+  owners: Map<string, BrowserRuntime>;
+  attachments: Map<string, string>;
+  members: Set<BrowserRuntime>;
+  detach: () => void;
+}
+
 interface BrowserRuntime {
+  profile: BrowserProfileRuntime;
+  profilePath: string;
+  ownedPages: Set<string>;
+  closing: boolean;
   viewportDimensions?: BrowserViewportDimensions;
   process: ChildProcessWithoutNullStreams;
   xvfb?: ChildProcessWithoutNullStreams;
@@ -208,8 +237,15 @@ export interface BrowserSessionStatus {
 
 export interface StartBrowserSessionInput {
   pane: Pane;
-  /** Server-derived YouTube account scope; never a client-supplied path. */
+  /** Server-derived, verified registry identity; never accepted as a public request field. */
+  googleAccount?: { ownerUserId: string; accountId: string };
+  /** Legacy YouTube account scope; never a client-supplied path. */
   profileKey?: string | null;
+  /**
+   * Server-derived key of a CLI (Gemini) account for this user: one Chrome profile
+   * shared by every Browser and YouTube pane that selects that account.
+   */
+  sharedProfileKey?: string;
   viewport?: BrowserSessionViewport;
   targetUrl?: string | null;
   streamMode?: BrowserStreamMode;
@@ -217,6 +253,30 @@ export interface StartBrowserSessionInput {
   includeInitialFrame?: boolean;
   traceId: string;
 }
+
+export interface GoogleAccountBrowserIdentity {
+  ownerUserId: string;
+  accountId: string;
+}
+
+/** A pane's own (non-shared) profile: the per-pane directory or a legacy account scope inside it. */
+export interface PaneProfileSource {
+  ownerUserId: string;
+  roomId: string;
+  paneId: string;
+  profileKey: string | null;
+  /** Only this linked account may receive the profile (an explicit pane choice). */
+  accountId?: string;
+}
+
+export type PaneProfileAdoptionResult = {
+  result: "ADOPTED" | "ALREADY_CONNECTED" | "TARGET_IN_USE" | "SOURCE_IN_USE" | "SOURCE_MISSING" | "NO_SIGN_IN" | "OTHER_ACCOUNT" | "CHECK_FAILED";
+  /** Registry account whose Google session the pane profile holds, when verified. */
+  accountId: string | null;
+};
+
+/** Redacted result of checking a verified account's persistent profile with Google. */
+export type GoogleAccountBrowserCheckResult = Pick<GoogleBrowserCheck, "status" | "reason" | "connectedAt"> & { checkedAt: string | null };
 
 export interface BrowserSessionManager {
   status(): BrowserSessionStatus;
@@ -262,6 +322,13 @@ export interface BrowserSessionManager {
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   recoverCaptureJobs?(): Promise<{ failedSegments: number; requeuedJobs: string[] }>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }>;
+  /** Verifies the account's profile with Google; launches it only when `launch` is true and no pane is using it. */
+  checkGoogleAccount?(identity: GoogleAccountBrowserIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<GoogleAccountBrowserCheckResult>;
+  /**
+   * Moves a closed pane profile into the shared profile of the registry account it
+   * is verifiably signed in to (Google ListAccounts), so one sign-in serves every pane.
+   */
+  adoptPaneGoogleProfile?(source: PaneProfileSource, context?: BrowserHostActorContext): Promise<PaneProfileAdoptionResult>;
 }
 
 const viewportSizes: Record<BrowserSessionViewport, ViewportSize> = {
@@ -947,11 +1014,19 @@ export function browserSessionNeedsNavigation<TSession extends Pick<PaneBrowserS
 export function browserSessionRestoreUrls(
   session: Pick<PaneBrowserSession, "activePageId" | "currentUrl" | "pages" | "status">
 ): { activeUrl: string | null; backgroundUrls: string[] } {
-  if (session.status === "NAVIGATING") return { activeUrl: null, backgroundUrls: [] };
   const persisted = session.pages
     .filter((page): page is typeof page & { url: string } => Boolean(page.url && /^https?:\/\//i.test(page.url)))
     .slice(0, 100);
   const active = persisted.find((page) => page.pageId === session.activePageId || page.isActive);
+  // A navigation owns the active page: it is about to load it, or Chrome died
+  // before the navigation committed (never reload a target that may crash it).
+  // The background tabs are unrelated to the navigation and are still restored.
+  if (session.status === "NAVIGATING") {
+    return {
+      activeUrl: null,
+      backgroundUrls: Array.from(new Set(persisted.filter((page) => page !== active && page.url !== active?.url).map((page) => page.url)))
+    };
+  }
   const activeUrl = active?.url ?? (session.currentUrl && /^https?:\/\//i.test(session.currentUrl) ? session.currentUrl : null);
   const backgroundUrls = Array.from(new Set(
     persisted.filter((page) => page !== active).map((page) => page.url).filter((url) => url !== activeUrl)
@@ -1276,6 +1351,18 @@ function windowsVirtualKeyCodeFor(key: string, code: string | undefined): number
   return 0;
 }
 
+export function googleBrowserProfilePathFor(profileRoot: string, ownerUserId: string, accountId: string): string {
+  if (!ownerUserId || !/^google_account:[A-Za-z0-9_-]+$/.test(accountId)) throw new SpaceConflictError("Invalid Google account profile identity.");
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  return join(profileRoot, "google-accounts", hash(ownerUserId), hash(accountId));
+}
+
+/** One shared profile per user and CLI account (the key already binds both). */
+export function sharedCliProfilePathFor(profileRoot: string, sharedProfileKey: string): string {
+  if (!/^[a-f0-9]{64}$/.test(sharedProfileKey)) throw new SpaceConflictError("Invalid shared browser account profile.");
+  return join(profileRoot, "cli-accounts", sharedProfileKey);
+}
+
 export function browserProfilePathFor(profileRoot: string, roomId: string, paneId: string, profileKey?: string | null): string {
   const root = join(profileRoot, sanitizeSegment(roomId), sanitizeSegment(paneId));
   if (profileKey == null) return root;
@@ -1498,6 +1585,371 @@ export async function applyRestoreState(
 export function createBrowserSessionManager(options: { store: SpaceStore; config: SpaceApiConfig }): BrowserSessionManager {
   const { store, config } = options;
   const runtimes = new Map<string, BrowserRuntime>();
+  const profiles = new Map<string, BrowserProfileRuntime>();
+  const profileTails = new Map<string, Promise<unknown>>();
+  function withProfileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+    const next = (profileTails.get(path) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    profileTails.set(path, next);
+    void next.finally(() => { if (profileTails.get(path) === next) profileTails.delete(path); }).catch(() => undefined);
+    return next;
+  }
+  function profilePathForInput(input: StartBrowserSessionInput): string {
+    return input.googleAccount
+      ? googleBrowserProfilePathFor(config.browserSessionsProfileRoot, input.googleAccount.ownerUserId, input.googleAccount.accountId)
+      : input.sharedProfileKey
+        ? sharedCliProfilePathFor(config.browserSessionsProfileRoot, input.sharedProfileKey)
+        : browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
+  }
+  /** Account identity of a start request; panes with the same identity share one Chrome. */
+  function profileIdentityForInput(input: StartBrowserSessionInput): string | null {
+    if (input.googleAccount) return `google-account:${input.googleAccount.accountId}`;
+    if (input.sharedProfileKey) return `cli-account:${input.sharedProfileKey}`;
+    return null;
+  }
+
+  // The shared profile of a CLI account. Before it exists, the account's earlier
+  // per-pane profiles (<room>/<pane>/accounts/<key>) are its history: a pane still
+  // using one is joined (same Chrome, so the sign-in is shared at once); otherwise
+  // the most recently signed-in one becomes the shared profile, moved whole.
+  async function prepareSharedCliProfile(sharedProfileKey: string): Promise<string> {
+    const root = config.browserSessionsProfileRoot;
+    const shared = sharedCliProfilePathFor(root, sharedProfileKey);
+    await profileMoveRecovery;
+    return withProfileLock(shared, async () => {
+      if (await stat(shared).then(() => true, () => false)) return shared;
+      const activePaths = new Set((await store.listActivePaneBrowserSessions()).map(session => session.profilePath));
+      const inUse = async (path: string) => profileRunning(path) || activePaths.has(path) || await foreignChromeHolds(path);
+      const candidates: Array<{ path: string; signedIn: boolean; modifiedMs: number; inUse: boolean }> = [];
+      for (const room of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+        if (!room.isDirectory() || !room.name.startsWith("room_")) continue;
+        for (const pane of await readdir(join(root, room.name), { withFileTypes: true }).catch(() => [])) {
+          if (!pane.isDirectory()) continue;
+          const path = join(root, room.name, pane.name, "accounts", sharedProfileKey);
+          if (!await stat(path).then(entry => entry.isDirectory(), () => false)) continue;
+          // A profile this service cannot open is useless to Chrome too: skip it. Any other
+          // unreadable cookie store (e.g. held by a Chrome) counts as in use, never as signed out.
+          const cookies = await googleSignInCookieState(path).catch((error: NodeJS.ErrnoException & { errcode?: number }) =>
+            error.code === "EACCES" || error.code === "EPERM" || error.errcode === 14 ? "inaccessible" as const : null);
+          if (cookies === "inaccessible") continue;
+          const modifiedMs = cookies?.modifiedMs ?? (await stat(path)).mtimeMs;
+          candidates.push({ path, signedIn: cookies?.hasSignInCookies ?? true, modifiedMs, inUse: cookies === null || await inUse(path) });
+        }
+      }
+      if (!candidates.length) return shared;
+      candidates.sort((a, b) => Number(b.signedIn) - Number(a.signedIn) || b.modifiedMs - a.modifiedMs);
+      // A pane still using the account wins: join its Chrome so nothing it holds is left behind.
+      const open = candidates.find(candidate => candidate.inUse);
+      if (open) return open.path;
+      const best = candidates[0]!;
+      return withProfileLock(best.path, async () => {
+        if (!await stat(best.path).then(() => true, () => false)) return shared;
+        if (await inUse(best.path)) return best.path;
+        await mkdir(dirname(shared), { recursive: true, mode: 0o700 });
+        await trackMove(rename(best.path, shared));
+        for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) await rm(join(shared, name), { force: true });
+        await writeFile(`${shared}.adoption.json`, JSON.stringify({ version: 1, adoptedAt: nowIso(), from: best.path.slice(root.length + 1), signedIn: best.signedIn }), { mode: 0o600 });
+        return shared;
+      });
+    });
+  }
+  async function assertGoogleAccount(input: StartBrowserSessionInput, context?: BrowserHostActorContext) {
+    if (!input.googleAccount) return;
+    const { ownerUserId, accountId } = input.googleAccount;
+    const room = await store.getRoom(input.pane.roomId);
+    if (room.kind === "AGENT_PROOF" || (context?.holderType === "OPERATOR" && context.holderId !== ownerUserId) ||
+        !(await store.listGoogleAccounts(ownerUserId)).some(account => account.id === accountId)) {
+      throw new SpaceConflictError("The Google account does not belong to this owner or is unavailable in a proof room.");
+    }
+  }
+
+  // Verified-account profiles whose owner is known to this host process. Checks
+  // open a private background page that no pane owns, lists or can activate.
+  const googleProfileIdentities = new Map<string, GoogleAccountBrowserIdentity>();
+  const googleChecks = new Map<string, { promise: Promise<GoogleAccountBrowserCheckResult>; strength: number }>();
+  const googleCheckTimers = new Map<string, { timer: NodeJS.Timeout; forced: boolean }>();
+  const googleProbeTargets = new Set<string>();
+  const googleMainFrameUrls = new Map<string, string>();
+  const googleCheckStaleMs = 10 * 60_000;
+  const redactedCheck = ({ status, reason, checkedAt, connectedAt }: GoogleBrowserCheck): GoogleAccountBrowserCheckResult => ({ status, reason, checkedAt, connectedAt });
+
+  async function probeGoogleListAccounts(profile: BrowserProfileRuntime, account: { googleSub: string; email: string }): Promise<GoogleBrowserEvidence> {
+    const { client } = profile;
+    const { targetId } = await client.send<{ targetId: string }>("Target.createTarget", { url: "about:blank", background: true });
+    googleProbeTargets.add(targetId);
+    try {
+      const sid = profile.attachments.get(targetId) ??
+        (await client.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })).sessionId;
+      await client.send("Page.enable", {}, sid);
+      await client.send("Runtime.runIfWaitingForDebugger", {}, sid).catch(() => undefined);
+      const loaded = client.waitFor("Page.loadEventFired", sid, 10_000).catch(() => null);
+      const navigation = await client.send<{ errorText?: string }>("Page.navigate", { url: googleBrowserCheckPageUrl }, sid);
+      if (navigation.errorText) return { ok: false, httpStatus: null, error: "NETWORK" };
+      await loaded;
+      const result = await client.send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        expression: googleListAccountsExpression({ sub: account.googleSub, email: account.email }),
+        awaitPromise: true,
+        returnByValue: true
+      }, sid);
+      return parseGoogleBrowserEvidence(readRuntimeValue(result));
+    } finally {
+      await client.send("Target.closeTarget", { targetId }).catch(() => undefined);
+      profile.attachments.delete(targetId);
+      googleProbeTargets.delete(targetId);
+    }
+  }
+
+  function checkGoogleAccountProfile(identity: GoogleAccountBrowserIdentity, launch: boolean, onlyIfOlderThanMs?: number): Promise<GoogleAccountBrowserCheckResult> {
+    const path = googleBrowserProfilePathFor(config.browserSessionsProfileRoot, identity.ownerUserId, identity.accountId);
+    // Join an equal or stronger check; a weaker one (no launch, or freshness-only) cannot answer this request.
+    const strength = launch ? 2 : onlyIfOlderThanMs === undefined ? 1 : 0;
+    const running = googleChecks.get(path);
+    if (running && running.strength >= strength) return running.promise;
+    if (running) return running.promise.catch(() => undefined).then(() => checkGoogleAccountProfile(identity, launch, onlyIfOlderThanMs));
+    const checking = withProfileLock(path, async (): Promise<GoogleAccountBrowserCheckResult> => {
+      const account = (await store.listGoogleAccounts(identity.ownerUserId)).find(candidate => candidate.id === identity.accountId);
+      if (!account) throw new SpaceNotFoundError("Google account not found.");
+      googleProfileIdentities.set(path, { ...identity });
+      const exists = await stat(path).then(() => true, (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      if (!exists) return { status: "NOT_CONNECTED", reason: "PROFILE_MISSING", checkedAt: nowIso(), connectedAt: null };
+      const previous = await readGoogleBrowserCheck(path);
+      if (previous && onlyIfOlderThanMs !== undefined && Date.now() - Date.parse(previous.checkedAt) < onlyIfOlderThanMs) return redactedCheck(previous);
+      let profile = profiles.get(path);
+      if (profile && (profile.process.exitCode !== null || profile.process.signalCode !== null)) {
+        await closeProfile(profile, path);
+        profile = undefined;
+      }
+      let launched = false;
+      if (!profile) {
+        if (!launch || closingAll) return previous ? redactedCheck(previous) : { status: "UNKNOWN", reason: "NOT_CHECKED", checkedAt: null, connectedAt: null };
+        try {
+          assertEnabled();
+          profile = await launchProfile({ profilePath: path, viewport: "desktop" });
+          launched = true;
+        } catch {
+          return { status: "UNKNOWN", reason: "BROWSER_UNAVAILABLE", checkedAt: nowIso(), connectedAt: previous?.connectedAt ?? null };
+        }
+      }
+      try {
+        const evidence = await withTimeout(probeGoogleListAccounts(profile, account), 20_000, "Timed out checking the Google session.")
+          .catch((): GoogleBrowserEvidence => ({ ok: false, httpStatus: null, error: "NETWORK" }));
+        const check = classifyGoogleBrowserEvidence(evidence, previous, nowIso());
+        // A failed check is reported once but never replaces the last verified state.
+        if (check.status !== "UNKNOWN") await writeGoogleBrowserCheck(path, check);
+        return redactedCheck(check);
+      } finally {
+        if (launched && !profile.members.size && profiles.get(path) === profile) await closeProfile(profile, path);
+      }
+    });
+    googleChecks.set(path, { promise: checking, strength });
+    void checking.finally(() => { if (googleChecks.get(path)?.promise === checking) googleChecks.delete(path); }).catch(() => undefined);
+    return checking;
+  }
+
+  function scheduleGoogleAccountCheck(path: string, delayMs: number, onlyIfOlderThanMs?: number) {
+    const identity = googleProfileIdentities.get(path);
+    if (!identity || closingAll) return;
+    const forced = onlyIfOlderThanMs === undefined;
+    const pending = googleCheckTimers.get(path);
+    if (pending?.forced && !forced) return;
+    if (pending) clearTimeout(pending.timer);
+    const timer = setTimeout(() => {
+      if (googleCheckTimers.get(path)?.timer === timer) googleCheckTimers.delete(path);
+      void checkGoogleAccountProfile(identity, false, onlyIfOlderThanMs).catch(() => undefined);
+    }, delayMs);
+    timer.unref?.();
+    googleCheckTimers.set(path, { timer, forced });
+  }
+
+  const profileRunning = (path: string) => {
+    const profile = profiles.get(path);
+    return Boolean(profile && profile.process.exitCode === null && profile.process.signalCode === null);
+  };
+  // Chrome's SingletonLock ("<host>-<pid>") also reveals a Chrome this process does not manage.
+  async function foreignChromeHolds(path: string): Promise<boolean> {
+    const lock = await readlink(join(path, "SingletonLock")).catch(() => null);
+    const pid = lock ? Number(/-(\d+)$/.exec(lock)?.[1]) : Number.NaN;
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    // A recycled pid must not block forever: require that process to be Chrome on this directory.
+    const commandLine = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+    return commandLine.split("\0").includes(`--user-data-dir=${path}`);
+  }
+
+  // Moves a pane's own profile into the account's shared profile after Google
+  // confirms which registry account it holds. Source and target must be closed;
+  // a target that never held a session is closed first (its panes reconnect).
+  // Adoption must finish well inside the 30 s Browser Host IPC timeout: a caller that
+  // gave up must never see its pane directory moved afterwards.
+  const adoptionBudgetMs = 22_000;
+  const profileMoves = new Set<Promise<unknown>>();
+  function trackMove<T>(work: Promise<T>): Promise<T> {
+    profileMoves.add(work);
+    void work.finally(() => profileMoves.delete(work)).catch(() => undefined);
+    return work;
+  }
+
+  async function adoptPaneProfile(source: PaneProfileSource): Promise<PaneProfileAdoptionResult> {
+    const none = (result: PaneProfileAdoptionResult["result"], accountId: string | null = null): PaneProfileAdoptionResult => ({ result, accountId });
+    const deadline = Date.now() + adoptionBudgetMs;
+    const remaining = () => Math.max(1_000, deadline - Date.now());
+    const accounts = (await store.listGoogleAccounts(source.ownerUserId))
+      .filter(account => !source.accountId || account.id === source.accountId);
+    if (!accounts.length) return none("NO_SIGN_IN");
+    const sourcePath = browserProfilePathFor(config.browserSessionsProfileRoot, source.roomId, source.paneId, source.profileKey);
+    await profileMoveRecovery;
+    const probeWith = async (profile: BrowserProfileRuntime, account: (typeof accounts)[number], previous: GoogleBrowserCheck | null) => {
+      const evidence = await withTimeout(probeGoogleListAccounts(profile, account), remaining(), "Timed out checking the Google session.")
+        .catch((): GoogleBrowserEvidence => ({ ok: false, httpStatus: null, error: "NETWORK" }));
+      return classifyGoogleBrowserEvidence(evidence, previous, nowIso());
+    };
+    return withProfileLock(sourcePath, async () => {
+      const exists = await stat(sourcePath).then(() => true, (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+      if (!exists) return none("SOURCE_MISSING");
+      // In use: a Chrome of this host, an active pane session (also after a host restart), or a foreign Chrome.
+      const activePaths = (await store.listActivePaneBrowserSessions()).map(session => session.profilePath);
+      const within = (path: string) => path === sourcePath || path.startsWith(`${sourcePath}/`);
+      if ([...profiles.keys()].some(path => within(path) && profileRunning(path)) || activePaths.some(within) || await foreignChromeHolds(sourcePath)) {
+        return none("SOURCE_IN_USE");
+      }
+      const cookies = await googleSignInCookieState(sourcePath).catch(() => null);
+      if (!cookies) return none("SOURCE_IN_USE");
+      if (!cookies.hasSignInCookies || cookies.modifiedMs === null) return none("NO_SIGN_IN");
+      const remembered = await readAdoptionProbe(sourcePath).catch(() => null);
+      if (remembered && remembered.cookiesModifiedMs === cookies.modifiedMs) return none(remembered.result);
+      if (closingAll) return none("CHECK_FAILED");
+      let probe: BrowserProfileRuntime;
+      try {
+        assertEnabled();
+        probe = await launchProfile({ profilePath: sourcePath, viewport: "desktop" });
+      } catch { return none("CHECK_FAILED"); }
+      const checks: Array<{ account: (typeof accounts)[number]; check: GoogleBrowserCheck }> = [];
+      try {
+        for (const account of accounts) checks.push({ account, check: await probeWith(probe, account, null) });
+      } finally {
+        if (profiles.get(sourcePath) === probe && !probe.members.size) await closeProfile(probe, sourcePath);
+      }
+      // Registry order puts the primary account first; it wins a multi-login profile.
+      const verified = checks.find(entry => entry.check.status === "CONNECTED");
+      if (!verified) {
+        if (checks.some(entry => entry.check.status === "UNKNOWN")) return none("CHECK_FAILED");
+        const result = checks.some(entry => entry.check.reason === "OTHER_ACCOUNT") ? "OTHER_ACCOUNT" : "NO_SIGN_IN";
+        // Remember against the cookies as the check left them (the check itself may touch them).
+        const after = await googleSignInCookieState(sourcePath).catch(() => null);
+        if (after?.modifiedMs != null) {
+          await writeAdoptionProbe(sourcePath, { version: 1, cookiesModifiedMs: after.modifiedMs, result, checkedAt: nowIso() }).catch(() => undefined);
+        }
+        return none(result);
+      }
+      const accountId = verified.account.id;
+      const targetPath = googleBrowserProfilePathFor(config.browserSessionsProfileRoot, source.ownerUserId, accountId);
+      googleProfileIdentities.set(targetPath, { ownerUserId: source.ownerUserId, accountId });
+      return withProfileLock(targetPath, async (): Promise<PaneProfileAdoptionResult> => {
+        const previous = await readGoogleBrowserCheck(targetPath);
+        const targetExists = await stat(targetPath).then(() => true, () => false);
+        if (targetExists) {
+          // Replace the shared profile only when Google confirms, now, that it never held a session.
+          if (previous?.connectedAt) return none(previous.status === "CONNECTED" ? "ALREADY_CONNECTED" : "TARGET_IN_USE", accountId);
+          if (activePaths.includes(targetPath) && !profileRunning(targetPath)) return none("TARGET_IN_USE", accountId);
+          if (await foreignChromeHolds(targetPath)) return none("TARGET_IN_USE", accountId);
+          let target = profileRunning(targetPath) ? profiles.get(targetPath)! : undefined;
+          const launched = !target;
+          if (!target) {
+            try { target = await launchProfile({ profilePath: targetPath, viewport: "desktop" }); }
+            catch { return none("TARGET_IN_USE", accountId); }
+          }
+          let current: GoogleBrowserCheck;
+          try { current = await probeWith(target, verified.account, previous); }
+          finally { if (launched && profiles.get(targetPath) === target && !target.members.size) await closeProfile(target, targetPath); }
+          if (current.status === "CONNECTED") {
+            await writeGoogleBrowserCheck(targetPath, current);
+            return none("ALREADY_CONNECTED", accountId);
+          }
+          if (current.reason !== "NO_GOOGLE_SESSION") return none("TARGET_IN_USE", accountId);
+          if (Date.now() > deadline) return none("CHECK_FAILED", accountId);
+          // The open shared profile never held a session: close it like a crash so its
+          // panes relaunch on the adopted profile at the same path.
+          const open = profiles.get(targetPath);
+          if (open && profileRunning(targetPath)) await closeProfile(open, targetPath);
+        }
+        if (Date.now() > deadline) return none("CHECK_FAILED", accountId);
+        const stamp = Date.now();
+        const replaced = `${targetPath}.replaced-${stamp}`;
+        const parkedAccounts = `${sourcePath}.accounts-${stamp}`;
+        const nested = source.profileKey === null && await stat(join(sourcePath, "accounts")).then(() => true, () => false);
+        await trackMove((async () => {
+          await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+          if (targetExists) await rename(targetPath, replaced);
+          try {
+            // A per-pane directory also contains the pane's legacy account scopes; they stay put.
+            if (nested) await rename(join(sourcePath, "accounts"), parkedAccounts);
+            await rename(sourcePath, targetPath);
+            if (nested) {
+              await mkdir(sourcePath, { mode: 0o700 });
+              await rename(parkedAccounts, join(sourcePath, "accounts"));
+            }
+          } catch (error) {
+            if (nested) await rename(parkedAccounts, join(sourcePath, "accounts")).catch(() => undefined);
+            if (targetExists) await rename(replaced, targetPath).catch(() => undefined);
+            throw error;
+          }
+        })());
+        for (const name of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) await rm(join(targetPath, name), { force: true });
+        await rm(`${sourcePath}.account-probe.json`, { force: true });
+        await writeGoogleBrowserCheck(targetPath, { ...verified.check, connectedAt: verified.check.checkedAt });
+        await writeFile(`${targetPath}.adoption.json`, JSON.stringify({
+          version: 1, adoptedAt: nowIso(),
+          from: sourcePath.slice(config.browserSessionsProfileRoot.length + 1),
+          replaced: targetExists ? replaced.slice(config.browserSessionsProfileRoot.length + 1) : null
+        }), { mode: 0o600 });
+        return none("ADOPTED", accountId);
+      });
+    });
+  }
+
+  // A crash between the renames of a move leaves "<pane>.accounts-<time>" or
+  // "<profile>.replaced-<time>" behind; put them back where nothing replaced them.
+  async function recoverInterruptedProfileMoves(): Promise<void> {
+    const root = config.browserSessionsProfileRoot;
+    for (const room of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+      if (!room.isDirectory() || !room.name.startsWith("room_")) continue;
+      for (const entry of await readdir(join(root, room.name), { withFileTypes: true }).catch(() => [])) {
+        const parked = /^(.+)\.accounts-\d+$/.exec(entry.name);
+        if (!entry.isDirectory() || !parked) continue;
+        const paneDir = join(root, room.name, parked[1]!);
+        if (await stat(join(paneDir, "accounts")).then(() => true, () => false)) continue;
+        await mkdir(paneDir, { recursive: true, mode: 0o700 });
+        await rename(join(root, room.name, entry.name), join(paneDir, "accounts")).catch(() => undefined);
+      }
+    }
+    const accountsRoot = join(root, "google-accounts");
+    for (const owner of await readdir(accountsRoot, { withFileTypes: true }).catch(() => [])) {
+      if (!owner.isDirectory()) continue;
+      for (const entry of await readdir(join(accountsRoot, owner.name), { withFileTypes: true }).catch(() => [])) {
+        const replaced = /^([a-f0-9]{64})\.replaced-\d+$/.exec(entry.name);
+        if (!entry.isDirectory() || !replaced) continue;
+        const target = join(accountsRoot, owner.name, replaced[1]!);
+        if (await stat(target).then(() => true, () => false)) continue;
+        await rename(join(accountsRoot, owner.name, entry.name), target).catch(() => undefined);
+      }
+    }
+  }
+  const profileMoveRecovery = recoverInterruptedProfileMoves().catch(() => undefined);
+
+  function noteGoogleProfileNavigation(path: string, profile: BrowserProfileRuntime, sessionId: string, url: string) {
+    if (!googleProfileIdentities.has(path)) return;
+    const targetId = [...profile.attachments].find(([, attached]) => attached === sessionId)?.[0];
+    if (!targetId || googleProbeTargets.has(targetId) || !profile.owners.has(targetId)) return;
+    const previous = googleMainFrameUrls.get(sessionId);
+    googleMainFrameUrls.set(sessionId, url);
+    // Sign-in, account chooser, challenge and sign-out flows all pass through these URLs.
+    if (isGoogleAuthenticationUrl(previous) || isGoogleAuthenticationUrl(url)) scheduleGoogleAccountCheck(path, 4_000);
+  }
+
   const closingSessions = new Set<string>();
   let closingAll = false;
   const runtimeStarts = new Map<string, Promise<BrowserRuntime>>();
@@ -1604,10 +2056,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     }
   }
 
-  async function createStoredSession(input: StartBrowserSessionInput): Promise<PaneBrowserSession> {
+  async function createStoredSession(input: StartBrowserSessionInput, profilePath = profilePathForInput(input)): Promise<PaneBrowserSession> {
     const sessionId = makeSpaceId("browser_session");
-    const profileId = `profile:${sanitizeSegment(input.pane.roomId)}:${sanitizeSegment(input.pane.id)}${input.profileKey ? `:${input.profileKey}` : ""}`;
-    const profilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
+    const profileId = profileIdentityForInput(input) ?? `profile:${sanitizeSegment(input.pane.roomId)}:${sanitizeSegment(input.pane.id)}${input.profileKey ? `:${input.profileKey}` : ""}`;
     return store.createPaneBrowserSession({
       sessionId,
       paneId: input.pane.id,
@@ -1648,30 +2099,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     if (existing && existing.process.exitCode === null && existing.process.signalCode === null) return Promise.resolve(existing);
     const pending = runtimeStarts.get(session.sessionId);
     if (pending) return pending;
-    const starting = launchRuntime(session);
+    const starting = withProfileLock(session.profilePath, () => launchRuntime(session));
     runtimeStarts.set(session.sessionId, starting);
     void starting.finally(() => { if (runtimeStarts.get(session.sessionId) === starting) runtimeStarts.delete(session.sessionId); }).catch(() => undefined);
     return starting;
   }
 
-  async function launchRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
-    const stale = runtimes.get(session.sessionId);
-    if (stale) {
-      runtimes.delete(session.sessionId);
-      try { stale.detachDiagnostics(); stale.client.close(); } catch { /* Dead runtime cleanup. */ }
-      if (stale.xvfb) await stopXvfbBestEffort(stale.xvfb);
-      if (stale.display !== undefined) releaseDisplay(stale.display);
-      capacity.releaseSession(session.sessionId);
-      capacity.releaseLive(`stream:${session.sessionId}`);
-    }
-    const fresh = await store.getPaneBrowserSession(session.sessionId);
-    if (!fresh?.isActive || fresh.status === "CLOSED") throw new SpaceConflictError("The browser session is closed.");
-    assertEnabled();
-    if (!capacity.acquireSession(session.sessionId)) {
-      throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "Managed browser session capacity is exhausted.", capacity.snapshot());
-    }
-    try { await mkdir(session.profilePath, { recursive: true, mode: 0o750 }); }
-    catch (error) { capacity.releaseSession(session.sessionId); throw error; }
+  async function launchProfile(session: Pick<PaneBrowserSession, "profilePath" | "viewport">): Promise<BrowserProfileRuntime> {
+    await mkdir(session.profilePath, { recursive: true, mode: 0o700 });
     const viewport = viewportSizes[session.viewport];
     const audioEnv = config.browserSessionsAudioEnabled
       ? {
@@ -1684,14 +2119,12 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     if (config.browserSessionsXvfbEnabled) {
       display = allocateDisplay();
       if (display === null) {
-        capacity.releaseSession(session.sessionId);
         throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "No Xvfb display is available for a headed browser session.", capacity.snapshot());
       }
       try {
         xvfb = await startXvfb(display, viewport.width, viewport.height, config.browserSessionsXvfbPath);
       } catch (error) {
         releaseDisplay(display);
-        capacity.releaseSession(session.sessionId);
         throw new SpaceFeatureDisabledError(
           "BROWSER_XVFB_UNAVAILABLE",
           `Headed browser sessions require Xvfb (${config.browserSessionsXvfbPath}). ${error instanceof Error ? error.message : String(error)}`,
@@ -1722,19 +2155,144 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       ],
       { env: { ...process.env, HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
     );
+    let client: CdpClient | undefined;
     try {
       const wsUrl = await waitForChromeWebSocket(chrome, 10_000);
-      const client = await CdpClient.connect(wsUrl, 10_000);
-      const target = await client.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
-      const attached = await client.send<{ sessionId: string }>("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      const runtime: BrowserRuntime = {
+      client = await CdpClient.connect(wsUrl, 10_000);
+      const profile: BrowserProfileRuntime = {
+        process: chrome, client, ...(xvfb ? { xvfb } : {}), ...(display !== null ? { display } : {}),
+        owners: new Map(), attachments: new Map(), members: new Set(), detach: () => undefined
+      };
+      profile.detach = client.onEvent(event => {
+        if (event.method === "Target.attachedToTarget") {
+          const sid = event.params?.sessionId;
+          const info = event.params?.targetInfo as { targetId?: string; type?: string; openerId?: string } | undefined;
+          if (typeof sid !== "string" || info?.type !== "page" || !info.targetId) return;
+          profile.attachments.set(info.targetId, sid);
+          const owner = profile.owners.get(info.targetId) ?? (info.openerId ? profile.owners.get(info.openerId) : undefined);
+          if (owner) {
+            void claimPage(owner, info.targetId, sid).catch(() => profile.client.send("Target.closeTarget", { targetId: info.targetId }).catch(() => undefined));
+          }
+        } else if (event.method === "Page.frameNavigated" && event.sessionId) {
+          const frame = event.params?.frame as { parentId?: string; url?: string } | undefined;
+          if (frame && !frame.parentId && typeof frame.url === "string") noteGoogleProfileNavigation(session.profilePath, profile, event.sessionId, frame.url);
+        } else if (event.method === "Target.detachedFromTarget") {
+          const sid = event.params?.sessionId;
+          if (typeof sid === "string") googleMainFrameUrls.delete(sid);
+          for (const [id, attached] of profile.attachments) {
+            if (attached !== sid) continue;
+            profile.attachments.delete(id);
+            const owner = profile.owners.get(id);
+            owner?.ownedPages.delete(id);
+            owner?.pageSessions.delete(id);
+            profile.owners.delete(id);
+          }
+        }
+      });
+      await client.send("Target.setAutoAttach", {
+        autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
+        filter: [{ type: "page", exclude: false }]
+      });
+      profiles.set(session.profilePath, profile);
+      return profile;
+    } catch (error) {
+      await stopChromeBestEffort(chrome, client);
+      if (xvfb) await stopXvfbBestEffort(xvfb);
+      if (display !== null) releaseDisplay(display);
+      throw error;
+    }
+  }
+
+  async function claimPage(runtime: BrowserRuntime, targetId: string, attachedId?: string): Promise<string> {
+    const profile = runtime.profile;
+    if (runtime.closing) {
+      await profile.client.send("Target.closeTarget", { targetId }).catch(() => undefined);
+      throw new SpaceConflictError("The browser pane is closing.");
+    }
+    const owner = profile.owners.get(targetId);
+    if (owner && owner !== runtime) throw new SpaceNotFoundError("Browser page was not found.");
+    profile.owners.set(targetId, runtime);
+    runtime.ownedPages.add(targetId);
+    const existing = runtime.pageSessions.get(targetId);
+    if (existing) return existing;
+    const sid = attachedId ?? profile.attachments.get(targetId) ??
+      (await profile.client.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true })).sessionId;
+    profile.attachments.set(targetId, sid);
+    runtime.pageSessions.set(targetId, sid);
+    await enablePageSecurity(profile.client, sid);
+    await profile.client.send("Runtime.runIfWaitingForDebugger", {}, sid);
+    return sid;
+  }
+
+  async function createOwnedPage(runtime: BrowserRuntime, url: string, background = false): Promise<string> {
+    // Claim and guard an inert page before any network navigation can run.
+    const { targetId } = await runtime.client.send<{ targetId: string }>("Target.createTarget", { url: "about:blank", background });
+    const sid = await claimPage(runtime, targetId);
+    if (url !== "about:blank") await runtime.client.send("Page.navigate", { url }, sid);
+    return targetId;
+  }
+
+  async function closeProfile(profile: BrowserProfileRuntime, path: string): Promise<void> {
+    profile.detach();
+    await stopChromeBestEffort(profile.process, profile.client);
+    if (profile.xvfb) await stopXvfbBestEffort(profile.xvfb);
+    if (profile.display !== undefined) releaseDisplay(profile.display);
+    if (profiles.get(path) === profile) profiles.delete(path);
+  }
+
+  async function releaseRuntime(runtime: BrowserRuntime): Promise<void> {
+    runtime.closing = true;
+    await withProfileLock(runtime.profilePath, async () => {
+      runtime.detachDiagnostics();
+      const profile = runtime.profile;
+      // Keep ownership while closing: late popups must still belong to this pane.
+      while (runtime.ownedPages.size) {
+        const ids = [...runtime.ownedPages];
+        for (const id of ids) {
+          await runtime.client.send("Target.closeTarget", { targetId: id }).catch(() => undefined);
+          runtime.ownedPages.delete(id);
+          runtime.pageSessions.delete(id);
+          profile.owners.delete(id);
+          profile.attachments.delete(id);
+        }
+      }
+      profile.members.delete(runtime);
+      if (!profile.members.size && profiles.get(runtime.profilePath) === profile) await closeProfile(profile, runtime.profilePath);
+    });
+  }
+
+  async function launchRuntime(session: PaneBrowserSession): Promise<BrowserRuntime> {
+    const stale = runtimes.get(session.sessionId);
+    if (stale) {
+      stale.detachDiagnostics();
+      runtimes.delete(session.sessionId);
+      capacity.releaseLive(`stream:${session.sessionId}`);
+    }
+    const fresh = await store.getPaneBrowserSession(session.sessionId);
+    if (!fresh?.isActive || fresh.status === "CLOSED") throw new SpaceConflictError("The browser session is closed.");
+    assertEnabled();
+    if (!capacity.acquireSession(session.sessionId)) {
+      throw new SpaceFeatureDisabledError("BROWSER_SESSION_CAPACITY", "Managed browser session capacity is exhausted.", capacity.snapshot());
+    }
+    let profile = profiles.get(session.profilePath);
+    if (profile && (profile.process.exitCode !== null || profile.process.signalCode !== null)) {
+      await closeProfile(profile, session.profilePath);
+      profile = undefined;
+    }
+    try { profile ??= await launchProfile(session); }
+    catch (error) { capacity.releaseSession(session.sessionId); throw error; }
+    const { client, process: chrome, xvfb, display } = profile;
+    let runtime: BrowserRuntime | undefined;
+    try {
+      runtime = {
+        profile, profilePath: session.profilePath, ownedPages: new Set(), closing: false,
         process: chrome,
         ...(xvfb ? { xvfb } : {}),
         ...(display !== null ? { display } : {}),
         client,
-        targetId: target.targetId,
-        cdpSessionId: attached.sessionId,
-        pageSessions: new Map([[target.targetId, attached.sessionId]]),
+        targetId: "",
+        cdpSessionId: "",
+        pageSessions: new Map(),
         consoleEntries: [],
         networkEntries: [],
         streamSubscribers: new Map(),
@@ -1742,27 +2300,13 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         streamSequence: 0,
         detachDiagnostics: () => undefined
       };
+      profile.members.add(runtime);
+      const paneRuntime = runtime;
+      runtime.targetId = await createOwnedPage(runtime, "about:blank");
+      runtime.cdpSessionId = runtime.pageSessions.get(runtime.targetId)!;
       runtime.detachDiagnostics = client.onEvent((event) => {
-        if (event.method === "Target.attachedToTarget") {
-          const targetSessionId = event.params?.sessionId;
-          const targetInfo = event.params?.targetInfo as { targetId?: unknown; type?: unknown } | undefined;
-          if (typeof targetSessionId === "string" && typeof targetInfo?.targetId === "string" && targetInfo.type === "page") {
-            runtime.pageSessions.set(targetInfo.targetId, targetSessionId);
-            void enablePageSecurity(client, targetSessionId)
-              .then(() => client.send("Runtime.runIfWaitingForDebugger", {}, targetSessionId))
-              .catch(() => client.send("Target.closeTarget", { targetId: targetInfo.targetId }).catch(() => undefined));
-          }
-          return;
-        }
-        if (event.method === "Target.detachedFromTarget") {
-          const targetSessionId = event.params?.sessionId;
-          if (typeof targetSessionId === "string") {
-            for (const [targetId, sessionId] of runtime.pageSessions) {
-              if (sessionId === targetSessionId) runtime.pageSessions.delete(targetId);
-            }
-          }
-          return;
-        }
+        const runtime = paneRuntime;
+        if (!event.sessionId || ![...runtime.pageSessions.values()].includes(event.sessionId)) return;
         if (event.method === "Fetch.requestPaused") {
           void handlePausedRequest(runtime, event);
           return;
@@ -1805,13 +2349,6 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           if (normalized) pushBounded(runtime.networkEntries, normalized, 1_000);
         }
       });
-      await enablePageSecurity(client, attached.sessionId);
-      await client.send("Target.setAutoAttach", {
-        autoAttach: true,
-        waitForDebuggerOnStart: true,
-        flatten: true,
-        filter: [{ type: "page", exclude: false }]
-      });
       await setViewport(runtime, session.viewport);
       const restore = browserSessionRestoreUrls(session);
       if (restore.activeUrl) {
@@ -1822,15 +2359,22 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       }
       for (const rawUrl of restore.backgroundUrls) {
         const url = await requestGuard.assertAllowed(rawUrl);
-        await client.send("Target.createTarget", { url, background: true });
+        await createOwnedPage(runtime, url, true);
       }
       runtimes.set(session.sessionId, runtime);
+      scheduleGoogleAccountCheck(session.profilePath, 6_000, googleCheckStaleMs);
       return runtime;
     } catch (error) {
       capacity.releaseSession(session.sessionId);
-      if (xvfb) await stopXvfbBestEffort(xvfb);
-      if (display !== null) releaseDisplay(display);
-      await stopChromeBestEffort(chrome);
+      if (runtime) {
+        runtime.detachDiagnostics();
+        for (const id of runtime.ownedPages) {
+          await client.send("Target.closeTarget", { targetId: id }).catch(() => undefined);
+          profile.owners.delete(id); profile.attachments.delete(id);
+        }
+        profile.members.delete(runtime);
+      }
+      if (!profile.members.size) await closeProfile(profile, session.profilePath);
       throw error;
     }
   }
@@ -1878,6 +2422,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         runtime.streamSubscribers.delete(id);
         if (runtime.streamSubscribers.size || !runtime.screencastActive) return;
         runtime.screencastActive = false;
+        // A runtime that was replaced after a crash (or stopped) already gave up
+        // this session's slot; it now belongs to the replacement's stream.
+        if (runtimes.get(sessionId) !== runtime) return;
         capacity.releaseLive(workloadKey);
         await runtime.client.send("Page.stopScreencast", {}, runtime.cdpSessionId).catch(() => undefined);
         void pumpCaptureQueue();
@@ -1983,7 +2530,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       targetInfos?: Array<{ targetId: string; type?: string; title?: string; url?: string; openerId?: string }>;
     }>("Target.getTargets");
     const pages = (result.targetInfos ?? [])
-      .filter((target) => target.type === "page")
+      .filter((target) => target.type === "page" && runtime.ownedPages.has(target.targetId))
       .slice(0, 100)
       .map((target): BrowserPageSummary => ({
         pageId: target.targetId,
@@ -2015,7 +2562,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
 
   async function activateRuntimePage(session: PaneBrowserSession, runtime: BrowserRuntime, pageId: string): Promise<void> {
     const targets = await runtime.client.send<{ targetInfos?: Array<{ targetId: string; type?: string }> }>("Target.getTargets");
-    if (!(targets.targetInfos ?? []).some((target) => target.targetId === pageId && target.type === "page")) {
+    if (!runtime.ownedPages.has(pageId) || !(targets.targetInfos ?? []).some((target) => target.targetId === pageId && target.type === "page")) {
       throw new SpaceNotFoundError(`Browser page ${pageId} was not found.`);
     }
     const wasStreaming = runtime.screencastActive;
@@ -2291,17 +2838,11 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const size = metrics.contentSize;
       if (size?.width && size.height) clip = { x: size.x ?? 0, y: size.y ?? 0, width: size.width, height: size.height, scale: 1 };
     } else if (job.options.target === "ELEMENT" && job.options.selector) {
-      const result = await runtime.client.send<{ result?: { value?: { x: number; y: number; width: number; height: number } | null } }>(
-        "Runtime.evaluate",
-        {
-          expression: `(() => { const element = document.querySelector(${JSON.stringify(job.options.selector)}); if (!element) return null; const r = element.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`,
-          returnByValue: true
-        },
-        runtime.cdpSessionId
-      );
-      const value = readRuntimeValue(result);
-      if (!value || value.width <= 0 || value.height <= 0) throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
-      clip = { ...value, scale: 1 };
+      const resolved = await resolveElementScreenshotClip(runtime.client, runtime.cdpSessionId, job.options.selector);
+      if (!resolved || resolved.width <= 0 || resolved.height <= 0) {
+        throw new SpaceNotFoundError(`Browser element ${job.options.selector} was not found.`);
+      }
+      clip = resolved;
     }
     const screenshot = await runtime.client.send<{ data: string }>(
       "Page.captureScreenshot",
@@ -2613,9 +3154,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       } catch {
         // Best effort: process termination below is the authoritative cleanup.
       }
-      if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
-      if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
-      if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+      if (runtime) await releaseRuntime(runtime);
       await store.updatePaneBrowserSession(active.sessionId, {
         status: "CLOSED",
         statusReason: "Browser session closed.",
@@ -2683,18 +3222,32 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     startOrRestore(input, context) {
       const pending = paneStarts.get(input.pane.id);
       if (pending) return pending.then(async (response) => {
+        await assertGoogleAccount(input, context);
         await assertCanMutate(response.session, context);
-        if (input.pane.mode === "YOUTUBE" && input.profileKey !== undefined && response.session.profilePath !== browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey)) {
+        const identity = profileIdentityForInput(input);
+        if (identity ? response.session.profileId !== identity : input.profileKey !== undefined && response.session.profilePath !== profilePathForInput(input)) {
           throw new SpaceConflictError("The Google account is changing. Retry after the current browser start finishes.");
         }
         return response;
       });
       const starting = (async () => {
         assertEnabled();
+        await assertGoogleAccount(input, context);
+        if (input.googleAccount) googleProfileIdentities.set(profilePathForInput(input), { ...input.googleAccount });
         let session = await store.getActivePaneBrowserSession(input.pane.id);
         if (session) await assertCanMutate(session, context);
-        const expectedProfilePath = browserProfilePathFor(config.browserSessionsProfileRoot, input.pane.roomId, input.pane.id, input.profileKey);
-        if (input.pane.mode === "YOUTUBE" && input.profileKey !== undefined && session && session.profilePath !== expectedProfilePath) {
+        if (input.sharedProfileKey && (await store.getRoom(input.pane.roomId)).kind === "AGENT_PROOF") {
+          throw new SpaceConflictError("Shared account profiles are unavailable in proof rooms.");
+        }
+        const identity = profileIdentityForInput(input);
+        const expectedProfilePath = input.sharedProfileKey && !(session && session.profileId === identity)
+          ? await prepareSharedCliProfile(input.sharedProfileKey)
+          : profilePathForInput(input);
+        // A running pane already on the resolved directory (e.g. the joined per-pane profile) keeps running.
+        const changesAccount = identity
+          ? Boolean(session && session.profileId !== identity && session.profilePath !== expectedProfilePath)
+          : input.profileKey !== undefined && Boolean(session && session.profilePath !== expectedProfilePath);
+        if (changesAccount && session) {
           // This start owns paneStarts; stop only the previous account runtime.
           await stopPaneById(input.pane.id, input.traceId, context, true);
           session = null;
@@ -2717,7 +3270,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
               videoPaused: prior.restoreVideoPaused
             };
           }
-          session = await createStoredSession({ ...input, targetUrl });
+          session = await createStoredSession({ ...input, targetUrl }, expectedProfilePath);
         } else if (input.viewport && input.viewport !== session.viewport) {
           session = await store.updatePaneBrowserSession(session.sessionId, { viewport: input.viewport });
         }
@@ -2791,8 +3344,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       await assertCanMutate(session, context);
       const runtime = await ensureRuntime(session);
       const url = rawUrl ? await assertSafeBrowserTargetUrl(rawUrl, config.browserEvidenceTargetOrigin) : "about:blank";
-      const created = await runtime.client.send<{ targetId: string }>("Target.createTarget", { url, background: !activate });
-      if (activate) await activateRuntimePage(session, runtime, created.targetId);
+      const pageId = await createOwnedPage(runtime, url, !activate);
+      if (activate) await activateRuntimePage(session, runtime, pageId);
       return refreshPages(session, runtime);
     },
     async activatePage(pane, pageId, _traceId, context) {
@@ -2827,6 +3380,20 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return responseFor(await dispatchRuntimeInput(pane, input, context), false);
     },
     diagnostics: diagnosticsForPane,
+    async adoptPaneGoogleProfile(source, context) {
+      if (context && (context.holderType !== "OPERATOR" || context.holderId !== source.ownerUserId)) {
+        throw new SpaceConflictError("Only the account owner can move a pane's Google sign-in.");
+      }
+      const room = await store.getRoom(source.roomId);
+      if (room.kind === "AGENT_PROOF") return { result: "SOURCE_MISSING", accountId: null };
+      return adoptPaneProfile(source);
+    },
+    async checkGoogleAccount(identity, launch, context) {
+      if (context && (context.holderType !== "OPERATOR" || context.holderId !== identity.ownerUserId)) {
+        throw new SpaceConflictError("The Google account does not belong to this operator.");
+      }
+      return checkGoogleAccountProfile(identity, launch);
+    },
     createCapture,
     async getCapture(pane, jobId) {
       const session = await requireActiveSession(pane);
@@ -2903,9 +3470,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         } catch {
           // Best effort: process termination below is the authoritative cleanup.
         }
-        if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
-        if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
-        if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+        if (runtime) await releaseRuntime(runtime);
       } finally { closingSessions.delete(session.sessionId); }
     },
     async stopRoom(roomId, traceId, context) {
@@ -2914,7 +3479,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     },
     async closeAll() {
       closingAll = true;
-      await Promise.allSettled([...paneStarts.values(), ...runtimeStarts.values()]);
+      for (const { timer } of googleCheckTimers.values()) clearTimeout(timer);
+      googleCheckTimers.clear();
+      await Promise.allSettled([...paneStarts.values(), ...runtimeStarts.values(), ...[...googleChecks.values()].map(check => check.promise), ...profileMoves, profileMoveRecovery]);
       const sessions = [...runtimes.keys()];
       await Promise.all(
         sessions.map(async (sessionId) => {
@@ -2927,9 +3494,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           } catch {
             // Closing the API should not hang on CDP socket state.
           }
-          if (runtime) await stopChromeBestEffort(runtime.process, runtime.client);
-          if (runtime?.xvfb) await stopXvfbBestEffort(runtime.xvfb);
-          if (runtime?.display !== undefined) releaseDisplay(runtime.display);
+          if (runtime) await releaseRuntime(runtime);
         })
       );
     },
@@ -2962,5 +3527,40 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return true;
     },
     startAudioStream
+  };
+}
+
+export interface ElementScreenshotClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
+
+export async function resolveElementScreenshotClip(
+  client: { send: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<any> },
+  sessionId: string,
+  selector: string
+): Promise<ElementScreenshotClip | null> {
+  const doc = await client.send("DOM.getDocument", {}, sessionId);
+  if (!doc?.root?.nodeId) return null;
+  const queried = await client.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector }, sessionId);
+  if (!queried?.nodeId) return null;
+  const box = await client.send("DOM.getBoxModel", { nodeId: queried.nodeId }, sessionId);
+  const border = box?.model?.border;
+  if (!border || !Array.isArray(border) || border.length < 8) return null;
+  const xs = [border[0], border[2], border[4], border[6]];
+  const ys = [border[1], border[3], border[5], border[7]];
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    scale: 1
   };
 }

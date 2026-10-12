@@ -1,7 +1,7 @@
 // Public demo only. No private API, homepage, uploads, or authentication traffic.
 const CACHE = "space-public-demo-__MOCK_RELEASE__";
 const BOOT = __MOCK_BOOT_ASSETS__;
-const BASE = "/demoappnew/";
+const BASE = "__MOCK_BASE__";
 const isAsset = url => url.origin === self.location.origin && url.pathname.startsWith(BASE + "assets/") && /-[\w-]+\.(js|css)$/.test(url.pathname);
 const isDocument = url => url.origin === self.location.origin && [BASE, BASE + "index.html"].includes(url.pathname);
 self.addEventListener("install", event => {

@@ -11,13 +11,14 @@ export function createRoomRoutedActions(options: {
   publish(roomId: string): Promise<void>;
   control?(roomId: string, command: Extract<RoomMiniRoute,{type:"CONTROL"}>, requestId: string, actor?: BrowserHostActorContext): Promise<RoomQuickActionResult>;
 }) {
-  return async (roomId: string, command: Exclude<RoomMiniRoute, { type: "ADVANCED" }>, requestId: string,
+  return async (roomId: string, command: Exclude<RoomMiniRoute, { type: "ADVANCED" | "CHAT" }>, requestId: string,
     traceId: string, actor?: BrowserHostActorContext): Promise<RoomQuickActionResult> => {
     if (command.type === "CONTROL") {
       if (!options.control) throw new SpaceConflictError("Space control is unavailable.");
       return options.control(roomId,command,requestId,actor);
     }
     if (command.type === "CLARIFY") return { summary: command.reason };
+    if ((command as any).type === "CHAT") return { summary: (command as any).reason };
     if (command.type === "OPEN_PANES") {
       if (!actor || actor.holderType !== "OPERATOR") throw new SpaceConflictError("An authenticated operator is required to open room panes.");
       const result = await options.panes.execute(roomId, actor.holderId, {

@@ -108,7 +108,10 @@ describe("StreamingService", () => {
     ] });
     const service = new StreamingService({ repository, credentialStore: credentials, store: new InMemorySpaceStore(), adapters: adapters(youtube) });
     const start = await service.startOAuth("YOUTUBE", "session-one");
+    expect(start.authorizationUrl).toContain("/api/admin/streaming/providers/YOUTUBE/oauth/authorize?state=");
+    expect(start.authorizationUrl).not.toContain("accounts.google.com");
     const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    expect(service.getPendingAuthorization("YOUTUBE", state)).toContain("https://provider.example/authorize?state=");
     await expect(service.completeOAuth({ provider: "YOUTUBE", code: "code", state, sessionToken: "other-session" }))
       .rejects.toMatchObject({ code: "OAUTH_STATE_INVALID" });
     const result = await service.completeOAuth({ provider: "YOUTUBE", code: "code", state, sessionToken: "session-one" });
@@ -118,6 +121,20 @@ describe("StreamingService", () => {
     await expect(service.completeOAuth({ provider: "YOUTUBE", code: "replay", state, sessionToken: "session-one" }))
       .rejects.toBeInstanceOf(StreamingServiceError);
     expect(JSON.stringify(await repository.listAuthorizations())).not.toContain("access-token");
+  });
+
+  it("allows cross-browser copy-link authorization without session cookie", async () => {
+    const repository = new InMemoryStreamingRepository();
+    const credentials = await secretRoot();
+    const youtube = adapter({ accounts: [
+      { externalAccountId: "channel-copy", displayName: "CopyChannel", badge: "CopyChannel", grantSubject: "grant-copy" }
+    ] });
+    const service = new StreamingService({ repository, credentialStore: credentials, store: new InMemorySpaceStore(), adapters: adapters(youtube) });
+    const start = await service.startOAuth("YOUTUBE", "session-admin");
+    const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    const result = await service.completeOAuth({ provider: "YOUTUBE", code: "code", state, sessionToken: "" });
+    expect(result.accounts).toHaveLength(1);
+    expect(result.accounts[0]?.displayName).toBe("CopyChannel");
   });
 
   it("singleflights cached collection and returns last successful data as STALE", async () => {

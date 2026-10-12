@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Clock3 } from "lucide-react";
+import { Clock3 } from "../ui-theme/app-icons.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
 import type { ClockWidgetConfig, DesktopWidgetState } from "./types.js";
 import { DEFAULT_CLOCK_CONFIG, loadWidgetConfig, saveWidgetConfig } from "./widget-storage.js";

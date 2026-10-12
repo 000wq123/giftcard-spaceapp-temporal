@@ -2,10 +2,12 @@ export type UiTheme = "classic" | "modern" | "codex" | "motion";
 export type ModernAppearance = "system" | "dark" | "light";
 export type ModernColorMode = "dark" | "light";
 export type ModernIconPack = "lucide" | "material-rounded" | "motion";
+export type UiBackground = "spaceapp" | "none";
 
 export const UI_THEME_STORAGE_KEY = "space.uiTheme.v1";
 export const MODERN_APPEARANCE_STORAGE_KEY = "space.modern.appearance.mode.v1";
 export const MODERN_ICON_PACK_STORAGE_KEY = "space.modern.iconPack.v1";
+export const UI_BACKGROUND_STORAGE_KEY = "space.uiBackground.v1";
 export const MODERN_TOOLBAR_MIGRATION_MARKER_SUFFIX = ".classicRead.v1";
 
 type ToolbarStorageKeys = {
@@ -72,6 +74,16 @@ export function readModernIconPack(storage: Storage): ModernIconPack {
 export function writeModernIconPack(storage: Storage, iconPack: ModernIconPack): ModernIconPack {
   storage.setItem(MODERN_ICON_PACK_STORAGE_KEY, iconPack);
   return iconPack;
+}
+
+export function readUiBackground(storage: Storage): UiBackground {
+  const stored = storage.getItem(UI_BACKGROUND_STORAGE_KEY);
+  return stored === "none" ? "none" : "spaceapp";
+}
+
+export function writeUiBackground(storage: Storage, background: UiBackground): UiBackground {
+  storage.setItem(UI_BACKGROUND_STORAGE_KEY, background);
+  return background;
 }
 
 export function resolveModernColorMode(appearance: ModernAppearance, prefersDark: boolean): ModernColorMode {

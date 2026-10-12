@@ -1,6 +1,6 @@
 {
   "name": "@space/codex-app-server",
-  "version": "0.1.0",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -17,13 +17,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@space/contracts": "0.1.0",
+    "@space/contracts": "0.2.5",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "vitest": "^4.1.11"
   },
   "license": "BUSL-1.1"
 }

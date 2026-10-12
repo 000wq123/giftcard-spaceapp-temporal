@@ -14,6 +14,8 @@ type AgentPaneActionEventDetail =
   | "plan_progress"
   | "deploy"
   | "clean_worktree"
+  | "scroll_top"
+  | "scroll_bottom"
   | "permissions"
         | "resume"
         | "copy"

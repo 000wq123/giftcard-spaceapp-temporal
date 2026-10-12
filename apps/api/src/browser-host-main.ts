@@ -133,6 +133,21 @@ const handler: BrowserHostRequestHandler = {
         ) ?? unavailable(method);
       case "diagnostics":
         return manager.diagnostics?.(params.pane as Pane, Boolean(params.includeNetwork), Number(params.limit)) ?? unavailable(method);
+      case "adoptPaneGoogleProfile": {
+        const source = params.source as { ownerUserId?: unknown; roomId?: unknown; paneId?: unknown; profileKey?: unknown; accountId?: unknown } | undefined;
+        if (typeof source?.ownerUserId !== "string" || typeof source.roomId !== "string" || typeof source.paneId !== "string" ||
+          (source.profileKey !== null && typeof source.profileKey !== "string") || (source.accountId !== undefined && typeof source.accountId !== "string")) {
+          throw new BrowserHostError("BROWSER_HOST_BAD_REQUEST", "Pane profile source is invalid.");
+        }
+        return manager.adoptPaneGoogleProfile?.({ ownerUserId: source.ownerUserId, roomId: source.roomId, paneId: source.paneId, profileKey: source.profileKey as string | null,
+          ...(typeof source.accountId === "string" ? { accountId: source.accountId } : {}) },
+          params.context as BrowserHostActorContext | undefined) ?? unavailable(method);
+      }
+      case "checkGoogleAccount": {
+        const identity = params.identity as { ownerUserId?: unknown; accountId?: unknown } | undefined;
+        if (typeof identity?.ownerUserId !== "string" || typeof identity.accountId !== "string") throw new BrowserHostError("BROWSER_HOST_BAD_REQUEST", "Google account identity is invalid.");
+        return manager.checkGoogleAccount?.({ ownerUserId: identity.ownerUserId, accountId: identity.accountId }, params.launch === true, params.context as BrowserHostActorContext | undefined) ?? unavailable(method);
+      }
     }
   },
   async startFrameStream(params, onFrame) {

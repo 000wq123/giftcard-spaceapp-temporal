@@ -37,6 +37,7 @@ type PendingRequest = {
   clientId: number | null;
   clientRequestId: JsonRpcId;
   method: string;
+  primarySelectionGeneration?: number;
 };
 
 type InitializeWaiter = {
@@ -275,6 +276,11 @@ export async function startCodexAppServerSocketMultiplexer(
   let projection: CodexCliModeDefaultsProjection | null = null;
   let projectionRefreshTail: Promise<void> = Promise.resolve();
   let currentThreadId: string | null = null;
+  // Only successful primary TUI selections identify the user-facing thread.
+  // Picker reads, secondary controls and agent notifications are not selections.
+  let primaryThreadId: string | null = null;
+  let primarySelectionGeneration = 0;
+  let primarySelectionPending = false;
   let currentMode: RuntimeMode | null = null;
   let currentPair: CodexCliModeDefaultPair | null = null;
   let manualPair: CodexCliModeDefaultPair | null = null;
@@ -478,12 +484,18 @@ export async function startCodexAppServerSocketMultiplexer(
     return { ...message, params: rewriteModeParams(params, pair) };
   }
 
+  function initializeResponseForClient(id: JsonRpcId): JsonRpcMessage {
+    const response = responseForClient(cachedInitializeResponse!, id);
+    if (!response.error) response.result = { ...asRecord(response.result), spaceCurrentThreadId: primarySelectionPending ? null : primaryThreadId };
+    return response;
+  }
+
   function routeInitializeResponse(message: JsonRpcMessage): void {
     cachedInitializeResponse = { ...message };
     delete cachedInitializeResponse.id;
     for (const waiter of initializeWaiters.splice(0)) {
       const state = client(waiter.clientId);
-      if (state) writeMessage(state.socket, responseForClient(cachedInitializeResponse, waiter.clientRequestId));
+      if (state) writeMessage(state.socket, initializeResponseForClient(waiter.clientRequestId));
     }
     initializeUpstreamId = null;
   }
@@ -523,6 +535,10 @@ export async function startCodexAppServerSocketMultiplexer(
     if (!request) return;
     pending.delete(key);
     if (request.method === "thread/start" || request.method === "thread/resume" || request.method === "thread/fork") {
+      if (request.clientId === primaryClientId && request.primarySelectionGeneration === primarySelectionGeneration) {
+        primarySelectionPending = false;
+        if (!message.error) primaryThreadId = stringField(asRecord(asRecord(message.result)?.thread), "id");
+      }
       currentThreadId = stringField(asRecord(asRecord(message.result)?.thread), "id") ?? currentThreadId;
     }
     if (request.clientId === null) return;
@@ -540,7 +556,7 @@ export async function startCodexAppServerSocketMultiplexer(
     const waiter = { clientId, clientRequestId: message.id };
     if (cachedInitializeResponse) {
       const state = client(clientId);
-      if (state) writeMessage(state.socket, responseForClient(cachedInitializeResponse, message.id));
+      if (state) writeMessage(state.socket, initializeResponseForClient(message.id));
       return;
     }
     initializeWaiters.push(waiter);
@@ -603,11 +619,26 @@ export async function startCodexAppServerSocketMultiplexer(
           return;
         }
       }
+      const params = asRecord(message.params);
+      if (message.method === "thread/settings/update" && params && Object.hasOwn(params, "spaceExpectedPrimaryThreadId")) {
+        if (primarySelectionPending || !primaryThreadId || params.spaceExpectedPrimaryThreadId !== primaryThreadId || params.threadId !== primaryThreadId) {
+          writeMessage(state.socket, { id: message.id, error: { code: -32600, message: "The active Codex task changed." } });
+          return;
+        }
+        const { spaceExpectedPrimaryThreadId: _expected, ...nativeParams } = params;
+        message.params = nativeParams;
+      }
+      const selectsPrimaryThread = state.id === primaryClientId && ["thread/start", "thread/resume", "thread/fork"].includes(message.method);
+      if (selectsPrimaryThread) {
+        primarySelectionGeneration += 1;
+        primarySelectionPending = true;
+      }
       const upstreamId = nextRequestId();
       pending.set(messageIdKey(upstreamId), {
         clientId: state.id,
         clientRequestId: message.id,
-        method: message.method
+        method: message.method,
+        ...(selectsPrimaryThread ? { primarySelectionGeneration } : {})
       });
       writeMessage(upstream, { ...rewriteRuntimeMessage(message), id: upstreamId });
       return;

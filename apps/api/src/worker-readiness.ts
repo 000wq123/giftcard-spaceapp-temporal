@@ -13,6 +13,7 @@ interface TemporalPoller {
 
 interface TemporalTaskQueueStats {
   approximateBacklogCount?: unknown;
+  approximateBacklogAge?: unknown;
 }
 
 interface TemporalTaskQueueDescription {
@@ -31,6 +32,16 @@ function longishToNumber(value: unknown): number | null {
     if (/^\d+$/.test(rendered)) return Number(rendered);
   }
   return null;
+}
+
+/** google.protobuf.Duration ({ seconds, nanos }) to seconds; null when absent. */
+export function durationToSeconds(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as { seconds?: unknown; nanos?: unknown };
+  const seconds = longishToNumber(record.seconds);
+  if (seconds === null) return null;
+  const nanos = typeof record.nanos === "number" && Number.isFinite(record.nanos) && record.nanos > 0 ? record.nanos : 0;
+  return seconds + nanos / 1e9;
 }
 
 function timestampToIso(value: unknown): string | null {
@@ -125,6 +136,8 @@ export function createWorkerReadinessChecker(config: SpaceApiConfig): WorkerRead
         pollerCount,
         workflowBacklogCount: longishToNumber(workflow.stats?.approximateBacklogCount),
         activityBacklogCount: longishToNumber(activity.stats?.approximateBacklogCount),
+        workflowBacklogAgeSeconds: durationToSeconds(workflow.stats?.approximateBacklogAge),
+        activityBacklogAgeSeconds: durationToSeconds(activity.stats?.approximateBacklogAge),
         pollerIdentities: uniquePollerIdentities(workflowPollers, activityPollers),
         lastPollerAccessAt,
         checkedAt

@@ -122,6 +122,8 @@ export interface CliVpnBroker {
     runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
   ): Promise<CliVpnGlobalRouteResult>;
   inspectRuntimes(runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>): Promise<CliVpnInspectionResult>;
+  /** Short-lived shared inspection for status displays only (never for isolation gates). */
+  inspectRuntimesCached?(runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>): Promise<CliVpnInspectionResult>;
   setRuntime(runtimeId: CliVpnManagedRuntimeId, enabled: boolean, pids: number[]): Promise<CliVpnRouteResult>;
 }
 
@@ -196,10 +198,22 @@ async function executeBroker(command: string, args: string[], stdin: string): Pr
   });
 }
 
+// Read-only broker actions; any other action may change routes or profiles.
+const readOnlyBrokerActions = new Set(["status", "egress-status"]);
+/** Status displays poll egress-status (sudo) every few seconds; share it this long. */
+export const CLI_VPN_INSPECTION_CACHE_MS = 15_000;
+
 export class CliVpnBrokerClient {
-  constructor(private readonly execute: CliVpnBrokerExecutor = executeBroker) {}
+  private inspectionCache = new Map<string, { at: number; value: Promise<CliVpnInspectionResult> }>();
+  private inspectionGeneration = 0;
+
+  constructor(
+    private readonly execute: CliVpnBrokerExecutor = executeBroker,
+    private readonly now: () => number = Date.now
+  ) {}
 
   private async run(action: string, args: string[] = [], stdin = ""): Promise<unknown> {
+    if (!readOnlyBrokerActions.has(action)) this.invalidateInspections();
     const output = await this.execute(brokerCommand, ["-n", brokerExecutable, action, ...args], stdin);
     const parsed = safeJson(output);
     if (parsed === null) throw new CliVpnError("BROKER_FAILED", "The CLI VPN broker returned invalid output.", 502);
@@ -257,6 +271,39 @@ export class CliVpnBrokerClient {
       [],
       JSON.stringify({ runtimes: payload })
     ));
+  }
+
+  /**
+   * Same result as inspectRuntimes, shared for CLI_VPN_INSPECTION_CACHE_MS per
+   * identical runtime/pid set. Only for status displays: isolation checks that
+   * gate a launch must call inspectRuntimes directly. Every mutating broker
+   * action drops the cache, also before it runs.
+   */
+  inspectRuntimesCached(
+    runtimes: Array<{ runtimeId: CliVpnManagedRuntimeId; pids: number[] }>
+  ): Promise<CliVpnInspectionResult> {
+    const key = JSON.stringify(runtimes.map((runtime) => [runtime.runtimeId, [...runtime.pids].sort((a, b) => a - b)]));
+    const nowMs = this.now();
+    const cached = this.inspectionCache.get(key);
+    if (cached && nowMs - cached.at < CLI_VPN_INSPECTION_CACHE_MS) return cached.value;
+    const generation = this.inspectionGeneration;
+    const value = this.inspectRuntimes(runtimes);
+    this.inspectionCache.set(key, { at: nowMs, value });
+    value.catch(() => {
+      // Failures are not shared beyond the requests already waiting on them.
+      if (this.inspectionCache.get(key)?.value === value) this.inspectionCache.delete(key);
+    });
+    void value.then(() => {
+      // A mutation that started meanwhile makes this result stale on arrival.
+      if (generation !== this.inspectionGeneration && this.inspectionCache.get(key)?.value === value) this.inspectionCache.delete(key);
+    }, () => undefined);
+    if (this.inspectionCache.size > 64) this.inspectionCache.delete(this.inspectionCache.keys().next().value!);
+    return value;
+  }
+
+  invalidateInspections(): void {
+    this.inspectionGeneration += 1;
+    this.inspectionCache.clear();
   }
 
   async setGlobalRoute(

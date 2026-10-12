@@ -189,6 +189,11 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   const lastPropFrameRef = useRef<string | null>(null);
   const lastPointerPointRef = useRef(new Map<number, { x: number; y: number; button: ReturnType<typeof pointerButton> }>());
   const hasFrameRef = useRef(false);
+  // Streamed frames redraw up to ~35 times per second; reading layout for each one
+  // forces a synchronous reflow. The draw size is cached while a ResizeObserver can
+  // invalidate it. Input mapping still reads fresh bounds on every event.
+  const drawSizeRef = useRef<{ width: number; height: number } | null>(null);
+  const drawSizeObservedRef = useRef(false);
   const [hasFrame, setHasFrame] = useState(false);
 
   const defaultViewportRef = useRef(viewportSize);
@@ -197,10 +202,17 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   presentedRef.current = onPresented;
   historyLimitRef.current = historyLimit;
 
+  function drawSize(canvas: HTMLCanvasElement) {
+    if (drawSizeRef.current) return drawSizeRef.current;
+    const { width, height } = canvas.getBoundingClientRect();
+    if (drawSizeObservedRef.current && width > 0 && height > 0) drawSizeRef.current = { width, height };
+    return { width, height };
+  }
+
   function draw(frame: DecodedFrame | undefined) {
     const canvas = canvasRef.current;
     if (!canvas || !frame) return;
-    const bounds = canvas.getBoundingClientRect();
+    const bounds = drawSize(canvas);
     if (bounds.width <= 0 || bounds.height <= 0) return;
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) return;
@@ -294,12 +306,18 @@ export const BrowserCanvas = forwardRef<BrowserCanvasHandle, BrowserCanvasProps>
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const redraw = () => draw(selectedIndexRef.current === null ? historyRef.current.at(-1) : historyRef.current[selectedIndexRef.current]);
+    const redraw = () => {
+      drawSizeRef.current = null;
+      draw(selectedIndexRef.current === null ? historyRef.current.at(-1) : historyRef.current[selectedIndexRef.current]);
+    };
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(redraw);
     observer?.observe(canvas);
+    drawSizeObservedRef.current = observer !== null;
     window.addEventListener("resize", redraw);
     return () => {
       observer?.disconnect();
+      drawSizeObservedRef.current = false;
+      drawSizeRef.current = null;
       window.removeEventListener("resize", redraw);
     };
   }, []);

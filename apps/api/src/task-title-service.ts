@@ -1,4 +1,4 @@
-import type { NativeTaskTitles } from "./task-title-native.js";
+import { qwenNativeSessionIdPattern, type NativeTaskTitles } from "./task-title-native.js";
 import { createHash } from "node:crypto";
 import {
   boundedTaskText,
@@ -98,6 +98,12 @@ export function submittedTaskRequests(
     } else if (char >= " ") line = (line + char).slice(-8000);
   }
   return requests.slice(-12);
+}
+/** Plan handoff prompts end with "Plan ID: <clipboard item id>" (see TerminalPane). */
+export function extractReferencedPlanId(request: string): string | null {
+  const match = /Plan ID:\s*([A-Za-z0-9][A-Za-z0-9._:-]{7,127})/i.exec(request);
+  const id = match?.[1]?.replace(/[.:]+$/, "");
+  return id && id.length >= 8 ? id : null;
 }
 const hash = (text: string) =>
   createHash("sha256").update(taskRequestFingerprint(text)).digest("hex");
@@ -426,6 +432,21 @@ export class TaskTitleService {
             nativeTitle = native.title ?? null;
             nativeManual = native.manual ?? false;
             if (native.requests?.length) requests = native.requests;
+            // The bridge proved this session belongs to the pane's process, so host-loss
+            // restore and task-history resume can reopen it exactly (`qwen --resume <id>`).
+            if (
+              runtimeId === "cli:qwen" &&
+              revisionId &&
+              revision &&
+              revision.nativeTaskRef !== native.nativeId &&
+              qwenNativeSessionIdPattern.test(native.nativeId)
+            ) {
+              await this.options.store.updateCliTaskRevision(
+                revisionId,
+                { nativeTaskRef: native.nativeId },
+                "trace:qwen-native-ref",
+              );
+            }
           }
         } catch {}
       }
@@ -510,6 +531,37 @@ export class TaskTitleService {
       nativeTitle,
       nativeManual,
     };
+  }
+  /**
+   * Bind the first "Plan ID: <id>" reference that names an existing PLAN to
+   * this pane. Any clipboard item id format is accepted (clipboard:…,
+   * clip-plan-…); references to unknown items are skipped.
+   */
+  private async bindReferencedPlan(context: TaskTitleContext): Promise<string | null> {
+    const planIds = context.requests
+      .map((req) => extractReferencedPlanId(req))
+      .filter((id): id is string => Boolean(id));
+    if (planIds.length === 0) return null;
+    let ownerUserId: string | null = null;
+    try {
+      ownerUserId = (await this.options.store.getRoom(context.pane.roomId))?.ownerUserId ?? null;
+    } catch {}
+    if (!ownerUserId) return planIds[0]!;
+    for (const planId of new Set(planIds)) {
+      try {
+        await this.options.store.updateClipboardItemProgress(ownerUserId, planId, {
+          paneId: context.pane.id,
+          roomId: context.pane.roomId,
+          paneTitle: context.pane.paneName ?? context.pane.title
+        } as any);
+        return planId;
+      } catch (error) {
+        if (error instanceof SpaceNotFoundError) continue;
+        // Managed plans own their pane binding; the reference is still valid.
+        return planId;
+      }
+    }
+    return null;
   }
   async observe(paneId: string, force = false): Promise<Pane> {
     const context = await this.context(paneId);
@@ -617,6 +669,10 @@ export class TaskTitleService {
     const steps = allSteps
       .filter((s, i, all) => all.indexOf(s) === i)
       .slice(-5);
+
+    const extractedPlanId = await this.bindReferencedPlan(context);
+    const planId = extractedPlanId ?? (previous?.metadata as { planId?: string | null } | undefined)?.planId ?? null;
+
     const metadata: TaskMetadata = taskMetadataSchema.parse({
       taskKey: context.key,
       version,
@@ -637,6 +693,7 @@ export class TaskTitleService {
           ? (context.nativeId ?? undefined)
           : undefined,
       preferredCandidateId: previous?.preferredCandidateId ?? null,
+      planId,
       updatedAt: now,
     });
     const state: TaskTitleState = {

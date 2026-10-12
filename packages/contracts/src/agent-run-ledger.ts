@@ -32,6 +32,61 @@ export const agentRunEvaluationSchema = z.discriminatedUnion("status", [
     })
 ]);
 
+const tokens = z.number().int().min(0).max(1_000_000_000_000);
+/**
+ * Space Dots Stage 7: token usage the runtime reported for this task's turn.
+ * MEASURED counts only what the runtime reported (for Codex, `thread/tokenUsage/updated`
+ * deltas within the turn); tools and evaluation outside the model are not tokens.
+ */
+export const agentRunMeasuredUsageSchema = z.object({
+  status: z.literal("MEASURED"),
+  inputTokens: tokens,
+  cachedInputTokens: tokens,
+  outputTokens: tokens,
+  reasoningOutputTokens: tokens,
+  totalTokens: tokens,
+  source: source,
+  observedAt: timestamp,
+  model: z.string().min(1).max(200).nullable()
+}).strict();
+export const agentRunUsageSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("UNKNOWN"), reason }).strict(),
+  agentRunMeasuredUsageSchema
+]);
+export type AgentRunMeasuredUsage = z.infer<typeof agentRunMeasuredUsageSchema>;
+export type AgentRunCost = z.infer<typeof agentRunCostSchema>;
+
+/**
+ * A versioned price list the operator provides. Space ships no prices: an
+ * estimate exists only for a model priced here, otherwise cost stays UNKNOWN.
+ */
+export const modelPriceCatalogSchema = z.object({
+  // Short enough that the cost source "tokens × <version>" stays within its 160-character limit.
+  version: z.string().min(1).max(120),
+  currency: z.literal("USD"),
+  prices: z.array(z.object({
+    model: z.string().min(1).max(200),
+    inputPerMillion: z.number().finite().nonnegative(),
+    cachedInputPerMillion: z.number().finite().nonnegative().optional(),
+    outputPerMillion: z.number().finite().nonnegative()
+  }).strict()).max(500)
+}).strict();
+export type ModelPriceCatalog = z.infer<typeof modelPriceCatalogSchema>;
+
+/** Estimates a turn's model cost from measured tokens; reasoning tokens are billed as output. */
+export function estimateAgentRunCost(usage: AgentRunMeasuredUsage, catalog: ModelPriceCatalog | null, at: string): AgentRunCost {
+  const unknown = (text: string): AgentRunCost => ({ status: "UNKNOWN", amountUsd: null, source: null, observedAt: null, priceCatalogVersion: null, reason: text });
+  if (!usage.model) return unknown("The runtime did not report the model, so no price applies.");
+  if (!catalog) return unknown(`No price catalog is configured; ${usage.totalTokens.toLocaleString("en-US")} tokens were measured.`);
+  const price = catalog.prices.find((entry) => entry.model === usage.model);
+  if (!price) return unknown(`Price catalog ${catalog.version} has no price for ${usage.model}.`);
+  const uncached = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
+  const amount = (uncached * price.inputPerMillion + usage.cachedInputTokens * (price.cachedInputPerMillion ?? price.inputPerMillion)
+    + usage.outputTokens * price.outputPerMillion) / 1_000_000;
+  return { status: "ESTIMATED", reason: null, amountUsd: Math.round(amount * 1_000_000) / 1_000_000, source: `tokens × ${catalog.version}`,
+    observedAt: at, priceCatalogVersion: catalog.version };
+}
+
 export const agentRunLedgerSchema = z.object({
   version: z.literal(1),
   recordedAt: timestamp.nullable(),
@@ -41,7 +96,7 @@ export const agentRunLedgerSchema = z.object({
     scope: z.literal("STARTUP_ONLY"),
     observedAt: timestamp.nullable()
   }).strict(),
-  usage: z.object({ status: z.literal("UNKNOWN"), reason }).strict(),
+  usage: agentRunUsageSchema,
   cost: agentRunCostSchema,
   evaluation: agentRunEvaluationSchema
 }).strict();
@@ -68,6 +123,9 @@ export function transitionAgentRunLedger(input: {
   at: string | null;
   runtimeModelAtStart?: string | null;
   evaluation?: AgentRunEvaluation;
+  /** Measured usage and its cost estimate, once the runtime reports them. */
+  usage?: AgentRunMeasuredUsage;
+  cost?: AgentRunCost;
 }): AgentRunLedger {
   const previous = input.current;
   const model = input.runtimeModelAtStart === undefined && previous ? previous.model : {
@@ -83,8 +141,8 @@ export function transitionAgentRunLedger(input: {
       ? previous.evaluation : evaluationForStatus(input.status, input.at));
   return agentRunLedgerSchema.parse({
     version: 1, recordedAt: input.at, model,
-    usage: previous?.usage ?? { status: "UNKNOWN", reason: "No task-scoped runtime usage receipt was recorded." },
-    cost: previous?.cost ?? { status: "UNKNOWN", amountUsd: null, source: null, observedAt: null, priceCatalogVersion: null,
+    usage: input.usage ?? previous?.usage ?? { status: "UNKNOWN", reason: "No task-scoped runtime usage receipt was recorded." },
+    cost: input.cost ?? previous?.cost ?? { status: "UNKNOWN", amountUsd: null, source: null, observedAt: null, priceCatalogVersion: null,
       reason: "No complete task billing receipt or versioned estimate covers model calls, tools, retries and evaluation." },
     evaluation
   });

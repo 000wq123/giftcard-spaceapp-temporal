@@ -6,14 +6,19 @@ export * from "./app-diagnostics.js";
 export * from "./activity-log.js";
 export * from "./streaming.js";
 export * from "./tool-routing.js";
+export * from "./deploy-queue.js";
+export * from "./gateway.js";
 export * from "./system-health.js";
 export * from "./task-titles.js";
 export * from "./task-metadata.js";
 export { parseRoomQuickCommand, type RoomQuickCommand } from "./room-quick-command.js";
 export * from "./pane-catalog.js";
+export * from "./pane-names.js";
+export * from "./room-names.js";
 
 export * from "./space-control.js";
 export * from "./space-decisions.js";
+export * from "./decisions.js";
 export * from "./plugins.js";
 export * from "./live-audio-registry.js";
 export type { LiveRoomContext } from "./live-context.js";
@@ -21,7 +26,28 @@ export * from "./demo-projects.js";
 export * from "./terminal-render.js";
 
 export * from "./maintenance-plan.js";
+export * from "./maintenance-autopilot.js";
 
 export * from "./agent-run-ledger.js";
+export * from "./auto-routing.js";
+export * from "./eval-gates.js";
+export * from "./eval-receipts.js";
+export * from "./dot-channels.js";
 export * from "./task-acceptance.js";
 export * from "./configuration-bundle.js";
+export * from "./cli-adapter.js";
+export * from "./source-control.js";
+export * from "./worktrees.js";
+export * from "./t3code.js";
+export * from "./version.js";
+export * from "./observability.js";
+
+export * from "./managed-plan-execution.js";
+export * from "./dots.js";
+export * from "./dot-tools.js";
+export * from "./dot-goals.js";
+export * from "./dot-schedules.js";
+export * from "./dot-computer.js";
+export * from "./dot-memory.js";
+export * from "./dot-connectors.js";
+export * from "./repository-providers.js";

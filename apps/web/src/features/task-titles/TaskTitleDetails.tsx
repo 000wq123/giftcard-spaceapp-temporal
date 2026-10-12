@@ -37,6 +37,8 @@ export function TaskTitleDetails({
     taskPane && pane.titleSource !== "manual"
       ? shortTaskTitle(pane.title, "Task")
       : displayTitle;
+  const headerText = pane.paneName || title;
+  const fullHeading = pane.paneName && pane.paneName !== title ? `${pane.paneName} · ${title}` : (pane.paneName || title);
   useEffect(() => {
     const handleGlobalDragStart = () => {
       close();
@@ -146,7 +148,7 @@ export function TaskTitleDetails({
       }}
     >
       <summary
-        aria-label={`Show task details ${title}`}
+        aria-label={`Show task details ${pane.paneName ? `${pane.paneName} - ${title}` : title}`}
         onClick={(event) => {
           event.preventDefault();
           if (detailsRef.current?.closest(".pane-card")?.classList.contains("is-dragging")) return;
@@ -158,7 +160,7 @@ export function TaskTitleDetails({
         }}
       >
         <strong ref={titleRef} className="pane-title-text">
-          {title}
+          {headerText}
         </strong>
       </summary>
       {open ? (
@@ -171,7 +173,7 @@ export function TaskTitleDetails({
           onPointerEnter={cancelTimer}
         >
           <div className="task-title-body">
-            <p className="task-title-heading">{title}</p>
+            <p className="task-title-heading">{fullHeading}</p>
             <p className="task-title-description">
               {pane.taskMetadata?.description ||
                 (taskPane

@@ -1,4 +1,4 @@
-import type { AgentPaneTaskRun } from "@space/contracts";
+import type { AgentPaneTaskRun, AttachmentCoverage } from "@space/contracts";
 import { ChatCopyButton } from "./ChatMarkdown.js";
 import { api } from "../../api.js";
 import { Download } from "../ui-theme/app-icons.js";
@@ -7,6 +7,28 @@ const statusLabels: Record<AgentPaneTaskRun["status"], string> = {
   QUEUED: "Queued", RUNNING: "Working", COMPLETED: "Completed",
   FAILED: "Failed", INTERRUPTED: "Stopped"
 };
+
+/** Measured tokens are what the runtime reported for this task; anything else stays unknown. */
+export function usageText(usage: NonNullable<AgentPaneTaskRun["ledger"]>["usage"]): string {
+  if (usage.status !== "MEASURED") return `Unknown; ${usage.reason}`;
+  const n = (value: number) => value.toLocaleString("en-US");
+  return `${n(usage.totalTokens)} tokens (input ${n(usage.inputTokens)}, of which cached ${n(usage.cachedInputTokens)}; output ${n(usage.outputTokens)}, `
+    + `of which reasoning ${n(usage.reasoningOutputTokens)})${usage.model ? ` on ${usage.model}` : ""}, reported by the runtime`;
+}
+/** Stage 7: Auto runs in shadow mode — what it would have chosen is shown, never applied. */
+export function autoRouteText(route: NonNullable<NonNullable<AgentPaneTaskRun["execution"]>["autoRoute"]>): string {
+  const choice = route.choice ? `${route.choice.model}${route.choice.reasoning ? ` · ${route.choice.reasoning}` : ""}` : "no selectable model fits";
+  const agreement = route.agreesWithActual === null ? "" : route.agreesWithActual ? " · same as what ran" : " · differs from what ran";
+  return `Would choose ${choice} (${route.tier.toLowerCase()} task; ${route.policyVersion}; not applied)${agreement}`;
+}
+const coverageLabels: Record<AttachmentCoverage["status"], string> = { FULL: "Read fully", PARTIAL: "Partly read", UNAVAILABLE: "Not readable" };
+/** What the task could actually read of a file; absent for files submitted before readers existed. */
+export function coverageText(coverage: AttachmentCoverage | undefined): string | null {
+  if (!coverage) return null;
+  const amount = [coverage.pages !== null ? `${coverage.pages} ${coverage.method === "video-frames" ? "frames" : coverage.method === "pptx-text" ? "slides"
+    : coverage.method === "xlsx-cells" ? "sheets" : "pages"}` : null, coverage.chars ? `${coverage.chars.toLocaleString("en-US")} characters` : null].filter(Boolean).join(", ");
+  return `${coverageLabels[coverage.status]}${amount ? ` (${amount})` : ""}${coverage.reason ? `. ${coverage.reason}` : ""}`;
+}
 
 function Timestamp({ value }: { value: string | null }) {
   return value ? <time dateTime={value}>{new Date(value).toLocaleString()}</time> : <>Not recorded</>;
@@ -36,10 +58,12 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
     `Trace: ${run.execution?.traceId ?? "Not recorded"}`,
     `Thread: ${run.threadId ?? "Not assigned"}`, `Turn: ${run.turnId ?? "Not assigned"}`,
     `Cost: ${costLabel}`, `Quality evaluation: ${evaluationLabel}`,
+    ...(run.execution?.autoRoute ? [`Auto (shadow): ${autoRouteText(run.execution.autoRoute)}`,
+      `Auto reasons: ${run.execution.autoRoute.reasons.join(" ")}`] : []),
     ...(ledger ? [
       `Ledger recorded: ${ledger.recordedAt ?? "Historical record; no ledger was recorded"}`,
       `Model evidence: ${ledger.model.source}; scope: ${ledger.model.scope}; observed: ${ledger.model.observedAt ?? "Not recorded"}`,
-      `Usage: Unknown; ${ledger.usage.reason}`,
+      `Usage: ${usageText(ledger.usage)}`,
       `Cost evidence: ${cost?.status === "UNKNOWN" ? cost.reason : `${cost?.source}; ${cost?.observedAt}; pricing: ${cost?.priceCatalogVersion ?? "Not applicable"}`}`,
       `Evaluation evidence: ${evaluation?.status === "SCORED" ? `${evaluation.evaluator}; rubric: ${evaluation.rubricVersion}; evidence: ${evaluation.evidenceIds.join(", ")}` : evaluation?.reason}`,
       ...(evaluation?.status === "SCORED" && evaluation.validation ? [
@@ -49,7 +73,8 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
       ] : [])
     ] : []),
     `Submitted files: ${attachments === undefined ? "Not recorded" : attachments.length}`,
-    ...(attachments ?? []).map(file => `File: ${JSON.stringify(file.name)}; ${file.mimeType}; ${file.byteSize} bytes; ${file.artifactId}; SHA-256: ${file.sha256}`)
+    ...(attachments ?? []).map(file => `File: ${JSON.stringify(file.name)}; ${file.mimeType}; ${file.byteSize} bytes; ${file.artifactId}; SHA-256: ${file.sha256}${
+      file.coverage ? `; ${coverageText(file.coverage)}` : ""}`)
   ].join("\n");
   return <details className="chat-task-details" data-task-run-id={run.runId}>
     <summary><span>Task details</span><span className={`chat-task-status is-${run.status.toLowerCase()}`}>{statusLabels[run.status]}</span></summary>
@@ -68,8 +93,11 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
         <div><dt>Quality evaluation</dt><dd>{evaluationLabel}</dd></div>
       </dl>
       <p className="chat-task-evidence-note">The runtime model is reported at startup; later routing changes may not be reported.</p>
+      {run.execution?.autoRoute && <p className="chat-task-evidence-note" title={run.execution.autoRoute.reasons.join(" ")}>
+        Auto (shadow): {autoRouteText(run.execution.autoRoute)}
+      </p>}
       {ledger && <section aria-label="Measurement evidence">
-        <p>Usage: {ledger.usage.reason}</p>
+        <p>Usage: {usageText(ledger.usage)}</p>
         <p>Cost: {cost?.status === "UNKNOWN" ? cost.reason : `${cost?.source} · ${cost?.observedAt} · Pricing: ${cost?.priceCatalogVersion ?? "Not applicable"}`}</p>
         <p>Evaluation: {evaluation?.status === "SCORED"
           ? `${evaluation.evaluator} · Rubric: ${evaluation.rubricVersion} · Assessed: ${evaluation.assessedAt}`
@@ -93,8 +121,11 @@ export function TaskDetails({ run }: { run: AgentPaneTaskRun }) {
               <Download aria-hidden="true" />
               <span><strong>{file.name}</strong><small>{file.mimeType} · {file.byteSize.toLocaleString("en-US")} bytes</small></span>
             </a>
+            {file.coverage ? <small className="chat-task-coverage" data-coverage={file.coverage.status.toLowerCase()}>{coverageText(file.coverage)}</small> : null}
           </li>)}</ul>
-          <p>Files included with this request. This does not confirm that their contents were read or checked.</p>
+          <p>{attachments.some(file => file.coverage)
+            ? "Coverage records how much of each file the task could read. It does not confirm that the answer used the file correctly."
+            : "Files included with this request. This does not confirm that their contents were read or checked."}</p>
         </> : <p>{attachments === undefined ? "Not recorded for this task." : "No files submitted."}</p>}
       </section>
       <dl className="chat-task-identifiers">

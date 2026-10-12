@@ -23,6 +23,16 @@ export const CLI_PANE_TYPES = Object.freeze([
   { typeId: "droid", id: "cli:droid", brand: "droid", displayName: "Droid CLI", shortLabel: "Droid", aliases: ["factory", "factory droid"] }
 ] as const);
 
+// TUIs whose running turn stops on Escape: Codex, Claude Code and Muse Code ("esc to interrupt"),
+// Oh My Pi (app.interrupt = escape; Ctrl-C only clears) and Droid ("Press ESC to stop").
+// The other CLIs cancel a running turn on Ctrl-C (Qoder binds ctrl+c to app:interrupt).
+const ESCAPE_INTERRUPT_CLI_RUNTIME_IDS: ReadonlySet<string> = new Set(["cli:codex", "cli:claude", "cli:muse", "cli:omp", "cli:droid"]);
+
+/** The key that interrupts a CLI's running turn without quitting the TUI. */
+export function cliTurnInterruptKey(runtimeId: string | null | undefined): "escape" | "ctrl_c" {
+  return runtimeId && ESCAPE_INTERRUPT_CLI_RUNTIME_IDS.has(runtimeId) ? "escape" : "ctrl_c";
+}
+
 export const PANE_TYPES = Object.freeze([
   ...CLI_PANE_TYPES.map(type => ({ typeId: type.typeId, label: type.shortLabel, aliases: type.aliases,
     mode: "TERMINAL" as const, runtimeId: type.id, adapter: "cli" as const, readiness: "TERMINAL_INPUT" as const })),
@@ -33,7 +43,9 @@ export const PANE_TYPES = Object.freeze([
   { typeId: "harness", label: "DeepSeek Harness", aliases: ["deepseek harness"], mode: "HARNESS", runtimeId: null, adapter: "harness", readiness: "HARNESS_INPUT" },
   { typeId: "live", label: "Live", aliases: ["audio", "voice", "gpt-live"], mode: "LIVE", runtimeId: null, adapter: "live", readiness: "AUDIO_INPUT" },
   { typeId: "files", label: "Files", aliases: ["file manager", "filemanager", "explorer"], mode: "FILES", runtimeId: null, adapter: "files", readiness: "BROWSER" },
-  { typeId: "demos", label: "Demo Projects", aliases: ["demo projects", "demos", "demo"], mode: "DEMOS", runtimeId: null, adapter: "demos", readiness: "DEMO_PROJECT" }
+  { typeId: "databases", label: "Databases", aliases: ["database", "db", "database manager", "sql", "dbms"], mode: "DATABASES", runtimeId: null, adapter: "databases", readiness: "BROWSER" },
+  { typeId: "demos", label: "Demo Projects", aliases: ["demo projects", "demos", "demo"], mode: "DEMOS", runtimeId: null, adapter: "demos", readiness: "DEMO_PROJECT" },
+  { typeId: "t3code", label: "T3 Code", aliases: ["t3 code", "t3", "agent harness", "t3code"], mode: "T3CODE", runtimeId: null, adapter: "t3code", readiness: "AGENT_HARNESS" }
 ] as const);
 export type PaneType = typeof PANE_TYPES[number];
 export type PaneTypeId = PaneType["typeId"];
@@ -59,6 +71,7 @@ export const roomMiniRouteSchema = z.discriminatedUnion("type", [
   openPanesActionSchema,
   roomSearchActionSchema,
   roomPlaybackActionSchema,
+  z.object({ type: z.literal("CHAT"), reason: z.string().trim().min(1).max(500) }).strict(),
   z.object({ type: z.literal("ADVANCED"), reason: z.string().trim().min(1).max(500) }).strict(),
   z.object({ type: z.literal("CLARIFY"), reason: z.string().trim().min(1).max(500) }).strict()
 ]);

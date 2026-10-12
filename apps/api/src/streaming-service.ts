@@ -213,6 +213,7 @@ export class StreamingService {
   private readonly metricCache = new Map<string, CachedMetricGroup>();
   private readonly metricFlights = new Map<string, Promise<StreamingProviderMetricMap>>();
   private readonly tokenFlights = new Map<string, Promise<StreamingTokenSet>>();
+  private readonly pendingAuthorizations = new Map<string, { provider: StreamingOAuthProvider; url: string; expiresAt: number }>();
   private spaceCache: { expiresAt: number; values: Record<string, StreamingProviderMetricValue> } | null = null;
 
   constructor(private readonly options: StreamingServiceOptions) {
@@ -290,6 +291,16 @@ export class StreamingService {
     });
   }
 
+  getPendingAuthorization(provider: StreamingOAuthProvider, state: string): string | null {
+    const entry = this.pendingAuthorizations.get(state);
+    if (!entry) return null;
+    if (entry.expiresAt <= this.now().getTime() || entry.provider !== provider) {
+      this.pendingAuthorizations.delete(state);
+      return null;
+    }
+    return entry.url;
+  }
+
   async startOAuth(provider: StreamingOAuthProvider, sessionToken: string): Promise<StreamingOAuthStartResponse> {
     if (!sessionToken) throw new StreamingServiceError("OAUTH_SESSION_REQUIRED", "A valid Space browser session is required.", 401);
     const readiness = await this.options.credentialStore.readiness(provider);
@@ -319,9 +330,18 @@ export class StreamingService {
       throw error;
     }
 
+    const externalAuthorizationUrl = this.adapters[provider].authorizationUrl({ client, state, codeChallenge: codeChallenge(verifier) });
+    const origin = client.redirectUri ? new URL(client.redirectUri).origin : "http://127.0.0.1:4911";
+    const internalAuthorizationUrl = `${origin}/api/admin/streaming/providers/${provider}/oauth/authorize?state=${encodeURIComponent(state)}`;
+    this.pendingAuthorizations.set(state, {
+      provider,
+      url: externalAuthorizationUrl,
+      expiresAt: new Date(expiresAt).getTime()
+    });
+
     return streamingOAuthStartResponseSchema.parse({
       provider,
-      authorizationUrl: this.adapters[provider].authorizationUrl({ client, state, codeChallenge: codeChallenge(verifier) }),
+      authorizationUrl: internalAuthorizationUrl,
       expiresAt
     });
   }
@@ -330,15 +350,15 @@ export class StreamingService {
     provider: StreamingOAuthProvider;
     code: string;
     state: string;
-    sessionToken: string;
+    sessionToken?: string;
   }): Promise<{ authorization: StreamingAuthorizationRecord; accounts: StreamingPlatformAccountRecord[] }> {
-    if (!input.code || !input.state || !input.sessionToken) {
+    if (!input.code || !input.state) {
       throw new StreamingServiceError("OAUTH_CALLBACK_INVALID", "The OAuth callback is incomplete.", 400);
     }
     const consumedAt = this.now().toISOString();
     const attempt = await this.options.repository.consumeOAuthAttempt({
       stateHash: digest(input.state),
-      sessionHash: digest(input.sessionToken),
+      sessionHash: input.sessionToken ? digest(input.sessionToken) : "",
       consumedAt
     });
     if (!attempt || attempt.provider !== input.provider) {

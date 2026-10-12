@@ -12,6 +12,11 @@ import { getApiConfig } from "../src/config.js";
 import { createOwnerSetupBootstrap } from "../src/owner-setup.js";
 import type { SetupConnectionsService } from "../src/setup-connections.js";
 
+// Each app lifecycle starts and closes the whole API. On loaded hosts
+// (2026-10-11) createApp took up to 15 s and app.close() 11-38 s, so the
+// default 5 s limit says nothing about correctness.
+const APP_LIFECYCLE_TIMEOUT_MS = 60_000;
+
 describe("public single-owner setup API", () => {
   it("small public profile is ready without contacting a disabled worker, and enabled profiles still require it", async () => {
     for (const enabled of [false, true]) {
@@ -37,7 +42,7 @@ describe("public single-owner setup API", () => {
     }
     // Public profile controls cannot turn off the live/private readiness requirement.
     expect(getApiConfig({ SPACEAPP_WORKFLOWS_ENABLED: "false" }).workflowsEnabled).toBe(true);
-  });
+  }, 2 * APP_LIFECYCLE_TIMEOUT_MS);
   it("claims an expiring token once, creates a session, and enables later owner login", async () => {
     const token = "setup-token-value-with-at-least-thirty-two-characters";
     const legacyPassword = "legacy operator password";
@@ -154,7 +159,7 @@ describe("public single-owner setup API", () => {
       }
     });
     expect(claimed.statusCode).toBe(200);
-    expect(claimed.cookies[0]?.name).toBe("space_session");
+    expect(claimed.cookies.find((entry) => entry.name === "space_session")?.name).toBe("space_session");
     expect(claimed.json()).toMatchObject({
       user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
       isAuthenticated: true,
@@ -181,7 +186,7 @@ describe("public single-owner setup API", () => {
       })
     ]);
 
-    const sessionCookie = `${claimed.cookies[0]!.name}=${claimed.cookies[0]!.value}`;
+    const sessionCookie = `${claimed.cookies.find((entry) => entry.name === "space_session")!.name}=${claimed.cookies.find((entry) => entry.name === "space_session")!.value}`;
     const csrf = await app.inject({
       method: "GET",
       url: "/api/auth/csrf",
@@ -278,7 +283,7 @@ describe("public single-owner setup API", () => {
 
     const status = await app.inject({ method: "GET", url: "/api/setup/status" });
     expect(status.json()).toEqual({ setupRequired: false, expiresAt: null });
-    const claimedAuth = await app.inject({ method: "GET", url: "/api/auth/me" });
+    const claimedAuth = await app.inject({ method: "GET", url: "/api/auth/me", remoteAddress: "203.0.113.10" });
     expect(claimedAuth.json()).toMatchObject({
       isAuthenticated: false,
       isSetupRequired: false
@@ -293,7 +298,7 @@ describe("public single-owner setup API", () => {
       }
     });
     expect(login.statusCode).toBe(200);
-    expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy();
+    expect(login.cookies.find((entry) => entry.name === "space_session")?.name).toBe("space_session");
 
     const legacyLogin = await app.inject({
       method: "POST",
@@ -317,5 +322,5 @@ describe("public single-owner setup API", () => {
     expect(secondClaim.statusCode).toBe(409);
 
     await app.close();
-  });
+  }, APP_LIFECYCLE_TIMEOUT_MS);
 });

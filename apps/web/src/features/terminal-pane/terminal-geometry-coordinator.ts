@@ -1,8 +1,11 @@
 import { getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { createTerminalResizePresentation, type ResizePresentationTerminal } from "./terminal-resize-presentation.js";
+import type { TerminalResizeTraceListener, TerminalResizeTraceReason } from "./terminal-resize-trace.js";
 
-export interface TerminalGeometryTerminal {
+export interface TerminalGeometryTerminal extends ResizePresentationTerminal {
   cols: number;
   rows: number;
+  modes?: { synchronizedOutputMode?: boolean };
   clearTextureAtlas?: () => void;
   refresh: (start: number, end: number) => void;
   resize?: (cols: number, rows: number) => void;
@@ -45,6 +48,7 @@ export interface TerminalRepaintInfo {
 }
 
 export interface TerminalGeometryCoordinatorOptions {
+  onTrace?: TerminalResizeTraceListener;
   ownerDocument: Document;
   host: HTMLElement;
   getTerminal: () => TerminalGeometryTerminal | null;
@@ -62,6 +66,7 @@ export interface TerminalGeometryCoordinatorOptions {
 }
 
 export interface TerminalRefitOptions {
+  reason?: TerminalResizeTraceReason;
   delayedPass?: boolean;
   repair?: boolean;
 }
@@ -311,9 +316,11 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
   let fontTicket = 0;
   let frame: number | null = null;
   let pendingRefit = false;
+  let waitingForSynchronizedOutput = false;
   let repairRequested = false;
   let restoreSample: LayoutSample | null = null;
   let stabilizingRestore = false;
+  let restoringPresentation = true;
   let lastStableGeometry: StableGeometry | null = null;
   let timer: number | null = null;
   let lastResizeKey: string | null = null;
@@ -329,7 +336,11 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     options.ownerDocument.visibilityState !== "hidden" &&
     options.host.isConnected;
 
+  const resizePresentation = createTerminalResizePresentation(options.host, options.getTerminal, isEligible, options.onTrace);
+
   const cancelScheduledWork = () => {
+    resizePresentation.cancel();
+    waitingForSynchronizedOutput = false;
     if (frame !== null) {
       ownerWindow.cancelAnimationFrame(frame);
       frame = null;
@@ -398,9 +409,50 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       cols,
       rows
     ]);
-    if (key === lastResizeKey && !force) return;
+    // A repair forces only the first frame of a grid for this socket and lease.
+    // Resending a grid the PTY already has would nudge it and redraw the CLI
+    // again (operator-approved 2026-10-11); reconcileResize stays explicit.
+    if (key === lastResizeKey) return;
     lastResizeKey = key;
+    options.onTrace?.("RESIZE_SENT", force ? "REPAIR" : "NORMAL");
     options.sendResize({ cols, rows, leaseId: identity.leaseId, ...(force ? { force: true } : {}) });
+  };
+
+  // Maximize/restore and the delayed stabilize pass often refit a grid that
+  // already matches its host. Without a layout, grid or paint change there is
+  // nothing to fit or redraw: confirm the PTY size (deduplicated) and report
+  // readiness, keeping the painted rows instead of re-rendering all of them.
+  const reapplyUnchangedGeometry = (
+    sample: LayoutSample,
+    terminal: TerminalGeometryTerminal,
+    fitAddon: TerminalGeometryFitAddon
+  ): boolean => {
+    const cached = lastStableGeometry;
+    if (
+      repairRequested ||
+      restoringPresentation ||
+      getSpaceRuntimeKind() === "demo" ||
+      !cached ||
+      !stableSamples(cached.sample, sample) ||
+      terminal.cols !== cached.cols ||
+      terminal.rows !== cached.rows
+    ) {
+      return false;
+    }
+    const proposed = fitAddon.proposeDimensions?.();
+    if (!proposed || proposed.cols !== terminal.cols || proposed.rows !== terminal.rows) return false;
+    if (geometryIsBroken(terminal, fitAddon, options.host) || suspectBlankPaint(options.host, sample)) return false;
+    sendResizeOnce(terminal.cols, terminal.rows);
+    pendingRefit = false;
+    options.onReady?.({
+      cols: terminal.cols,
+      rows: terminal.rows,
+      leaseId: options.getResizeIdentity()?.leaseId ?? null,
+      width: sample.width,
+      height: sample.height,
+      repaired: false
+    });
+    return true;
   };
 
   const applyGeometry = (sample: LayoutSample) => {
@@ -414,6 +466,19 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       pendingRefit = true;
       return;
     }
+    if (reapplyUnchangedGeometry(sample, terminal, fitAddon)) return;
+    const keepAtBottom = options.isScrolledToBottom?.() ?? false;
+    options.onTrace?.("FIT_BEFORE", restoringPresentation ? "REVEAL" : repairRequested ? "REPAIR" : "NORMAL");
+    // A dock resize leaves the old screen at its previous size until fit runs.
+    // Fit that ordinary layout change before diagnosing overflow/collapse;
+    // otherwise onResize is followed by a forced PTY redraw of the same grid.
+    const layoutChanged = lastStableGeometry !== null && !stableSamples(lastStableGeometry.sample, sample);
+    const proposed = layoutChanged && !restoringPresentation ? fitAddon.proposeDimensions?.() : undefined;
+    if (proposed && (proposed.cols !== terminal.cols || proposed.rows !== terminal.rows)) {
+      resizePresentation.begin();
+    }
+    const fittedLayout = layoutChanged && !repairRequested;
+    if (fittedLayout) fitAddon.fit();
     const broken = repairRequested || geometryIsBroken(terminal, fitAddon, options.host);
     repairRequested = false;
     if (broken && getSpaceRuntimeKind() !== "demo") {
@@ -421,14 +486,14 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       options.measureCharacterSize(terminal);
       terminal.clearTextureAtlas?.();
     }
-    const keepAtBottom = options.isScrolledToBottom?.() ?? false;
-    fitAddon.fit();
+    if (!fittedLayout || broken) fitAddon.fit();
     if (!Number.isInteger(terminal.cols) || terminal.cols <= 0 || !Number.isInteger(terminal.rows) || terminal.rows <= 0) {
       pendingRefit = true;
       return;
     }
     const overflowClamped = clampTerminalOverflow(terminal, options.host, sample);
     const repaired = broken || overflowClamped;
+    options.onTrace?.("FIT_AFTER", repaired ? "REPAIR" : "NORMAL");
     terminal.refresh(0, terminal.rows - 1);
     const paintScreen = screenRectSample(options.host);
     const backing = canvasBackingSample(options.host);
@@ -463,6 +528,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       cols: terminal.cols,
       rows: terminal.rows
     };
+    restoringPresentation = false;
     pendingRefit = false;
     options.onReady?.({
       cols: terminal.cols,
@@ -546,8 +612,29 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       }
       stabilizingRestore = false;
       restoreSample = null;
-      if (reuseStableGeometry(sample)) return;
+      if (reuseStableGeometry(sample)) {
+        restoringPresentation = false;
+        return;
+      }
     }
+    // FitAddon clears the DOM renderer, and xterm's resize path renders rows
+    // directly, bypassing its synchronized-output render queue. Let the CLI
+    // finish its current frame before fitting. Stable warm reveals above do
+    // not need a fit and keep their existing readiness path.
+    const terminal = options.getTerminal();
+    if (terminal?.modes?.synchronizedOutputMode) {
+      pendingRefit = true;
+      if (!waitingForSynchronizedOutput) {
+        waitingForSynchronizedOutput = true;
+        options.onTrace?.("SYNC_WAIT");
+        // This buffers a refresh, arming xterm's own bounded protocol timeout
+        // even if the CLI sent begin-sync without any subsequent output.
+        terminal.refresh(0, terminal.rows - 1);
+      }
+      frame = ownerWindow.requestAnimationFrame(runFrame);
+      return;
+    }
+    waitingForSynchronizedOutput = false;
     applyGeometry(sample);
   };
 
@@ -562,6 +649,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
   };
 
   const requestRefit = (request: TerminalRefitOptions = {}) => {
+    options.onTrace?.("REFIT_REQUEST", request.reason ?? (request.repair ? "REPAIR" : "UNKNOWN"));
     repairRequested ||= request.repair === true;
     pendingRefit = true;
     scheduleFrame();
@@ -574,7 +662,10 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
         scheduleFrame();
       }, REFIT_STABILIZE_DELAY_MS);
     }
-    const ready = options.ownerDocument.fonts?.ready;
+    // FontFaceSet.ready can flush pending style/layout even when already
+    // resolved. Future loads still use the loadingdone/loadingerror listeners.
+    const fonts = options.ownerDocument.fonts;
+    const ready = fonts?.status === "loading" ? fonts.ready : undefined;
     if (ready) {
       const ticket = fontTicket + 1;
       fontTicket = ticket;
@@ -618,8 +709,10 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
   const syncVisibility = (request: TerminalVisibilityOptions = {}) => {
     if (request.repair === true) repairRequested = true;
     const eligible = isEligible();
+    options.onTrace?.("VISIBILITY", eligible ? "REVEAL" : "HIDDEN");
     if (!eligible) {
       active = false;
+      restoringPresentation = true;
       pendingRefit = true;
       stabilizingRestore = true;
       restoreSample = null;
@@ -655,9 +748,9 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       syncVisibility();
       return;
     }
-    requestRefit({ repair: measurementChanged });
+    requestRefit({ repair: measurementChanged, reason: "VIEWPORT" });
   };
-  const handleFontChange = () => requestRefit({ repair: true });
+  const handleFontChange = () => requestRefit({ repair: true, reason: "FONT" });
   ownerWindow.addEventListener("resize", handleViewportChange);
   ownerWindow.visualViewport?.addEventListener("resize", handleViewportChange);
   options.ownerDocument.fonts?.addEventListener("loadingdone", handleFontChange);
@@ -667,6 +760,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     dispose() {
       if (disposed) return;
       disposed = true;
+      resizePresentation.dispose();
       cancelScheduledWork();
       ownerWindow.removeEventListener("resize", handleViewportChange);
       ownerWindow.visualViewport?.removeEventListener("resize", handleViewportChange);
@@ -694,6 +788,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
         cols,
         rows
       ]);
+      options.onTrace?.("RESIZE_SENT", "RECONCILE");
       options.sendResize({ cols, rows, leaseId: identity.leaseId, force });
     },
     repairIfBroken(): boolean {
@@ -701,6 +796,13 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
       const fitAddon = options.getFitAddon();
       if (!isEligible() || !terminal || !fitAddon || !geometryIsBroken(terminal, fitAddon, options.host)) {
         return false;
+      }
+      const sample = hostLayoutSample(options.host);
+      if (sample && lastStableGeometry && !stableSamples(lastStableGeometry.sample, sample)) {
+        // Output can arrive before the dock's scheduled fit. Let that fit
+        // distinguish a normal layout change from a persistent geometry fault.
+        requestRefit({ delayedPass: false });
+        return true;
       }
       requestRefit({ delayedPass: true, repair: true });
       return true;

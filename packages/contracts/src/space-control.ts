@@ -1,3 +1,4 @@
+import { dotIdSchema } from "./dots.js";
 import { z } from "zod";
 
 export const SPACE_CONTROL_VERSION = "space-control-v1";
@@ -6,6 +7,7 @@ const id = z.string().trim().min(1).max(200);
 const text = z.string().trim().min(1).max(100_000);
 export const controlTargetSchema = z.object({
   paneIds: z.array(id).min(1).max(64).optional(),
+  paneNames: z.array(id).min(1).max(64).optional(),
   runtimeId: id.optional(),
   state: z.enum(["OPEN", "CLOSED", "STOPPED", "RUNNING", "ALL"]).default("ALL")
 }).strict();
@@ -31,7 +33,7 @@ export const controlResourceOperations = ["panes.open","panes.move","panes.split
  "files.publish","files.delete","media.publish","media.delete","files.preview",
  "settings.providers","settings.tools","settings.task_titles","settings.plugins","settings.voice","settings.appearance","settings.snapshot","settings.rollback","settings.update","models.list",
  "ops.status","ops.logs","ops.test","ops.verify","ops.deploy","ops.proof","access.cli",
- "ui.theme","ui.scale","asteroids.control"] as const;
+ "ui.theme","ui.scale","asteroids.control","vnc.action"] as const;
 export const controlVoicePreferencePatchSchema = z.object({
   enabled: z.boolean().optional(),
   model: id.optional(),
@@ -55,7 +57,7 @@ export const controlActionSchema = z.discriminatedUnion("kind", [
   z.object({kind:z.literal("cli"), runtimeId:id, enabled:z.boolean()}).strict(),
   z.object({kind:z.literal("vpn"), operation:z.enum(["set","rotate"]), runtimeId:id.optional(), enabled:z.boolean().optional(), profile:z.enum(["mullvad","nord"]).optional()}).strict(),
   z.object({kind:z.literal("clipboard"), operation:z.enum(["save","complete","delete"]), id:id.optional(),
-    text:text.optional(), title:z.string().max(200).optional(), source:z.enum(["COPY","PASTE","MANUAL_NOTE","AGENT_NOTE","PLAN"]).default("MANUAL_NOTE"), completed:z.boolean().optional(),
+    text:text.optional(), title:z.string().max(200).optional(), minimumModel:z.string().max(160).optional(), minimumReasoning:z.enum(["none","minimal","low","medium","high","xhigh","max","ultra"]).optional(), source:z.enum(["COPY","PASTE","MANUAL_NOTE","AGENT_NOTE","PLAN"]).default("MANUAL_NOTE"), completed:z.boolean().optional(),
     confirm:z.boolean().optional(), confirmed:z.boolean().optional()}).strict(),
   z.object({kind:z.literal("native_command"), target:controlTargetSchema,
     command:z.string().min(2).max(2000).regex(/^\/[a-zA-Z][a-zA-Z0-9_-]*(?: [^\x00-\x1f\x7f]*)?$/), when:z.enum(["NOW","AFTER_TURN"]).default("AFTER_TURN")}).strict(),
@@ -97,11 +99,11 @@ export const controlInspectSchema = z.object({roomId:id.optional(),
 }).strict();
 export const controlResultSchema=z.object({index:z.number().int().min(0), paneId:id.optional(),
   status:z.enum(["COMPLETED","PENDING","FAILED","CANCELLED","UNKNOWN"]), detail:z.string().max(2000), error:z.string().max(2000).optional(), evidence:z.record(z.string(),z.unknown()).default({})});
-export const controlOperationSchema=z.object({id, actorId:id, roomId:id, requestId:id, payloadHash:z.string(),
+export const controlOperationSchema=z.object({dotId:dotIdSchema.nullable().optional(),id, actorId:id, roomId:id, requestId:id, payloadHash:z.string(),
   status:z.enum(["RUNNING","COMPLETED","PARTIAL","FAILED","CANCELLED","UNKNOWN"]),
   createdAt:z.string(),updatedAt:z.string(), results:z.array(controlResultSchema), cancelRequested:z.boolean().default(false),
   command:controlExecuteSchema.optional(),nextIndex:z.number().int().min(0).default(0)});
-export const controlScheduleSchema=z.object({id,actorId:id,roomId:id,dueAt:z.iso.datetime(),command:controlExecuteSchema,
+export const controlScheduleSchema=z.object({dotId:dotIdSchema.nullable().optional(),id,actorId:id,roomId:id,dueAt:z.iso.datetime(),command:controlExecuteSchema,
   status:z.enum(["SCHEDULED","RUNNING","COMPLETED","CANCELLED","BLOCKED"]),
   expectedTasks:z.record(z.string(),z.string().nullable()).default({}),
   expectedModels:z.record(z.string(),z.string().nullable()).default({}),
@@ -246,10 +248,7 @@ export interface ControlActionCatalogItem {
 
 // Advertise gaps explicitly. Recognizing an action name does not mean that an
 // authenticated, verifiable execution adapter exists for it.
-export const controlUnavailableResources: Partial<Record<(typeof controlResourceOperations)[number], string>> = {
-  "settings.plugins": "Plugin enable/disable is unavailable through Control. Use the authenticated Plugins settings; disconnecting is not a reversible enable/disable switch.",
-  "settings.rollback": "Settings snapshots are sanitized observations, not restorable backups. Rollback is unavailable; no settings were restored."
-};
+export const controlUnavailableResources: Partial<Record<(typeof controlResourceOperations)[number], string>> = {};
 
 export interface ControlInspectSectionItem {
   section: (typeof controlInspectSections)[number];
@@ -286,13 +285,13 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   {
     domain: "settings",
     action: "settings.appearance",
-    description: "Unavailable until an active-client preference adapter can verify the requested theme and UI scale changes.",
+    description: "Persist and verify appearance preferences (theme, UI scale, and terminal font size) with client read-back verification.",
     requiredPermission: "OPERATOR_WRITE",
     isDestructive: false,
     supportsDryRun: true,
     supportsRollback: false,
     parameters: {
-      theme: { type: "string", required: false, description: "Theme name: graphite, forest, copper, steel, contrast, modern, classic" },
+      theme: { type: "string", required: false, description: "Theme name: graphite, forest, copper, steel, contrast, modern, classic, codex" },
       zoomLevel: { type: "number", required: false, description: "UI zoom percentage (50-200)" },
       terminalFontSize: { type: "number", required: false, description: "Terminal font size (8-32)" }
     },
@@ -319,7 +318,7 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   {
     domain: "settings",
     action: "settings.plugins",
-    description: "Unavailable through Control. Use authenticated Plugins settings; enabling, connecting and deleting credentials are distinct operations.",
+    description: "Connect or disconnect plugins and update connection credentials with verification.",
     requiredPermission: "OPERATOR_WRITE",
     isDestructive: false,
     supportsDryRun: true,
@@ -333,10 +332,10 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   {
     domain: "settings",
     action: "settings.snapshot",
-    description: "Persist a sanitized settings observation with verified storage. This is not a restorable backup and excludes credentials and browser-local preferences.",
+    description: "Persist a restorable settings snapshot with verified storage.",
     requiredPermission: "OPERATOR_WRITE",
     isDestructive: false,
-    supportsDryRun: false,
+    supportsDryRun: true,
     supportsRollback: false,
     parameters: {
       label: { type: "string", required: false, description: "Descriptive label for the settings snapshot" }
@@ -346,11 +345,11 @@ export const controlActionCatalog: ControlActionCatalogItem[] = [
   {
     domain: "settings",
     action: "settings.rollback",
-    description: "Unavailable: sanitized settings observations cannot be restored. No settings are changed.",
+    description: "Roll back system and workspace settings to a previously captured restorable settings snapshot with verification.",
     requiredPermission: "OPERATOR_WRITE",
     isDestructive: true,
-    supportsDryRun: false,
-    supportsRollback: false,
+    supportsDryRun: true,
+    supportsRollback: true,
     parameters: {
       snapshotId: { type: "string", required: false, description: "Snapshot ID to restore, or omits to restore latest" },
       confirm: { type: "boolean", required: true, description: "Explicit confirmation required for rollback" }

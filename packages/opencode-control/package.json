@@ -1,6 +1,6 @@
 {
   "name": "@space/opencode-control",
-  "version": "0.1.0",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -19,7 +19,7 @@
   "dependencies": {},
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "vitest": "^4.1.11"
   },
   "license": "BUSL-1.1"
 }

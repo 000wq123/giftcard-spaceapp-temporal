@@ -1,14 +1,14 @@
 <p align="center">
-  <a href="https://spaceapp.dev"><img src="docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
+  <a href="https://spaceapp.dev"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/oll4com/spaceapp/releases"><img src="https://img.shields.io/github/v/release/oll4com/spaceapp?color=00d2b4&label=release" alt="GitHub Release"></a>
   <a href="https://www.npmjs.com/package/run-spaceapp"><img src="https://img.shields.io/npm/v/run-spaceapp?color=00d2b4&label=npm%20run-spaceapp" alt="npm package"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1%20%2F%20Apache%202.0-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%2011-orange.svg" alt="Platform Support">
   <img src="https://img.shields.io/badge/docker-self--hosted-2496ed.svg" alt="Docker Self-Hosted">
-  <img src="https://img.shields.io/badge/starter%20model-Big%20Pickle%20%28free%29-success.svg" alt="Starter model: Big Pickle (free)">
+  <img src="https://img.shields.io/badge/first%20CLI-OpenCode-success.svg" alt="OpenCode first CLI">
 </p>
 
 <h3 align="center">The Source-Available, Self-Hosted Multi-Agent AI Coding Workspace</h3>
@@ -27,8 +27,8 @@
 
 With SpaceApp, you can:
 - **Run Multiple AI Coding Agents in Parallel**: Pair program with Codex, Claude Code, Gemini, and OpenCode side-by-side on the same project repository or across separate workspaces.
-- **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the [security model](docs/security-model.md).
-- **Start with OpenCode and a Free Model**: Setup presents **OpenCode** first. Its starter model is the free Big Pickle (`opencode/big-pickle`) from OpenCode Zen. On first launch SpaceApp checks it with a real tool call and, if it fails, picks another free model that passes (see [CLI providers](docs/cli-providers.md)). No API key is needed for these free models.
+- **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the state and trust boundaries.
+- **Start with OpenCode**: Setup presents OpenCode first. Available models, free tiers and authentication requirements depend on the installed CLI and its current provider catalog. Select and verify a model during setup.
 - **Shared Vector Memory (optional)**: When the memory graph is enabled for a deployment, SpaceApp stores memory records and their embeddings in PostgreSQL with `pgvector` and shows them as a 3D graph that agent sessions can query. Embeddings are computed by the configured embedding provider, so that provider receives the indexed text.
 - **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
 
@@ -40,16 +40,16 @@ With SpaceApp, you can:
 Run up to 16 AI coding assistants, terminals, or workspace monitors simultaneously in a single coordinated room. Keep their terminals and task history accessible while working across projects. Context limits and continuation behavior depend on the runtime:
 
 <p align="center">
-  <img src="docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-16-pane-matrix.png" alt="SpaceApp 16-Pane Multi-Agent Workspace" width="950" />
 </p>
 
 *Above: SpaceApp running OpenCode, Codex, Gemini, Grok, DeepSeek, Cursor, Copilot, Hermes, Droid, and terminal tools in a live 16-pane room grid.*
 
 ### 2. Live Agent Execution & Streaming Telemetry
-Inspect agent thought chains, token consumption, automated bash commands, and test suites running in real-time on your local machine:
+Watch agent output, shell commands and test runs as they stream from each pane. Token usage appears where the runtime reports it (for example Codex rollouts); otherwise it is shown as unavailable:
 
 <p align="center">
-  <img src="docs/images/spaceapp-live-execution.png" alt="Live Real-Time Agent Execution in SpaceApp" width="950" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-live-execution.png" alt="Live Real-Time Agent Execution in SpaceApp" width="950" />
 </p>
 
 *Above: Real-time execution captured from a live SpaceApp room running parallel Google Gemini 3.8 Flash agents handling test verification, codebase search, and file editing.*
@@ -58,16 +58,16 @@ Inspect agent thought chains, token consumption, automated bash commands, and te
 Access your entire engineering environment through the central SpaceApp overlay: switch rooms, inspect agent files, manage persistent clipboards, configure VPN routes, and monitor system resources:
 
 <p align="center">
-  <img src="docs/images/spaceapp-tools-docks.png" alt="Workspace Action Palette and Docks" width="950" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-tools-docks.png" alt="Workspace Action Palette and Docks" width="950" />
 </p>
 
-*Above: The SpaceApp Actions & Docks center providing instant access to Rooms, Room Agent, Shared Chat, Media, Agent Files, Tasks, Links, Settings, and CLI Tools.*
+*Above: The SpaceApp Actions & Docks center, a single entry point to Rooms, Room Agent, Shared Chat, Media, Agent Files, Tasks, Links, Settings, and CLI Tools.*
 
 ### 4. Canonical 3D Vector Memory Graph
 SpaceApp features an integrated PostgreSQL `pgvector` database that indexes file modifications, architecture choices, and session history into an interactive 3D point cloud:
 
 <p align="center">
-  <img src="docs/images/spaceapp-3d-memory.png" alt="Canonical 3D Vector Memory Point Cloud" width="850" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-3d-memory.png" alt="Canonical 3D Vector Memory Point Cloud" width="850" />
 </p>
 
 *Above: 3D visualization of the persistent vector memory graph linking multi-session context, file relationships, and cross-agent discoveries.*
@@ -76,9 +76,9 @@ SpaceApp features an integrated PostgreSQL `pgvector` database that indexes file
 Coordinate multi-step tasks conversationally through the Room Agent or speak naturally to your workspace using full-duplex Gemini Live voice streaming:
 
 <p align="center">
-  <img src="docs/images/spaceapp-room-agent.png" alt="SpaceApp Room Agent" width="380" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-room-agent.png" alt="SpaceApp Room Agent" width="380" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="docs/images/spaceapp-gemini-live-voice.png" alt="SpaceApp Gemini Live Voice" width="540" />
+  <img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-gemini-live-voice.png" alt="SpaceApp Gemini Live Voice" width="540" />
 </p>
 
 *Above left: The Room Agent coordinator ready to receive goals and orchestrate sub-agents. Above right: Gemini Live full-duplex voice interface (latency depends on the provider and network and is not benchmarked here).*
@@ -88,7 +88,7 @@ Coordinate multi-step tasks conversationally through the Room Agent or speak nat
 ## ⚡ Quick Start: One-Command Installation
 
 ### Prerequisites
-- **Node.js**: 20.11 or newer (for the lightweight host launcher).
+- **Node.js**: Follow the selected `run-spaceapp` launcher version's `engines` requirement. Development of this monorepo requires **>=22.12 <23**; see [Contributing](CONTRIBUTING.md).
 - **Hardware**:
   - Minimum (`small` profile): 4 CPU cores, 8 GB-class RAM (at least 7 GiB reported by the operating system), 6.5 GiB free disk.
   - `large` profile (adds the managed browser): 8 CPU cores, 15 GiB RAM, 11 GiB free disk.
@@ -109,7 +109,7 @@ npx --yes run-spaceapp@latest install
 2. **Container Initialization**: Pulls the pinned, verified images and starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
-5. **Start Coding with OpenCode**: Open the Getting Started room and start OpenCode. On its first launch it checks the free Big Pickle model with a real tool call (or a free fallback model, see above); no paid account or API key is needed. Submit a small task and check its actual result.
+5. **Start Coding with OpenCode**: Open the Getting Started room, verify the available provider/model and complete its authentication if required. Submit a small task and check its actual result.
 
 To retain a global `spaceapp` command for future management, optionally install:
 ```bash
@@ -147,7 +147,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 
 ### 📁 Host Workspace Management
 
-By default, the SpaceApp containers get no bind mount of your host filesystem: agents see only the directories you register. Container separation is not a sandbox against a hostile workload, and host-root access (below) removes this boundary; see the [security model](docs/security-model.md). Register the directories your AI agents may inspect and modify:
+By default, the SpaceApp containers get no bind mount of your host filesystem: agents see only the directories you register. Container separation is not a sandbox against a hostile workload, and host-root access (below) removes this boundary; see the architecture and trust boundaries. Register the directories your AI agents may inspect and modify:
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
@@ -192,19 +192,20 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 
 ## 🧩 Supported AI Coding Agents
 
-SpaceApp bundles OpenCode and installs the other CLIs on request. Models and plans depend on each provider account:
+The runtime registry declares 16 CLI adapters, listed below. Installed versions and available credentials determine what can run. See the compatibility evidence and limitations; a declared adapter is not an authenticated runtime proof.
 
 | Assistant | Integration Type | Authentication | Description |
 | :--- | :--- | :--- | :--- |
-| **OpenCode** | **Bundled (first CLI)** | None for free models; `opencode auth login` for other providers | Starts on the free Big Pickle model with an automatic free fallback (see [CLI providers](docs/cli-providers.md)). |
-| **OpenAI Codex** | Owner-installed | API Key / device-code login | OpenAI's Codex CLI; available models depend on your OpenAI account. |
-| **Anthropic Claude Code** | Owner-installed | API Key / OAuth | Anthropic's Claude Code CLI; not included in SpaceApp images, installed with `provider install claude`. Available models depend on your Anthropic account. |
-| **Google Gemini CLI** | Owner-installed | Google OAuth / API Key | Google's Gemini CLI; available models depend on your Google account or API key. |
-| **Qwen Code** | Owner-installed | API Key / OpenRouter | High-efficiency open-weight coding models developed by Alibaba Cloud. |
-| **Kimi Code** | Owner-installed | Moonshot API Key | Long-context coding assistant with deep context caching. |
-| **Grok Build** | Owner-installed | xAI API Key | Real-time coding and reasoning powered by xAI Grok. |
-| **DeepSeek CLI** | Experimental | DeepSeek API Key | Community `run-deepseek-cli` package, not an official DeepSeek CLI. |
-| **Cursor / Copilot / Autohand** | Owner-installed | Provider login / API Key | Optional CLIs installed with `provider install`. |
+| **OpenCode** | First CLI in setup | Provider-dependent | Uses the installed CLI's provider catalog and native sessions. |
+| **OpenAI Codex** | CLI adapter | Provider-supported login | Native session references and Codex control integration. |
+| **Anthropic Claude Code** | CLI adapter | Provider-supported login | Uses the installed Claude CLI and its current model catalog. |
+| **Google Gemini CLI** | CLI adapter | Native account authentication | Login availability and recovery support are capability-specific. |
+| **Qwen Code** | CLI adapter | Provider-dependent | Uses the configured Qwen provider and current catalog. |
+| **Kimi Code** | CLI adapter | Provider-supported login | Native behavior depends on the installed Kimi CLI. |
+| **Grok Build** | CLI adapter | Provider-supported login | Account authentication and model availability are provider-controlled. |
+| **DeepSeek CLI** | CLI adapter | Configured API credentials | Runtime and native-session format support remain version-specific. |
+| **Cursor / Copilot / Autohand** | CLI adapters | Provider-dependent | Capabilities and recovery limitations are declared per runtime. |
+| **Hermes / Oh My Pi / Qoder / Muse / Droid** | CLI adapters | Provider-dependent | Declared adapters; resume is limited to the provider's own session selection or unsupported. |
 
 ---
 
@@ -272,7 +273,7 @@ npx --yes run-spaceapp@latest owner rotate-setup-token
 <details>
 <summary><b>Need host-root filesystem access on Linux?</b></summary>
 <br>
-On Linux, the launcher can mount the whole host filesystem into the CLI service. CLI sessions can then read and modify the entire host, so read the [security model](docs/security-model.md) first:
+On Linux, the launcher can mount the whole host filesystem into the CLI service. CLI sessions can then read and modify the entire host, so read the trust boundaries first:
 
 ```bash
 npx --yes run-spaceapp@latest install --access host-root
@@ -315,16 +316,18 @@ npx.cmd --yes run-spaceapp@latest install
 
 ## 📚 Documentation & Deep Dives
 
-- [Getting Started & Installation Guide](docs/getting-started.md)
-- [CLI Providers, Models & Credential Setup](docs/cli-providers.md)
-- [Operations, Backup, Restore & Rollback](docs/operations.md)
-- [Container Security & Isolation Model](docs/security-model.md)
-- [Clean-Room Verification Runbook](docs/clean-room-testing.md)
-- [Release Process & Pipeline](docs/public-release.md)
-- [Public Distribution Decision (ADR-010)](docs/decisions/ADR-010-public-distribution.md)
+- [Getting Started & Installation Guide](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md)
+- [CLI Providers, Models & Credential Setup](https://github.com/oll4com/spaceapp/blob/main/docs/cli-providers.md)
+- [Operations, Backup, Restore & Rollback](https://github.com/oll4com/spaceapp/blob/main/docs/operations.md)
+- Architecture, Trust Boundaries & Feature Status
+- [Security Model: Authentication, Rate Limits & Browser Capture](docs/security-model.md)
+- Claims Audit: Performance, Isolation & Continuity Evidence
+- [Clean-Room Verification Runbook](https://github.com/oll4com/spaceapp/blob/main/docs/clean-room-testing.md)
+- [Release Process & Pipeline](https://github.com/oll4com/spaceapp/blob/main/docs/public-release.md)
+- [Public Distribution Decision (ADR-010)](https://github.com/oll4com/spaceapp/blob/main/docs/decisions/ADR-010-public-distribution.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
-- [Community Support](SUPPORT.md)
-- [Security Disclosures](SECURITY.md)
+- [Community Support](https://github.com/oll4com/spaceapp/blob/main/SUPPORT.md)
+- [Security Disclosures](https://github.com/oll4com/spaceapp/blob/main/SECURITY.md)
 
 ---
 
@@ -332,8 +335,10 @@ npx.cmd --yes run-spaceapp@latest install
 
 SpaceApp is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE).
 
-- **Free and Allowed Use**: You are 100% free to copy, modify, test, self-host, and use SpaceApp for personal and internal business operations without payment.
-- **Use Limitation**: You may not offer SpaceApp as a hosted commercial managed service or SaaS competing directly with the licensor.
-- **Open-Source Transition**: On **October 1, 2030**, this version of SpaceApp transitions automatically to the permissive **Apache License 2.0**.
+SpaceApp is source-available, not open source, until its Change Date. The licensor is example.invalid. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
 
-*Integrated AI provider CLIs (Claude, Codex, Gemini, etc.) remain subject to their respective third-party licenses and terms. See [Third-Party Notices](THIRD_PARTY_NOTICES.md).*
+- **Permitted use**: The license lets you copy, modify, create derivative works, redistribute and make non-production use of SpaceApp. Its Additional Use Grant also permits production use, including self-hosting and internal business operations.
+- **Use limitation**: You may not make SpaceApp's functionality available to third parties as a hosted or managed service, application service provider (ASP) or software-as-a-service (SaaS) offering that competes with example.invalid products or services.
+- **Change Date**: On **2030-10-01** (October 1, 2030), the licensed version becomes available under the **Apache License, Version 2.0**.
+
+*Integrated AI provider CLIs (Claude, Codex, Gemini, etc.) remain subject to their respective third-party licenses and terms. See [Third-Party Notices](https://github.com/oll4com/spaceapp/blob/main/THIRD_PARTY_NOTICES.md).*

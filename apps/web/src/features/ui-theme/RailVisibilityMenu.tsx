@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { createPortal } from "react-dom";
 import type { RailVisibilityItem } from "./use-rail-visibility.js";
 import { dispatchRailMenuChange } from "../rail-popover.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 export type RailVisibilityMenuProps = {
   items: RailVisibilityItem[];
@@ -106,7 +107,7 @@ export function RailVisibilityMenu({
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
-      if (event.button === 1) return;
+      if (event.button === 1 || shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (menuRef.current?.contains(target)) return;
       if (event.button === 2) {

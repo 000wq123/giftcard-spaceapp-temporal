@@ -1,6 +1,7 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import React, { useEffect, useState, useRef } from "react";
 import { Monitor, Maximize2, X, ExternalLink } from "../ui-theme/app-icons.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import "./desktop-display-controls.css";
 
 export interface DesktopDisplayInfo {
@@ -101,6 +102,7 @@ export function DesktopDisplayControls({
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }

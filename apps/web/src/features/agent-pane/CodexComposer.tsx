@@ -1,6 +1,15 @@
-import { ArrowUp, Bot, Camera, File, FileVideo, Keyboard, Monitor, Paperclip, Plus, Sparkles, Square, Trash2, X } from "../ui-theme/app-icons.js";
+import { ArrowUp, Bot, Camera, File, FileVideo, Hash, Keyboard, Monitor, Paperclip, Plus, Sparkles, Square, Trash2, X } from "../ui-theme/app-icons.js";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
+import type { AgentPaneModelProvider, PaneCliModelSettings, PromptVariable } from "@space/contracts";
+import { PromptVariableAutocomplete } from "../prompt-variables/PromptVariableAutocomplete.js";
+import { PromptVariablesMenu } from "../prompt-variables/PromptVariablesMenu.js";
+import {
+  expandPromptVariables,
+  filterPromptVariables,
+  findActiveVariableToken,
+  usePromptVariables,
+  type PromptVariableToken
+} from "../prompt-variables/prompt-variables-store.js";
 import { CliShortcutsMenu } from "../terminal-pane/CliShortcutsMenu.js";
 import { OSK_CLI_COMMANDS, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
 import { api } from "../../api.js";
@@ -42,6 +51,7 @@ const modelPickerLoadingFallback = (
 );
 
 export interface CodexComposerProps {
+  snapshotRef?: { current: (() => string) | null };
   paneTitle: string;
   onShortcut?: (command: OskCliCommand) => void;
   isVisible?: boolean;
@@ -98,6 +108,7 @@ function attachmentKind(attachment: CodexComposerAttachment): "image" | "video" 
 }
 
 export function CodexComposer({
+  snapshotRef,
   paneTitle,
   onShortcut,
   isVisible = true,
@@ -260,6 +271,64 @@ export function CodexComposer({
     }
   }, [onPromptChange, setTypingMode, typingLayoutMode]);
 
+  const { variables: promptVariables, settings: promptVariablesSettings } = usePromptVariables();
+  const [variablesManagerOpen, setVariablesManagerOpen] = useState(false);
+  const [variablesManagerInitialName, setVariablesManagerInitialName] = useState("");
+  const [selectedVariableIndex, setSelectedVariableIndex] = useState(0);
+  const [activeVariableToken, setActiveVariableToken] = useState<PromptVariableToken | null>(null);
+  const dismissedVariableTokenRef = useRef<string | null>(null);
+
+  const checkVariableToken = useCallback(() => {
+    if (!promptVariablesSettings.enabled) {
+      setActiveVariableToken(null);
+      return;
+    }
+    const textarea = promptRef.current;
+    if (!textarea) return;
+    const cursorPos = textarea.selectionStart ?? 0;
+    const textBeforeCursor = textarea.value.slice(0, cursorPos);
+    const token = findActiveVariableToken(textBeforeCursor);
+    if (!token || token.token === dismissedVariableTokenRef.current) {
+      setActiveVariableToken(null);
+    } else {
+      setActiveVariableToken(token);
+    }
+  }, [promptVariablesSettings.enabled]);
+
+  const filteredVariables = useMemo(() => {
+    if (!activeVariableToken) return [];
+    return filterPromptVariables(promptVariables, activeVariableToken.query);
+  }, [promptVariables, activeVariableToken]);
+
+  useEffect(() => {
+    if (!activeVariableToken) {
+      dismissedVariableTokenRef.current = null;
+      setSelectedVariableIndex(0);
+    }
+  }, [activeVariableToken]);
+
+  const handleSelectPromptVariable = useCallback((variable: PromptVariable) => {
+    const textarea = promptRef.current;
+    if (!textarea || !activeVariableToken) return;
+    const cursorPos = textarea.selectionStart ?? 0;
+    const text = textarea.value;
+    const tokenLen = activeVariableToken.token.length;
+    const startPos = Math.max(0, cursorPos - tokenLen);
+    const tagText = `#${variable.name} `;
+    const newText = text.slice(0, startPos) + tagText + text.slice(cursorPos);
+    const newCursorPos = startPos + tagText.length;
+    textarea.value = newText;
+    lastEmittedPromptRef.current = newText;
+    textarea.setSelectionRange(newCursorPos, newCursorPos);
+    setHasText(Boolean(newText.trim()));
+    onPromptChange(newText);
+    resizeTextarea();
+    dismissedVariableTokenRef.current = tagText.trim();
+    setActiveVariableToken(null);
+    setSelectedVariableIndex(0);
+    textarea.focus();
+  }, [activeVariableToken, onPromptChange]);
+
   const modelSettings = useMemo<PaneCliModelSettings | null>(() => {
     // A provider with an unavailable catalog must not hide the picker: the working
     // providers stay selectable so the user can switch away from the inactive one.
@@ -353,6 +422,20 @@ export function CodexComposer({
     promptRef.current?.focus();
   }, [pending]);
 
+  useEffect(() => {
+    if (!snapshotRef) return;
+    const snapshot = () => {
+      if (debounceTimerRef.current !== null) window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+      const value = promptRef.current?.value ?? prompt;
+      lastEmittedPromptRef.current = value;
+      onPromptChange(value);
+      return value;
+    };
+    snapshotRef.current = snapshot;
+    return () => { if (snapshotRef.current === snapshot) snapshotRef.current = null; };
+  }, [snapshotRef, onPromptChange, prompt]);
+
   const canSubmit = !isDisabled && !pending && !isRunning && (attachments.length > 0 || hasText || canSend);
 
   function submit(event?: FormEvent) {
@@ -374,6 +457,15 @@ export function CodexComposer({
         setLayoutSuggestion(null);
       }
     }
+    if (promptVariablesSettings.enabled && promptVariablesSettings.autoExpandOnSubmit && promptVariables.length > 0) {
+      const expanded = expandPromptVariables(currentValue, promptVariables, { autoUnescape: true });
+      if (expanded !== currentValue) {
+        currentValue = expanded;
+        if (promptRef.current) {
+          promptRef.current.value = currentValue;
+        }
+      }
+    }
     const canDoSubmit = !isDisabled && !pending && !isRunning && (attachments.length > 0 || Boolean(currentValue.trim()) || canSend);
     if (canDoSubmit) {
       if (debounceTimerRef.current !== null) {
@@ -388,6 +480,34 @@ export function CodexComposer({
   }
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (activeVariableToken) {
+      if (filteredVariables.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setSelectedVariableIndex((prev) => (prev + 1) % filteredVariables.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setSelectedVariableIndex((prev) => (prev - 1 + filteredVariables.length) % filteredVariables.length);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          const picked = filteredVariables[selectedVariableIndex] ?? filteredVariables[0];
+          if (picked) {
+            handleSelectPromptVariable(picked);
+          }
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissedVariableTokenRef.current = activeVariableToken.token;
+        setActiveVariableToken(null);
+        return;
+      }
+    }
     const isGKey = event.code === "KeyG" || event.key.toLowerCase() === "g" || event.key === "γ" || event.key === "Γ" || event.key === "©";
     if (autocorrectSettings.enabled && (event.altKey || (event.ctrlKey && event.shiftKey)) && isGKey) {
       event.preventDefault();
@@ -560,6 +680,22 @@ export function CodexComposer({
           </button>
         </div>
       ) : null}
+      {activeVariableToken ? (
+        <PromptVariableAutocomplete
+          query={activeVariableToken.query}
+          selectedIndex={selectedVariableIndex}
+          onSelect={handleSelectPromptVariable}
+          onClose={() => {
+            dismissedVariableTokenRef.current = activeVariableToken.token;
+            setActiveVariableToken(null);
+          }}
+          onOpenManager={(initialName) => {
+            setVariablesManagerInitialName(initialName ?? "");
+            setVariablesManagerOpen(true);
+          }}
+          onHighlightIndex={setSelectedVariableIndex}
+        />
+      ) : null}
       <textarea
         ref={promptRef}
         name="agent-message"
@@ -577,6 +713,7 @@ export function CodexComposer({
           }
           lastEmittedPromptRef.current = value;
           checkLayoutMismatch(value);
+          checkVariableToken();
           if (debounceTimerRef.current !== null) {
             window.clearTimeout(debounceTimerRef.current);
           }
@@ -602,6 +739,7 @@ export function CodexComposer({
           }
           lastEmittedPromptRef.current = value;
           checkLayoutMismatch(value);
+          checkVariableToken();
           resizeTextarea();
           if (debounceTimerRef.current !== null) {
             window.clearTimeout(debounceTimerRef.current);
@@ -610,6 +748,9 @@ export function CodexComposer({
             onPromptChange(value);
           }, 1000);
         }}
+        onClick={checkVariableToken}
+        onKeyUp={checkVariableToken}
+        onSelect={checkVariableToken}
         onKeyDown={handlePromptKeyDown}
         placeholder="Ask anything, or give me a goal…"
         rows={1}
@@ -672,8 +813,32 @@ export function CodexComposer({
             ) : null}
           </button>
         ) : null}
-        <div className="codex-composer-spacer" />
         {onShortcut ? <CliShortcutsMenu active={isVisible} disabled={isDisabled || pending || isRunning} onCommand={onShortcut} commands={OSK_CHAT_MODE_COMMANDS} /> : null}
+        <PromptVariablesMenu
+          disabled={isDisabled || pending}
+          active={isVisible}
+          paneTitle={paneTitle}
+          initialName={variablesManagerInitialName}
+          open={variablesManagerOpen}
+          onOpenChange={(nextOpen) => {
+            setVariablesManagerOpen(nextOpen);
+            if (!nextOpen) setVariablesManagerInitialName("");
+          }}
+          onInsertVariable={(variable) => {
+            const textarea = promptRef.current;
+            if (textarea) {
+              const tagText = `#${variable.name} `;
+              insertTextAtCursor(textarea, tagText);
+              const newVal = textarea.value;
+              lastEmittedPromptRef.current = newVal;
+              setHasText(Boolean(newVal.trim()));
+              onPromptChange(newVal);
+              resizeTextarea();
+              textarea.focus();
+            }
+          }}
+        />
+        <div className="codex-composer-spacer" />
         <VoiceInputButton label={paneTitle} active={voiceActive} disabled={voiceDisabled || isDisabled} onClick={onVoice} onPrewarm={onVoicePrewarm} />
         {modelSettings ? (
           <span title={disabledTitle}>

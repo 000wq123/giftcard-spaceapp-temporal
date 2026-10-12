@@ -1,4 +1,4 @@
-import type { AgentRuntimeAuthMode, AgentRuntimeAuthState } from "@space/contracts";
+import type { AgentRuntimeAuthMode, AgentRuntimeAuthState, CliAdapterLimitation } from "@space/contracts";
 
 export type CliRuntimeKey =
   | "codex"
@@ -39,6 +39,21 @@ export interface CliRuntimeDescriptor {
   tempDir: string;
   environment: Readonly<Record<string, string>>;
   nativeResumeArgs: readonly string[] | null;
+  /**
+   * Declares `REFERENCE` recovery: a RESUME launch passes the recorded native task reference
+   * (buildCliSpawnArgs) and both launch gates admit it. A launcher that can pass one while its
+   * exactness is unproven keeps this false and declares REFERENCE_PENDING_LIVE_PROOF instead.
+   */
+  declaresNativeReference: boolean;
+  /** What the adapter cannot provide for this runtime; apps/api/tests/cli-adapter-contract.test.ts derives the expected set. */
+  adapterLimitations: readonly CliAdapterLimitation[];
+  /** Environment variable that carries a non-main account profile to the wrapper (kept by its sudoers). */
+  accountProfileEnv: `SPACE_${string}_ACCOUNT_PROFILE` | null;
+  /** The wrapper starts the TUI on SPACE_CLI_MODEL_ID/SPACE_CLI_REASONING_EFFORT (a pane's own model pick). */
+  paneModelLaunchEnv: boolean;
+  /** Configured fallback; does not establish provider support or live discovery. Set to the
+   * model the CLI starts on without a pane pick (its own catalog/config default, checked
+   * 2026-10-11), or null where its account/provider decides; never passed to it as a pick. */
   defaultModelId: string | null;
   credentialVerifiedReason: string;
   loginBootstrapReason: string | null;
@@ -46,6 +61,37 @@ export interface CliRuntimeDescriptor {
 
 const proxmoxHome = "/var/lib/spaceapp-user";
 const codexHome = `${proxmoxHome}/.codex`;
+
+const completionUnobserved: CliAdapterLimitation = {
+  operation: "completion",
+  code: "COMPLETION_UNOBSERVED",
+  detail: "Space sees PTY output and process exit only; a turn's success is not observed, so completion fails closed."
+};
+const providerSelectionOnly: CliAdapterLimitation = {
+  operation: "nativeResume",
+  code: "PROVIDER_SELECTION_ONLY",
+  detail: "Recovery reaches the provider's own continue or latest-session selection, which need not be the same native task."
+};
+const loginNotInTerminal: CliAdapterLimitation = {
+  operation: "login",
+  code: "LOGIN_NOT_IN_TERMINAL",
+  detail: "Authentication happens inside the CLI or through managed credentials; a terminal login is refused before a session is allocated."
+};
+const hostLossRestartsFresh: CliAdapterLimitation = {
+  operation: "reconnect",
+  code: "HOST_LOSS_RESTARTS_FRESH",
+  detail: "A live host process reconnects; after a pane-host loss the session restarts fresh instead of resuming."
+};
+const referencePendingLiveProof = (form: string): CliAdapterLimitation => ({
+  operation: "nativeResume",
+  code: "REFERENCE_PENDING_LIVE_PROOF",
+  detail: `RESUME passes the recorded reference (${form}); REFERENCE stays undeclared until a live resume proof exists.`
+});
+const interactivePicker = (form: string): CliAdapterLimitation => ({
+  operation: "nativeResume",
+  code: "PROVIDER_SELECTION_INTERACTIVE_PICKER",
+  detail: `Without a recorded reference, ${form} opens the provider's interactive session picker.`
+});
 
 export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
   {
@@ -74,6 +120,10 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       XDG_STATE_HOME: `${codexHome}/space-opencode/state`
     },
     nativeResumeArgs: ["--continue"],
+    declaresNativeReference: true,
+    adapterLimitations: [loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
     defaultModelId: null,
     credentialVerifiedReason: "OpenCode is available without credentials. A working free model is checked on first launch.",
     loginBootstrapReason: null
@@ -99,6 +149,14 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/tmp`,
     environment: { CODEX_HOME: codexHome },
     nativeResumeArgs: null,
+    declaresNativeReference: true,
+    adapterLimitations: [{
+      operation: "start",
+      code: "START_REQUIRES_RESOLVED_MODEL",
+      detail: "A fresh Codex start needs a resolved model and reasoning effort; the launcher refuses a bare start."
+    }],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
     defaultModelId: "gpt-5.6-sol",
     credentialVerifiedReason: "Codex CLI direct VS Code/Codex parity wrapper, /etc cwd, and credential smoke are verified.",
     loginBootstrapReason: null
@@ -124,6 +182,10 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-claude/tmp`,
     environment: { CLAUDE_CONFIG_DIR: `${codexHome}/space-claude` },
     nativeResumeArgs: ["--resume"],
+    declaresNativeReference: true,
+    adapterLimitations: [interactivePicker("a bare `--resume`"), completionUnobserved],
+    accountProfileEnv: "SPACE_CLAUDE_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
     defaultModelId: "sonnet",
     credentialVerifiedReason: "Claude Code direct Anthropic operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Claude Code CLI is enabled only for first-run OAuth login; credential smoke is still pending."
@@ -149,6 +211,14 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-gemini/tmp`,
     environment: {},
     nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, {
+      operation: "nativeResume",
+      code: "REFERENCE_STEERED_BY_WRAPPER",
+      detail: "RESUME passes `--continue`; the recorded conversation id travels in SPACE_GEMINI_CONVERSATION_ID and the wrapper steers the continue to it. Unverified live."
+    }, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: "SPACE_GEMINI_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
     defaultModelId: "gemini-3.8-flash",
     credentialVerifiedReason: "The official Google Antigravity CLI is installed; authentication is handled natively inside the CLI.",
     loginBootstrapReason: null
@@ -174,6 +244,14 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-autohand/tmp`,
     environment: { AUTOHAND_HOME: `${codexHome}/space-autohand` },
     nativeResumeArgs: null,
+    declaresNativeReference: false,
+    adapterLimitations: [{
+      operation: "nativeResume",
+      code: "NATIVE_RESUME_UNSUPPORTED",
+      detail: "Space has no Autohand resume form; recovery starts a fresh session with bounded Space context."
+    }, hostLossRestartsFresh, completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: false,
     defaultModelId: "openrouter/auto",
     credentialVerifiedReason: "Autohand Code CLI patched distribution, isolated account and OpenRouter credentials, /etc parity, approved MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
@@ -202,7 +280,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       QWEN_RUNTIME_DIR: `${codexHome}/space-qwen/runtime`
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "qwen-2.5-coder-32b",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`--resume <uuid>`"), completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
     credentialVerifiedReason: "Qwen Code CLI direct operator parity wrapper, selected provider credentials, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -227,7 +309,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-kimi/tmp`,
     environment: { KIMI_CODE_HOME: `${codexHome}/space-kimi` },
     nativeResumeArgs: ["--session"],
-    defaultModelId: "kimi-k1.5",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, interactivePicker("`--session`"), completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "kimi-code/k3",
     credentialVerifiedReason: "Kimi Code subscription direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Kimi Code CLI is enabled only for first-run Kimi Code OAuth login; subscription credential smoke is still pending."
   },
@@ -252,7 +338,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-grok/tmp`,
     environment: { GROK_HOME: `${codexHome}/space-grok` },
     nativeResumeArgs: ["--resume"],
-    defaultModelId: "grok-3",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "grok-4.7",
     credentialVerifiedReason: "Grok Build account direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: "Grok Build CLI is enabled only for first-run xAI device-code login; account credential smoke is still pending."
   },
@@ -277,7 +367,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-deepseek/tmp`,
     environment: { DEEPSEEK_HOME: `${codexHome}/space-deepseek` },
     nativeResumeArgs: null,
-    defaultModelId: "deepseek-chat",
+    declaresNativeReference: true,
+    adapterLimitations: [completionUnobserved],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "deepseek-flash/deepseek-flash",
     credentialVerifiedReason: "DeepSeek CLI 0.1.1 text-chat wrapper, live provider model catalog, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -305,7 +399,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
       AGENT_CLI_CREDENTIAL_STORE: "file"
     },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "claude-3-5-sonnet",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: "SPACE_CURSOR_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: false,
+    defaultModelId: "auto",
     credentialVerifiedReason: "Cursor CLI direct operator parity wrapper, browser OAuth, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -330,7 +428,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: `${codexHome}/space-copilot/tmp`,
     environment: { COPILOT_HOME: `${codexHome}/space-copilot` },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "gpt-4o",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved],
+    accountProfileEnv: "SPACE_COPILOT_ACCOUNT_PROFILE",
+    paneModelLaunchEnv: true,
+    defaultModelId: null,
     credentialVerifiedReason: "GitHub Copilot CLI direct operator parity wrapper, GitHub device login, /etc cwd, MCP access, and credential smoke are verified.",
     loginBootstrapReason: null
   },
@@ -355,7 +457,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     tempDir: "/var/lib/spaceapp-user/.codex/space-hermes/tmp",
     environment: { HERMES_HOME: "/var/lib/spaceapp-user/.hermes" },
     nativeResumeArgs: ["--continue"],
-    defaultModelId: "hermes-3-llama-3.1-8b",
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "opencode-zen:big-pickle",
     credentialVerifiedReason: "Hermes Agent v0.20.1 installed at ~/.hermes; node-pty TUI smoke and end-to-end chat smoke verified.",
     loginBootstrapReason: null
   },
@@ -379,8 +485,12 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     stateRoot: `${codexHome}/space-omp`,
     tempDir: `${codexHome}/space-omp/tmp`,
     environment: {},
-    nativeResumeArgs: ["--resume"],
-    defaultModelId: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
+    defaultModelId: "codex-lb/gpt-6-sol",
     credentialVerifiedReason: "Oh My Pi CLI is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
   },
@@ -404,7 +514,12 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     stateRoot: `${codexHome}/space-qoder`,
     tempDir: `${codexHome}/space-qoder/tmp`,
     environment: {},
-    nativeResumeArgs: ["--resume"],
+    // The Qoder sudoers admits `--continue`/`-c` only; a bare `--resume` was refused by `sudo -n`.
+    nativeResumeArgs: ["--continue"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, referencePendingLiveProof("`-r <uuid>`, fresh `--session-id <uuid>`"), completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
     defaultModelId: null,
     credentialVerifiedReason: "Qoder CLI is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
@@ -429,7 +544,11 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     stateRoot: `${codexHome}/space-muse`,
     tempDir: `${codexHome}/space-muse/tmp`,
     environment: {},
-    nativeResumeArgs: null,
+    nativeResumeArgs: ["resume", "--last"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
     defaultModelId: null,
     credentialVerifiedReason: "Muse Code is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
@@ -454,12 +573,23 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     stateRoot: `${codexHome}/space-droid`,
     tempDir: `${codexHome}/space-droid/tmp`,
     environment: {},
-    nativeResumeArgs: null,
+    nativeResumeArgs: ["--resume", "--last"],
+    declaresNativeReference: false,
+    adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
+    accountProfileEnv: null,
+    paneModelLaunchEnv: true,
     defaultModelId: null,
     credentialVerifiedReason: "Droid is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
   }
 ];
+
+/**
+ * Runtimes whose panes can run under a linked (non-main) account profile; each descriptor names the
+ * variable that carries it (accountProfileEnv). The literal tuple keeps per-provider profile readers exhaustive.
+ */
+export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"] as const satisfies
+  readonly `cli:${CliRuntimeKey}`[];
 
 const descriptorById = new Map(cliRuntimeDescriptors.map((descriptor) => [descriptor.id, descriptor]));
 

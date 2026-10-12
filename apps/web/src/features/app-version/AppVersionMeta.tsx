@@ -1,5 +1,5 @@
 import { Github, RefreshCw, Youtube } from "../ui-theme/app-icons.js";
-import { readPublicHomepageConfig } from "../homepage/public-config.js";
+import { readPublicHomepageConfig } from "./public-config.js";
 import { useAppVersion } from "./use-app-version.js";
 import { isUpdateAvailable, versionLabel } from "./version-check.js";
 

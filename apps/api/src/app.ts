@@ -1,9 +1,52 @@
-import { readDashboardActivity } from "./agents-dashboard.js";
+import { applyUnmanagedCodexModelSettings } from "./plan-execution-mutations.js";
+import { registerPlanExecutionRoutes, assertManagedPlanMutationScope } from "./plan-execution-routes.js";
+import { registerDotsRoutes, validateSessionDotOwner } from "./dots-routes.js";
+import { dotDeveloperContext, registerDotToolGatewayRoutes } from "./dot-tools-gateway.js";
+import { createDotGoalService, createDotGoalWorkflowCoordinator, registerDotGoalRoutes } from "./dot-goals.js";
+import { sweepStrandedChatRuns as sweepStrandedChatRunsOnce } from "./stranded-chat-runs.js";
+import { createDotScheduleService, registerDotScheduleRoutes } from "./dot-schedules.js";
+import { createDotComputerService, registerDotComputerRoutes } from "./dot-computer.js";
+import { createDotDelegationService } from "./dot-delegations.js";
+import { describeCoverage, readAttachments } from "./attachment-readers.js";
+import { PostgresChannelsRepository, type ChannelsRepository, PostgresDotEvalsRepository, type DotEvalsRepository, PostgresAutoRouteShadowRepository, PostgresConnectorAccountsRepository, PostgresDotDelegationsRepository, type AutoRouteShadowRepository, PostgresDotDeliverablesRepository, PostgresDotGoalsRepository, PostgresDotMemoryRepository, PostgresDotSchedulesRepository, PostgresDotsRepository } from "@space/db";
+import { createDotMemoryService, registerDotMemoryRoutes } from "./dot-memory.js";
+import { createDotDeliverablesService, registerDotDeliverableRoutes } from "./dot-deliverables.js";
+import { completeConnectorCallback, createConnectorCrypto, createConnectorService, createGoogleConnector, createMicrosoftConnector, registerConnectorRoutes } from "./dot-connectors.js";
+import { Client, Connection, WorkflowNotFoundError } from "@temporalio/client";
+import { cliResourceHealth } from "./cli-resource-health.js";
+import { registerReviewRoutes } from "./review-routes.js";
+import { registerSwarmRoutes } from "./swarm-routes.js";
+import { assertAgentPaneCompatible } from "./pane-guards.js";
+import { registerTelegramRoutes } from "./telegram-routes.js";
+import { registerConfigurationRoutes } from "./configuration-routes.js";
+import { registerStreamingAdminRoutes } from "./streaming-admin-routes.js";
+import { registerStreamingBotRoutes } from "./streaming-bot-routes.js";
+import { createMcpToolExecutor } from "./mcp-tool-executor.js";
+import { recordAudit } from "./request-audit.js";
+import { registerUserLinkRoutes } from "./user-link-routes.js";
+import { registerTaskItemRoutes } from "./task-item-routes.js";
+import { registerClipboardRoutes } from "./clipboard-routes.js";
+import { registerAdminUserRoutes } from "./admin-user-routes.js";
+import { createGatewayCodexResetCreditsService, createGatewayCodexUsageProvider } from "./gateway/gateway-codex-services.js";
+import { createGatewayAdminService, type GatewayAdminService } from "./gateway/gateway-service.js";
+import { registerGatewayAdminRoutes } from "./gateway/gateway-routes.js";
+import { registerTraceRoutes } from "./trace-routes.js";
+import { apiLogRedaction, redactRequestUrlForLog } from "./request-logging.js";
+export { redactRequestUrlForLog } from "./request-logging.js";
+import { registerArtifactReadRoutes } from "./artifact-read-routes.js";
+import { sendApiError } from "./http-errors.js";
+import { safeStorageSegment, safeOriginalFilename, safeCliFilename, safeBrowserEvidenceSegment,
+  pathInside, permanentlyDeleteLocalArtifact, sweepExpiredBrowserArtifacts, localArtifactFilePath } from "./artifact-storage.js";
+export { sweepExpiredBrowserArtifacts, type BrowserArtifactRetentionSweepResult } from "./artifact-storage.js";
+import { withStagedUploads, withStagedBufferUpload, withPersistedUpload, readStagedUpload } from "./multipart-upload.js";
+import { recordUploadedArtifact } from "./upload-record.js";
+import { createCliDashboardActivityReader, readDashboardActivity, type DashboardActivityDetail, type DashboardStatus } from "./agents-dashboard.js";
 import { routeLiveDelegation } from "./live-jev-delegation.js";
 import { registerLiveHistoryRoutes } from "./live-history-routes.js";
 import { InMemoryLiveHistoryRepository, PostgresLiveHistoryRepository } from "@space/db";
+import { PostgresSessionRevocationRepository } from "@space/db";
 import { buildLiveRoomContext } from "./live-room-context.js";
-import { maintenancePlanRequestSchema, maintenanceApplyRequestSchema } from "@space/contracts";
+import { DOT_TOOL_GATEWAY_VERSION, dotWorkspacePath, summarizeAutoRouteShadow } from "@space/contracts";
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
 import { cliRenderAiDescription, createCliRenderAiRepository, cleanupCliRenderAiRepository, createCliRenderAiController } from "./cli-render-ai-proof.js";
 import { warmCapacityProofDescription, cliRenderProofDescription, cliRenderProofRuntimeIds, createCliRenderProofFixture, startCliRenderProofFixture } from "./cli-render-proof-fixture.js";
@@ -11,11 +54,18 @@ import { controlOperationSchema, SPACE_CONTROL_VERSION } from "@space/contracts"
 import { controlTokenHeader, verifyControlToken } from "./space-control-token.js";
 import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady } from "@space/contracts";
 import { controlSkills, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
-import { captureControlSettingsSnapshot } from "./space-control-settings.js";
+import { captureControlSettingsSnapshot, restoreControlSettingsSnapshot, executeControlPluginAction } from "./space-control-settings.js";
 import { parseSpaceControlQuick } from "./space-control-quick.js";
 import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
 import { registerSpaceControlRoutes } from "./space-control-routes.js";
 import { pluginsService } from "./plugins-service.js";
+import { InMemorySourceControlRepository, PostgresSourceControlRepository } from "@space/db";
+import { SourceControlService } from "./source-control/service.js";
+import { registerSourceControlRoutes } from "./source-control/routes.js";
+import { WORKTREES_ROOT, WorktreeService } from "./worktrees/worktree-service.js";
+import { registerWorktreeRoutes } from "./worktrees/worktree-routes.js";
+import { mayCreatePaneDirectory, resolveProjectEnsureTarget } from "./project-paths.js";
+import { GitControlError } from "./source-control/errors.js";
 import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
 import { InMemoryLiveMemoryRepository, PostgresLiveMemoryRepository } from "@space/db";
 import { createLivePersonalMemory } from "./live-personal-memory.js";
@@ -34,7 +84,7 @@ import { SystemTopologyService } from "./system-topology-service.js";
 import { InMemorySystemHealthRepository, PostgresSystemHealthRepository } from "@space/db";
 import { systemHealthSnapshotSchema, systemHealthHistorySchema, systemHealthRangeSchema, systemTopologySnapshotSchema } from "@space/contracts";
 import { seedYouTubeSignIn } from "./youtube-shared-signin.js";
-import { YouTubeAccountStore, selectYouTubeAccountSchema, youtubeAccountProfileKey, youtubeAccountSignInUrl, googleAccountSignInUrl } from "./youtube-accounts.js";
+import { YouTubeAccountStore, privatePaneProfileId, selectYouTubeAccountSchema, youtubeAccountProfileKey, youtubeAccountSignInUrl, googleAccountSignInUrl } from "./youtube-accounts.js";
 import type { PaneBrowserSessionResponse } from "@space/contracts";
 import { YouTubePlaybackStore, youtubePlaybackSchema, youtubeBrowserPlayback } from "./youtube-playback-state.js";
 import { CanonicalMemorySearch } from "./canonical-memory-search.js";
@@ -53,11 +103,12 @@ import { VoiceProxyTickets, relayVoiceSockets, voiceProxyLimits } from "./voice-
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { execFile, spawn } from "node:child_process";
 import { createNativeCliModelCatalog, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
-import { createHash, timingSafeEqual, randomBytes } from "node:crypto";
+import { createHash, timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import { z, ZodError, type ZodTypeAny } from "zod";
@@ -110,16 +161,11 @@ import {
   createPaneBrowserSessionRequestSchema,
   createPaneCliSessionRequestSchema,
   createArtifactInputSchema,
-  createClipboardItemRequestSchema,
-  createTaskItemRequestSchema,
-  createUserLinkRequestSchema,
   createBrowserEvidenceInputSchema,
   createImportCandidateInputSchema,
   createMcpToolExecutionInputSchema,
-  createProviderInputSchema,
   createSwarmReconcileInputSchema,
   createSwarmTaskInputSchema,
-  createTelegramPairingInputSchema,
   createTurnInputSchema,
   cliSessionReapResponseSchema,
   cliSessionStatsSchema,
@@ -127,20 +173,20 @@ import {
   cliTaskHistoryQuerySchema,
   cliRuntimeDisablePreviewSchema,
   cliRuntimeSettingsResponseSchema,
+  cliProviderSettingsResponseSchema,
+  updateCliProviderSettingInputSchema,
+  updateAllCliProvidersInputSchema,
   harnessMaintenanceRestartResultSchema,
   harnessMaintenanceStatusSchema,
   cliRuntimeVpnStatusSchema,
   cliGlobalEgressStatusSchema,
   cliEgressRouteIdSchema,
-  cliVpnProfileIdSchema,
   updateCliGlobalEgressInputSchema,
   updateCliGlobalEgressResultSchema,
-  cliVpnRoutingStatusSchema,
   cliToggleRuntimeIds,
   cliToggleRuntimeIdSchema,
   type CliToggleRuntimeId,
   cliVpnConnectionSchema,
-  clipboardItemListResponseSchema,
   listSharedChatMessagesQuerySchema,
   sendSharedChatMessageInputSchema,
   sharedChatMessageListResponseSchema,
@@ -149,10 +195,6 @@ import {
   auditChainListResponseSchema,
   auditVerifyResponseSchema,
   clearSharedChatResponseSchema,
-
-  setClipboardItemCompletedRequestSchema,
-  updatePlanProgressRequestSchema,
-  taskItemListResponseSchema,
   codexEnvironmentSchema,
   codexLbSpeedDefaultUpdateRequestSchema,
   codexLbSpeedDefaultsResponseSchema,
@@ -168,6 +210,7 @@ import {
   codexResetCreditRedemptionInputSchema,
   codexResetCreditRedemptionResponseSchema,
   antigravityUsageAccountListSchema,
+  claudeUsageAccountListSchema,
   apiProviderAccountListSchema,
   type ApiProviderAccountList,
   codexUsageAccountListSchema,
@@ -183,15 +226,14 @@ import {
   createMemoryEntryInputSchema,
   createPaneInputSchema,
   createRoomPanesRequestSchema,
-  createReviewCheckInputSchema,
-  createReviewDecisionInputSchema,
-  createReviewDiffSummaryInputSchema,
   activeAgentTurnsInputSchema,
   activeAgentTurnsResponseSchema,
   createProofRoomInputSchema,
   createReleasePreviewInputSchema,
   createReleaseRequestSchema,
   createRoomInputSchema,
+  MAX_ROOMS,
+  pickNextAvailableRoomName,
   reorderPanesInputSchema,
   reorderRoomsInputSchema,
   updatePaneLayoutInputSchema,
@@ -199,11 +241,8 @@ import {
   updateAppDiagnosticsInputSchema,
   updateCodexCliModeDefaultsInputSchema,
   updateCliRuntimeSettingInputSchema,
-  agentToolAssignmentSchema,
   agentToolLaunchTaskInputSchema,
   agentToolLaunchTaskResponseSchema,
-  applyAgentToolsInputSchema,
-  updateAgentToolAssignmentInputSchema,
   updateCliRuntimeSettingResultSchema,
   updateCliRuntimeVpnInputSchema,
   updateCliRuntimeVpnResultSchema,
@@ -211,24 +250,20 @@ import {
   updateHarnessEnabledResultSchema,
   updateHarnessVpnResultSchema,
   restartCliRuntimeVpnSessionsResultSchema,
-  replaceCliVpnProfileInputSchema,
   updateRoomInputSchema,
-  updateTaskItemInputSchema,
-  updateUserLinkRequestSchema,
   createSkillProposalInputSchema,
   claimSwarmLockInputSchema,
   cliLoginRequestSchema,
   cliLoginResponseSchema,
   cliAccountProfileIdSchema,
   cliAccountProfileDetailsResponseSchema,
+  cliAccountIdentitiesResponseSchema,
   createCliAccountProfileInputSchema,
   createCliAccountProfileResponseSchema,
   listCliAccountProfilesResponseSchema,
   removeCliAccountProfileResponseSchema,
   updateCliAccountProfileInputSchema,
   updateCliAccountProfileResponseSchema,
-  cliMaintenanceRequestSchema,
-  cliUpdateAllRequestSchema,
   cliTerminalClientEventInputSchema,
   cliTerminalClientEventResponseSchema,
   cliModelIdentifierSchema,
@@ -238,10 +273,6 @@ import {
   isAgentFileArtifact,
   isRoomMediaArtifact,
   listActivityLogEventsQuerySchema,
-  listArtifactsQuerySchema,
-  listClipboardItemsQuerySchema,
-  listTaskItemsQuerySchema,
-  listUserLinksQuerySchema,
   importCandidateDecisionInputSchema,
   importCandidateDecisionResultSchema,
   hostMemoryDetailsSchema,
@@ -252,30 +283,11 @@ import {
   systemAnalyticsProcessesResponseSchema,
   systemAnalyticsRangeSchema,
   systemAnalyticsResourcesResponseSchema,
-  streamingOAuthProviderSchema,
-  streamingCatalogResponseSchema,
-  streamingOAuthStartResponseSchema,
-  streamingOverlaySnapshotSchema,
-  streamingVerifyAccountResponseSchema,
-  streamingDisconnectAuthorizationResponseSchema,
-updateStreamingOverlaySettingsInputSchema,
-  updateStreamingBotSettingsInputSchema,
-  streamingBotSettingsSchema,
-  streamingBotStatusSchema,
-  streamingBotActivitySchema,
-  streamingBotTestInputSchema,
-  createStreamingBotMemoryInputSchema,
-  updateStreamingBotMemoryInputSchema,
-  streamingBotReviewedMemorySchema,
-  streamingBotMcpExecuteInputSchema,
   toolbarModelStatsSchema,
   launchReadinessSchema,
   listImportCandidatesQuerySchema,
   listMemoryQuerySchema,
   listPanesQuerySchema,
-  listReviewChecksQuerySchema,
-  listReviewDecisionsQuerySchema,
-  listReviewDiffSummariesQuerySchema,
   listSharedTasksQuerySchema,
   listSwarmTasksQuerySchema,
   listTurnsQuerySchema,
@@ -303,7 +315,6 @@ updateStreamingOverlaySettingsInputSchema,
   roomCliActivityResponseSchema,
   resumePaneCliSessionRequestSchema,
   resumePaneCliSessionResponseSchema,
-  reviewRoomStateSchema,
   runSwarmTaskInputSchema,
   runSwarmTaskResponseSchema,
   setupClaimInputSchema,
@@ -337,6 +348,7 @@ updateStreamingOverlaySettingsInputSchema,
   type CodexLbSpeedDefaultsResponse,
   type CodexLbSpeedTier,
   type AntigravityUsageAccountList,
+  type ClaudeUsageAccountList,
   type CodexUsageAccountList,
   type CodexHistoryItem,
   type Event,
@@ -344,7 +356,6 @@ updateStreamingOverlaySettingsInputSchema,
   type McpToolExecutionResult,
   type MemoryEmbeddingSmokeCheck,
   type MemoryVectorReadiness,
-  mcpToolExecutionResultSchema,
   memoryEntrySchema,
   observabilitySnapshotSchema,
   openBrowserBookmarkInputSchema,
@@ -361,21 +372,16 @@ updateStreamingOverlaySettingsInputSchema,
   storageReadinessSchema,
   sharedTaskSchema,
   updateSwarmTaskInputSchema,
-  updateTelegramIntegrationInputSchema,
   updateCodexGoalTaskInputSchema,
   updatePaneBrowserSessionRequestSchema,
   updatePaneInputSchema,
   updateArtifactRetentionInputSchema,
   deleteRoomAgentFilesResponseSchema,
   deleteRoomMediaResponseSchema,
-  updateProviderInputSchema,
   updateProviderSettingsInputSchema,
   updateUserSettingsInputSchema,
-  exportConfigOptionsSchema,
   importConfigOptionsSchema,
-  importConfigRequestSchema,
   importConfigResultSchema,
-  spaceConfigBundleSchema,
   type SpaceConfigBundle,
   type ExportConfigOptions,
   type ImportConfigOptions,
@@ -426,8 +432,6 @@ updateStreamingOverlaySettingsInputSchema,
   eventSchema,
   type LiveAudioProviderId,
   type VoiceRealtimeHistoryItem,
-  adminUserListResponseSchema,
-  updateUserRoleInputSchema,
   type AuthUser,
   type Room
 } from "@space/contracts";
@@ -444,7 +448,10 @@ import {
   PostgresStreamingBotRepository,
   PostgresSpaceStore,
   InMemoryDemoProjectsRepository,
-  PostgresDemoProjectsRepository
+  InMemoryGatewayRepository,
+  PostgresGatewayRepository,
+  PostgresDemoProjectsRepository,
+  type GatewayRepository
 } from "@space/db";
 import {
   InMemorySpaceStore,
@@ -459,12 +466,12 @@ import {
   TelegramSecretStore,
   createCanonicalGeminiMemoryBridge,
   createCodexGoalsAdapter,
-  decideMcpToolPolicy,
   makeSpaceId,
   nowIso,
   redactMemoryText,
   type CanonicalMemoryBridge,
   type CodexGoalsAdapter,
+  type GoogleAccount,
   type SpaceStore
 } from "@space/runtime";
 import {
@@ -472,10 +479,15 @@ import {
   createCsrfToken,
   csrfHeaderName,
   cookieName,
+  defaultSessionRevocationStore,
+  generatePkcePair,
   getAuthConfig,
   hashPassword,
   operatorSessionTtlSeconds,
+  signOAuthState,
   signSession,
+  signSessionWithTtl,
+  verifyOAuthState,
   verifyPassword,
   verifyCsrfToken,
   verifyAgentPostToken,
@@ -491,29 +503,45 @@ import {
 } from "./app-diagnostics.js";
 import { ActivityLogService } from "./activity-log.js";
 import { registerBenchmarkRoutes } from "./benchmark-routes.js";
+import { registerChessBenchmarkRoutes } from "./chess/chess-routes.js";
+import { pickClaudeProfile } from "./chess/chess-players.js";
 import { registerAsteroidsDirectorRoutes } from "./asteroids-director.js";
 import { registerPluginRoutes } from "./plugins-routes.js";
 import { registerFilesRoutes } from "./files-routes.js";
+import { registerDatabasesRoutes } from "./databases/databases-routes.js";
+import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";
+import { FilesystemError } from "./filesystem-error.js";
+import { withStagedAgentFiles } from "./agent-file-upload.js";
 import { registerDemoProjectsRoutes } from "./demo-projects/routes.js";
 import { DemoProjectsService } from "./demo-projects/service.js";
 import { DemoCredentialStore } from "./demo-projects/credentials.js";
+import { t3PublicOrigins } from "./t3code/access.js";
+import { registerT3Bindings } from "./t3code/bindings.js";
+import { registerT3Gateway } from "./t3code/gateway.js";
+import { registerT3LegacyRetirement } from "./t3code/legacy.js";
+import { registerT3StaticAssets, t3StartupAssets } from "./t3code/static-assets.js";
+import { t3InlineBootstrapSupported } from "./t3code/upstream.js";
+import { createT3CodeServiceController, registerT3CodeAdminRoutes, type T3CodeServiceController } from "./t3code/service-control.js";
 import { isHarnessRootHttpPath, registerHarnessRoutes, readHarnessTaskTitle, renameHarnessTaskTitle } from "./harness-proxy.js";
 import { createActiveAgentCountProvider } from "./active-agent-count.js";
 import { buildCliAgentBootstrapMarkdown } from "./agent-bootstrap.js";
-import { effectiveRouting, discoverRoutingProfiles, projectRoutingState, serializeRoutingUpdate, routingStateWithLegacy, saveProjectedRouting } from "./tool-routing.js";
-import { updateToolRoutingSchema, resolveToolRoute, spaceToolPolicies } from "@space/contracts";
+import { createAutoRouteFactsLoader } from "./auto-route-facts.js";
+import { createDotEvalService, registerDotEvalRoutes } from "./dot-evals.js";
+import { createDotChannelService, registerDotChannelRoutes } from "./dot-channels.js";
+import { createDotLiveService, registerDotLiveRoutes } from "./dot-live.js";
+import { createSlackClient, parseSlackEnvelope, verifySlackSignature } from "./channel-slack.js";
+import { createBotFrameworkVerifier, createTeamsClient, parseTeamsActivity } from "./channel-teams.js";
+import { readDeployQueue } from "./deploy-queue.js";
+import { projectRoutingState } from "./tool-routing.js";
+import { registerAgentToolRoutingRoutes } from "./agent-tool-routing-routes.js";
 import {
   AgentFileDocxNormalizationError,
   agentFileMaxBytes,
   agentFileMaxCount,
   agentFileMaxRequestBytes,
-  agentFilePreviewKind,
-  agentFileStoragePath,
   cliAgentFilesEnabled,
   cliAgentFilesTokenHeader,
   persistAgentFile,
-  readAgentFileTextPreview,
-  renderAgentFileDocxPreview,
   verifyCliAgentFilesToken,
   type AgentFileDocxNormalizer
 } from "./cli-agent-files.js";
@@ -538,7 +566,8 @@ import {
   createConfiguredBrowserSessionManager,
   type BrowserSessionManagerWithHostHealth
 } from "./browser-host-proxy.js";
-import { assertSafeBrowserTargetUrl, type BrowserSessionManager } from "./browser-sessions.js";
+import { assertSafeBrowserTargetUrl, googleBrowserProfilePathFor, isPrivateOrReservedAddress, type BrowserSessionManager, type GoogleAccountBrowserCheckResult, type PaneProfileAdoptionResult } from "./browser-sessions.js";
+import { readGoogleBrowserCheck, summarizeGoogleBrowserStatus, type GoogleBrowserStatusSummary } from "./google-browser-session-check.js";
 import { assertSafeVncTarget, pipeVncStream, vncPresets } from "./vnc-proxy.js";
 import { cliBrowserBridgeEnabled, cliBrowserBridgeTokenHeader, verifyCliBrowserBridgeToken } from "./cli-browser-bridge.js";
 import {
@@ -548,13 +577,12 @@ import {
   isDirectOperatorParityRuntime,
   isCodexDirectParityRuntime,
   isDeepSeekDirectParityRuntime,
-  isGrokDirectParityRuntime,
-  isKimiDirectParityRuntime,
   isLegacyCodexCliCwd,
   isOpenCodeDirectParityRuntime,
   resolveDirectOperatorParityCwd
 } from "./cli-parity.js";
 import { createRoomPaneController, type RoomPaneObservation, type RoomCommandAction } from "./room-pane-control.js";
+import { createPaneWorkingTime } from "./pane-working-time.js";
 import { OpenCodeNativeInputNotReadyError, openCodeComposerLine, openCodeCurrentSelectionWithSource, openCodeTuiSelection, switchOpenCodeTuiSettings } from "./cli-opencode-model-picker.js";
 import { openCodeTaskTimeline } from "./room-task-telemetry.js";
 import { roomOpenCodeTerminalState, roomTerminalCommands, roomTerminalState, roomTerminalMode, roomTerminalInterruptKey } from "./room-terminal-screen.js";
@@ -570,7 +598,7 @@ import {
   createCodexParityService,
   type CodexParityService
 } from "./codex-parity.js";
-import { UnifiedCliTaskRegistry, type ResolvedSpaceCliTask } from "./unified-cli-task-registry.js";
+import { UnifiedCliTaskRegistry } from "./unified-cli-task-registry.js";
 import { AgentSessionHistoryService } from "./agent-session-history.js";
 import { buildSharedChatDispatchPrompt, pickSharedChatDispatchTarget, resolveSharedChatDispatchRuntimeIds } from "./shared-chat-dispatch.js";
 import {
@@ -588,7 +616,6 @@ import {
   type CliVpnBroker
 } from "./cli-vpn.js";
 import {
-  opencodeNativeSessionIdPattern,
   readOpenCodeNativeSessionId,
   readOpenCodeNativeSessionIdFromProcessTree
 } from "./opencode-native-session.js";
@@ -600,9 +627,12 @@ import {
   readGeminiPaneConversation,
   writeGeminiPaneConversation
 } from "./gemini-native-session.js";
-import { resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
+import { hasExactNativeTaskResume, resolveNativeTaskResume } from "./cli-native-task-resume.js";
+import { cliAccountProfileRuntimeIds, findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { verifyGeminiPaneSession } from "./gemini-session-verification.js";
 import { loadGeminiNativeTurns } from "./gemini-native-turns.js";
+import { QuietRequestLogController } from "./request-log-policy.js";
+import { claudeNativeSessionIdPattern, loadClaudeNativeTurns, type ClaudeNativeTurns } from "./claude-native-turns.js";
 import {
   abortOpenCodeSession,
   fetchOpenCodeCurrentModel,
@@ -636,6 +666,11 @@ import {
   type CliSessionCleanupService
 } from "./cli-session-cleanup.js";
 import {
+  getCliProviderSettings,
+  updateCliProviderSetting,
+  updateAllCliProviders
+} from "./cli-providers.js";
+import {
   CliTerminalManager,
   codexPrivateAppServerSocketPath,
   findAvailableCodexThreadId,
@@ -656,11 +691,13 @@ import {
   activeCliSessionObserverRuntime,
   checkCliRuntimeCredential,
   createAgentRuntimeRegistryCache,
+  createCliRuntimeRegistryCache,
   discoverAgentRuntimes,
   findRuntime,
   isCliRuntimeLoginLaunchable,
   isCliRuntimeTerminalLaunchable,
-  observeCliRuntimeCredential
+  observeCliRuntimeCredential,
+  registerCliRuntimeCacheInvalidation
 } from "./cli-runtimes.js";
 import {
   CliMaintenanceError,
@@ -668,10 +705,15 @@ import {
 } from "./cli-maintenance.js";
 import { createCliUpdateAllRunner, type CliUpdateAllRunner } from "./cli-maintenance.js";
 import {
-  applyAgentTools,
-  buildAgentToolsCatalog,
-  type AgentToolsOptions
-} from "./agent-tools.js";
+  MaintenanceAutopilot,
+  createCliMaintenanceAutopilotSteps,
+  createMemoryReliefStep,
+  createStorageCleanupStep
+} from "./maintenance-autopilot.js";
+import { registerMaintenanceAutopilotRoutes } from "./maintenance-autopilot-routes.js";
+import { cliMaintenanceRunParamSchema, registerCliMaintenanceRoutes } from "./cli-maintenance-routes.js";
+import { registerCliEgressRoutes } from "./cli-egress-routes.js";
+import { type AgentToolsOptions } from "./agent-tools.js";
 import { getApiConfig, type SpaceApiConfig } from "./config.js";
 import {
   cliChatProviderEnabledByRuntimeToggle,
@@ -706,6 +748,8 @@ import {
   type KernelCacheReclaimResult
 } from "./toolbar-system-services.js";
 import { createAntigravityUsageAccountProvider, discoverAntigravityProfiles } from "./antigravity-usage-services.js";
+import { claudeProfileUsageSchema, createClaudeUsageAccountProvider } from "./claude-usage-services.js";
+import type { ClaudeProfileUsage } from "./claude-usage.js";
 import { createApiProviderAccountProvider } from "./api-provider-balance-services.js";
 import {
   createToolbarModelStatsCollector,
@@ -717,16 +761,14 @@ import {
 } from "./system-analytics-service.js";
 import { OpencodeModelBenchService } from "./opencode-model-bench.js";
 import { StreamingCredentialStore } from "./streaming-credential-store.js";
-import { PUBLIC_SPACEAPP_KNOWLEDGE, asksForOperatorPrivateData, containsSensitiveDisclosure, formatStreamingBotLiveMetrics } from "@space/streaming";
+import { formatStreamingBotLiveMetrics } from "@space/streaming";
 import {
   StreamingService,
   StreamingServiceError,
   StreamingSettingsVersionConflictError
 } from "./streaming-service.js";
 import {
-  StreamingBotService,
-  StreamingBotServiceError,
-  toMcpExecuteResponse
+  StreamingBotService
 } from "./streaming-bot-service.js";
 import {
   CORE_RESTART_SERVICES,
@@ -752,7 +794,8 @@ import {
   ReleasePublishingManager
 } from "./release-publishing.js";
 import { createAppVersionReader } from "./app-version.js";
-import { discoverMcpCatalog, executeMcpTool, runMcpDiscoverySmoke, type McpDiscoveryCatalog } from "./mcp.js";
+import { createDesktopLatestHandler, desktopReleaseDirectory } from "./desktop-release.js";
+import { discoverMcpCatalog, runMcpDiscoverySmoke, type McpDiscoveryCatalog } from "./mcp.js";
 import { createMemoryEmbedding, runMemoryEmbeddingSmoke } from "./memory-embedding-smoke.js";
 import { registerMemoryGraphRoutes } from "./memory-graph-routes.js";
 import { createMemoryGraphService, type MemoryGraphApiService } from "./memory-graph-service.js";
@@ -765,7 +808,9 @@ import {
   type MemoryMutationCoordinator
 } from "./memory-mutation-coordinator.js";
 import { createHttpObservability } from "./observability.js";
-import { validateProviderCredential } from "./providers.js";
+import { requestTraceContexts, traceContextForRawRequest } from "./trace-context.js";
+import { workflowStartErrorCode } from "./api-metrics.js";
+import { registerProviderRoutes } from "./provider-routes.js";
 import {
   extractGenericPaneTitleCandidate,
   generateOpenCodePaneTitle,
@@ -811,20 +856,6 @@ import { createWorkerReadinessChecker, type WorkerReadinessChecker } from "./wor
 import { createDecisionsService, type DecisionsService } from "./decisions-service.js";
 import { isVoiceDailyBudgetExceeded, summarizeVoiceDelegationCosts } from "./live-cost-accounting.js";
 
-declare module "fastify" {
-  interface FastifyRequest {
-    requestIdForSpace: string;
-    user: {
-      id: string;
-      email: string;
-      role: "OPERATOR" | "ADMIN" | "USER";
-      googleId?: string | null;
-      avatarUrl?: string | null;
-      proofScope?: "READ_ONLY";
-      automationScope?: "APP_DIAGNOSTICS";
-    } | null;
-  }
-}
 
 export type SpaceCapabilityInventoryCollector = (context: {
   store: SpaceStore;
@@ -836,6 +867,7 @@ export type GeminiMemorySearcher = (query: ListMemoryQuery) => Promise<MemoryEnt
 export interface CreateAppOptions {
   decisionsService?: DecisionsService;
   store?: SpaceStore;
+  t3CodeServiceController?: T3CodeServiceController;
   agentFileDocxNormalizer?: AgentFileDocxNormalizer;
   appDiagnosticsService?: AppDiagnosticsService;
   activityLogService?: ActivityLogService;
@@ -846,8 +878,15 @@ export interface CreateAppOptions {
   browserSessionManager?: BrowserSessionManager;
   memoryEmbeddingGenerator?: (input: string) => Promise<number[]>;
   spaceAgentAdapter?: SpaceAgentAdapter;
+  /** Stage 7 tests: Auto shadow evidence without a database. */
+  autoRouteShadowRepository?: AutoRouteShadowRepository;
+  /** Stage 7 tests: evaluation runs without a database. */
+  dotEvalsRepository?: DotEvalsRepository;
+  /** Stage 6 tests: Slack and Teams threads without a database. */
+  channelsRepository?: ChannelsRepository;
   roomMiniRouter?: Pick<ReturnType<typeof createRoomMiniRouter>, "route">;
   roomAgentWorkflow?: RoomAgentWorkflowCoordinator;
+  dotGoalWorkflow?: import("./dot-goals.js").DotGoalWorkflowCoordinator | null;
   roomActionExecutor?: RoomActionExecutor;
   roomPlanInventoryProvider?: RoomPlanInventoryProvider;
   roomTaskEvaluator?: RoomTaskEvaluator;
@@ -870,6 +909,8 @@ export interface CreateAppOptions {
   cliLoginTimeoutMs?: number;
   cliLoginObservationIntervalMs?: number;
   agentToolsOptions?: AgentToolsOptions;
+  /** Directory of the merge queue state (space-merge-queue.service); read-only for the API. */
+  deployQueueRoot?: string;
   cliRuntimeSessionTerminator?: (sessionId: string) => Promise<boolean>;
   cliVpnBroker?: CliVpnBroker;
   cliVpnSessionPidResolver?: (sessions: readonly PaneCliSession[]) => Promise<Map<string, number>>;
@@ -899,6 +940,7 @@ export interface CreateAppOptions {
   modelCatalogCacheMaxAgeMs?: number;
   cancelWorkflow?: (workflowId: string) => Promise<void>;
   antigravityUsageProvider?: () => Promise<AntigravityUsageAccountList>;
+  claudeUsageProvider?: () => Promise<ClaudeUsageAccountList>;
   apiProviderAccountsProvider?: () => Promise<ApiProviderAccountList>;
   toolbarUsageProvider?: () => Promise<CodexUsageAccountList>;
   codexResetCreditsService?: CodexResetCreditsService;
@@ -913,18 +955,22 @@ export interface CreateAppOptions {
   streamingService?: StreamingService;
   streamingBotService?: StreamingBotService;
   toolbarCliSessionReaper?: () => Promise<CliHostReapAggregate>;
+  toolbarCliSessionTerminator?: (sessionId: string) => Promise<boolean>;
   toolbarKernelCacheReclaimer?: () => Promise<KernelCacheReclaimResult>;
   toolbarProviderRouteApplier?: (provider: Provider) => Promise<void>;
   codexLbSpeedDefaultsProvider?: () => Promise<CodexLbSpeedDefaultsResponse>;
+  gatewayAdminService?: GatewayAdminService;
   codexLbSpeedDefaultUpdater?: (modelId: CodexLbSpeedModelId, tier: CodexLbSpeedTier) => Promise<CodexLbSpeedDefaultsResponse>;
   codexHistoryPurgeService?: CodexHistoryPurgeService;
   cliSessionCleanupService?: CliSessionCleanupService;
   codexHistoryAccessCoordinator?: CodexHistoryAccessCoordinator;
+  maintenanceAutopilot?: MaintenanceAutopilot;
   serviceRestarter?: CoreServiceRestarter;
   deepSeekHarnessServiceController?: DeepSeekHarnessServiceController;
   serviceRestartCooldownPath?: string;
   telegramIntegrationManager?: TelegramIntegrationManager;
   sourceControlPublishingManager?: SourceControlPublishingManager;
+  sourceControlService?: SourceControlService;
   cliMaintenanceManager?: CliMaintenanceManager;
   cliUpdateAllRunner?: CliUpdateAllRunner;
   cliRecoveryLoginOpener?: (input: {
@@ -934,8 +980,11 @@ export interface CreateAppOptions {
   }) => Promise<{ paneId: string }>;
   removeGeminiAccountProfileState?: (profileId: string) => Promise<void>;
   readGeminiAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
+  removeClaudeAccountProfileState?: (profileId: string) => Promise<void>;
+  readClaudeAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
+  readClaudeAccountProfileUsage?: (profileId: string) => Promise<ClaudeProfileUsage>;
   removeCopilotAccountProfileState?: (profileId: string) => Promise<void>;
-  readCopilotAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
+  readCopilotAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; login?: string | null }>;
   removeCursorAccountProfileState?: (profileId: string) => Promise<void>;
   readCursorAccountProfileDetails?: (profileId: string) => Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null }>;
   releasePublishingManager?: ReleasePublishingManager;
@@ -960,6 +1009,7 @@ const publicPaths = new Set([
   "/api/auth/google/credential",
   "/api/auth/desktop-handoff",
   "/api/auth/logout",
+  "/api/auth/logout-all",
   "/logout",
   "/api/setup/status",
   "/api/setup/claim",
@@ -978,7 +1028,12 @@ const publicPaths = new Set([
   "/api/desktop/update.bat",
   "/api/desktop/update.sh",
   "/api/desktop/install.sh",
-  "/api/desktop/download/:filename"
+  "/api/desktop/download/:filename",
+  "/api/admin/streaming/providers/:provider/oauth/authorize",
+  "/api/admin/streaming/providers/:provider/oauth/callback",
+  // Slack and Teams deliveries: verified by their signatures inside the routes.
+  "/api/channels/slack/events",
+  "/api/channels/teams/messages"
 ]);
 const internalApiPrefix = "/api/internal/";
 const internalTokenHeader = "x-space-internal-token";
@@ -990,20 +1045,6 @@ const cliBrowserBridgePaths = new Set([
   "/api/cli/browser/commands"
 ]);
 const execFileAsync = promisify(execFile);
-const sensitiveRequestQueryNames = new Set([
-  "api_key",
-  "auth",
-  "authorization",
-  "credential",
-  "csrf",
-  "code",
-  "key",
-  "password",
-  "secret",
-  "state",
-  "ticket",
-  "token"
-]);
 
 async function readGitVersionMetadata(cwd = process.env.SPACE_GIT_ROOT ?? process.env.SPACE_REPO_ROOT ?? process.cwd()) {
   const gitConfig = ["-c", `safe.directory=${cwd}`];
@@ -1024,32 +1065,6 @@ async function readGitVersionMetadata(cwd = process.env.SPACE_GIT_ROOT ?? proces
   }
 }
 
-function isSensitiveRequestQueryName(name: string): boolean {
-  const normalized = name.toLowerCase().replaceAll("-", "_");
-  return (
-    sensitiveRequestQueryNames.has(normalized) ||
-    normalized.endsWith("_key") ||
-    normalized.endsWith("_password") ||
-    normalized.endsWith("_secret") ||
-    normalized.endsWith("_ticket") ||
-    normalized.endsWith("_token")
-  );
-}
-
-export function redactRequestUrlForLog(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl, "http://space.local");
-    const redactedSearchParams = new URLSearchParams();
-    for (const [name, value] of parsed.searchParams.entries()) {
-      const isClipboardSearch = parsed.pathname === "/api/clipboard-items" && name === "q";
-      redactedSearchParams.append(name, isSensitiveRequestQueryName(name) || isClipboardSearch ? "[REDACTED]" : value);
-    }
-    const query = redactedSearchParams.toString();
-    return `${parsed.pathname}${query ? `?${query}` : ""}${parsed.hash}`;
-  } catch {
-    return rawUrl.replace(/([?&][^=&#]*(?:api[_-]?key|auth|credential|csrf|key|password|secret|ticket|token)[^=&#]*=)[^&#]*/gi, "$1[REDACTED]");
-  }
-}
 
 function requestIpForLog(request: FastifyRequest): string | undefined {
   try {
@@ -1085,10 +1100,6 @@ const appDiagnosticsHeartbeatInputSchema = z.object({
   captureId: z.string().min(6).max(100).regex(/^[A-Za-z0-9][A-Za-z0-9:_-]*$/)
 }).strict();
 const sourceControlProviderParamSchema = z.object({ provider: sourceControlProviderSchema }).strict();
-const cliMaintenanceRunParamSchema = z.object({ runId: idSchema }).strict();
-const cliMaintenanceReplayQuerySchema = z.object({
-  afterSequence: z.coerce.number().int().min(0).max(1_000_000_000).default(0)
-}).strict();
 const setupConnectionCheckRunParamSchema = z.object({ runId: idSchema }).strict();
 const setupConnectionCheckReplayQuerySchema = z.object({
   afterSequence: z.coerce.number().int().min(0).max(1_000_000_000).default(0)
@@ -1121,7 +1132,6 @@ type CodexRuntimeModelSettings = {
   reasoningEffort: string | null;
 };
 
-const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:copilot", "cli:cursor"] as const;
 type CliAccountProfileRuntimeId = typeof cliAccountProfileRuntimeIds[number];
 
 function isCliAccountProfileRuntimeId(runtimeId: string): runtimeId is CliAccountProfileRuntimeId {
@@ -1321,7 +1331,6 @@ const cliClipboardDebugInputSchema = z.object({
     })
     .optional()
 });
-const swarmStateQuerySchema = z.object({ roomId: idSchema.optional() });
 const eventStreamQuerySchema = z.object({
   roomId: idSchema.optional(),
   replayLimit: z.coerce.number().int().min(1).max(500).optional()
@@ -1508,27 +1517,6 @@ function isAllowedAppDiagnosticsAutomationMutation(request: FastifyRequest): boo
   return appDiagnosticsAutomationMutationRoutes.has(`${request.method} ${route}`);
 }
 
-function sendApiError(reply: FastifyReply, statusCode: number, code: string, message: string, details?: unknown) {
-  return reply.status(statusCode).send({
-    error: {
-      code,
-      message,
-      details,
-      requestId: reply.request.requestIdForSpace
-    }
-  });
-}
-
-function streamingOAuthPopupHtml(provider: z.infer<typeof streamingOAuthProviderSchema>, ok: boolean): string {
-  const payload = JSON.stringify({ type: "space.streaming.oauth", provider, ok }).replaceAll("<", "\\u003c");
-  const heading = ok ? "Connection complete" : "Connection failed";
-  const detail = ok ? "You can close this window and return to Space." : "Return to Space for safe provider details.";
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${heading}</title></head><body><main><h1>${heading}</h1><p>${detail}</p></main><script>
-try { localStorage.setItem("space.streaming.oauth", JSON.stringify({ type: "space.streaming.oauth", provider: ${JSON.stringify(provider)}, ok: ${ok}, at: Date.now() })); } catch (e) {}
-try { window.opener?.postMessage(${payload}, window.location.origin); } catch (e) {}
-window.close();
-</script></body></html>`;
-}
 
 function isAllowedImageMime(mimeType: string): mimeType is ImageArtifactMimeType {
   return imageArtifactMimeTypeSchema.safeParse(mimeType).success;
@@ -1597,21 +1585,6 @@ function sniffImageMime(buffer: Buffer): ImageArtifactMimeType | null {
     return "image/webp";
   }
   return null;
-}
-
-function safeStorageSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 140) || "item";
-}
-
-function safeOriginalFilename(value: string): string {
-  return value.replace(/[^\w .@-]/g, "_").slice(0, 180) || "image";
-}
-
-function safeCliFilename(value: string): string {
-  return value
-    .replace(/[^\w .@-]/g, "_")
-    .replace(/\s+/g, "_")
-    .slice(0, 160) || "upload";
 }
 
 function shellQuotePath(value: string): string {
@@ -1770,94 +1743,6 @@ function inferUploadMimeType(filename: string, declaredMimeType: string): string
   return inferred || normalizedDeclared || "application/octet-stream";
 }
 
-function safeBrowserEvidenceSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 140) || "item";
-}
-
-function decodeStorageSegment(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return "";
-  }
-}
-
-function artifactFilename(artifact: Artifact): string {
-  const metadataName = artifact.metadata.originalFilename ?? artifact.metadata.storedFilename ?? artifact.metadata.artifactFile;
-  if (typeof metadataName === "string" && metadataName.trim()) {
-    return safeOriginalFilename(metadataName);
-  }
-  const extension = artifact.mimeType.split("/")[1]?.replace(/[^a-z0-9.+-]/gi, "") || "bin";
-  return `${safeStorageSegment(artifact.id)}.${extension}`;
-}
-
-function localArtifactFilePath(input: { artifactRoot: string; artifact: Artifact }): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(input.artifact.storageUri);
-  } catch {
-    throw new SpaceConflictError(`Artifact ${input.artifact.id} does not have a local file-backed storage URI.`);
-  }
-  if (parsed.protocol !== "space-artifact:") {
-    throw new SpaceConflictError(`Artifact ${input.artifact.id} does not have a local file-backed storage URI.`);
-  }
-
-  const segments = parsed.pathname.split("/").filter(Boolean).map(decodeStorageSegment);
-  let candidate: string | null = null;
-  if (parsed.hostname === "user-uploads" && segments.length === 3) {
-    const [roomId, day, filename] = segments as [string, string, string];
-    candidate = join(input.artifactRoot, "user-uploads", safeStorageSegment(roomId), safeStorageSegment(day), safeCliFilename(filename));
-  }
-  if (parsed.hostname === "cli-uploads" && segments.length === 5) {
-    const [roomId, paneId, sessionId, day, filename] = segments as [string, string, string, string, string];
-    candidate = join(
-      input.artifactRoot,
-      "cli-uploads",
-      safeStorageSegment(roomId),
-      safeStorageSegment(paneId),
-      safeStorageSegment(sessionId),
-      safeStorageSegment(day),
-      safeCliFilename(filename)
-    );
-  }
-  if (parsed.hostname === "agent-files" && segments.length === 5) {
-    const [roomId, paneId, sessionId, day, filename] = segments as [string, string, string, string, string];
-    candidate = agentFileStoragePath({
-      artifactRoot: input.artifactRoot,
-      roomId,
-      paneId,
-      cliSessionId: sessionId,
-      day,
-      storedFilename: filename
-    });
-  }
-  if (parsed.hostname === "browser-evidence" && segments.length === 2) {
-    const [captureId, filename] = segments as [string, string];
-    candidate = join(input.artifactRoot, "browser-evidence", safeBrowserEvidenceSegment(captureId), safeCliFilename(filename));
-  }
-
-  if (!candidate || !pathInside(input.artifactRoot, candidate)) {
-    throw new SpaceConflictError(`Artifact ${input.artifact.id} does not have a supported local file-backed storage URI.`);
-  }
-  return candidate;
-}
-
-async function permanentlyDeleteLocalArtifact(input: {
-  store: SpaceStore;
-  artifactRoot: string;
-  artifact: Artifact;
-}): Promise<Artifact> {
-  const filePath = localArtifactFilePath({ artifactRoot: input.artifactRoot, artifact: input.artifact });
-  try {
-    await unlink(filePath);
-  } catch (error) {
-    if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-  return input.store.deleteArtifact(input.artifact.id);
-}
-
 async function readBrowserCaptureTimelineManifest(
   artifactRoot: string,
   jobId: string
@@ -1896,43 +1781,75 @@ function correlateBrowserTimelineEvents(
   });
 }
 
-export interface BrowserArtifactRetentionSweepResult {
-  softDeleted: number;
-  filesRemoved: number;
-  fileErrors: Array<{ artifactId: string; message: string }>;
+export interface DatabaseRetentionSweepResult {
+  deletedChunks: number;
+  deletedPanes: number;
+  batches: number;
 }
 
-export async function sweepExpiredBrowserArtifacts(input: {
+export async function runDatabaseRetentionSweep(input: {
   store: SpaceStore;
-  artifactRoot: string;
-  at?: string;
-  removeFile?: (path: string) => Promise<void>;
-}): Promise<BrowserArtifactRetentionSweepResult> {
-  const expired = await input.store.deleteExpiredBrowserArtifacts(input.at);
-  const removeFile = input.removeFile ?? unlink;
-  let filesRemoved = 0;
-  const fileErrors: Array<{ artifactId: string; message: string }> = [];
-  for (const artifact of expired) {
-    try {
-      await removeFile(localArtifactFilePath({ artifactRoot: input.artifactRoot, artifact }));
-      filesRemoved += 1;
-    } catch (error) {
-      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      fileErrors.push({
-        artifactId: artifact.id,
-        message: error instanceof Error ? error.message.slice(0, 500) : "Artifact file cleanup failed."
+  olderThanDays?: number;
+  olderThanHoursForPanes?: number;
+  batchLimit?: number;
+  maxBatches?: number;
+}): Promise<DatabaseRetentionSweepResult> {
+  const olderThanDays = input.olderThanDays ?? 7;
+  const olderThanHoursForPanes = input.olderThanHoursForPanes ?? 24;
+  const batchLimit = input.batchLimit ?? 500;
+  const maxBatches = input.maxBatches ?? 10;
+  let totalDeletedChunks = 0;
+  let totalDeletedPanes = 0;
+  let totalBatches = 0;
+
+  const pruneChunksFn = (input.store as {
+    pruneExpiredCliTranscriptChunks?: (opts?: {
+      olderThanDays?: number;
+      batchSize?: number;
+    }) => Promise<{ deletedChunks: number }> | { deletedChunks: number };
+  }).pruneExpiredCliTranscriptChunks;
+
+  const prunePanesFn = (input.store as {
+    pruneClosedPanes?: (opts?: {
+      olderThanHours?: number;
+      batchSize?: number;
+    }) => Promise<{ deletedPanes: number }> | { deletedPanes: number };
+  }).pruneClosedPanes;
+
+  if (typeof pruneChunksFn === "function") {
+    let chunkBatches = 0;
+    while (chunkBatches < maxBatches) {
+      const result = await pruneChunksFn.call(input.store, {
+        olderThanDays,
+        batchSize: batchLimit
       });
+      totalDeletedChunks += result.deletedChunks;
+      chunkBatches += 1;
+      if (result.deletedChunks < batchLimit) break;
     }
+    totalBatches = Math.max(totalBatches, chunkBatches);
   }
-  return { softDeleted: expired.length, filesRemoved, fileErrors };
-}
 
-function pathInside(root: string, candidate: string): boolean {
-  const resolvedRoot = resolve(root);
-  const resolvedCandidate = resolve(candidate);
-  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${sep}`);
-}
+  if (typeof prunePanesFn === "function") {
+    let paneBatches = 0;
+    while (paneBatches < maxBatches) {
+      const result = await prunePanesFn.call(input.store, {
+        olderThanHours: olderThanHoursForPanes,
+        batchSize: batchLimit
+      });
+      totalDeletedPanes += result.deletedPanes;
+      paneBatches += 1;
+      if (result.deletedPanes < batchLimit) break;
+    }
+    totalBatches = Math.max(totalBatches, paneBatches);
+  }
 
+  return {
+    deletedChunks: totalDeletedChunks,
+    deletedPanes: totalDeletedPanes,
+    batches: totalBatches
+  };
+}
 async function ensureMinimumModeBits(path: string, modeBits: number): Promise<void> {
   const currentMode = (await stat(path)).mode & 0o777;
   const nextMode = currentMode | modeBits;
@@ -1948,9 +1865,14 @@ async function ensureCliUploadPathReadable(input: { artifactRoot: string; filePa
     throw new Error("CLI upload path escaped cli-uploads root");
   }
 
-  await ensureMinimumModeBits(input.artifactRoot, CLI_UPLOAD_TRAVERSE_MODE_BITS);
+  const grantTraverse = async (directory: string) => {
+    const handle = await openWorkspacePath(input.artifactRoot, directory, true);
+    try { await ensureMinimumModeBits(descriptorPath(handle), CLI_UPLOAD_TRAVERSE_MODE_BITS); }
+    finally { await handle.close(); }
+  };
+  await grantTraverse(input.artifactRoot);
   for (let currentDir = targetDir; pathInside(uploadRoot, currentDir); currentDir = dirname(currentDir)) {
-    await ensureMinimumModeBits(currentDir, CLI_UPLOAD_TRAVERSE_MODE_BITS);
+    await grantTraverse(currentDir);
     if (resolve(currentDir) === resolve(uploadRoot)) break;
   }
 }
@@ -2009,25 +1931,6 @@ async function getLatestRoomEvent(store: SpaceStore, roomId: string): Promise<Ev
   return store.getLatestEvent(roomId);
 }
 
-async function getSwarmTaskById(store: SpaceStore, taskId: string): Promise<SwarmTask> {
-  const task = (await store.listSwarmTasks({ page: 1, pageSize: 1000, sortOrder: "desc" })).find(
-    (candidate) => candidate.id === taskId
-  );
-  if (!task) {
-    throw new SpaceNotFoundError(`Swarm task ${taskId} was not found.`);
-  }
-  return task;
-}
-
-function assertAgentPaneCompatible(pane: Pane) {
-  if (pane.mode !== "CHAT") {
-    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; native agent sessions require CHAT panes.`);
-  }
-  if (pane.isClosed) {
-    throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
-  }
-}
-
 class PaneClosedConflictError extends SpaceConflictError {}
 
 function assertCliPaneCompatible(pane: Pane) {
@@ -2037,73 +1940,6 @@ function assertCliPaneCompatible(pane: Pane) {
   if (pane.isClosed) {
     throw new PaneClosedConflictError(`Pane ${pane.id} is closed.`);
   }
-}
-
-function swarmExecutionGate(config: SpaceApiConfig): string | null {
-  if (!config.swarmExecutionEnabled) {
-    return "Swarm execution is disabled. Set SPACE_SWARM_EXECUTION_ENABLED=true only after worker/agent smoke is approved.";
-  }
-  if (!config.agentPaneEnabled) return "SPACE_AGENT_PANE_ENABLED must be true before swarm tasks can run.";
-  if (!config.enableCodexTurns) return "SPACE_ENABLE_CODEX_TURNS must be true before swarm tasks can run.";
-  if (!config.codexAppServerEnabled) return "SPACE_CODEX_APP_SERVER_ENABLED must be true before swarm tasks can run.";
-  if (config.codexAppServerTransport !== "stdio") return "Swarm task execution currently supports only stdio Codex App Server turns.";
-  if (!config.codexAppServerAllowStdioSpawn) return "SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN must be true before swarm tasks can run.";
-  if (!config.codexAppServerAllowTurnExecution) return "SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION must be true before swarm tasks can run.";
-  return null;
-}
-
-function swarmStateForResponse(state: SwarmState, config: SpaceApiConfig): SwarmState {
-  const gate = swarmExecutionGate(config);
-  return swarmStateSchema.parse({
-    ...state,
-    executionStatus: gate ? "DISABLED" : "READY",
-    statusReason: gate ?? "Swarm execution is ready to queue tasks into Space CHAT panes."
-  });
-}
-
-async function selectSwarmAgentPane(store: SpaceStore, task: SwarmTask, paneId?: string): Promise<Pane> {
-  if (paneId) {
-    const pane = await getPaneById(store, paneId);
-    if (pane.roomId !== task.roomId) {
-      throw new SpaceNotFoundError(`Pane ${paneId} was not found in task room ${task.roomId}.`);
-    }
-    assertAgentPaneCompatible(pane);
-    return pane;
-  }
-  const pane = (await store.listPanes(task.roomId, false)).find((candidate) => candidate.mode === "CHAT" && !candidate.isClosed);
-  if (!pane) {
-    throw new SpaceConflictError("Create or open a CHAT pane in this room before running a swarm task.");
-  }
-  return pane;
-}
-
-async function assertSwarmDependenciesDone(store: SpaceStore, task: SwarmTask): Promise<void> {
-  if (!task.dependsOnTaskIds.length) return;
-  const tasks = await store.listSwarmTasks({ page: 1, pageSize: 1000, sortOrder: "desc", roomId: task.roomId });
-  const byId = new Map(tasks.map((candidate) => [candidate.id, candidate]));
-  const incomplete = task.dependsOnTaskIds.filter((taskId) => byId.get(taskId)?.status !== "DONE");
-  if (incomplete.length) {
-    throw new SpaceConflictError(`Swarm task dependencies are not done: ${incomplete.join(", ")}.`);
-  }
-}
-
-function buildSwarmTaskPrompt(task: SwarmTask, operatorPrompt?: string): string {
-  const prompt = redactMemoryText(operatorPrompt?.trim() ?? "");
-  return [
-    "Space swarm task execution request:",
-    `- Task id: ${task.id}`,
-    `- Role: ${task.role}`,
-    `- Title: ${task.title}`,
-    `- Goal: ${task.goal}`,
-    task.dependsOnTaskIds.length ? `- Depends on: ${task.dependsOnTaskIds.join(", ")}` : "- Depends on: none",
-    "",
-    "Work inside the existing Space room context. Use available Space memory, MCP, skills, browser, and CLI tools only through mediated Space tools.",
-    "Return concise progress, concrete evidence, and blockers. Do not claim external actions unless they were actually executed through Space.",
-    prompt ? `\nOperator run notes:\n${prompt}` : ""
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, 8000);
 }
 
 const BROWSER_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["BROWSER", "YOUTUBE"];
@@ -2194,21 +2030,6 @@ async function availableNativeCodexThreadId(
     if (error instanceof CodexParityNotFoundError) return null;
     throw error;
   }
-}
-
-async function availableOpenCodeNativeSessionId(input: {
-  sourceTask: ResolvedSpaceCliTask;
-  runtimeId: string;
-  sourceRuntimeId: string;
-  stateRoot?: string;
-}): Promise<string | null> {
-  const { sourceTask, runtimeId, sourceRuntimeId } = input;
-  if (runtimeId !== "cli:opencode" || sourceRuntimeId !== "cli:opencode") return null;
-  const nativeTaskRef = sourceTask.revision.nativeTaskRef;
-  if (nativeTaskRef && opencodeNativeSessionIdPattern.test(nativeTaskRef)) return nativeTaskRef;
-  const mapped = await readOpenCodeNativeSessionId(sourceTask.session.sessionId, input.stateRoot);
-  if (mapped) return mapped;
-  return null;
 }
 
 function paneTitleFromCliTaskTitle(title: string): string {
@@ -3099,39 +2920,6 @@ function sortSharedTasks(tasks: SharedTask[], sortOrder: "asc" | "desc"): Shared
   });
 }
 
-function buildMcpToolExecutionResult(input: {
-  executionId?: string;
-  status: "BLOCKED" | "APPROVAL_REQUIRED" | "EXECUTED" | "FAILED";
-  code: z.infer<typeof mcpToolExecutionResultSchema>["code"];
-  message: string;
-  toolId: string;
-  serverId: string | null;
-  toolName: string | null;
-  startedAt: string;
-  finishedAt?: string;
-  policy: z.infer<typeof mcpToolExecutionResultSchema>["policy"];
-  approved: boolean;
-  artifact: z.infer<typeof mcpToolExecutionResultSchema>["artifact"];
-}) {
-  const finishedAt = input.finishedAt ?? nowIso();
-  return mcpToolExecutionResultSchema.parse({
-    id: "mcp-gateway",
-    executionId: input.executionId ?? makeSpaceId("mcp_exec"),
-    status: input.status,
-    code: input.code,
-    message: input.message,
-    toolId: input.toolId,
-    serverId: input.serverId,
-    toolName: input.toolName,
-    startedAt: input.startedAt,
-    finishedAt,
-    durationMs: Math.max(0, new Date(finishedAt).getTime() - new Date(input.startedAt).getTime()),
-    policy: input.policy,
-    approved: input.approved,
-    artifact: input.artifact
-  });
-}
-
 function buildAgentMcpObservation(result: McpToolExecutionResult) {
   return {
     executionId: result.executionId,
@@ -3473,7 +3261,9 @@ function requiresCsrf(request: FastifyRequest): boolean {
     routeUrl !== "/api/voice/realtime/history/search" &&
     routeUrl !== "/api/voice/realtime/logs" &&
     routeUrl !== "/api/voice/client-error" &&
-    !request.url.startsWith("/api/asteroids/benchmark/")
+    !request.url.startsWith("/api/asteroids/benchmark/") &&
+    !request.url.startsWith("/api/harness/") &&
+    routeUrl !== "/api/harness/*"
   );
 }
 
@@ -3499,7 +3289,7 @@ function createDemoProjectsService(input: {
   const repository =
     config.runtimeStore === "postgres" && config.databaseUrl
       ? PostgresDemoProjectsRepository.fromConnectionString(config.databaseUrl, {
-          max: Math.min(config.databasePoolMax, 4),
+          max: Math.min(config.databasePoolMax, 2),
           idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
           connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
         })
@@ -3632,46 +3422,7 @@ async function collectStorageReadiness(): Promise<StorageReadiness> {
   });
 }
 
-async function recordAudit(
-  store: SpaceStore,
-  request: FastifyRequest,
-  input: {
-    action: string;
-    targetType: string;
-    targetId?: string | null;
-    actorUserId?: string | null;
-    metadata?: Record<string, unknown>;
-  }
-) {
-  let actorUserId = input.actorUserId ?? request.user?.id ?? null;
-  if (request.user) {
-    const persistedUser = await store.upsertUser(request.user);
-    if (!input.actorUserId || input.actorUserId === request.user.id) {
-      actorUserId = persistedUser.id;
-    }
-  }
-  await store.recordAuditEvent({
-    actorUserId,
-    traceId: request.requestIdForSpace,
-    action: input.action,
-    targetType: input.targetType,
-    targetId: input.targetId ?? null,
-    metadata: input.metadata ?? {}
-  });
-}
 
-function reviewGateStatus(checks: Array<{ status: string }>): { gateStatus: "EMPTY" | "PASS" | "WARN" | "FAIL"; statusReason: string } {
-  if (!checks.length) {
-    return { gateStatus: "EMPTY", statusReason: "No review checks have been recorded for this room." };
-  }
-  if (checks.some((check) => check.status === "FAIL")) {
-    return { gateStatus: "FAIL", statusReason: "At least one review check is failing." };
-  }
-  if (checks.some((check) => ["WARN", "RUNNING", "SKIPPED"].includes(check.status))) {
-    return { gateStatus: "WARN", statusReason: "Review checks include warnings, skipped checks, or running work." };
-  }
-  return { gateStatus: "PASS", statusReason: "All recorded review checks are passing." };
-}
 
 interface SharedChatLiveSocket {
   readyState: number;
@@ -3727,6 +3478,32 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       email: z.string().email().nullable()
     }).strict().parse(JSON.parse(stdout));
   });
+  const removeClaudeAccountProfileState = options.removeClaudeAccountProfileState ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    await execFileAsync(join(commandRoot, "claude-vscode-parity"), ["remove-profile", profileId], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024
+    });
+  });
+  const readClaudeAccountProfileDetails = options.readClaudeAccountProfileDetails ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    const { stdout } = await execFileAsync(join(commandRoot, "claude-vscode-parity"), ["profile-info", profileId], {
+      timeout: 12_000,
+      maxBuffer: 16 * 1024
+    });
+    return z.object({
+      authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"]),
+      email: z.string().email().nullable()
+    }).strict().parse(JSON.parse(stdout));
+  });
+  const readClaudeAccountProfileUsage = options.readClaudeAccountProfileUsage ?? (async (profileId: string) => {
+    const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
+    const { stdout } = await execFileAsync(join(commandRoot, "claude-vscode-parity"), ["usage-info", profileId], {
+      timeout: 25_000,
+      maxBuffer: 16 * 1024
+    });
+    return claudeProfileUsageSchema.parse(JSON.parse(stdout));
+  });
   const removeCopilotAccountProfileState = options.removeCopilotAccountProfileState ?? (async (profileId: string) => {
     const commandRoot = config.cliCommandPath ?? "/opt/spaceapp/bin";
     await execFileAsync(join(commandRoot, "copilot-vscode-parity"), ["remove-profile", profileId], {
@@ -3742,7 +3519,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
     return z.object({
       authStatus: z.enum(["CONNECTED", "NOT_CONNECTED", "UNAVAILABLE"]),
-      email: z.string().email().nullable()
+      email: z.string().email().nullable(),
+      login: z.string().regex(/^[A-Za-z0-9-]{1,39}$/).nullable().optional()
     }).strict().parse(JSON.parse(stdout));
   });
   const removeCursorAccountProfileState = options.removeCursorAccountProfileState ?? (async (profileId: string) => {
@@ -3765,6 +3543,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   const deletingCliAccountProfileKeys = new Set<string>();
   const cliAccountProfileKey = (runtimeId: string, profileId: string) => `${runtimeId}/${profileId}`;
+  const readCliAccountProfileDetails = (runtimeId: CliAccountProfileRuntimeId, profileId: string) =>
+    runtimeId === "cli:gemini"
+      ? readGeminiAccountProfileDetails(profileId)
+      : runtimeId === "cli:claude"
+        ? readClaudeAccountProfileDetails(profileId)
+        : runtimeId === "cli:copilot"
+          ? readCopilotAccountProfileDetails(profileId)
+          : readCursorAccountProfileDetails(profileId);
+  // The linked-accounts view reads every profile's sign-in identity; a short cache keeps
+  // repeated menu opens from spawning one native probe per profile each time.
+  const cliAccountIdentityCacheTtlMs = 30_000;
+  const cliAccountIdentityCache = new Map<string, { expiresAt: number; value: Promise<{ authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; login?: string | null }> }>();
+  const readCachedCliAccountIdentity = (runtimeId: CliAccountProfileRuntimeId, profileId: string) => {
+    const key = cliAccountProfileKey(runtimeId, profileId);
+    const cached = cliAccountIdentityCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const value = readCliAccountProfileDetails(runtimeId, profileId)
+      .catch(() => ({ authStatus: "UNAVAILABLE" as const, email: null }));
+    cliAccountIdentityCache.set(key, { expiresAt: Date.now() + cliAccountIdentityCacheTtlMs, value });
+    return value;
+  };
+  const invalidateCliAccountIdentity = (runtimeId: string, profileId: string) => {
+    cliAccountIdentityCache.delete(cliAccountProfileKey(runtimeId, profileId));
+  };
   const appVersionReader = createAppVersionReader({
     appVersionEnv: process.env.SPACE_APP_VERSION
   });
@@ -3779,6 +3581,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   }
   const sourceControlPublishingManager =
     options.sourceControlPublishingManager ?? new SourceControlPublishingManager({ store });
+  const personalGitRoot = process.env.SPACE_PERSONAL_GIT_ROOT || "/opt/spaceapp/var/personal-source-control";
+  const sourceControlService = options.sourceControlService ?? new SourceControlService({
+    repository: config.runtimeStore === "postgres" && config.databaseUrl
+      ? PostgresSourceControlRepository.fromConnectionString(config.databaseUrl)
+      : new InMemorySourceControlRepository(),
+    credentials: new DemoCredentialStore(personalGitRoot),
+    credentialRoot: personalGitRoot,
+    defaultGiteaUrl: process.env.SPACE_GITEA_URL,
+    privateOrigins: (process.env.SPACE_GIT_ALLOWED_PRIVATE_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean)
+  });
   const cliMaintenanceManager =
     options.cliMaintenanceManager ?? new CliMaintenanceManager({
       store,
@@ -3876,6 +3688,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const codexSocketControlFactory = options.codexSocketControlFactory ?? ((socketPath: string) =>
     createCodexAppServerSocketControlService({
       socketPath,
+      rolloutRoot: config.codexAppServerHome ?? "/var/lib/spaceapp-user/.codex",
       clientInfo: { name: "space", title: "Space", version: config.version },
       timeoutMs: 5_000
     }));
@@ -3978,16 +3791,44 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       throw new Error(lastError instanceof Error ? lastError.message : `${runtimeId} model catalog is unavailable.`);
     };
   };
+  // One cached catalog per runtime, shared by Chat panes and the Chess benchmark.
+  const cliModelsExecutors = new Map<string, () => Promise<string>>();
+  const cliModelsExecutor = (runtimeId: string) => {
+    let executor = cliModelsExecutors.get(runtimeId);
+    if (!executor) {
+      executor = createCliModelsExecutor(runtimeId);
+      cliModelsExecutors.set(runtimeId, executor);
+    }
+    return executor;
+  };
   const cliChatProviderAdapters = config.cliChatTurnsEnabled
     ? config.cliChatTurnRuntimeIds.map((runtimeId) =>
         cliRuntimeModelsChatProviderAdapter({
           runtimeId,
           providerName: cliChatRuntimeName(runtimeId),
-          executeModels: createCliModelsExecutor(runtimeId),
+          executeModels: cliModelsExecutor(runtimeId),
           resolveState: cliChatRuntimeState
         })
       )
     : [];
+  const dotsRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresDotsRepository.fromConnectionString(config.databaseUrl) : null;
+  const dotMemoryRepository = dotsRepository && config.databaseUrl ? PostgresDotMemoryRepository.fromConnectionString(config.databaseUrl) : null;
+  const dotMemoryService = dotsRepository && dotMemoryRepository ? createDotMemoryService({
+    store, dots: dotsRepository, memories: dotMemoryRepository,
+    // Embeddings only when semantic memory is verified; text search works without them.
+    embed: async (text) => {
+      const [smoke, vector] = await Promise.all([store.getLatestMemoryEmbeddingSmoke(), store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions)]);
+      return isSemanticMemoryReady(smoke, vector) ? await memoryEmbeddingGenerator(text) : null;
+    },
+    audit: async (request, action, metadata) => {
+      if (request) await recordAudit(store, request, { action, targetType: "dot", targetId: String(metadata.dotId ?? ""), metadata });
+      else await Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action, targetType: "dot",
+        targetId: String(metadata.dotId ?? ""), metadata })).catch(() => undefined);
+    }
+  }) : null;
+  const autoRouteFactsLoader = config.codexAppServerHome
+    ? createAutoRouteFactsLoader({ codexHome: config.codexAppServerHome, priceCatalogPath: config.modelPriceCatalogPath ?? null }) : null;
   const spaceAgentAdapter =
     options.spaceAgentAdapter ??
     createSpaceAgentAdapter({
@@ -3995,6 +3836,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       config,
       codexTurnStarter,
       codexAgentControl,
+      validateDot: (pane, dotId, ownerUserId) => validateSessionDotOwner(store, dotsRepository, pane, dotId, ownerUserId),
+      readPendingRequest: async (session) => dotsRepository && await dotsRepository.hasPendingApproval(session.sessionId).catch(() => false)
+        ? { kind: "APPROVAL" as const } : null,
+      dotTurnContext: async (session, workspace) => {
+        if (!dotsRepository || !session.dotId) return null;
+        const owner = (await store.getRoom(session.roomId)).ownerUserId;
+        const dot = owner ? await dotsRepository.get(owner, session.dotId) : null;
+        if (!dot) return null;
+        // Only a new thread or one that started with gateway tools uses the gateway.
+        const toolGateway = config.dotToolGatewayEnabled
+          && (!session.threadId || await dotsRepository.sessionToolGateway(session.sessionId) === DOT_TOOL_GATEWAY_VERSION);
+        // Gateway turns start with the Dot's recent memories; recall finds the rest.
+        const memories = toolGateway && dotMemoryService ? await dotMemoryService.context(owner!, dot.dotId, session.roomId).catch(() => []) : [];
+        return { toolGateway, developerContext: dotDeveloperContext(dot, workspace, dotWorkspacePath(dot.dotId, config.dotWorkspaceRoot), memories) };
+      },
+      autoRouteFacts: autoRouteFactsLoader ?? undefined,
+      readDotAttachments: async ({ dotId, artifacts }) => {
+        const inputs = artifacts.flatMap((artifact) => {
+          try {
+            return [{ artifactId: artifact.id, sourcePath: localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact }),
+              filename: typeof artifact.metadata.originalFilename === "string" ? artifact.metadata.originalFilename : artifact.id,
+              mimeType: artifact.mimeType, byteSize: artifact.byteSize, sha256: artifact.sha256 }];
+          } catch { return []; }
+        });
+        // Text goes to the Dot's workspace; the coverage cache stays outside it so a Dot cannot rewrite what was read.
+        const results = await readAttachments(inputs, { outputDir: join(dotWorkspacePath(dotId, config.dotWorkspaceRoot), "attachments"),
+          cacheDir: dotWorkspacePath(dotId, join(dirname(config.dotWorkspaceRoot), "read-cache")) });
+        return results.map((result) => ({ artifactId: result.artifactId, coverage: result.coverage, line: describeCoverage(result) }));
+      },
       cliChatProviderAdapters,
       openCodeControlResolver: async () => resolveChatOpenCodeCatalogControl(),
       openCodeSessionControlResolver: async (spaceAgentSessionId) =>
@@ -4045,7 +3915,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       reason: event.reason
     });
   };
-  const workerReadinessChecker = options.workerReadinessChecker ?? createWorkerReadinessChecker(config);
+  const baseWorkerReadinessChecker = options.workerReadinessChecker ?? createWorkerReadinessChecker(config);
+  // Every readiness check (readyz, admin worker, system status) refreshes the
+  // Temporal queue gauges on /metrics; /metrics itself never calls Temporal.
+  const workerReadinessChecker: WorkerReadinessChecker = async () => {
+    const readiness = await baseWorkerReadinessChecker();
+    try { observability.observeWorkerReadiness(readiness); } catch { /* metrics never fail readiness */ }
+    return readiness;
+  };
   const storageReadinessChecker = options.storageReadinessChecker ?? collectStorageReadiness;
   const spaceCapabilityInventoryCollector = options.spaceCapabilityInventoryCollector ?? collectDefaultSpaceCapabilityInventory;
   const geminiMemorySearcher = options.geminiMemorySearcher ?? ((q) => searchDefaultGeminiMemory(q, decisionsService));
@@ -4125,6 +4002,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         const pids = await cliTerminalManager.activeSessionPids([session]);
         const rootPid = pids.get(session.sessionId) ?? null;
         return rootPid ? readGeminiNativeConversationIdFromProcessTree(rootPid) : null;
+      }
+      if (session.runtimeId === "cli:claude") {
+        const pids = await cliTerminalManager.activeSessionPids([session]);
+        const native = await loadClaudeNativeTurns({
+          paneId: session.paneId, sessionId: session.sessionId, rootPid: pids.get(session.sessionId) ?? null
+        });
+        return native?.nativeSessionId ?? null;
       }
       return null;
     }
@@ -4259,6 +4143,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       });
     }
   });
+  // Dashboard and live agent counts poll every Claude pane; one launcher read per session
+  // serves every room request and browser tab for a few seconds.
+  const claudeLiveTurnsCache = new Map<string, { expires: number; value: Promise<ClaudeNativeTurns | null> }>();
+  const readClaudeLiveTurns = (session: PaneCliSession): Promise<ClaudeNativeTurns | null> => {
+    const now = Date.now();
+    const cached = claudeLiveTurnsCache.get(session.sessionId);
+    if (cached && cached.expires > now) return cached.value;
+    for (const [key, entry] of claudeLiveTurnsCache) if (entry.expires <= now) claudeLiveTurnsCache.delete(key);
+    const value = cliTerminalManager.activeSessionPids([session]).catch(() => null)
+      .then(pids => loadClaudeNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null }));
+    claudeLiveTurnsCache.set(session.sessionId, { expires: now + 4_000, value });
+    return value;
+  };
   const cliVpnBroker = options.cliVpnBroker ?? new CliVpnBrokerClient();
   const deepSeekHarnessServiceController = options.deepSeekHarnessServiceController ?? createDeepSeekHarnessServiceController();
   const cliVpnSessionPidResolver = options.cliVpnSessionPidResolver
@@ -4347,7 +4244,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       );
     });
-  cliRuntimeRegistryCache = createAgentRuntimeRegistryCache(() => discoverAgentRuntimes(config));
+  cliRuntimeRegistryCache = createCliRuntimeRegistryCache(config);
   setupConnections =
     options.setupConnections ??
     createSetupConnectionsService({
@@ -4432,12 +4329,31 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
     });
+  const claudeUsageProvider =
+    options.claudeUsageProvider ??
+    createClaudeUsageAccountProvider({
+      listProfiles: async () => store.listCliAccountProfiles("cli:claude"),
+      readUsage: readClaudeAccountProfileUsage
+    });
   const apiProviderAccountsProvider =
     options.apiProviderAccountsProvider ??
     createApiProviderAccountProvider();
+  // One Space Gateway repository for the admin routes and, once Codex reads from the gateway, the quota views.
+  // It is created before the Fastify app exists, so its pool is closed by the onClose hook added after the app is built.
+  let sharedGatewayRepository: GatewayRepository | null = null;
+  const gatewayRepositoryFor = (): GatewayRepository => {
+    sharedGatewayRepository ??= store instanceof PostgresSpaceStore && config.databaseUrl
+      ? PostgresGatewayRepository.fromConnectionString(config.databaseUrl, 2)
+      : new InMemoryGatewayRepository();
+    return sharedGatewayRepository;
+  };
+  const gatewayRepositoryForUsage = config.codexUsageSource === "gateway" ? gatewayRepositoryFor() : null;
+  const resolveGatewayAdminService = (): GatewayAdminService => gatewayAdminService!;
   const toolbarUsageProvider =
     options.toolbarUsageProvider ??
-    createCodexUsageAccountProvider({ readUsage: createCodexUsageRemoteReader() });
+    (config.codexUsageSource === "gateway" && gatewayRepositoryForUsage
+      ? createGatewayCodexUsageProvider({ repository: gatewayRepositoryForUsage })
+      : createCodexUsageAccountProvider({ readUsage: createCodexUsageRemoteReader() }));
   const taskTitleRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresTaskTitleRepository.fromConnectionString(config.databaseUrl)
     : new InMemoryTaskTitleRepository();
@@ -4463,7 +4379,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const stopTaskTitleEvents = eventBus.subscribe(event => {
     if(event.paneId && !["PANE_UPDATED","PANE_CLOSED"].includes(event.type))taskTitles.notify(event.paneId);
   });
-  const codexResetCreditsService = options.codexResetCreditsService ?? createCodexResetCreditsService();
+  const codexResetCreditsService = options.codexResetCreditsService
+    ?? (config.codexUsageSource === "gateway" && gatewayRepositoryForUsage
+      ? createGatewayCodexResetCreditsService({ repository: gatewayRepositoryForUsage, admin: { gatewayAdmin: (path, body) => resolveGatewayAdminService().gatewayAdmin(path, body) } })
+      : createCodexResetCreditsService());
   const toolbarCliSessionStatsProvider =
     options.toolbarCliSessionStatsProvider ??
     createCliSessionStatsProvider({
@@ -4504,6 +4423,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
     });
   const toolbarCliSessionReaper = options.toolbarCliSessionReaper ?? (() => cliTerminalManager.reapDetachedSessions());
+  const toolbarCliSessionTerminator = options.toolbarCliSessionTerminator ?? ((sessionId: string) => cliTerminalManager.interrupt(sessionId));
   const toolbarModelStatsCollector = options.toolbarModelStatsCollector
     ?? createToolbarModelStatsCollector({ store });
   const systemAnalyticsService = options.systemAnalyticsService ?? new SystemAnalyticsService({
@@ -4573,6 +4493,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     requests: () => observability.recentSnapshot(),
     onError: () => app.log.warn("System health history sample could not be retained."),
     checks: [
+      { id: "cli-resource-guard", label: "CLI resource protection", collect: () => cliResourceHealth() },
       { id: "api", label: "Space API", collect: async () => ({ status: "healthy", detail: "API is responding", values: [
         { label: "Uptime", value: `${Math.round(process.uptime())} s` },
         { label: "Node.js", value: process.version },
@@ -4705,6 +4626,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
           return roomTerminalState(screen.text) === "RUNNING";
         }
+        if (isClaudeDirectParityRuntime(session.runtimeId)) {
+          const native = await readClaudeLiveTurns(session).catch(() => null);
+          if (native) return native.busy;
+        }
         const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
         return roomTerminalState(screen.text) === "RUNNING";
       }
@@ -4716,7 +4641,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const toolbarKernelCacheReclaimer = options.toolbarKernelCacheReclaimer ?? runKernelCacheReclaim;
   const toolbarProviderRouteApplier =
     options.toolbarProviderRouteApplier ??
-    ((provider: Provider) => applyGlobalProviderRoute(config, provider, { strict: true }));
+    ((provider: Provider) => applyGlobalProviderRoute(config, provider, { strict: true })
+      .finally(() => codexParity.invalidateRouteStatus?.()));
   const codexLbSpeedDefaultsService = createCodexLbSpeedDefaultsService({
     listModels: async () => {
       if (!codexAgentControl) throw new Error("Codex model catalog is unavailable.");
@@ -4726,9 +4652,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const codexLbSpeedDefaultsProvider = options.codexLbSpeedDefaultsProvider ?? codexLbSpeedDefaultsService.read;
   const codexLbSpeedDefaultUpdater = options.codexLbSpeedDefaultUpdater ?? codexLbSpeedDefaultsService.update;
   const codexHistoryPurgeService = options.codexHistoryPurgeService ?? createCodexHistoryPurgeService();
-  const cliSessionCleanupService = options.cliSessionCleanupService ?? createCliSessionCleanupService({
-    codexPurge: codexHistoryPurgeService
-  });
+  const cliSessionCleanupService = options.cliSessionCleanupService ?? createCliSessionCleanupService();
   const codexHistoryAccessCoordinator = options.codexHistoryAccessCoordinator ?? createCodexHistoryAccessCoordinator();
   const sharedCliTaskPurgePreviews = new Map<string, {
     actorId: string;
@@ -4800,33 +4724,78 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const [models, screen] = await Promise.all([
       loadNativeCliModels(
         runtime.detectedCommandPath,
-        ["cli:gemini", "cli:cursor"].includes(session.runtimeId) ? session.accountProfileId : null
+        findCliRuntimeDescriptor(session.runtimeId)?.accountProfileEnv ? session.accountProfileId : null
       ),
       cliTerminalManager.observeRoomScreen(session.sessionId, true)
     ]);
+    // A pane is pinned to its model at launch, which need not be the catalog's first entry.
     const modelId = nativeCliConfirmedModel(screen.text, models, session.runtimeId)
       ?? (models.some(model => model.id === session.modelId) ? session.modelId : null)
-      ?? models.find(model => model.isDefault)?.id
       ?? null;
     const model = models.find(entry => entry.id === modelId);
     return {
       sessionId: session.sessionId, threadId: null, models, controlMode: "NATIVE",
       current: modelId ? { modelId, reasoningEffort: nativeCliConfirmedReasoning(screen.text, session.runtimeId, model)
-        ?? (session.modelId === modelId && model?.supportedReasoningEfforts.includes(session.reasoningEffort ?? '') ? session.reasoningEffort! : model?.defaultReasoningEffort ?? (model?.supportedReasoningEfforts.includes('auto') ? 'auto' : model?.supportedReasoningEfforts[0] ?? 'none')) } : null,
+        ?? (session.modelId === modelId && model?.supportedReasoningEfforts.includes(session.reasoningEffort ?? '') ? session.reasoningEffort! : 'unknown') } : null,
       isTurnActive: roomTerminalState(screen.text) === "RUNNING"
     };
+  };
+  /** Switches a native-picker CLI to an advertised model and effort with screen readback, then
+   * records it on the session and the pane (the pane's next session starts on it). Callers serialize. */
+  const applyNativePaneModel = async (input: {
+    pane: Pane;
+    active: PaneCliSession;
+    modelId: string;
+    reasoningEffort: string;
+    traceId: string;
+    assertControl: (current: PaneCliSession) => Promise<void>;
+  }) => {
+    const { pane, active, traceId } = input;
+    const before = await readPaneNativeModelSettings(active);
+    let model = before.models.find((entry) => entry.id === input.modelId);
+    if (!model || !model.supportedReasoningEfforts.includes(input.reasoningEffort)) {
+      throw new SpaceConflictError("The selected model settings are not advertised by this CLI.");
+    }
+    if (active.runtimeId === 'cli:gemini' && model.reasoningOptions?.length) {
+      const variantId = model.id.replace(/-(low|medium|high)$/, `-${input.reasoningEffort}`);
+      model = before.models.find(entry => entry.id === variantId) ?? model;
+    }
+    if (before.isTurnActive) throw new SpaceConflictError("Wait for this CLI turn to finish before changing models.");
+    const assertCurrent = async () => {
+      const current = await store.getActivePaneCliSession(pane.id);
+      if (!current?.isActive || current.sessionId !== active.sessionId || current.status === "EXITED" || current.status === "ERROR") {
+        throw new SpaceConflictError("The CLI session changed during the model switch.");
+      }
+      await input.assertControl(current);
+    };
+    let step = 0;
+    await switchNativeCliModel({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
+      read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
+      readUndimmed: () => cliTerminalManager.observeRoomScreenUndimmed(active.sessionId),
+      write: (data) => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `model-picker:${traceId}:${step++}`)
+    });
+    // Preserve the confirmed model even if its separate effort command fails.
+    await store.updatePaneCliSession(active.sessionId, { modelId: model.id, reasoningEffort: "unknown" }, traceId);
+    // Gemini, OMP and Claude apply the effort together with the model.
+    if (active.runtimeId !== 'cli:gemini' && active.runtimeId !== 'cli:omp' && active.runtimeId !== 'cli:claude') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
+      read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
+      write: data => cliTerminalManager.sendInput(active.sessionId, data, traceId, null, `reasoning-picker:${traceId}:${step++}`)
+    });
+    await assertCurrent();
+    const current = { modelId: model.id, reasoningEffort: input.reasoningEffort };
+    const updated = await store.updatePaneCliSession(active.sessionId, current, traceId);
+    const paneEffort = reasoningEffortSchema.safeParse(input.reasoningEffort);
+    if (paneEffort.success) {
+      // A pick belongs to this pane: its next session (restart, resume) starts on it.
+      await store.updatePane(pane.id, { modelId: model.id, reasoningEffort: paneEffort.data }, traceId);
+    }
+    return { before, current, updated };
   };
   const readPaneCliModelSettings = async (pane: Pane, session: PaneCliSession, traceId: string) => {
     if (!isCodexDirectParityRuntime(session.runtimeId)) {
       throw new SpaceConflictError("Model switching is available only for Codex CLI panes.");
     }
-    let threadId = await resolvePaneCodexThreadId({
-      store,
-      session,
-      traceId,
-      findThreadId: options.findCodexThreadId
-    });
-    const refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? session;
+    let refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? session;
     const socketPath = codexPrivateAppServerSocketPath(refreshedSession);
     const directAvailable = await codexSessionSocketProbe(socketPath);
     if (!directAvailable) {
@@ -4848,19 +4817,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!models.length) {
       throw new SpaceFeatureDisabledError("CODEX_MODEL_CATALOG_UNAVAILABLE", "Codex did not advertise any selectable models.");
     }
+    // The TUI can restore a task without replacing its Space CLI session.
+    // Its confirmed selection outranks persisted ownership and writer locks.
+    // undefined means an older multiplexer; null means a selection is pending.
+    const primaryThreadId = await directControl.readCurrentThreadId?.();
+    let threadId = primaryThreadId !== undefined ? primaryThreadId : await resolvePaneCodexThreadId({
+      store, session: refreshedSession, traceId, findThreadId: options.findCodexThreadId
+    });
+    if (primaryThreadId === undefined) refreshedSession = (await store.getPaneCliSession(session.sessionId)) ?? refreshedSession;
     // A fresh TUI already owns a native thread before its first message is
     // persisted. Resolve only this app-server's kernel-held writer lock; never
     // drive its composer with /model or Enter to change settings.
-    if (!threadId && directControl.readThreadSettings) {
+    if (primaryThreadId === undefined && !threadId && directControl.readThreadSettings) {
       const candidates = await (options.findCodexModelControlThreads ?? findCodexWriterThreads)({
         codexHome: codexDirectParityCodexHome, paneId: pane.id, sessionId: session.sessionId
       });
       if (candidates.length === 1) threadId = candidates[0]!;
     }
+    // A just-started or just-resumed Codex can reject thread/read briefly;
+    // report it like an unavailable catalog instead of a server error.
     const nativeSettings = threadId && directControl.readThreadSettings
-      ? await directControl.readThreadSettings(threadId)
+      ? await directControl.readThreadSettings(threadId).catch(() => {
+          throw new SpaceFeatureDisabledError(
+            "CODEX_SESSION_CONTROL_UNAVAILABLE",
+            "Live Codex model control is unavailable; the current CLI session was left unchanged."
+          );
+        })
       : null;
-    if (nativeSettings && nativeSettings.cwd !== refreshedSession.cwd) {
+    const isSessionOwnedThread = refreshedSession.codexThreadId === threadId;
+    if (nativeSettings && nativeSettings.cwd !== refreshedSession.cwd && !isSessionOwnedThread && primaryThreadId !== threadId) {
       throw new SpaceConflictError("Codex model control did not confirm this pane's working directory.");
     }
     const runtimeSettings = nativeSettings ?? (threadId
@@ -4885,7 +4870,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     const current = currentModelId && currentReasoningEffort && persistedCombinationIsAdvertised
       ? { modelId: currentModelId, reasoningEffort: currentReasoningEffort }
       : null;
-    const activity = threadId && (!nativeSettings || nativeSettings.isTurnActive)
+    const screen = await cliTerminalManager.observeRoomScreen(refreshedSession.sessionId, true).catch(() => null);
+    const screenIsRunning = screen ? roomTerminalState(screen.text) === "RUNNING" : false;
+    const activity = threadId
       ? await cliTerminalManager.getCurrentTurnActivity(refreshedSession.sessionId)
       : { status: "PENDING" as const, turnId: null };
     return {
@@ -4895,15 +4882,41 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         current,
         models,
         controlMode: "DIRECT" as const,
-        isTurnActive: nativeSettings?.isTurnActive ?? activity.status === "RUNNING"
+        isTurnActive: Boolean(nativeSettings?.isTurnActive || activity.status === "RUNNING" || screenIsRunning)
       },
       activity,
       directControl,
+      primaryThreadId,
+      controlCwd: nativeSettings?.cwd ?? refreshedSession.cwd,
       session: refreshedSession
     };
   };
+  const readOpenCodeServerControlFromMapping = async (spaceSessionId: string, stateRoot?: string): Promise<OpenCodeServerControl | null> => {
+    const resolvedStateRoot = stateRoot ?? join(opencodeDirectParityRoot, "state");
+    const safeName = spaceSessionId.replace(/[^A-Za-z0-9_.-]/g, "_");
+    const mappingPath = join(resolvedStateRoot, "opencode", "space-cli-sessions", `${safeName}.json`);
+    try {
+      const text = await readFile(mappingPath, "utf8");
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const nativeSessionId = typeof parsed.nativeSessionId === "string" ? parsed.nativeSessionId : "";
+      if (!/^ses_[A-Za-z0-9]+$/.test(nativeSessionId)) return null;
+      const fallback = await resolveOpenCodeTitleFallbackControl(resolvedStateRoot);
+      if (!fallback) return null;
+      return {
+        ...fallback,
+        spaceSessionId,
+        nativeSessionId,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : fallback.updatedAt
+      };
+    } catch {
+      return null;
+    }
+  };
   const resolveOpenCodeServerControl = async (session: PaneCliSession): Promise<OpenCodeServerControl> => {
-    const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
+    let control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot);
+    if (!control) {
+      control = await readOpenCodeServerControlFromMapping(session.sessionId, options.opencodeStateRoot);
+    }
     if (!control || !(await openCodeServerIsHealthy(control))) {
       throw new SpaceFeatureDisabledError(
         "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
@@ -5053,7 +5066,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       : null;
     const currentSelection = openCodeCurrentSelectionWithSource(refreshedSession.modelId, serverCurrent, nativeCurrent, models, refreshedSession.reasoningEffort);
     const current = currentSelection.current;
-    const isTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
+    if (current?.modelId && (refreshedSession.modelId !== current.modelId || refreshedSession.reasoningEffort !== current.reasoningEffort)) {
+      try {
+        await store.updatePaneCliSession(refreshedSession.sessionId, {
+          modelId: current.modelId,
+          reasoningEffort: current.reasoningEffort ?? "default"
+        }, traceId);
+        await store.updatePane(pane.id, {
+          modelId: current.modelId
+        }, traceId);
+      } catch {}
+    }
+    const screen = await cliTerminalManager.observeRoomScreen(session.sessionId, true).catch(() => null);
+    const screenIsRunning = screen ? roomTerminalState(screen.text) === "RUNNING" : false;
+    const serverTurnActive = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId);
+    const isTurnActive = Boolean(serverTurnActive || screenIsRunning);
     return {
       settings: {
         sessionId: refreshedSession.sessionId,
@@ -5152,6 +5179,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         : "OpenCode server did not confirm the selected model. Reopen the picker to refresh its current settings.");
     }
     await store.updatePaneCliSession(session.sessionId, {modelId:model.id,reasoningEffort:effort}, traceId);
+    try { await store.updatePane(pane.id, {modelId:model.id}, traceId); } catch {}
     if (!nativeTuiConfirmed) {
       await store.updatePaneCliSession(session.sessionId, {statusReason:"OpenCode model applied on the server without native TUI confirmation."}, traceId);
     }
@@ -5208,28 +5236,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         ? parsedNativeThreadId.data
         : null
     );
-    const opencodeNativeSessionId = await availableOpenCodeNativeSessionId({
-      sourceTask,
-      runtimeId: runtime.id,
-      sourceRuntimeId: sourceTask.runtimeId
-    });
-    const geminiNativeConversationId =
-      runtime.id === "cli:gemini" &&
-      sourceTask.runtimeId === "cli:gemini"
-        ? (sourceTask.revision.nativeTaskRef && geminiNativeConversationIdPattern.test(sourceTask.revision.nativeTaskRef)
-            ? sourceTask.revision.nativeTaskRef
-            : await readGeminiPaneConversation(pane.id))
-        : null;
-    const reasonixNativeSessionRef =
-      runtime.id === "cli:deepseek" && sourceTask.runtimeId === "cli:deepseek"
-        ? await resolveReasonixNativeSessionRef({
-            workspace: sourceTask.revision.cwd ?? pane.cwd ?? "/etc",
-            firstUserMessage: sourceTask.firstUserMessage
-          }).catch(() => null)
-        : null;
-    const exactNativeResume = Boolean(
-      nativeThreadId || opencodeNativeSessionId || geminiNativeConversationId || reasonixNativeSessionRef
-    );
+    // Exact task-history resume for every other runtime comes from its registered resolver.
+    const nativeResume = await resolveNativeTaskResume(runtime.id, { sourceTask, pane });
+    const exactNativeResume = Boolean(nativeThreadId || nativeResume);
     if (requireNative && !exactNativeResume) throw new SpaceConflictError("Exact native resume is unavailable; the existing pane was preserved.");
     const mode = exactNativeResume
       ? "NATIVE_RESUME" as const
@@ -5309,8 +5318,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
       cliTerminalManager.recordSessionAllocation(allocatedSession.sessionId, allocatedAtNs);
 
-      if (geminiNativeConversationId) {
-        await writeGeminiPaneConversation(pane.id, geminiNativeConversationId);
+      if (nativeResume?.afterAllocate) {
+        await nativeResume.afterAllocate(pane.id);
       }
 
       if (nativeThreadId) {
@@ -5334,11 +5343,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             reasoningEffort: session.reasoningEffort,
             ...(nativeThreadId
               ? { nativeTaskRef: nativeThreadId }
-              : opencodeNativeSessionId
-                ? { nativeTaskRef: opencodeNativeSessionId }
-                : reasonixNativeSessionRef
-                  ? { nativeTaskRef: reasonixNativeSessionRef }
-                  : {})
+              : nativeResume?.persistAsNativeTaskRef
+                ? { nativeTaskRef: nativeResume.ref }
+                : {})
           },
           traceId
         );
@@ -5396,7 +5403,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           targetRevisionId: session.cliTaskRevisionId,
           sourceRuntimeId: sourceTask.runtimeId,
           codexThreadId: nativeThreadId,
-          opencodeNativeSessionId: opencodeNativeSessionId ?? undefined
+          ...nativeResume?.auditMetadata
         }
       });
       return resumePaneCliSessionResponseSchema.parse({
@@ -5429,14 +5436,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!session || session.purpose !== "NORMAL" || (expectedSessionId && session.sessionId !== expectedSessionId)) throw new SpaceConflictError("The target CLI session is unavailable or changed.");
     return session;
   }
-  async function roomOpenCodeTasks(control: OpenCodeServerControl) {
+  async function roomOpenCodeInspection(control: OpenCodeServerControl) {
     const [response, busy] = await Promise.all([
       openCodeServerFetch(control, `/session/${encodeURIComponent(control.nativeSessionId)}/message?limit=512`),
       fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId)
     ]);
     if (!response.ok) throw new SpaceConflictError("OpenCode task history is unavailable.");
     const data: unknown = await response.json();
-    return openCodeTaskTimeline(Array.isArray(data) ? data : [], busy, nowIso());
+    const messages = Array.isArray(data) ? data : [];
+    const tasks = openCodeTaskTimeline(messages, busy, nowIso());
+
+    const transcriptLines: string[] = [];
+    for (const msg of messages) {
+      if (!msg || typeof msg !== "object") continue;
+      const role = (msg as any).info?.role === "user" ? "User" : (msg as any).info?.role === "assistant" ? "Assistant" : null;
+      if (!role) continue;
+      const parts = Array.isArray((msg as any).parts) ? (msg as any).parts : [];
+      const textParts = parts
+        .filter((p: any) => p && typeof p === "object" && p.type === "text" && typeof p.text === "string")
+        .map((p: any) => p.text.trim())
+        .filter(Boolean);
+      if (textParts.length > 0) {
+        transcriptLines.push(`[${role}]\n${textParts.join("\n")}`);
+      }
+    }
+    const transcript = transcriptLines.join("\n\n");
+    return { tasks, transcript };
+  }
+  async function roomOpenCodeTasks(control: OpenCodeServerControl) {
+    return (await roomOpenCodeInspection(control)).tasks;
   }
   const roomCliObservationCache = new Map<string, { expires: number; data: RoomPaneObservation }>();
   async function inspectRoomCli(pane: Pane, freshness?: { fresh?: boolean }): Promise<RoomPaneObservation> {
@@ -5446,7 +5474,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
     const rawTaskRef = session?.codexThreadId?.trim();
-    const base: RoomPaneObservation = { paneId: pane.id, title: pane.title, runtimeId: pane.terminalRuntimeId ?? null,
+    const base: RoomPaneObservation = { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, runtimeId: pane.terminalRuntimeId ?? null,
       sessionId: session?.sessionId ?? null, state: "UNKNOWN", nativeTaskRef: rawTaskRef && rawTaskRef.length > 0 ? rawTaskRef : null,
       modelId: session?.modelId ?? pane.modelId ?? null, nativeMode: null, checkedAt: nowIso(), tasks: [] };
     if (!session || session.purpose !== "NORMAL") return base;
@@ -5467,15 +5495,30 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       const control = await resolveOpenCodeServerControl(session).catch(() => null);
       if (control) {
         base.nativeTaskRef = control.nativeSessionId;
-        base.tasks = await roomOpenCodeTasks(control);
-        const settings = await readPaneOpenCodeModelSettings(pane, session, "room-observation");
-        base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
-        base.configuredModelId = pane.modelId; base.effectiveModelId = base.modelId; base.modelVerificationStatus = base.modelId ? "VERIFIED" : "UNKNOWN";
-        const agents = await openCodeServerFetch(control, "/agent");
-        if (agents.ok) { const data = await agents.json() as Array<{ name?: string; mode?: string; hidden?: boolean }>;
+        const inspection = await roomOpenCodeInspection(control).catch(() => null);
+        if (inspection) {
+          base.tasks = inspection.tasks;
+          if (inspection.transcript && inspection.transcript.trim().length > 0) {
+            base.text = redactMemoryText(inspection.transcript);
+          }
+        }
+        const settings = await readPaneOpenCodeModelSettings(pane, session, "room-observation").catch(() => null);
+        if (settings) {
+          base.models = settings.settings.models; base.modelId = settings.settings.current?.modelId ?? null;
+          base.configuredModelId = pane.modelId; base.effectiveModelId = base.modelId; base.modelVerificationStatus = base.modelId ? "VERIFIED" : "UNKNOWN";
+        }
+        const agents = await openCodeServerFetch(control, "/agent").catch(() => null);
+        if (agents?.ok) { const data = await agents.json().catch(() => null) as Array<{ name?: string; mode?: string; hidden?: boolean }> | null;
           if (Array.isArray(data)) base.modes = data.filter((agent) => !agent.hidden && agent.mode !== "subagent" && agent.name).map((agent) => agent.name!); }
         if (base.state !== "EXITED" && base.state !== "ERROR") {
-          base.state = roomOpenCodeTerminalState(screen.text, settings.settings.isTurnActive, base.modes ?? []);
+          const terminalMode = roomOpenCodeTerminalState(screen.text, settings?.settings?.isTurnActive ?? false, base.modes ?? []);
+          base.state = settings?.settings?.isTurnActive
+            ? "RUNNING"
+            : (terminalMode === "WAITING_FOR_INPUT" || rawState === "WAITING_FOR_INPUT")
+            ? "WAITING_FOR_INPUT"
+            : (terminalMode === "IDLE" || Boolean(control))
+            ? "IDLE"
+            : "UNKNOWN";
         }
       }
     } else if (session.runtimeId === "cli:gemini") {
@@ -5537,7 +5580,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }];
       }
 
-      const native = await loadGeminiNativeTurns({ paneId: pane.id, sessionId: session.sessionId, rootPid }).catch(() => null);
+      const native = await loadGeminiNativeTurns({ paneId: pane.id, sessionId: session.sessionId, rootPid }, { fresh: freshness?.fresh === true }).catch(() => null);
       if (native) {
         base.nativeTaskRef = native.conversationId;
         base.tasks = native.turns.map(({ finalResponse: _response, inputText: _input, aborted: _aborted, ...task }) => task);
@@ -5547,6 +5590,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             base.state = "RUNNING";
           } else if (rawState === "WAITING_FOR_INPUT" || latest?.status === "INTERRUPTED" || latest?.aborted) {
             base.state = "WAITING_FOR_INPUT";
+          } else if (latest?.status === "COMPLETED" || rawState === "UNKNOWN") {
+            base.state = "IDLE";
           }
         }
       }
@@ -5566,8 +5611,34 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         base.state = rawState === "RUNNING" ? "RUNNING" : rawState === "WAITING_FOR_INPUT" ? "WAITING_FOR_INPUT" : "IDLE";
       }
       base.modes = ["workspace", "read-only", "yolo", "plan"];
+    } else if (isClaudeDirectParityRuntime(session.runtimeId)) {
+      const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+      const native = await loadClaudeNativeTurns({
+        paneId: pane.id, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null
+      }, { fresh: freshness?.fresh === true }).catch(() => null);
+      if (native) {
+        base.nativeTaskRef = native.nativeSessionId;
+        base.tasks = native.tasks;
+        base.modelId = native.modelId ?? base.modelId;
+        // Record the live conversation so host-loss restore and task history resume it exactly.
+        // Only a session with a written turn has a transcript that `claude --resume` can open.
+        if (native.tasks.length && session.cliTaskRevisionId) {
+          try {
+            const revision = await store.getCliTaskRevision(session.cliTaskRevisionId);
+            if (revision && revision.nativeTaskRef !== native.nativeSessionId) {
+              await store.updateCliTaskRevision(revision.revisionId, { nativeTaskRef: native.nativeSessionId }, "trace:claude-native-ref");
+            }
+          } catch {}
+        }
+        // Claude's own session status is authoritative over screen heuristics.
+        if (base.state !== "EXITED" && base.state !== "ERROR") {
+          base.state = native.busy ? "RUNNING" : base.state === "RUNNING" ? "IDLE" : base.state;
+        }
+      }
     }
     if (session.runtimeId === "cli:claude") base.modes = ["default", "plan", "accept edits", "bypass permissions", "auto"];
+    if (session.runtimeId === "cli:omp" || session.runtimeId === "cli:droid") base.modes = ["build", "plan"];
+    if (session.runtimeId === "cli:qoder") base.modes = ["yolo", "auto mode", "don't ask", "default", "accept edits", "plan"];
     base.nativeMode = roomTerminalMode(session.runtimeId, screen.text, base.modes);
     roomCliObservationCache.set(pane.id, { expires: Date.now() + 15_000, data: base });
     return base;
@@ -5685,6 +5756,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (watchdogTimer) clearTimeout(watchdogTimer);
     }
   }
+  const assertNoManagedModelMutation = async (paneId: string) => {
+    if ((await store.planExecutions.listActive()).some(execution => execution.paneId === paneId))
+      throw new SpaceConflictError("This pane has a managed plan execution. Change the exact stage through its override endpoint.");
+  };
   const roomPaneController = createRoomPaneController({
     store, chat: spaceAgentAdapter, listRuntimes: () => cliTerminalManager.listRuntimes(),
     isEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId),
@@ -5702,6 +5777,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     async configureCli(pane, action, traceId) {
       const session = await roomCliSession(pane, action.expectedSessionId);
       if (action.modelId || action.reasoningEffort) {
+        await assertNoManagedModelMutation(pane.id);
         if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
           const control = await resolveOpenCodeServerControl(session);
           const before = await readPaneOpenCodeModelSettings(pane, session, traceId);
@@ -5715,22 +5791,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           if (after.settings.current?.modelId !== model.id) throw new SpaceConflictError("OpenCode model readback did not confirm the requested model.");
           await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
         } else if (isCodexDirectParityRuntime(session.runtimeId)) {
-          const before = await readPaneCliModelSettings(pane, session, traceId);
-          const modelId = action.modelId ?? before.settings.current?.modelId;
-          const model = before.settings.models.find((entry) => entry.id === modelId);
-          const reasoning = action.reasoningEffort ?? before.settings.current?.reasoningEffort ?? model?.defaultReasoningEffort;
-          if (!model || !reasoning || !model.supportedReasoningEfforts.includes(reasoning)) throw new SpaceConflictError("The model/reasoning combination is not advertised by this CLI.");
-          // Register the explicit selection with the existing defaults router.
-          // Otherwise the TUI's collaboration-mode update restores its preset.
-          if ((await roomCliSession(pane, action.expectedSessionId)).codexThreadId !== before.settings.threadId) {
-            throw new SpaceConflictError("The native Codex thread changed before model control.");
-          }
-          if (before.settings.threadId) await before.directControl.updateThreadSettings({
-            threadId: before.settings.threadId, model: model.id, reasoningEffort: reasoning });
-          await cliTerminalManager.updateCodexNativeModelSettings({ sessionId: session.sessionId,
-            expectedThreadId: before.settings.threadId, models: before.settings.models, modelId: model.id, reasoningEffort: reasoning, traceId });
-          if (before.settings.threadId) await waitForCodexThreadSettings({ threadId: before.settings.threadId, cwd: session.cwd, sessionId: session.sessionId, modelId: model.id, reasoningEffort: reasoning, models: before.settings.models });
-          await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
+          await applyUnmanagedCodexModelSettings(store,pane.id,{
+            inspect: async () => {
+              const before = await readPaneCliModelSettings(pane, session, traceId);
+              const modelId = action.modelId ?? before.settings.current?.modelId;
+              const model = before.settings.models.find((entry) => entry.id === modelId);
+              const reasoning = action.reasoningEffort ?? before.settings.current?.reasoningEffort ?? model?.defaultReasoningEffort;
+              if (!model || !reasoning || !model.supportedReasoningEfforts.includes(reasoning)) throw new SpaceConflictError("The model/reasoning combination is not advertised by this CLI.");
+              return {before,model,reasoning};
+            },
+            assertCurrent: async ({before}) => {
+              const current = await roomCliSession(pane, action.expectedSessionId);
+              if (current.codexThreadId !== before.settings.threadId || current.cwd !== session.cwd)
+                throw new SpaceConflictError("The native Codex thread changed before model control.");
+            },
+            updateSettings: async ({before,model,reasoning},beforeSend) => {
+              if (before.settings.threadId) await before.directControl.updateThreadSettings({
+                threadId: before.settings.threadId, model: model.id, reasoningEffort: reasoning, beforeSend });
+            },
+            updateRouter: async ({before,model,reasoning}) => {
+              // Keep the TUI's collaboration-mode router in sync with this explicit
+              // selection while managed creation is excluded from the pane.
+              await cliTerminalManager.updateCodexNativeModelSettings({ sessionId: session.sessionId,
+                expectedThreadId: before.settings.threadId, models: before.settings.models, modelId: model.id, reasoningEffort: reasoning, traceId });
+            },
+            finish: async ({before,model,reasoning}) => {
+              if (before.settings.threadId) await waitForCodexThreadSettings({ threadId: before.settings.threadId, cwd: session.cwd, sessionId: session.sessionId, modelId: model.id, reasoningEffort: reasoning, models: before.settings.models });
+              await store.updatePaneCliSession(session.sessionId, { modelId: model.id, reasoningEffort: reasoning }, traceId);
+            }
+          });
         } else if (session.runtimeId === "cli:omp") {
           const command = `/switch ${action.modelId}${action.reasoningEffort && action.reasoningEffort !== "none" ? `:${action.reasoningEffort}` : ""}`;
           await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
@@ -5740,8 +5829,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
             command: `/model ${action.modelId}`, when: action.when }, traceId);
           if (action.modelId) await store.updatePaneCliSession(session.sessionId, { modelId: action.modelId }, traceId);
-        } else await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
-          command: "/model", selection: action.modelId ?? action.reasoningEffort, when: action.when }, traceId);
+        } else {
+          // Same verified native switch as the pane picker (screen readback, pane pick persisted);
+          // the plain /model menu stays the fallback while a turn runs or the catalog lacks the model.
+          const before = action.modelId && isDirectOperatorParityRuntime(session.runtimeId)
+            ? await readPaneNativeModelSettings(session).catch(() => null) : null;
+          const model = before?.models.find((entry) => entry.id === action.modelId);
+          const reasoning = model ? action.reasoningEffort ?? model.defaultReasoningEffort ?? before?.current?.reasoningEffort : undefined;
+          if (before && model && reasoning && model.supportedReasoningEfforts.includes(reasoning) && !before.isTurnActive) {
+            await cliTerminalManager.runSerializedTerminalMutation(session.sessionId, () => applyNativePaneModel({
+              pane, active: session, modelId: model.id, reasoningEffort: reasoning, traceId,
+              assertControl: async (current) => { if (current.sessionId !== session.sessionId) throw new SpaceConflictError("The CLI session changed during the model switch."); }
+            }));
+          } else await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId,
+            command: "/model", selection: action.modelId ?? action.reasoningEffort, when: action.when }, traceId);
+        }
       }
       if (action.nativeMode) {
         const mode = action.nativeMode.toLowerCase() === "build" && session.runtimeId === "cli:codex" ? "default" : action.nativeMode.toLowerCase();
@@ -5751,6 +5853,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if (before.nativeMode !== mode) {
           if (before.modes && !before.modes.includes(mode)) throw new SpaceConflictError("The requested mode is not advertised by this CLI.");
           if (mode === "plan" && ["cli:codex", "cli:gemini", "cli:qwen"].includes(session.runtimeId)) {
+            await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId, command: "/plan", when: action.when }, traceId);
+          } else if ((session.runtimeId === "cli:omp" || session.runtimeId === "cli:qoder") && (mode === "plan" || before.nativeMode === "plan")) {
+            // Plan is a /plan toggle here; Shift+Tab changes thinking effort (Oh My Pi) or permissions (Qoder).
             await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: session.sessionId, command: "/plan", when: action.when }, traceId);
           } else {
             if (!before.nativeMode) throw new SpaceConflictError("The current native mode is not visible; inspect the CLI menu before switching.");
@@ -5861,6 +5966,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       if (pane.terminalRuntimeId && !isCodexDirectParityRuntime(pane.terminalRuntimeId) && !isOpenCodeDirectParityRuntime(pane.terminalRuntimeId)) {
         const source = taskId ? await unifiedCliTaskRegistry.getTask(taskId, [pane.terminalRuntimeId]) : null;
         if (source && source.session.roomId !== pane.roomId) throw new SpaceConflictError("Room Agent can resume only tasks belonging to this room.");
+        if (source && hasExactNativeTaskResume(pane.terminalRuntimeId)) {
+          // Runtimes with a registered native task resolver (cli-native-task-resume.ts) resume that exact
+          // task like Codex and OpenCode; the native /resume menu stays the fallback when no ref is available.
+          try {
+            const result = await resumePaneCliTask(pane, { taskId: source.taskId }, traceId, undefined, true);
+            const resumed = await cliTerminalManager.ensurePaneControlReady(result.pane, traceId);
+            return { paneId: pane.id, sessionId: resumed.sessionId, mode: result.mode, state: resumed.status };
+          } catch (error) {
+            if (!(error instanceof SpaceConflictError) || !error.message.startsWith("Exact native resume is unavailable")) throw error;
+          }
+        }
         const ready = await cliTerminalManager.ensurePaneControlReady(pane, traceId);
         const result = await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: ready.sessionId,
           command: "/resume", ...(source ? { selection: source.title } : {}), when: "AFTER_TURN" }, traceId);
@@ -5929,8 +6045,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       assertCliRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
       decisionsService
     });
+  const worktreeService = new WorktreeService();
   const roomPaneCommands = createRoomPaneCommands({
     store,
+    worktreeService,
     // Fast path: use cached registry (10s TTL + stale-while-revalidate) instead of
     // fresh discoverAgentRuntimes per bulk open, so 16x codex stays in the 2-3s budget.
     discover: () => cliRuntimeRegistryCache.readStaleWhileRefreshing(),
@@ -5960,10 +6078,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       assertRuntimeEnabled: (runtimeId) => cliRuntimeVisibility.assertEnabled(runtimeId),
       navigate: async (pane, url, traceId, actor) => {
         if (!(await browserSessionManager.getActive(pane))) {
-          const owner = await youtubeAccountOwner(actor?.holderId ?? "operator:unknown", pane);
-          const profileId = await browserAccountStore.get(owner, pane.id);
+          const userId = actor?.holderId ?? "operator:unknown";
+          const resolved = await resolvePaneBrowserAccount(userId, pane);
+          const { account, profileKey, sharedProfileKey } = actor?.holderType === "OPERATOR" ? await adoptPaneSignIn(userId, pane, resolved, actor) : resolved;
           const opened = await browserSessionManager.startOrRestore({ pane, targetUrl: url, traceId, includeInitialFrame: false,
-            profileKey: youtubeAccountProfileKey(owner, profileId) }, actor);
+            profileKey: account ? null : profileKey,
+            ...(!account && sharedProfileKey ? { sharedProfileKey } : {}),
+            ...(account ? { googleAccount: { ownerUserId: account.ownerUserId, accountId: account.id } } : {}) }, actor);
           if (opened.session.currentUrl === url) return;
         }
         await browserSessionManager.navigate(pane, url, traceId, actor);
@@ -5973,7 +6094,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const miniRouter = options.roomMiniRouter ?? createRoomMiniRouter({
     baseUrl: config.codexLbBaseUrl,
     apiKey: roomTaskEvaluatorKey,
-    decisionsService
+    decisionsService,
+    useOpenCodeFree: true
   });
   const controlRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresControlRepository.fromConnectionString(config.databaseUrl) : new InMemoryControlRepository();
@@ -6119,10 +6241,35 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       await cliTerminalManager.sendInput(session.sessionId,"\r",traceId,null,`${traceId}:${pane.id}:submit`);
       return {sessionId:session.sessionId,nativeTaskRef:observed.nativeTaskRef??session.sessionId,state:"RUNNING",submitted:true};
     });
-    } finally { roomCliObservationCache.delete(pane.id); }
+    } finally {
+      roomCliObservationCache.delete(pane.id);
+      dashboardAgentsCache.delete(pane.roomId);
+    }
   };
   const paneStateCache = new Map<string, { expires: number; data: Record<string, unknown> | null }>();
-  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,queueDisconnected:true,
+  const dashboardAgentsCache = new Map<string, { expires: number; data: { data: Pane[]; activity: Record<string, DashboardStatus>; details: Record<string, DashboardActivityDetail>; sampledAt: string } }>();
+  const readCliDashboardActivity = createCliDashboardActivityReader({
+    screenState: async session => roomTerminalState((await cliTerminalManager.observeRoomScreen(session.sessionId)).text),
+    codexTurn: session => cliTerminalManager.getCurrentTurnActivity(session.sessionId),
+    openCode: async session => {
+      const control = await readOpenCodeServerControl(session.sessionId, options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state");
+      if (!control) return null;
+      if (!control.directory && session.cwd) control.directory = session.cwd;
+      const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false);
+      return { busy, messages: async () => {
+        const response = await openCodeServerFetch(control, `/session/${encodeURIComponent(control.nativeSessionId)}/message?limit=2`);
+        const data: unknown = response.ok ? await response.json() : [];
+        return Array.isArray(data) ? data : [];
+      } };
+    },
+    geminiTurns: async session => {
+      const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
+      const native = await loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null }).catch(() => null);
+      return native && native.turns.length > 0 ? native.turns : null;
+    },
+    claude: readClaudeLiveTurns
+  });
+  const spaceControl = createSpaceControl({store,repository:controlRepository,controller:roomPaneController,decisionsService,phase:2,pluginsService,queueDisconnected:true,
     publish:async roomId=>{const event=await getLatestRoomEvent(store,roomId);if(event)eventBus.publish(event);},
     publishEvent: (event) => eventBus.publish(event),
     resolveActor: controlUser,
@@ -6210,6 +6357,28 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             accountEmail: verified.accountEmail,
             accountVerificationStatus: verified.accountVerificationStatus,
             verificationEvidence: verified.verificationEvidence as unknown as Record<string, unknown>
+          };
+        }
+        if (pane.mode === "TERMINAL" && isOpenCodeDirectParityRuntime(pane.terminalRuntimeId)) {
+          const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id, 1))[0] ?? null;
+          if (session) {
+            const control = await resolveOpenCodeServerControl(session).catch(() => null);
+            if (control) {
+              const currentModel = await fetchOpenCodeCurrentModel(control, control.nativeSessionId).catch(() => null);
+              if (currentModel) {
+                const liveModelId = `${currentModel.providerID}/${currentModel.id}`;
+                return {
+                  configuredModelId: session.modelId ?? pane.modelId ?? liveModelId,
+                  effectiveModelId: liveModelId,
+                  modelVerificationStatus: "VERIFIED"
+                };
+              }
+            }
+          }
+          return {
+            configuredModelId: session?.modelId ?? pane.modelId ?? null,
+            effectiveModelId: null,
+            modelVerificationStatus: "UNKNOWN"
           };
         }
         return null;
@@ -6549,25 +6718,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             ...(isDebug ? { debug: true, diagnosticStatus: "PASSED" } : {})
           };
         }
-        if(action.operation==="media.publish"){
+        if(action.operation==="media.publish" || action.operation==="files.publish"){
           const input=controlPublishInput.parse(action.input);
           const buffer=input.text!==undefined?Buffer.from(input.text):Buffer.from(input.base64!,"base64");
-          if(!buffer.length)throw new SpaceConflictError("Media contents must not be empty.");
-          const mimeType=sniffImageMime(buffer)??inferUploadMimeType(input.filename,input.mimeType);
-          const storage=buildGenericUserUploadStorage({artifactRoot:config.browserEvidenceArtifactRoot,roomId,originalFilename:input.filename});
-          await mkdir(dirname(storage.filePath),{recursive:true});await writeFile(storage.filePath,buffer,{flag:"wx"});
-          try{
-            const result=await store.createArtifact({roomId,paneId:null,kind:mimeType.startsWith("image/")?"IMAGE":isVideoMimeType(mimeType)?"VIDEO":"EXPORT",mimeType,
-              storageUri:storage.storageUri,sha256:createHash("sha256").update(buffer).digest("hex"),byteSize:buffer.length,
-              metadata:{source:"USER_UPLOAD",originalFilename:input.filename,storedFilename:storage.storedFilename,uploadedBy:actor.id}},makeSpaceId("trace"));
+          return withStagedBufferUpload(config.browserEvidenceArtifactRoot, {buffer,filename:input.filename,mimeType:input.mimeType}, async upload => {
+            if(action.operation==="files.publish"){
+              const artifact=await persistAgentFile({store,artifactRoot:config.browserEvidenceArtifactRoot,roomId,paneId:null,cliSessionId:null,runtimeId:"space-control",originalFilename:input.filename,
+                declaredMimeType:input.mimeType,sourcePath:upload.sourcePath,traceId:makeSpaceId("trace")});
+              eventBus.publish(artifact.event); return {id:artifact.artifact.id,mimeType:artifact.artifact.mimeType};
+            }
+            const mimeType=sniffImageMime(upload.sample)??inferUploadMimeType(input.filename,input.mimeType);
+            const storage=buildGenericUserUploadStorage({artifactRoot:config.browserEvidenceArtifactRoot,roomId,originalFilename:input.filename});
+            const result=await withPersistedUpload(config.browserEvidenceArtifactRoot,upload,storage.filePath,pinnedPath =>
+              recordUploadedArtifact(store,{roomId,paneId:null,kind:mimeType.startsWith("image/")?"IMAGE":isVideoMimeType(mimeType)?"VIDEO":"EXPORT",mimeType,
+                storageUri:storage.storageUri,sha256:upload.sha256,byteSize:upload.byteSize,
+                metadata:{source:"USER_UPLOAD",originalFilename:input.filename,storedFilename:storage.storedFilename,uploadedBy:actor.id}},makeSpaceId("trace"),pinnedPath));
             eventBus.publish(result.event);return {id:result.artifact.id,mimeType:result.artifact.mimeType};
-          }catch(error){await unlink(storage.filePath).catch(()=>{});throw error;}
-        }
-        if(action.operation==="files.publish"){
-          const input=controlPublishInput.parse(action.input);
-          const artifact=await persistAgentFile({store,artifactRoot:config.browserEvidenceArtifactRoot,roomId,paneId:null,cliSessionId:null,runtimeId:"space-control",originalFilename:input.filename,
-            declaredMimeType:input.mimeType,buffer:input.text!==undefined?Buffer.from(input.text):Buffer.from(input.base64!,"base64"),traceId:makeSpaceId("trace")});
-          eventBus.publish(artifact.event); return {id:artifact.artifact.id,mimeType:artifact.artifact.mimeType};
+          });
         }
         if(action.operation.startsWith("ops.")){
           const toolNames={"ops.status":"space_status","ops.logs":"space_logs","ops.test":"space_scoped_test","ops.verify":"space_live_verify","ops.deploy":"space_deploy_commit","ops.proof":"space_authenticated_ui_proof"} as const;
@@ -6589,6 +6756,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         if(action.operation==="settings.snapshot"){
           return captureControlSettingsSnapshot({actor,roomId,input:action.input,repository:controlRepository,
             inspect:()=>spaceControl.inspect(actor,{roomId,section:"SETTINGS",offset:0,limit:100})});
+        }
+        if(action.operation==="settings.rollback"){
+          return restoreControlSettingsSnapshot({actor,roomId,input:action.input,repository:controlRepository,
+            store,pluginsService});
+        }
+        if(action.operation==="settings.plugins"){
+          return executeControlPluginAction({actor,roomId,input:action.input,repository:controlRepository,
+            pluginsService});
         }
         const route=controlResourceRoutes[action.operation];
         if(!route)throw new SpaceConflictError("Resource operation has no available adapter.");
@@ -6807,6 +6982,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     workflow: roomAgentWorkflow,
     missionStopper: roomActionExecutor,
     roomPlanInventoryProvider,
+    codexLbBaseUrl: config.codexLbBaseUrl,
+    codexLbKeyFile: config.codexLbKeyFile,
     refreshControlReceipts:async(roomId)=>{
       for(const record of await controlRepository.list("operation",null,roomId)){
         const operation=controlOperationSchema.parse(record.value);
@@ -6998,12 +7175,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   }
 
+  // Successful fast requests are the bulk of the journal (badge and dashboard
+  // polls) and pushed everything else out within a day. Log only errors and
+  // slow requests; SPACE_API_REQUEST_LOG=all restores Fastify's per-request lines.
   const app = Fastify({
+    ...(process.env.SPACE_API_REQUEST_LOG === "all" ? {} : { logController: new QuietRequestLogController() }),
+    requestIdHeader: false,
+    genReqId: () => `req:${nanoid(12)}`,
+    // Every request log line carries the W3C trace id next to reqId. The
+    // context is created once per raw request and reused by onRequest.
+    childLoggerFactory(logger, bindings, childOptions, rawRequest) {
+      return logger.child({ ...bindings, w3cTraceId: traceContextForRawRequest(rawRequest).w3cTraceId }, childOptions);
+    },
     // public-host is the only public marketing proxy; forwarded IPs from every other remote remain untrusted.
     trustProxy: ["127.0.0.1", "::1", "::ffff:127.0.0.1", "192.0.2.2"],
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      redact: ["req.headers.authorization", "req.headers.cookie", "password"],
+      redact: apiLogRedaction,
       serializers: {
         req(request: FastifyRequest & { socket?: { remoteAddress?: string; remotePort?: number } }) {
           const socket = request.raw?.socket ?? request.socket;
@@ -7017,6 +7205,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
     }
+  });
+  // SEC-011: logouts and "log out everywhere" survive API restarts. Revocations stay effective in
+  // memory while the database is unreachable; loading is retried until it succeeds.
+  const sessionRevocationRepository = store instanceof PostgresSpaceStore && config.databaseUrl
+    ? PostgresSessionRevocationRepository.fromConnectionString(config.databaseUrl) : null;
+  let sessionRevocationRetry: NodeJS.Timeout | null = null;
+  const attachSessionRevocations = async (): Promise<void> => {
+    if (!sessionRevocationRepository) return;
+    try {
+      await defaultSessionRevocationStore.attachPersistence(sessionRevocationRepository);
+    } catch (error) {
+      app.log.error({ err: error, event: "session_revocations.load_failed" }, "Persisted session revocations could not be loaded; retrying.");
+      sessionRevocationRetry = setTimeout(() => void attachSessionRevocations(), 30_000);
+      sessionRevocationRetry.unref?.();
+    }
+  };
+  await attachSessionRevocations();
+  const persistRevocation = (pending: Promise<void>) => pending.catch((error: unknown) => {
+    app.log.error({ err: error, event: "session_revocations.persist_failed" }, "A session revocation is effective now but was not persisted.");
   });
   reportCliTerminalManagerTelemetry = (telemetry) => {
     observability.observeCliTerminalEvent({
@@ -7055,6 +7262,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   let durableEventPollTimer: ReturnType<typeof setInterval> | null = null;
   let systemAnalyticsSampleTimer: ReturnType<typeof setInterval> | null = null;
   let systemAnalyticsRollupTimer: ReturnType<typeof setInterval> | null = null;
+  let dbRetentionTimer: ReturnType<typeof setInterval> | null = null;
+  let dbRetentionSweepRunning = false;
 
   async function runDurableEventPoll() {
     try {
@@ -7111,6 +7320,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   }
 
+  async function executeDatabaseRetentionSweep() {
+    if (!config.enableDbSweep) return;
+    if (dbRetentionSweepRunning) return;
+    dbRetentionSweepRunning = true;
+    try {
+      const result = await runDatabaseRetentionSweep({ store });
+      if (result.deletedChunks > 0 || result.deletedPanes > 0) {
+        app.log.info(
+          { deletedChunks: result.deletedChunks, deletedPanes: result.deletedPanes, batches: result.batches },
+          "Database retention sweep completed."
+        );
+      }
+    } catch (error) {
+      app.log.error({ err: error }, "Database retention sweep failed.");
+    } finally {
+      dbRetentionSweepRunning = false;
+    }
+  }
+
   await app.register(cookie);
   await app.register(compress, {
     threshold: 1024,
@@ -7136,6 +7364,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     max: config.apiRateLimitMax,
     timeWindow: "1 minute",
     keyGenerator: (request) => requestIpForLog(request) ?? "unknown"
+  });
+  // Lifecycle hooks stay behind the global limiter (route-rate-limits).
+  app.addHook("onClose", async () => {
+    if (sessionRevocationRetry) clearTimeout(sessionRevocationRetry);
+    defaultSessionRevocationStore.detachPersistence();
+    await sessionRevocationRepository?.dispose();
   });
   const defaultRouteRateLimitOptions = {
     config: {
@@ -7166,9 +7400,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const userRoleCache = new Map<string, { role: "ADMIN" | "USER" | "OPERATOR"; cachedAt: number }>();
   const USER_ROLE_CACHE_TTL_MS = 60_000;
 
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
     observability.onRequest(request);
-    request.requestIdForSpace = `req:${nanoid(12)}`;
+    request.requestIdForSpace = request.id;
+    request.traceContext = traceContextForRawRequest(request.raw);
+    requestTraceContexts.remember(request.id, request.traceContext);
+    reply.header("x-request-id", request.id);
     let sessionUser = verifySession(request.cookies[cookieName], auth.sessionSecret);
     if (sessionUser) {
       if (sessionUser.id === "user:operator-proof") {
@@ -7190,22 +7427,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         }
       }
       request.user = sessionUser;
-    } else if (!request.cookies["space_logged_out"] && (request.raw.url ?? "").startsWith("/api/")) {
-      const url = request.raw.url ?? "";
-      if (!url.startsWith("/api/auth/login") && !url.startsWith("/api/auth/logout") && !url.startsWith("/api/setup/")) {
-        const cached = userRoleCache.get("user:operator");
-        if (cached) {
-          request.user = { id: "user:operator", email: "operator@space.local", role: cached.role };
-        } else if (store.getControlActor) {
-          try {
-            const op = await store.getControlActor("user:operator");
-            if (op) {
-              userRoleCache.set("user:operator", { role: op.role, cachedAt: Date.now() });
-              request.user = { id: op.id, email: op.email, role: op.role, googleId: op.googleId ?? null, avatarUrl: op.avatarUrl ?? null };
-            }
-          } catch {}
-        }
-      }
     }
   });
 
@@ -7213,7 +7434,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     observability.onResponse(request, reply);
   });
 
+  // Count error responses by their stable code; payloads are never logged.
+  app.addHook("onSend", async (_request, reply, payload) => {
+    if (reply.statusCode >= 400) observability.observeErrorResponse(reply.statusCode, payload);
+    return payload;
+  });
+
   app.addHook("onClose", async () => {
+    observability.close();
     await spaceControl.close();
     stopTaskTitleEvents();
     await taskTitles.close();
@@ -7223,6 +7451,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
     if (systemAnalyticsSampleTimer) clearInterval(systemAnalyticsSampleTimer);
     if (systemAnalyticsRollupTimer) clearInterval(systemAnalyticsRollupTimer);
+    if (dbRetentionTimer) clearInterval(dbRetentionTimer);
     opencodeModelBenchService.stopDailyRefresh();
     stopTrackingPublishedEvents();
     await cliTerminalManager.closeAll();
@@ -7232,6 +7461,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await systemAnalyticsService.dispose();
     await streamingService.dispose();
     await demoProjectsService.dispose();
+    defaultSessionRevocationStore.close();
   });
 
   app.addHook("onReady", async () => {
@@ -7275,28 +7505,44 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await runArtifactRetentionSweep();
     artifactRetentionTimer = setInterval(() => void runArtifactRetentionSweep(), 15 * 60 * 1000);
     artifactRetentionTimer.unref();
+    // A Chat run accepted in PostgreSQL whose Temporal workflow never started stays
+    // QUEUED forever, and a RUNNING run whose workflow ended without an outcome stays
+    // RUNNING. Fail both honestly (stranded-chat-runs.ts); never touch a run Temporal still runs.
+    strandedRunTimer = setInterval(() => void sweepStrandedChatRuns().catch((error) =>
+      app.log.warn({ err: error }, "Stranded Chat run sweep failed.")), 2 * 60 * 1000);
+    strandedRunTimer.unref();
     await seedDurableEventRelay();
     durableEventPollTimer = setInterval(() => void runDurableEventPoll(), 1000);
     durableEventPollTimer.unref();
     if (store instanceof PostgresSpaceStore) {
       void taskTitles.start().catch(() => app.log.warn({event:"task_titles.start_failed"},"Task metadata startup deferred."));
     }
-    void systemAnalyticsService.sample().catch((error) => {
-      app.log.error({ err: error }, "Initial system analytics sample failed.");
-    });
-    systemAnalyticsSampleTimer = setInterval(
-      () => void systemAnalyticsService.sample().catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
-      10_000
-    );
-    systemAnalyticsSampleTimer.unref();
-    systemAnalyticsRollupTimer = setInterval(
-      () => void systemAnalyticsService.rollupAndSweep().catch((error) => app.log.error({ err: error }, "System analytics rollup failed.")),
-      60_000
-    );
-    systemAnalyticsRollupTimer.unref();
-    void systemAnalyticsService.backfill().catch((error) => {
-      app.log.error({ err: error }, "System analytics backfill failed.");
-    });
+    // Like the model bench refresh, the default collectors do not scan the
+    // host's processes and CLI history inside test runs (routes still sample
+    // on demand); an injected analytics service keeps its schedule.
+    if (options.systemAnalyticsService || (process.env.NODE_ENV !== "test" && process.env.VITEST !== "true")) {
+      void systemAnalyticsService.sample().catch((error) => {
+        app.log.error({ err: error }, "Initial system analytics sample failed.");
+      });
+      systemAnalyticsSampleTimer = setInterval(
+        () => void systemAnalyticsService.sample().catch((error) => app.log.error({ err: error }, "System analytics sample failed.")),
+        10_000
+      );
+      systemAnalyticsSampleTimer.unref();
+      systemAnalyticsRollupTimer = setInterval(
+        () => void systemAnalyticsService.rollupAndSweep().catch((error) => app.log.error({ err: error }, "System analytics rollup failed.")),
+        60_000
+      );
+      systemAnalyticsRollupTimer.unref();
+      void systemAnalyticsService.backfill().catch((error) => {
+        app.log.error({ err: error }, "System analytics backfill failed.");
+      });
+    }
+    if (config.enableDbSweep && store instanceof PostgresSpaceStore) {
+      void executeDatabaseRetentionSweep();
+      dbRetentionTimer = setInterval(() => void executeDatabaseRetentionSweep(), 15 * 60 * 1000);
+      dbRetentionTimer.unref();
+    }
   });
 
   app.addHook("preHandler", async (request, reply) => {
@@ -7346,7 +7592,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       );
     }
     if (request.user && requiresCsrf(request)) {
-      if (request.routeOptions.url === "/api/:method" || isHarnessRootHttpPath(request.url)) {
+      if (
+        request.routeOptions.url === "/api/:method" ||
+        request.routeOptions.url === "/api/harness/*" ||
+        request.url.startsWith("/api/harness/") ||
+        isHarnessRootHttpPath(request.url)
+      ) {
         return;
       }
       const submittedToken = request.headers[csrfHeaderName];
@@ -7357,6 +7608,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof FilesystemError) {
+      return sendApiError(reply, error.statusCode, error.code, error.message);
+    }
+    if (error instanceof GitControlError) return sendApiError(reply, error.statusCode, error.code, error.message);
     if (error instanceof StreamingSettingsVersionConflictError) {
       request.log.info({ requestId: request.requestIdForSpace, currentVersion: error.currentVersion }, "streaming overlay settings conflicted");
       return sendApiError(reply, 409, "STREAMING_SETTINGS_CONFLICT", error.message, { currentVersion: error.currentVersion });
@@ -7473,13 +7728,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   app.get("/healthz", defaultRouteRateLimitOptions, async () => ({ ok: true, service: "space-api" }));
-  app.get("/readyz", defaultRouteRateLimitOptions, async () => {
+  // Liveness only: the process answers. Dependency outages belong to /readyz and
+  // must not cause a supervisor to restart a healthy API.
+  app.get("/livez", defaultRouteRateLimitOptions, async () => ({
+    ok: true,
+    service: "space-api",
+    uptimeSeconds: Math.round(process.uptime())
+  }));
+  app.get("/readyz", defaultRouteRateLimitOptions, async (request, reply) => {
     const bounded = <T>(operation: Promise<T>, fallback: T, timeoutMs = 2_500): Promise<T> =>
       Promise.race([
         operation,
         new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs))
       ]);
-    const [worker, appDiagnostics] = await Promise.all([
+    const databaseCheck = store.checkReadiness
+      ? bounded(
+          store.checkReadiness().then(() => "RUNNING" as const).catch(() => "UNAVAILABLE" as const),
+          "UNAVAILABLE" as const
+        )
+      : Promise.resolve("in-memory" as const);
+    const [worker, appDiagnostics, database] = await Promise.all([
       config.workflowsEnabled === false ? Promise.resolve(null) : bounded(workerReadinessChecker(), workerReadinessSchema.parse({
         id: "space-worker",
         status: "ERROR",
@@ -7497,7 +7765,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         lastPollerAccessAt: null,
         checkedAt: new Date().toISOString()
       })),
-      appDiagnosticsService.getStatus()
+      appDiagnosticsService.getStatus(),
+      databaseCheck
     ]);
     const cliHost = config.cliEnabled
       ? await bounded(cliTerminalManager.hostPing().then((ok) => ok ? "RUNNING" as const : "UNAVAILABLE" as const).catch(() => "UNAVAILABLE" as const), "UNAVAILABLE" as const)
@@ -7526,15 +7795,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     } else if (!config.browserSessionsEnabled) {
       browserHost = "DISABLED";
     }
+    const ok = database !== "UNAVAILABLE" && (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
+      (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED");
+    // Default responses stay 200 with an ok flag for existing consumers (web
+    // proxy recovery, live guard). Orchestrators that only read status codes
+    // use ?strict=1 and receive 503 while a dependency is not ready.
+    if (!ok && (request.query as { strict?: string } | undefined)?.strict === "1") reply.code(503);
     return {
-      ok: (config.workflowsEnabled === false || worker?.status === "RUNNING") && cliHost !== "UNAVAILABLE" && cliAdminHost !== "UNAVAILABLE" &&
-        (browserHost === "in-process" || browserHost === "RUNNING" || browserHost === "DISABLED"),
+      ok,
       apiStartedAt,
       dependencies: {
         store: config.runtimeStore,
         runtimeStore: config.runtimeStore,
+        database,
         eventBus: "in-process",
-        temporal: config.workflowsEnabled === false ? "disabled" : "enabled",
+        temporal: config.workflowsEnabled === false ? "disabled" : config.enableDummyTurns ? "enabled" : "disabled",
         worker: config.workflowsEnabled === false ? "disabled" : worker?.status,
         cliHost,
         cliAdminHost,
@@ -7560,36 +7835,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     git: await readGitVersionMetadata()
   }));
   app.get("/api/app/version", defaultRouteRateLimitOptions, async () => appVersionReader.status());
-  app.get("/api/desktop/latest", defaultRouteRateLimitOptions, async () => {
-    const manifestPath = resolve(process.cwd(), "apps/desktop/release/manifest.json");
-    try {
-      const raw = await readFile(manifestPath, "utf8");
-      const manifest = JSON.parse(raw);
-      const version = manifest.version || "0.1.16";
-      return {
-        version,
-        name: manifest.name || "SpaceApp",
-        builtAt: manifest.builtAt,
-        download7zUrl: `/api/desktop/download/SpaceApp-${version}-win.7z`,
-        downloadZipUrl: `/api/desktop/download/SpaceApp-${version}-win.zip`,
-        installerUrl: `/api/desktop/download/SpaceApp-Setup-${version}.exe`,
-        appImageUrl: `/api/desktop/download/SpaceApp-${version}.AppImage`,
-        debUrl: `/api/desktop/download/spaceapp_${version}_amd64.deb`,
-        targets: manifest.targets || []
-      };
-    } catch {
-      return {
-        version: "0.1.16",
-        name: "SpaceApp",
-        download7zUrl: "/api/desktop/download/SpaceApp-0.1.16-win.7z",
-        downloadZipUrl: "/api/desktop/download/SpaceApp-0.1.16-win.zip",
-        installerUrl: "/api/desktop/download/SpaceApp-Setup-0.1.16.exe",
-        appImageUrl: "/api/desktop/download/SpaceApp-0.1.16.AppImage",
-        debUrl: "/api/desktop/download/spaceapp_0.1.16_amd64.deb",
-        targets: []
-      };
-    }
-  });
+  app.get("/api/desktop/latest", defaultRouteRateLimitOptions, createDesktopLatestHandler());
   app.get("/api/desktop/update.ps1", defaultRouteRateLimitOptions, async (_request, reply) => {
     const filePath = resolve(process.cwd(), "apps/desktop/release/update.ps1");
     const fileStat = await stat(filePath).catch(() => null);
@@ -7642,7 +7888,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (!/^[a-zA-Z0-9_.-]+$/.test(filename) || filename.includes("..")) {
       return reply.status(400).send({ error: "Invalid filename" });
     }
-    const filePath = resolve(process.cwd(), "apps/desktop/release", filename);
+    const filePath = resolve(desktopReleaseDirectory, filename);
     const fileStat = await stat(filePath).catch(() => null);
     if (!fileStat || !fileStat.isFile()) {
       return reply.status(404).send({ error: "File not found" });
@@ -7665,7 +7911,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     reply.header("Content-Type", mimeType);
     return reply.send(createReadStream(filePath));
   });
-  app.get("/metrics", defaultRouteRateLimitOptions, async (_request, reply) => {
+  // Aggregate metrics only (route templates, codes, categories, process and
+  // queue gauges). Served to local/private-network scrapers and signed-in
+  // administrators; clients that reach the API from the public internet
+  // (including through the trusted proxy) are refused.
+  app.get("/metrics", defaultRouteRateLimitOptions, async (request, reply) => {
+    const ip = requestIpForLog(request);
+    const administrator = request.user?.role === "ADMIN" || request.user?.role === "OPERATOR";
+    if (!administrator && !(ip && isPrivateOrReservedAddress(ip.replace(/^::ffff:/, "")))) {
+      return sendApiError(reply, 403, "METRICS_FORBIDDEN", "Metrics are available to local scrapers and administrators only.");
+    }
     reply.header("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
     return observability.renderPrometheus();
   });
@@ -8114,15 +8369,83 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     resolvePublicOrigin: (request) => resolveDemoPublicOrigin(request, config)
   });
 
+  // T3 Code: the feature flag scopes only these encapsulated T3 namespaces.
+  // The configured public UI origin is accepted alongside the derived one, as
+  // for voice sessions, because the TLS/web proxy hides the browser origin.
+  const t3Origins = t3PublicOrigins(config.browserEvidenceTargetOrigin, config.demoProjectsPublicOrigin);
+  const t3Bindings = await registerT3Bindings(app, { enabled: config.t3CodeEnabled, sessionSecret: auth.sessionSecret, store, publicOrigins: t3Origins,
+    socketPath: config.t3CodeSocketPath, healthTimeoutMs: config.t3CodeHealthTimeoutMs });
+  await registerT3Gateway(app, { enabled: config.t3CodeEnabled, sessionSecret: auth.sessionSecret, store, publicOrigins: t3Origins,
+    socketPath: config.t3CodeSocketPath, timeoutMs: config.t3CodeProxyTimeoutMs,
+    documentBootstrap: t3Bindings.openForDocument, inlineBootstrapEnabled: t3InlineBootstrapSupported, startupAssets: () => t3StartupAssets() });
+  await registerT3StaticAssets(app, { enabled: config.t3CodeEnabled, sessionSecret: auth.sessionSecret });
+  await registerT3LegacyRetirement(app);
+  registerT3CodeAdminRoutes(app, {
+    featureEnabled: config.t3CodeEnabled,
+    controller: options.t3CodeServiceController ?? createT3CodeServiceController(),
+    socketPath: config.t3CodeSocketPath,
+    healthTimeoutMs: config.t3CodeHealthTimeoutMs,
+    routeOptions: defaultRouteRateLimitOptions,
+    audit: (request, action, metadata) => recordAudit(store, request, { action, targetType: "managed_service", targetId: "space-t3code.service", metadata })
+  });
+
   registerBenchmarkRoutes(app, defaultRouteRateLimitOptions);
+  registerChessBenchmarkRoutes(app, defaultRouteRateLimitOptions, {
+    cli: {
+      listModels: (runtimeId) => cliModelsExecutor(runtimeId)(),
+      // A chess player must also be signed in (Kimi and Autohand can be enabled but not connected).
+      state: async (runtimeId) => {
+        const state = await cliChatRuntimeState(runtimeId);
+        if (!state.enabled) return state;
+        const runtime = findRuntime(await cliRuntimeRegistryCache.read(), runtimeId);
+        return runtime?.authState === "READY" ? state : { enabled: false, reason: runtime?.authReason ?? "Sign-in required." };
+      }
+    },
+    // Claude moves go to the signed-in account with the most quota left, like T3 Code.
+    claudeProfile: async () => pickClaudeProfile((await claudeUsageProvider()).data)
+  });
 
   registerAsteroidsDirectorRoutes(app, defaultRouteRateLimitOptions);
 
-  registerPluginRoutes(app, defaultRouteRateLimitOptions);
+  if (dotsRepository) app.addHook("onClose", () => dotsRepository.dispose());
+  if (dotMemoryRepository) app.addHook("onClose", () => dotMemoryRepository.dispose());
+  registerDotsRoutes(app, {
+    repository: dotsRepository, routeOptions: defaultRouteRateLimitOptions,
+    // Goals and schedules have dedicated Stage 4 routes; their Stage 2 collections live under /collections.
+    dedicatedResources: ["goals", "schedules"],
+    nativeGoals: async () => (await codexGoals.list()).map(goal => agentPaneGoalSchema.parse({
+      threadId: goal.threadId, goalId: goal.goalId, objective: goal.title, status: goal.status,
+      tokenBudget: goal.tokenBudget, tokensUsed: goal.tokensUsed, timeUsedSeconds: goal.timeUsedSeconds,
+      createdAt: goal.createdAt, updatedAt: goal.updatedAt
+    })),
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+
+  const personalGitOwner = async (request: FastifyRequest) => {
+    if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use personal Source Control.", 401);
+    return (await store.upsertUser(request.user)).id;
+  };
+  registerPluginRoutes(app, defaultRouteRateLimitOptions, {
+    service: sourceControlService,
+    owner: personalGitOwner
+  });
+  registerSourceControlRoutes(app, { service: sourceControlService, store, rateLimitOptions: defaultRouteRateLimitOptions, authenticatedOwner: personalGitOwner });
+  registerWorktreeRoutes(app, {
+    service: worktreeService,
+    rateLimitOptions: defaultRouteRateLimitOptions,
+    authorizeDestructive: (request) => request.user?.role === "ADMIN" || request.user?.role === "OPERATOR"
+  });
+  app.addHook("onClose", async () => { await sourceControlService.close(); });
 
   registerHarnessRoutes(app, config, store);
 
-  registerFilesRoutes(app);
+  registerFilesRoutes(app, { hostModeEnabled: config.filesHostModeEnabled });
+  registerDatabasesRoutes(app);
 
   app.post(
     "/api/app-diagnostics/event-batches",
@@ -8227,8 +8550,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     config: {
       rateLimit: {
         max: 10,
-        timeWindow: "15 minutes",
-        allowList: (request) => isLoopbackRequest(request)
+        timeWindow: "15 minutes"
       }
     }
   }, async (request, reply) => {
@@ -8260,7 +8582,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       metadata: { role: persistedUser.role, devLogin: persistedUser.id === "user:dev-operator" }
     });
     const token = signSession(persistedUser, auth.sessionSecret);
-    reply.clearCookie("space_logged_out", { path: "/" });
     reply.setCookie(cookieName, token, {
       httpOnly: true,
       secure: auth.secureCookies,
@@ -8268,16 +8589,25 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       path: "/",
       maxAge: operatorSessionTtlSeconds
     });
+    reply.clearCookie("space_logged_out", { path: "/" });
     return { user: persistedUser, isAuthenticated: true, isSetupRequired: false };
   });
 
   app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
+    const currentToken = request.cookies[cookieName];
+    if (currentToken) {
+      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
+    }
+    const body = (request.body ?? {}) as { revokeAll?: boolean };
+    if (body.revokeAll && request.user) {
+      await persistRevocation(defaultSessionRevocationStore.revokeUser(request.user.id));
+    }
     if (request.user) {
       await recordAudit(store, request, {
         action: "auth.logout",
         targetType: "user",
         targetId: request.user.id,
-        metadata: { role: request.user.role }
+        metadata: { role: request.user.role, revokedAll: Boolean(body.revokeAll) }
       });
     }
     reply.setCookie("space_logged_out", "1", {
@@ -8291,7 +8621,38 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true };
   });
 
+  app.post("/api/auth/logout-all", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (!request.user) {
+      return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required to revoke all sessions.");
+    }
+    await persistRevocation(defaultSessionRevocationStore.revokeUser(request.user.id));
+    const currentToken = request.cookies[cookieName];
+    if (currentToken) {
+      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
+    }
+    await recordAudit(store, request, {
+      actorUserId: request.user.id,
+      action: "auth.logout_all",
+      targetType: "user",
+      targetId: request.user.id,
+      metadata: { role: request.user.role }
+    });
+    reply.setCookie("space_logged_out", "1", {
+      httpOnly: false,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 86400 * 30
+    });
+    reply.clearCookie(cookieName, { path: "/" });
+    return { ok: true, message: "All user sessions have been revoked." };
+  });
+
   const handleGetLogout = async (request: FastifyRequest, reply: FastifyReply) => {
+    const currentToken = request.cookies[cookieName];
+    if (currentToken) {
+      await persistRevocation(defaultSessionRevocationStore.revokeToken(currentToken));
+    }
     if (request.user) {
       await recordAudit(store, request, {
         actorUserId: request.user.id,
@@ -8349,66 +8710,84 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return { ok: true, googleAuthEnabled: true };
   });
 
-  async function resolveOrRegisterGoogleUser(info: { email: string; sub: string; name?: string; picture?: string }, requestId: string): Promise<AuthUser> {
-    if (store.getUserByGoogleId) {
-      const byGoogleId = await store.getUserByGoogleId(info.sub);
-      if (byGoogleId) {
-        if (store.updateUserGoogleInfo) {
-          await store.updateUserGoogleInfo(byGoogleId.id, info.sub, info.picture, info.email);
-        }
-        return {
-          ...byGoogleId,
-          email: byGoogleId.email.endsWith(".local") ? info.email : byGoogleId.email,
-          avatarUrl: info.picture ?? byGoogleId.avatarUrl
-        };
-      }
-    }
-    const existing = await store.getControlActor(`user:google:${info.sub}`, info.email);
-    if (existing) {
-      if (store.updateUserGoogleInfo) {
-        await store.updateUserGoogleInfo(existing.id, info.sub, info.picture, info.email);
-      }
-      return {
-        ...existing,
-        email: existing.email.endsWith(".local") ? info.email : existing.email,
-        avatarUrl: info.picture ?? existing.avatarUrl
-      };
-    }
-
-    // Auto-claim initial Space operator on first Google sign-in:
-    // If the instance's primary operator (user:operator) has not been linked to a Google account yet,
-    // and either its email is the default/local placeholder (e.g. .local or matching DEV_OPERATOR_EMAIL)
-    // or matches the configured SPACE_OPERATOR_EMAIL from the server configuration,
-    // automatically link this first Google identity directly to user:operator so that all bookmarks,
-    // clipboard items, tasks, and rooms created during installation are fully preserved.
-    const operatorUser = await store.getControlActor("user:operator");
-    if (operatorUser && !operatorUser.googleId) {
-      const isDefaultLocalEmail = operatorUser.email.endsWith(".local") || operatorUser.email === "space@space.local";
-      const matchesConfiguredOperator = Boolean(auth.operatorEmail && info.email.toLowerCase() === auth.operatorEmail.toLowerCase());
-      if (isDefaultLocalEmail || matchesConfiguredOperator) {
-        if (store.updateUserGoogleInfo) {
-          await store.updateUserGoogleInfo(operatorUser.id, info.sub, info.picture, info.email);
-        }
-        return {
-          ...operatorUser,
-          email: info.email,
-          googleId: info.sub,
-          avatarUrl: info.picture ?? operatorUser.avatarUrl
-        };
-      }
-    }
-
-    const newUser: AuthUser = {
-      id: `user:google:${info.sub}`,
-      email: info.email.toLowerCase(),
-      role: "USER"
-    };
-    const persisted = await store.upsertUser(newUser);
-    if (store.ensureUserStarterRoom) {
-      await store.ensureUserStarterRoom(persisted.id, persisted.email, requestId);
-    }
-    return persisted;
+  async function resolveOrRegisterGoogleUser(info: { email: string; sub: string; name?: string; picture?: string }, _requestId: string): Promise<AuthUser> {
+    const user = await store.getUserByGoogleId?.(info.sub);
+    if (!user) throw new Error("This Google account is not linked to any SpaceApp user. Please log in with your credentials and link your Google account in Settings.");
+    // Login only reads membership. Only the authenticated linking flow can create it.
+    return user;
   }
+
+  function isGoogleProofSession(request: FastifyRequest): boolean {
+    const session = verifySession(request.cookies[cookieName], auth.sessionSecret);
+    return Boolean(session && (session.id.startsWith("user:operator-proof") || session.id.startsWith("user:proof") || session.proofScope || session.automationScope));
+  }
+
+  async function hasAlternativeGoogleLogin(userId: string): Promise<boolean> {
+    const owner = await store.getOwnerCredentials();
+    if (owner) return owner.user.id === userId;
+    if (!auth.operatorEmail || !auth.operatorPasswordHash) return false;
+    // Mirror the existing password route's persisted operator identity.
+    const operator = await store.getControlActor("user:operator", auth.operatorEmail);
+    return operator?.id === userId && operator.email.toLowerCase() === auth.operatorEmail.toLowerCase();
+  }
+
+  async function googleAccountBrowserStatuses(accounts: GoogleAccount[]): Promise<Map<string, GoogleBrowserStatusSummary>> {
+    const active = accounts.length ? await store.listActivePaneBrowserSessions() : [];
+    return new Map(await Promise.all(accounts.map(async (account): Promise<[string, GoogleBrowserStatusSummary]> => {
+      const path = googleBrowserProfilePathFor(config.browserSessionsProfileRoot, account.ownerUserId, account.id);
+      // Only a definite ENOENT means "no profile"; other stat errors stay Unknown.
+      const profileExists = await stat(path).then(() => true, (error: NodeJS.ErrnoException) => error.code !== "ENOENT");
+      const check = profileExists ? await readGoogleBrowserCheck(path).catch(() => null) : null;
+      const activeUrls = active.filter(candidate => candidate.profileId === `google-account:${account.id}`).map(candidate => candidate.currentUrl);
+      return [account.id, summarizeGoogleBrowserStatus({ profileExists, check, activeUrls })];
+    })));
+  }
+
+  app.get("/api/auth/google/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const accounts = await store.listGoogleAccounts(request.user!.id);
+    const statuses = await googleAccountBrowserStatuses(accounts);
+    return { accounts: accounts.map(account => ({ ...account, ...statuses.get(account.id)! })) };
+  });
+
+  // Checks the account's own persistent browser profile with Google. Only the
+  // classified state is returned; cookies, emails and tokens stay in Chrome.
+  app.post("/api/auth/google/accounts/:id/browser-check", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot check external accounts.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    const account = (await store.listGoogleAccounts(request.user!.id)).find(candidate => candidate.id === id);
+    if (!account) throw new SpaceNotFoundError("Google account not found.");
+    let check: GoogleAccountBrowserCheckResult;
+    try {
+      check = browserSessionManager.checkGoogleAccount
+        ? await browserSessionManager.checkGoogleAccount({ ownerUserId: account.ownerUserId, accountId: account.id }, true, operatorBrowserActor(request))
+        : { status: "UNKNOWN", reason: "BROWSER_UNAVAILABLE", checkedAt: nowIso(), connectedAt: null };
+    } catch (error) {
+      if (error instanceof SpaceNotFoundError) throw error;
+      // An unavailable or older Browser Host is not evidence of a Google logout.
+      check = { status: "UNKNOWN", reason: "BROWSER_UNAVAILABLE", checkedAt: nowIso(), connectedAt: null };
+    }
+    await recordAudit(store, request, { action: "auth.google.browser_check", targetType: "google_account", targetId: id, metadata: { status: check.status, reason: check.reason } });
+    const statuses = await googleAccountBrowserStatuses([account]);
+    return { account: { ...account, ...statuses.get(account.id)! }, check };
+  });
+
+  app.patch("/api/auth/google/accounts/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot manage external accounts.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    parseBody(z.object({ isPrimary: z.literal(true) }).strict(), request.body);
+    const account = await store.setPrimaryGoogleAccount(request.user!.id, id);
+    await recordAudit(store, request, { action: "auth.google.primary", targetType: "google_account", targetId: id });
+    return { account };
+  });
+
+  app.delete("/api/auth/google/accounts/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot manage external accounts.");
+    const { id } = parseQuery(idParamSchema, request.params);
+    await store.removeGoogleAccount(request.user!.id, id, await hasAlternativeGoogleLogin(request.user!.id));
+    await recordAudit(store, request, { action: "auth.google.unlink", targetType: "google_account", targetId: id });
+    return { ok: true };
+  });
 
   interface DesktopAuthHandoffEntry {
     token: string;
@@ -8427,11 +8806,51 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }[tag] || tag));
   }
 
-  app.get("/api/auth/google/start", defaultRouteRateLimitOptions, async (request, reply) => {
+  const dotsAuthenticatedOwner = async (request: FastifyRequest) => {
+    if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+      throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+    }
+    return (await store.upsertUser(request.user)).id;
+  };
+  const oauthRedirectBase = (request: FastifyRequest) => {
+    const forwardedProto = request.headers["x-forwarded-proto"];
+    const forwardedHost = request.headers["x-forwarded-host"];
+    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    return `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}`;
+  };
+  const connectorStateTools = {
+    sign: (value: string) => signOAuthState(value, auth.sessionSecret),
+    verify: (token: string | undefined) => verifyOAuthState(token, auth.sessionSecret),
+    sessionHash: (request: FastifyRequest) => createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex"),
+    redirectUri: (request: FastifyRequest, provider: "GOOGLE" | "MICROSOFT") => provider === "GOOGLE"
+      ? auth.googleRedirectUri || `${oauthRedirectBase(request)}/api/auth/google/callback`
+      : process.env.SPACE_MICROSOFT_REDIRECT_URI || `${oauthRedirectBase(request)}/api/connectors/microsoft/callback`,
+    secureCookies: auth.secureCookies
+  };
+  const connectorStatePurpose = (state: string | undefined): string | null => {
+    try { return (JSON.parse(Buffer.from(verifyOAuthState(state, auth.sessionSecret) ?? "", "base64url").toString("utf8")) as { purpose?: string }).purpose ?? null; }
+    catch { return null; }
+  };
+  // The connector service is created with the other Dot services; the sign-in callback reaches it through this reference.
+  const connectorServiceRef: { current: ReturnType<typeof createConnectorService> | null } = { current: null };
+  const startGoogleOAuth = async (request: FastifyRequest, reply: FastifyReply) => {
     if (!auth.googleClientId) {
       return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
     }
-    const state = randomBytes(16).toString("hex");
+    const query = request.query as Record<string, string> | undefined;
+    const linking = query?.link === "true" || request.routeOptions.url === "/api/auth/google/accounts/link";
+    if (linking && !request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Sign in before linking a Google account.");
+    if (linking && isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot link external accounts.");
+    const pkce = generatePkcePair();
+    const rawState = Buffer.from(JSON.stringify({
+      nonce: randomBytes(16).toString("hex"), expiresAt: Date.now() + 600_000,
+      userId: linking ? request.user!.id : null,
+      sessionHash: linking ? createHash("sha256").update(request.cookies[cookieName]!).digest("hex") : null,
+      codeChallenge: pkce.codeChallenge
+    })).toString("base64url");
+    const state = signOAuthState(rawState, auth.sessionSecret);
+    const signedPkce = signOAuthState(pkce.codeVerifier, auth.sessionSecret);
     const forwardedProto = request.headers["x-forwarded-proto"];
     const forwardedHost = request.headers["x-forwarded-host"];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
@@ -8446,13 +8865,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       maxAge: 600
     });
 
+    reply.setCookie("space_oauth_pkce", signedPkce, {
+      httpOnly: true,
+      secure: auth.secureCookies,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 600
+    });
+
     const authUrl = buildGoogleAuthUrl({
       clientId: auth.googleClientId,
       redirectUri,
-      state
+      state,
+      codeChallenge: pkce.codeChallenge
     });
 
-    const query = request.query as Record<string, string> | undefined;
     const desktopHandoff = query?.desktopHandoff;
     if (desktopHandoff && typeof desktopHandoff === "string" && desktopHandoff.length >= 16) {
       reply.setCookie("space_oauth_desktop_handoff", desktopHandoff, {
@@ -8478,8 +8905,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       reply.clearCookie("space_oauth_mobile", { path: "/" });
     }
 
-    if (query?.link === "true" && request.user) {
-      reply.setCookie("space_oauth_link_user", request.user.id, {
+    if (linking && request.user) {
+      if (request.user.id.startsWith("user:operator-proof") || request.user.id.startsWith("user:proof")) {
+        return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot link external accounts.");
+      }
+      const linkToken = signSessionWithTtl(request.user, auth.sessionSecret, 600);
+      reply.setCookie("space_oauth_link_user", linkToken, {
         httpOnly: true,
         secure: auth.secureCookies,
         sameSite: "lax",
@@ -8494,27 +8925,52 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { authUrl };
     }
     return reply.redirect(authUrl);
-  });
+  };
+  app.get("/api/auth/google/start", defaultRouteRateLimitOptions, startGoogleOAuth);
+  app.get("/api/auth/google/accounts/link", defaultRouteRateLimitOptions, startGoogleOAuth);
 
   app.get("/api/auth/google/callback", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!auth.googleClientId) {
       return sendApiError(reply, 400, "GOOGLE_AUTH_DISABLED", "Google authentication is not configured on this server.");
     }
-    const query = request.query as Record<string, string> | undefined;
-    if (query?.error) {
-      return reply.redirect(`/?authError=${encodeURIComponent(query.error_description || query.error)}`);
+    // Email/calendar connections reuse this registered callback; their signed state says so.
+    if (connectorStatePurpose((request.query as Record<string, string> | undefined)?.state) === "connector") {
+      return completeConnectorCallback(request, reply, connectorServiceRef.current, { authenticatedOwner: dotsAuthenticatedOwner, state: connectorStateTools });
     }
-
+    const query = request.query as Record<string, string> | undefined;
     const code = query?.code;
     const state = query?.state;
     const savedState = request.cookies["space_oauth_state"];
-    const linkUserId = request.cookies["space_oauth_link_user"];
+    const pkceCookie = request.cookies["space_oauth_pkce"];
+    const linkCookie = request.cookies["space_oauth_link_user"];
     const desktopHandoff = request.cookies["space_oauth_desktop_handoff"];
-    reply.clearCookie("space_oauth_link_user", { path: "/" });
-    reply.clearCookie("space_oauth_desktop_handoff", { path: "/" });
-
-    if (!code || !state || !savedState || state !== savedState) {
-      return reply.redirect("/?authError=" + encodeURIComponent("Invalid or expired Google OAuth state. Try signing in again."));
+    for (const name of ["space_oauth_state", "space_oauth_pkce", "space_oauth_link_user", "space_oauth_desktop_handoff", "space_oauth_mobile"]) reply.clearCookie(name, { path: "/" });
+    const verifiedState = verifyOAuthState(state, auth.sessionSecret);
+    let transaction: { userId: string | null; sessionHash: string | null; codeChallenge: string; expiresAt: number } | null = null;
+    try {
+      transaction = z.object({ userId: z.string().nullable(), sessionHash: z.string().nullable(), codeChallenge: z.string().min(43), expiresAt: z.number() })
+        .parse(JSON.parse(Buffer.from(verifiedState ?? "", "base64url").toString("utf8")));
+    } catch { /* Reject malformed and legacy transactions; a fresh start is safe. */ }
+    const errorKey = transaction?.userId || linkCookie ? "googleLinkError" : "authError";
+    const fail = (message: string) => reply.redirect(`/?${errorKey}=${encodeURIComponent(message)}`);
+    if (!state || state !== savedState || !verifiedState || !transaction || transaction.expiresAt <= Date.now()) {
+      return fail("Invalid or expired Google OAuth state. Try signing in again.");
+    }
+    if (query?.error) return fail("Google authentication was cancelled or failed.");
+    if (!code) return fail("Google authorization code is missing. Try signing in again.");
+    const codeVerifier = verifyOAuthState(pkceCookie, auth.sessionSecret);
+    if (!codeVerifier || createHash("sha256").update(codeVerifier).digest("base64url") !== transaction.codeChallenge) {
+      return fail("Invalid or expired Google PKCE session. Try signing in again.");
+    }
+    let linkUser: AuthUser | null = null;
+    if (transaction.userId) {
+      linkUser = verifySession(linkCookie, auth.sessionSecret);
+      if (!linkUser || linkUser.id !== transaction.userId || isGoogleProofSession(request) || !request.user || request.user.id !== transaction.userId ||
+        transaction.sessionHash !== createHash("sha256").update(request.cookies[cookieName] ?? "").digest("hex")) {
+        return fail("You must be actively logged into the original account linking session. Please try again.");
+      }
+    } else if (linkCookie) {
+      return fail("Invalid account linking session. Please try again.");
     }
 
     const forwardedProto = request.headers["x-forwarded-proto"];
@@ -8528,20 +8984,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         code,
         clientId: auth.googleClientId,
         clientSecret: auth.googleClientSecret,
-        redirectUri
+        redirectUri,
+        codeVerifier
       });
 
-      if (linkUserId) {
-        if (store.getUserByGoogleId) {
-          const conflicting = await store.getUserByGoogleId(googleInfo.sub);
-          if (conflicting && conflicting.id !== linkUserId) {
-            reply.clearCookie("space_oauth_state", { path: "/" });
-            return reply.redirect("/?googleLinkError=" + encodeURIComponent("This Google account is already linked to another Space user."));
-          }
-        }
-        if (store.updateUserGoogleInfo) {
-          await store.updateUserGoogleInfo(linkUserId, googleInfo.sub, googleInfo.picture, googleInfo.email);
-        }
+      if (linkUser) {
+        const linkUserId = linkUser.id;
+        await store.linkGoogleAccount(linkUserId, googleInfo);
         await recordAudit(store, request, {
           actorUserId: linkUserId,
           action: "auth.google.link",
@@ -8549,7 +8998,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           targetId: linkUserId,
           metadata: { googleSub: googleInfo.sub, email: googleInfo.email }
         });
-        reply.clearCookie("space_oauth_state", { path: "/" });
+        request.log.info({
+          event: "SECURITY_OAUTH_ACCOUNT_LINKED",
+          userId: linkUserId,
+          googleSub: googleInfo.sub,
+          email: googleInfo.email
+        }, `[SECURITY_AUDIT] User ${linkUserId} linked Google account ${googleInfo.email}`);
         return reply.redirect("/?googleLinked=true");
       }
 
@@ -8636,8 +9090,10 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
 
       return reply.redirect("/");
     } catch (err) {
-      request.log.error({ err }, "Google OAuth callback failed");
-      return reply.redirect(`/?authError=${encodeURIComponent(err instanceof Error ? err.message : "Google login failed.")}`);
+      request.log.warn({ event: "GOOGLE_OAUTH_FAILED" }, "Google OAuth callback failed");
+      const clientMessage = err instanceof SpaceConflictError || (err instanceof Error && err.message.includes("not linked"))
+        ? err.message : "Google authentication failed. Please try again or sign in with your password.";
+      return fail(clientMessage);
     }
   });
 
@@ -8664,15 +9120,19 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     if (!request.user) {
       return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required to unlink Google account.");
     }
-    if (store.unlinkGoogleAccount) {
-      await store.unlinkGoogleAccount(request.user.id);
-    }
+    if (isGoogleProofSession(request)) return sendApiError(reply, 403, "FORBIDDEN", "Proof sessions cannot manage external accounts.");
+    const primary = (await store.listGoogleAccounts(request.user.id)).find(account => account.isPrimary);
+    if (primary) await store.removeGoogleAccount(request.user.id, primary.id, await hasAlternativeGoogleLogin(request.user.id));
     await recordAudit(store, request, {
       actorUserId: request.user.id,
       action: "auth.google.unlink",
       targetType: "user",
       targetId: request.user.id
     });
+    request.log.info({
+      event: "SECURITY_OAUTH_ACCOUNT_UNLINKED",
+      userId: request.user.id
+    }, `[SECURITY_AUDIT] User ${request.user.id} unlinked their Google account`);
     return { ok: true };
   });
 
@@ -8710,159 +9170,26 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     }
   });
 
-  app.get("/api/admin/users", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
-    }
-    if (!store.listUsersWithRoomCounts) {
-      return { users: [] };
-    }
-    const users = await store.listUsersWithRoomCounts();
-    return adminUserListResponseSchema.parse({ users });
+  registerAdminUserRoutes(app, {
+    store, userRoleCache, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
-  app.patch("/api/admin/users/:id/role", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
-    }
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const input = updateUserRoleInputSchema.parse(request.body);
-
-    if (params.id === request.user.id && input.role !== "ADMIN") {
-      return sendApiError(reply, 400, "CANNOT_DEMOTE_SELF", "You cannot remove admin permissions from your own account.");
-    }
-
-    if (!store.updateUserRole) {
-      return sendApiError(reply, 501, "NOT_IMPLEMENTED", "User role modification not supported.");
-    }
-
-    const updated = await store.updateUserRole(params.id, input.role);
-    userRoleCache.set(params.id, { role: input.role, cachedAt: Date.now() });
-    await recordAudit(store, request, {
-      actorUserId: request.user.id,
-      action: "admin.user.role_change",
-      targetType: "user",
-      targetId: params.id,
-      metadata: { newRole: input.role }
-    });
-
-    return { user: updated };
+  app.addHook("onClose", async () => { await sharedGatewayRepository?.dispose(); });
+  let gatewayAdminService = options.gatewayAdminService;
+  if (!gatewayAdminService) {
+    gatewayAdminService = createGatewayAdminService({ repository: gatewayRepositoryFor(), gatewayUrl: config.gatewayUrl, internalToken: config.internalApiToken });
+  }
+  registerGatewayAdminRoutes(app, {
+    service: gatewayAdminService, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
-  app.post("/api/admin/users/:id/copy-from-operator", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
-    }
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const targetUser = await store.getControlActor(params.id);
-    if (!targetUser) {
-      return sendApiError(reply, 404, "USER_NOT_FOUND", "Target user was not found.");
-    }
-    let copiedLinks = 0;
-    let linkPage = 1;
-    while (true) {
-      const pageResult = await store.listUserLinks("user:operator", { isQuick: undefined, page: linkPage, pageSize: 100 });
-      for (const link of pageResult.items) {
-        try {
-          await store.createUserLink({
-            ownerUserId: targetUser.id,
-            url: link.url,
-            title: link.title,
-            description: link.description,
-            openMode: link.openMode,
-            isQuick: link.isQuick,
-            category: link.category
-          });
-          copiedLinks++;
-        } catch {
-          // Ignore duplicate links
-        }
-      }
-      if (pageResult.items.length < 100) break;
-      linkPage++;
-    }
-
-    let copiedClipboard = 0;
-    let clipPage = 1;
-    while (true) {
-      const pageResult = await store.listClipboardItems("user:operator", { page: clipPage, pageSize: 100 });
-      for (const item of pageResult.items) {
-        try {
-          await store.upsertClipboardItem({
-            ownerUserId: targetUser.id,
-            text: item.text,
-            source: item.source,
-            title: item.title,
-            roomId: item.roomId ?? undefined,
-            paneId: item.paneId ?? undefined,
-            paneTitle: item.paneTitle ?? undefined
-          });
-          copiedClipboard++;
-        } catch {
-          // Ignore duplicate items
-        }
-      }
-      if (pageResult.items.length < 100) break;
-      clipPage++;
-    }
-    await recordAudit(store, request, {
-      actorUserId: request.user.id,
-      action: "admin.user.copy_from_operator",
-      targetType: "user",
-      targetId: params.id,
-      metadata: { copiedLinks, copiedClipboard }
-    });
-    return { ok: true, copiedLinks, copiedClipboard };
+  registerClipboardRoutes(app, {
+    store, routeOptions: defaultRouteRateLimitOptions
   });
 
-  app.get("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
-    const query = parseQuery(listClipboardItemsQuerySchema, request.query);
-    const owner = await store.upsertUser(request.user!);
-    const result = await store.listClipboardItems(owner.id, query);
-    return clipboardItemListResponseSchema.parse({
-      data: result.items,
-      pagination: {
-        page: query.page,
-        pageSize: query.pageSize,
-        totalItems: result.total,
-        totalPages: Math.ceil(result.total / query.pageSize)
-      }
-    });
-  });
-
-  app.post("/api/clipboard-items", defaultRouteRateLimitOptions, async (request, reply) => {
-    const input = parseBody(createClipboardItemRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const item = await store.upsertClipboardItem({ ...input, ownerUserId: owner.id });
-    return reply.code(201).send(item);
-  });
-
-  app.delete("/api/clipboard-items/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const owner = await store.upsertUser(request.user!);
-    const deleted = await store.deleteClipboardItem(owner.id, params.id);
-    return { id: deleted.id, deleted: true };
-  });
-
-  app.patch("/api/clipboard-items/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const input = parseBody(setClipboardItemCompletedRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    return store.setClipboardItemCompleted(owner.id, params.id, input.completed);
-  });
-
-  app.patch("/api/clipboard-items/:id/progress", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const input = parseBody(updatePlanProgressRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const updated = await store.updateClipboardItemProgress(owner.id, params.id, input);
-    return updated;
-  });
-
-  app.delete("/api/clipboard-items", defaultRouteRateLimitOptions, async (request) => {
-    const owner = await store.upsertUser(request.user!);
-    return { deletedCount: await store.clearClipboardItems(owner.id) };
-  });
+  registerTraceRoutes(app, { store, routeOptions: defaultRouteRateLimitOptions });
 
   async function dispatchSharedChatToAgentPanes(input: {
     message: { id: string; senderLabel: string; content: string; metadata?: Record<string, unknown> };
@@ -9009,79 +9336,9 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     });
   });
 
-  app.get("/api/task-items", defaultRouteRateLimitOptions, async (request) => {
-    const query = parseQuery(listTaskItemsQuerySchema, request.query);
-    const owner = await store.upsertUser(request.user!);
-    const result = await store.listTaskItems(owner.id, query);
-    return taskItemListResponseSchema.parse({
-      data: result.items,
-      pagination: {
-        page: query.page,
-        pageSize: query.pageSize,
-        totalItems: result.total,
-        totalPages: Math.ceil(result.total / query.pageSize)
-      }
-    });
-  });
-
-  app.get("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const owner = await store.upsertUser(request.user!);
-    const item = await store.getTaskItem(owner.id, params.id);
-    if (!item) {
-      throw new SpaceNotFoundError("Task item was not found.");
-    }
-    return item;
-  });
-
-  app.post("/api/task-items", defaultRouteRateLimitOptions, async (request, reply) => {
-    const input = parseBody(createTaskItemRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const item = await store.upsertTaskItem({
-      ...input,
-      status: input.status ?? "OPEN",
-      source: "MANUAL",
-      ownerUserId: owner.id
-    });
-    await recordAudit(store, request, {
-      action: "task.create",
-      targetType: "task_item",
-      targetId: item.id,
-      metadata: { title: item.title, roomId: item.roomId, paneId: item.paneId }
-    });
-    return reply.code(201).send(item);
-  });
-
-  app.patch("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const input = parseBody(updateTaskItemInputSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const item = await store.updateTaskItem(owner.id, params.id, input);
-    await recordAudit(store, request, {
-      action: "task.update",
-      targetType: "task_item",
-      targetId: params.id,
-      metadata: { status: input.status, hasTitle: Boolean(input.title) }
-    });
-    return item;
-  });
-
-  app.delete("/api/task-items/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const owner = await store.upsertUser(request.user!);
-    const deleted = await store.deleteTaskItem(owner.id, params.id);
-    await recordAudit(store, request, {
-      action: "task.delete",
-      targetType: "task_item",
-      targetId: params.id,
-      metadata: {}
-    });
-    return { id: deleted.id, deleted: true };
-  });
-
-  app.delete("/api/task-items", defaultRouteRateLimitOptions, async (request) => {
-    const owner = await store.upsertUser(request.user!);
-    return { deletedCount: await store.clearTaskItems(owner.id) };
+  registerTaskItemRoutes(app, {
+    store, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
   app.get("/api/links/inspect", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -9266,59 +9523,9 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     };
   });
 
-  app.get("/api/links", defaultRouteRateLimitOptions, async (request) => {
-    const query = parseQuery(listUserLinksQuerySchema, request.query);
-    const owner = await store.upsertUser(request.user!);
-    const result = await store.listUserLinks(owner.id, query);
-    return {
-      data: result.items,
-      pagination: {
-        page: query.page,
-        pageSize: query.pageSize,
-        totalItems: result.total,
-        totalPages: Math.ceil(result.total / query.pageSize)
-      }
-    };
-  });
-
-  app.post("/api/links", defaultRouteRateLimitOptions, async (request, reply) => {
-    const input = parseBody(createUserLinkRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const link = await store.createUserLink({ ...input, ownerUserId: owner.id });
-    await recordAudit(store, request, {
-      action: "link.create",
-      targetType: "user_link",
-      targetId: link.id,
-      metadata: { hostname: new URL(link.url).hostname }
-    });
-    return reply.code(201).send(link);
-  });
-
-  app.patch("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const input = parseBody(updateUserLinkRequestSchema, request.body);
-    const owner = await store.upsertUser(request.user!);
-    const link = await store.updateUserLink(owner.id, params.id, input);
-    await recordAudit(store, request, {
-      action: "link.update",
-      targetType: "user_link",
-      targetId: link.id,
-      metadata: { hostname: new URL(link.url).hostname }
-    });
-    return link;
-  });
-
-  app.delete("/api/links/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseQuery(idParamSchema, request.params);
-    const owner = await store.upsertUser(request.user!);
-    const link = await store.deleteUserLink(owner.id, params.id);
-    await recordAudit(store, request, {
-      action: "link.delete",
-      targetType: "user_link",
-      targetId: link.id,
-      metadata: { hostname: new URL(link.url).hostname }
-    });
-    return { id: link.id, deleted: true };
+  registerUserLinkRoutes(app, {
+    store, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
   app.get("/api/codex/history", defaultRouteRateLimitOptions, async (request) => {
@@ -9483,59 +9690,15 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   app.get("/api/rooms/:id/dashboard-agents", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await assertRoomAccess(params.id, request.user);
+    const cached = dashboardAgentsCache.get(params.id);
+    if (cached && cached.expires > Date.now()) {
+      return cached.data;
+    }
     const data = (await store.listPanes(params.id)).filter(pane => !pane.isClosed);
-    const activity = await readDashboardActivity(data, store, async session => {
-      if (isCodexDirectParityRuntime(session.runtimeId)) {
-        const state = await cliTerminalManager.getCurrentTurnActivity(session.sessionId);
-        if (state.status === "RUNNING") return "working";
-        if (state.status === "COMPLETED") return "done";
-        if (state.status === "ABORTED") return "waiting";
-        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-        const raw = roomTerminalState(screen.text);
-        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
-      }
-      if (isOpenCodeDirectParityRuntime(session.runtimeId)) {
-        const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
-        const control = await readOpenCodeServerControl(session.sessionId, stateRoot);
-        if (control) {
-          if (!control.directory && session.cwd) control.directory = session.cwd;
-          const busy = await fetchOpenCodeSessionIsTurnActive(control, control.nativeSessionId, session.cwd ?? undefined).catch(() => false);
-          if (busy) return "working";
-        }
-        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-        const raw = roomTerminalState(screen.text);
-        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
-      }
-      if (session.runtimeId === "cli:gemini") {
-        const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
-        const rootPid = pids?.get(session.sessionId) ?? null;
-        const native = await loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid }).catch(() => null);
-        if (native && native.turns.length > 0) {
-          const latest = native.turns.at(-1)!;
-          if (latest.status === "RUNNING") return "working";
-          if (latest.status === "INTERRUPTED" || latest.aborted) return "waiting";
-          if (latest.status === "COMPLETED") {
-            const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-            const raw = roomTerminalState(screen.text);
-            if (raw === "RUNNING") return "working";
-            if (raw === "WAITING_FOR_INPUT") return "waiting";
-            return "done";
-          }
-        }
-        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-        const raw = roomTerminalState(screen.text);
-        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
-      }
-      if (isDeepSeekDirectParityRuntime(session.runtimeId)) {
-        const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-        const raw = roomTerminalState(screen.text);
-        return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
-      }
-      const screen = await cliTerminalManager.observeRoomScreen(session.sessionId).catch(() => ({ text: "" }));
-      const raw = roomTerminalState(screen.text);
-      return raw === "RUNNING" ? "working" : raw === "WAITING_FOR_INPUT" ? "waiting" : "idle";
-    });
-    return { data, activity };
+    const { activity, details } = await readDashboardActivity(data, store, readCliDashboardActivity);
+    const result = { data, activity, details, sampledAt: nowIso() };
+    dashboardAgentsCache.set(params.id, { expires: Date.now() + 2500, data: result });
+    return result;
   });
 
   app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async (request) => {
@@ -9561,6 +9724,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         return {
           roomId: room.id,
           runningCliCount: roomActivity?.runningCliCount ?? 0,
+          paneCount: roomActivity?.paneCount ?? 0,
           runtimeIds: roomActivity?.runtimeIds ?? []
         };
       }),
@@ -9571,7 +9735,12 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   app.post("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const input = parseBody(createRoomInputSchema, request.body);
     if (input.initialPaneCount > 0) await cliRuntimeVisibility.assertEnabled("cli:codex");
-    const room = await store.createRoom(input, request.requestIdForSpace, request.user?.id ?? null);
+    const existingRooms = await store.listRooms(request.user?.id ?? null);
+    if (existingRooms.length >= MAX_ROOMS) {
+      throw new SpaceConflictError(`Maximum room limit of ${MAX_ROOMS} rooms reached.`);
+    }
+    const roomName = input.name?.trim() || pickNextAvailableRoomName(existingRooms.map((r) => r.name));
+    const room = await store.createRoom({ ...input, name: roomName }, request.requestIdForSpace, request.user?.id ?? null);
     await recordAudit(store, request, {
       action: "room.create",
       targetType: "room",
@@ -9697,10 +9866,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
           : profile === "CLI_INPUT"
             ? `${cliInputProofRoomDescriptionPrefix}${input.runtimeId}]`
             : "Persistent isolated room for agent UI proof and debugging.",
+        // Proof rooms never inherit the /opt/spaceapp room default (eda97abab6):
+        // their /etc panes would otherwise start CLI sessions in the live checkout.
+        projectPath: "/etc",
         initialPaneCount: 0,
         kind: "AGENT_PROOF"
       },
-      request.requestIdForSpace
+      request.requestIdForSpace,
+      profile === "STANDARD" && request.user ? (await store.upsertUser(request.user)).id : undefined
     );
     await activityLogService.recordRoomCreate({
       roomId: room.id,
@@ -10013,23 +10186,18 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   });
 
   app.post("/api/projects/ensure", defaultRouteRateLimitOptions, async (request, reply) => {
-    const body = (request.body ?? {}) as { name?: string; path?: string };
-    let targetPath = typeof body.path === "string" ? body.path.trim() : "";
-    let name = typeof body.name === "string" ? body.name.trim() : "";
-    if (name) {
-      if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-        return reply.status(400).send({
-          ok: false,
-          error: "Project name must contain only English letters, numbers, hyphens, and underscores."
-        });
-      }
-      if (!targetPath) {
-        targetPath = `/opt/spaceapp/projects/${name}`;
-      }
+    const body = (request.body ?? {}) as { name?: unknown; path?: unknown };
+    const target = await resolveProjectEnsureTarget({
+      name: body.name,
+      path: body.path,
+      role: request.user?.role,
+      projectsRoot: config.projectsRoot,
+      installRoot: config.installRoot
+    });
+    if (!target.ok) {
+      return reply.status(target.status).send({ ok: false, error: target.error, code: target.code });
     }
-    if (!targetPath) {
-      return reply.status(400).send({ ok: false, error: "Missing project name or path." });
-    }
+    const targetPath = target.path;
     try {
       await mkdir(targetPath, { recursive: true, mode: 0o775 });
       try {
@@ -10039,7 +10207,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       } catch (gitErr) {
         request.log.warn({ err: gitErr, targetPath }, "Failed to auto-init git in project directory");
       }
-      return reply.send({ ok: true, path: targetPath, name: name || targetPath.split("/").filter(Boolean).pop() || "project" });
+      return reply.send({ ok: true, path: targetPath, name: target.name });
     } catch (err: any) {
       request.log.error({ err, targetPath }, "Failed to ensure project directory");
       return reply.status(500).send({ ok: false, error: `Failed to create directory: ${err?.message || String(err)}` });
@@ -10159,6 +10327,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     return pid;
   }
 
+  // Status displays share a short-lived egress inspection; isolation gates
+  // (assertDeepSeekHarnessIsolated) always read the broker directly.
+  function inspectCliVpnStatus(runtimes: Parameters<CliVpnBroker["inspectRuntimes"]>[0]) {
+    return cliVpnBroker.inspectRuntimesCached
+      ? cliVpnBroker.inspectRuntimesCached(runtimes)
+      : cliVpnBroker.inspectRuntimes(runtimes);
+  }
+
   async function assertDeepSeekHarnessIsolated(pid: number): Promise<void> {
     const inspection = await cliVpnBroker.inspectRuntimes([{ runtimeId: "cli:harness", pids: [pid] }]);
     const harness = inspection.runtimes.find((runtime) => runtime.runtimeId === "cli:harness");
@@ -10194,7 +10370,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       });
     }
     try {
-      const inspection = await cliVpnBroker.inspectRuntimes([{ runtimeId: "cli:harness", pids: pid ? [pid] : [] }]);
+      const inspection = await inspectCliVpnStatus([{ runtimeId: "cli:harness", pids: pid ? [pid] : [] }]);
       const harness = inspection.runtimes.find((runtime) => runtime.runtimeId === "cli:harness");
       const vpnEnabled = harness?.mode === "vpn";
       const isolated = Boolean(pid && harness?.isolatedPids.includes(pid));
@@ -10280,7 +10456,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     const allSessions = sessionGroups.flatMap((group) => group.sessions);
     const pidBySessionId = await cliVpnSessionPidResolver(allSessions);
     try {
-      const inspection = await cliVpnBroker.inspectRuntimes(sessionGroups.map(({ runtimeId, sessions }) => ({
+      const inspection = await inspectCliVpnStatus(sessionGroups.map(({ runtimeId, sessions }) => ({
         runtimeId,
         pids: sessions.flatMap((session) => {
           const pid = pidBySessionId.get(session.sessionId);
@@ -10363,6 +10539,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     }
   }
 
+  registerCliRuntimeCacheInvalidation(app, () => cliRuntimeRegistryCache.invalidate());
   app.get("/api/cli/runtimes", defaultRouteRateLimitOptions, async (request) => {
     const registry = await cliRuntimeRegistryCache.readStaleWhileRefreshing();
     const settings = new Map((await store.listCliRuntimeSettings()).map((setting) => [setting.runtimeId, setting.enabled]));
@@ -10396,6 +10573,45 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       harness,
       checkedAt: nowIso()
     });
+  });
+
+  app.get("/api/cli/providers", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI provider settings require the ADMIN role.");
+    }
+    const settings = await getCliProviderSettings();
+    return cliProviderSettingsResponseSchema.parse(settings);
+  });
+
+  app.patch("/api/cli/providers/:id", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI provider settings require the ADMIN role.");
+    }
+    const params = request.params as { id: string };
+    const input = parseBody(updateCliProviderSettingInputSchema, request.body ?? {});
+    const settings = await updateCliProviderSetting(params.id, input.enabled);
+    await recordAudit(store, request, {
+      action: input.enabled ? "cli_provider.enable" : "cli_provider.disable",
+      targetType: "cli_provider",
+      targetId: params.id,
+      metadata: { enabled: input.enabled }
+    });
+    return cliProviderSettingsResponseSchema.parse(settings);
+  });
+
+  app.post("/api/cli/providers/toggle-all", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI provider settings require the ADMIN role.");
+    }
+    const input = parseBody(updateAllCliProvidersInputSchema, request.body ?? {});
+    const settings = await updateAllCliProviders(input.enabled);
+    await recordAudit(store, request, {
+      action: input.enabled ? "cli_provider.enable_all" : "cli_provider.disable_all",
+      targetType: "cli_provider",
+      targetId: "all",
+      metadata: { enabled: input.enabled }
+    });
+    return cliProviderSettingsResponseSchema.parse(settings);
   });
 
   app.patch("/api/admin/harness/vpn", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -10489,116 +10705,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     return harnessMaintenanceRestartResultSchema.parse({ status });
   });
 
-  const agentToolsOptions = options.agentToolsOptions;
-  const routingQuery = z.object({ runtimeId: z.string().min(1).max(160), modelId: z.string().min(1).max(160) }).strict();
-
-  app.get("/api/model-capabilities", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
-    return { profiles: await discoverRoutingProfiles(agentToolsOptions), state: await store.getToolRoutingState() };
+  registerAgentToolRoutingRoutes(app, {
+    store, agentToolsOptions: options.agentToolsOptions, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
-  app.get("/api/agent-tools/effective", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
-    const input = parseQuery(routingQuery, request.query);
-    return effectiveRouting(store, input.runtimeId, input.modelId, agentToolsOptions);
-  });
-
-  app.post("/api/agent-tools/route-preview", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
-    const input = parseBody(routingQuery.extend({ toolId: z.string().max(160), taskNeedsTool: z.boolean().default(true) }), request.body);
-    const plan = await effectiveRouting(store, input.runtimeId, input.modelId, agentToolsOptions);
-    const policy = spaceToolPolicies.find((entry) => entry.toolId === input.toolId);
-    if (!policy) return sendApiError(reply, 404, "TOOL_NOT_FOUND", "No routing policy exists for this tool.");
-    const state = await routingStateWithLegacy(store);
-    return resolveToolRoute(policy, plan.profile, state.overrides, { taskNeedsTool: input.taskNeedsTool });
-  });
-
-  app.put("/api/agent-tools/policies", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
-    const input = parseBody(updateToolRoutingSchema, request.body);
-    return serializeRoutingUpdate(async () => {
-      const previous = await store.getToolRoutingState();
-      const state = await saveProjectedRouting(store, { ...previous, enabledRuntimeIds: input.enabledRuntimeIds, overrides: input.overrides }, input.expectedRevision, request.user!.id, agentToolsOptions);
-      await recordAudit(store, request, {
-        action: "agent_tools.routing_updated", targetType: "agent_tools", targetId: "routing",
-        metadata: { revision: state.revision, enabledRuntimeIds: state.enabledRuntimeIds }
-      });
-      return state;
-    });
-  });
-
-  app.post("/api/agent-tools/vision-exceptions", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "A per-turn vision exception requires an explicit ADMIN request.");
-    const input = parseBody(routingQuery.extend({
-      sessionId: idSchema, turnId: idSchema, expectedRevision: z.number().int().nonnegative()
-    }), request.body);
-    return serializeRoutingUpdate(async () => {
-      const session = await store.getPaneCliSession(input.sessionId);
-      if (!session || session.runtimeId !== input.runtimeId || session.status !== "RUNNING") {
-        throw new SpaceConflictError("A vision exception requires a running session of the selected runtime.");
-      }
-      const previous = await store.getToolRoutingState();
-      const visionExceptions = previous.visionExceptions.filter((entry) => Date.parse(entry.expiresAt) > Date.now());
-      visionExceptions.push({
-        runtimeId: input.runtimeId, modelId: input.modelId, sessionId: input.sessionId, turnId: input.turnId,
-        actorId: request.user!.id, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString()
-      });
-      const state = await saveProjectedRouting(store, { ...previous, visionExceptions }, input.expectedRevision, request.user!.id, agentToolsOptions);
-      await recordAudit(store, request, { action: "agent_tools.vision_exception", targetType: "cli_session",
-        targetId: input.sessionId, metadata: { modelId: input.modelId, turnId: input.turnId, expiresInSeconds: 300 } });
-      return { revision: state.revision, expiresInSeconds: 300 };
-    });
-  });
-  const agentToolIdParamSchema = z.object({ toolId: idSchema });
-
-  app.get("/api/agent-tools/catalog", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tools require the ADMIN role.");
-    }
-    return await buildAgentToolsCatalog(store, agentToolsOptions);
-  });
-
-  app.patch("/api/agent-tools/assignments/:toolId", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
-    }
-    const params = parseQuery(agentToolIdParamSchema, request.params);
-    const input = parseBody(updateAgentToolAssignmentInputSchema, request.body ?? {});
-    return serializeRoutingUpdate(async () => {
-      const assignment = await store.updateAgentToolAssignment(params.toolId, input, request.user?.id ?? "operator:unknown");
-      await projectRoutingState(store, agentToolsOptions);
-      return agentToolAssignmentSchema.parse(assignment);
-    });
-  });
-
-  app.delete("/api/agent-tools/assignments/:toolId", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool assignments require the ADMIN role.");
-    }
-    const params = parseQuery(agentToolIdParamSchema, request.params);
-    return serializeRoutingUpdate(async () => {
-    const deleted = await store.deleteAgentToolAssignment(params.toolId);
-    if (!deleted) {
-      throw new SpaceNotFoundError(`Agent tool assignment ${params.toolId} was not found.`);
-    }
-    await projectRoutingState(store, agentToolsOptions);
-    return { toolId: params.toolId, deleted: true };
-    });
-  });
-
-  app.post("/api/agent-tools/apply", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "Applying agent tools requires the ADMIN role.");
-    }
-    const input = parseBody(applyAgentToolsInputSchema, request.body ?? {});
-    return serializeRoutingUpdate(async () => {
-      const result = await applyAgentTools(store, input.assignments, agentToolsOptions);
-      for (const assignment of input.assignments) {
-        await store.updateAgentToolAssignment(assignment.toolId, assignment, request.user!.id);
-      }
-      await projectRoutingState(store, agentToolsOptions);
-      return result;
-    });
+  app.get("/api/admin/deploy-queue", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "The deploy queue requires ADMIN.");
+    return readDeployQueue(options.deployQueueRoot);
   });
 
   app.post("/api/agent-tools/launch", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -10660,185 +10774,10 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     });
   });
 
-  app.get("/api/cli/egress", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    const settings = await store.listCliRuntimeSettings();
-    return (await readCliVpnApplications(settings)).egress;
-  });
-
-  app.get("/api/cli/vpn/routing-status", defaultRouteRateLimitOptions, async () => {
-    const settings = await store.listCliRuntimeSettings();
-    const vpn = await readCliVpnApplications(settings);
-    return cliVpnRoutingStatusSchema.parse({
-      vpnSupported: config.cliVpnEnabled,
-      selectedRoute: vpn.egress.selectedRoute,
-      connectionStatus: vpn.connection?.status ?? "NOT_CONFIGURED",
-      egressIpv4: vpn.connection?.egressIpv4 ?? null,
-      egressIpv6: vpn.connection?.egressIpv6 ?? null,
-      relay: vpn.connection?.relay ?? null,
-      applications: vpn.applications,
-      checkedAt: nowIso()
-    });
-  });
-
-  app.get("/api/cli/vpn", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    return cliVpnConnectionSchema.parse(await cliVpnBroker.status());
-  });
-
-  app.put("/api/cli/vpn/profile", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const input = parseBody(replaceCliVpnProfileInputSchema, request.body ?? {});
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.replace(input.config));
-    await recordAudit(store, request, {
-      action: "cli.vpn.profile.replace",
-      targetType: "cli_vpn_profile",
-      targetId: "shared",
-      metadata: {
-        status: connection.status,
-        profileFingerprint: connection.profileFingerprint,
-        ipv4Verified: connection.egressIpv4 !== null,
-        ipv6Verified: connection.egressIpv6 !== null
-      }
-    });
-    return connection;
-  });
-
-  app.post("/api/cli/vpn/verify", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.verify());
-    await recordAudit(store, request, {
-      action: "cli.vpn.profile.verify",
-      targetType: "cli_vpn_profile",
-      targetId: "shared",
-      metadata: {
-        status: connection.status,
-        profileFingerprint: connection.profileFingerprint,
-        ipv4Verified: connection.egressIpv4 !== null,
-        ipv6Verified: connection.egressIpv6 !== null
-      }
-    });
-    return connection;
-  });
-
-  app.delete("/api/cli/vpn/profile", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI VPN settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.remove());
-    await recordAudit(store, request, {
-      action: "cli.vpn.profile.remove",
-      targetType: "cli_vpn_profile",
-      targetId: "shared",
-      metadata: { status: connection.status }
-    });
-    return connection;
-  });
-
-  const cliVpnProfileParamSchema = z.object({ profileId: cliVpnProfileIdSchema });
-
-  app.put("/api/cli/egress/profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const params = parseQuery(cliVpnProfileParamSchema, request.params);
-    const input = parseBody(replaceCliVpnProfileInputSchema, request.body ?? {});
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.replaceProfile(params.profileId, input.config));
-    await recordAudit(store, request, {
-      action: "cli.egress.profile.replace",
-      targetType: "cli_vpn_profile",
-      targetId: params.profileId,
-      metadata: {
-        status: connection.status,
-        profileFingerprint: connection.profileFingerprint,
-        ipv4Verified: connection.egressIpv4 !== null,
-        ipv6Verified: connection.egressIpv6 !== null
-      }
-    });
-    return connection;
-  });
-
-  app.post("/api/cli/egress/profiles/:profileId/verify", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const params = parseQuery(cliVpnProfileParamSchema, request.params);
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.verifyProfile(params.profileId));
-    await recordAudit(store, request, {
-      action: "cli.egress.profile.verify",
-      targetType: "cli_vpn_profile",
-      targetId: params.profileId,
-      metadata: { status: connection.status, profileFingerprint: connection.profileFingerprint }
-    });
-    return connection;
-  });
-
-  app.post("/api/cli/egress/profiles/mullvad/random-city", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.rotateMullvadCity());
-    await recordAudit(store, request, {
-      action: "cli.egress.mullvad.city.rotate",
-      targetType: "cli_vpn_profile",
-      targetId: "mullvad",
-      metadata: {
-        status: connection.status,
-        relay: connection.relay,
-        egressIpv4: connection.egressIpv4
-      }
-    });
-    return connection;
-  });
-
-  app.post("/api/cli/egress/profiles/nord/random-city", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.rotateNordCity());
-    await recordAudit(store, request, {
-      action: "cli.egress.nord.city.rotate",
-      targetType: "cli_vpn_profile",
-      targetId: "nord",
-      metadata: {
-        status: connection.status,
-        relay: connection.relay,
-        egressIpv4: connection.egressIpv4
-      }
-    });
-    return connection;
-  });
-
-  app.delete("/api/cli/egress/profiles/:profileId", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") {
-      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI egress settings require the ADMIN role.");
-    }
-    assertCliVpnAvailable();
-    const params = parseQuery(cliVpnProfileParamSchema, request.params);
-    const connection = cliVpnConnectionSchema.parse(await cliVpnBroker.removeProfile(params.profileId));
-    await recordAudit(store, request, {
-      action: "cli.egress.profile.remove",
-      targetType: "cli_vpn_profile",
-      targetId: params.profileId,
-      metadata: { status: connection.status }
-    });
-    return connection;
+  registerCliEgressRoutes(app, {
+    store, config, cliVpnBroker, assertCliVpnAvailable, readCliVpnApplications,
+    routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
   async function switchGlobalCliEgress(request: FastifyRequest, routeId: CliEgressRouteId) {
@@ -11327,7 +11266,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   });
 
   const cliAccountProfileParamSchema = z.object({
-    runtimeId: z.enum(["cli:gemini", "cli:copilot", "cli:cursor"]),
+    runtimeId: z.enum(["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"]),
     profileId: cliAccountProfileIdSchema.optional()
   });
 
@@ -11364,6 +11303,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       input,
       request.user?.id ?? "operator:unknown"
     );
+    invalidateCliAccountIdentity(params.runtimeId, profile.profileId);
     await recordAudit(store, request, {
       action: "cli.runtime.account_profile.created",
       targetType: "cli_runtime",
@@ -11391,6 +11331,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       { runtimeId: params.runtimeId, profileId: params.profileId, displayName: input.displayName },
       request.user?.id ?? "operator:unknown"
     );
+    invalidateCliAccountIdentity(params.runtimeId, profile.profileId);
     await recordAudit(store, request, {
       action: "cli.runtime.account_profile.renamed",
       targetType: "cli_runtime",
@@ -11398,6 +11339,40 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       metadata: { profileId: profile.profileId }
     });
     return updateCliAccountProfileResponseSchema.parse({ profile });
+  });
+
+  app.get("/api/cli/account-identities", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") {
+      return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI account profiles require the ADMIN role.");
+    }
+    const runtimes = await Promise.all(cliAccountProfileRuntimeIds.map(async (runtimeId) => ({
+      runtimeId,
+      enabled: await cliRuntimeVisibility.isEnabled(runtimeId)
+    })));
+    const query = parseQuery(z.object({ refresh: z.enum(["0", "1"]).optional() }), request.query ?? {});
+    const profiles = (await Promise.all(runtimes
+      .filter((runtime) => runtime.enabled)
+      .map(async ({ runtimeId }) => store.listCliAccountProfiles(runtimeId)))).flat()
+      .filter((profile): profile is typeof profile & { runtimeId: CliAccountProfileRuntimeId } => isCliAccountProfileRuntimeId(profile.runtimeId));
+    if (query.refresh === "1") {
+      for (const profile of profiles) invalidateCliAccountIdentity(profile.runtimeId, profile.profileId);
+    }
+    // At most a few native probes at once; cached identities resolve immediately.
+    const accounts: Array<{ runtimeId: CliAccountProfileRuntimeId; profileId: string; displayName: string; authStatus: "CONNECTED" | "NOT_CONNECTED" | "UNAVAILABLE"; email: string | null; login?: string | null }> = new Array(profiles.length);
+    let nextIndex = 0;
+    await Promise.all(Array.from({ length: Math.min(6, profiles.length) }, async () => {
+      while (nextIndex < profiles.length) {
+        const index = nextIndex++;
+        const profile = profiles[index]!;
+        accounts[index] = {
+          runtimeId: profile.runtimeId,
+          profileId: profile.profileId,
+          displayName: profile.displayName,
+          ...await readCachedCliAccountIdentity(profile.runtimeId, profile.profileId)
+        };
+      }
+    }));
+    return cliAccountIdentitiesResponseSchema.parse({ accounts, checkedAt: nowIso() });
   });
 
   app.get("/api/cli/runtimes/:runtimeId/account-profiles/:profileId/details", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -11412,11 +11387,11 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     if (!profile) {
       throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
     }
-    const nativeDetails = params.runtimeId === "cli:gemini"
-      ? await readGeminiAccountProfileDetails(params.profileId)
-      : params.runtimeId === "cli:copilot"
-        ? await readCopilotAccountProfileDetails(params.profileId)
-        : await readCursorAccountProfileDetails(params.profileId);
+    const nativeDetails = await readCliAccountProfileDetails(params.runtimeId, params.profileId);
+    cliAccountIdentityCache.set(cliAccountProfileKey(params.runtimeId, params.profileId), {
+      expiresAt: Date.now() + cliAccountIdentityCacheTtlMs,
+      value: Promise.resolve(nativeDetails)
+    });
     return cliAccountProfileDetailsResponseSchema.parse({
       details: {
         runtimeId: params.runtimeId,
@@ -11454,12 +11429,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
       }
       if (params.runtimeId === "cli:gemini") await removeGeminiAccountProfileState(params.profileId);
+      else if (params.runtimeId === "cli:claude") await removeClaudeAccountProfileState(params.profileId);
       else if (params.runtimeId === "cli:copilot") await removeCopilotAccountProfileState(params.profileId);
       else await removeCursorAccountProfileState(params.profileId);
       const removed = await store.removeCliAccountProfile(params.runtimeId, params.profileId);
       if (!removed) {
         throw new SpaceNotFoundError(`CLI account profile ${params.runtimeId}/${params.profileId} was not found.`);
       }
+      invalidateCliAccountIdentity(params.runtimeId, params.profileId);
       await recordAudit(store, request, {
         action: "cli.runtime.account_profile.removed",
         targetType: "cli_runtime",
@@ -11741,6 +11718,59 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     });
   });
 
+  const planExecutionTarget = async (owner: string, paneId: string, expectedSessionId?: string) => {
+    const actor = await controlUser(owner);
+    if (actor.role !== "ADMIN") throw new SpaceConflictError("Managed execution requires current administrator access.");
+    const pane = await getPaneById(store, paneId);
+    await assertRoomAccess(pane.roomId, actor);
+    assertCliPaneCompatible(pane);
+    await assertPaneCliRuntimeEnabled(pane);
+    const session = await store.getActivePaneCliSession(pane.id);
+    if (!session || !session.isActive || session.status !== "RUNNING" ||
+        (expectedSessionId && session.sessionId !== expectedSessionId) || !isCodexDirectParityRuntime(session.runtimeId))
+      throw new SpaceConflictError("Managed execution requires the same running Codex session.");
+    assertNormalCliSession(session);
+    let threadId = await resolvePaneCodexThreadId({store,session,traceId:"managed-plan",findThreadId:options.findCodexThreadId});
+    if (!threadId && session.cwd) {
+      // Fresh TUI threads have a writer lock before their first persisted turn.
+      // Bind only the single writer owned by this exact pane/session, confirmed
+      // by that session's private native socket and working directory.
+      const candidates = await (options.findCodexModelControlThreads ?? findCodexWriterThreads)({
+        codexHome: codexDirectParityCodexHome, paneId: pane.id, sessionId: session.sessionId
+      });
+      if (candidates.length === 1) {
+        const native = await codexSocketControlFactory(codexPrivateAppServerSocketPath(session)).readThread?.(candidates[0]!);
+        if (native && native.id === candidates[0] && native.cwd === session.cwd && ['idle','active'].includes(native.status)) {
+          await store.claimPaneCliCodexThread(session.sessionId,native.id,"AUTO","managed-plan");
+          threadId = native.id;
+        }
+      }
+    }
+    if (!threadId || !session.cwd) throw new SpaceConflictError("The Codex session has no confirmed native thread and working directory.");
+    return {paneId:pane.id,sessionId:session.sessionId,threadId,cwd:session.cwd};
+  };
+  registerPlanExecutionRoutes(app, {
+    store,
+    maxStageAttempts: config.planStageMaxAttempts,
+    target: planExecutionTarget,
+    assertStartControl: async (request, target) => {
+      const session = await store.getActivePaneCliSession(target.paneId);
+      if (!session || session.sessionId !== target.sessionId) throw new SpaceConflictError("The CLI session changed.");
+      await assertCliHttpMutationControl(request, session);
+    },
+    resolve: async execution => {
+      const target = await planExecutionTarget(execution.ownerUserId,execution.paneId,execution.sessionId);
+      if (target.threadId !== execution.threadId || target.cwd !== execution.cwd)
+        throw new SpaceConflictError("Managed execution identity changed.");
+      const session = await store.getPaneCliSession(execution.sessionId);
+      if (!session || session.paneId !== execution.paneId) throw new SpaceConflictError("Managed session was not found.");
+      return codexSocketControlFactory(codexPrivateAppServerSocketPath(session));
+    },
+    publish: async event => {
+      eventBus.publish(await store.publishManagedPlanExecutionEvent(event));
+    }
+  });
+
   app.get("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, params.id);
@@ -11779,6 +11809,13 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         : (await readPaneCliModelSettings(pane, active, request.requestIdForSpace)).settings;
       return paneCliModelSettingsStatusSchema.parse({ status: "AVAILABLE", settings });
     } catch (error) {
+      if (error instanceof SpaceConflictError) {
+        return paneCliModelSettingsStatusSchema.parse({
+          status: "UNAVAILABLE",
+          reasonCode: "CONFLICT",
+          reason: error.message
+        });
+      }
       if (
         error instanceof SpaceFeatureDisabledError &&
         (error.errorCode === "CODEX_SESSION_CONTROL_UNAVAILABLE" ||
@@ -11798,6 +11835,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   });
 
   app.patch("/api/panes/:id/cli/model-settings", defaultRouteRateLimitOptions, async (request) => {
+    assertManagedPlanMutationScope(request);
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(updateCliModelSettingsBodySchema, request.body ?? {});
     const pane = await getPaneById(store, params.id);
@@ -11813,41 +11851,13 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     if (active.sessionId !== input.expectedSessionId) {
       throw new SpaceConflictError("The CLI session changed before the model switch could be applied.");
     }
+    await assertNoManagedModelMutation(pane.id);
 
     if (!isCodexDirectParityRuntime(active.runtimeId) && !isOpenCodeDirectParityRuntime(active.runtimeId)) {
       return cliTerminalManager.runSerializedTerminalMutation(active.sessionId, async () => {
-        const before = await readPaneNativeModelSettings(active);
-        let model = before.models.find((entry) => entry.id === input.modelId);
-        if (!model || !model.supportedReasoningEfforts.includes(input.reasoningEffort)) {
-          throw new SpaceConflictError("The selected model settings are not advertised by this CLI.");
-        }
-        if (active.runtimeId === 'cli:gemini' && model.reasoningOptions?.length) {
-          const variantId = model.id.replace(/-(low|medium|high)$/, `-${input.reasoningEffort}`);
-          model = before.models.find(entry => entry.id === variantId) ?? model;
-        }
-        if (before.isTurnActive) throw new SpaceConflictError("Wait for this CLI turn to finish before changing models.");
-        const assertCurrent = async () => {
-          const current = await store.getActivePaneCliSession(pane.id);
-          if (!current?.isActive || current.sessionId !== active.sessionId || current.status === "EXITED" || current.status === "ERROR") {
-            throw new SpaceConflictError("The CLI session changed during the model switch.");
-          }
-          await assertCliHttpMutationControl(request, current);
-        };
-        let step = 0;
-        await switchNativeCliModel({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
-          read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
-          write: (data) => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null,
-            `model-picker:${request.requestIdForSpace}:${step++}`)
-        });
-        // Preserve the confirmed model even if its separate effort command fails.
-        await store.updatePaneCliSession(active.sessionId, { modelId: model.id, reasoningEffort: "unknown" }, request.requestIdForSpace);
-        if (active.runtimeId !== 'cli:gemini' && active.runtimeId !== 'cli:omp') await switchNativeCliReasoning({ model, effort: input.reasoningEffort, runtimeId: active.runtimeId, assertCurrent,
-          read: () => cliTerminalManager.observeRoomScreen(active.sessionId, true),
-          write: data => cliTerminalManager.sendInput(active.sessionId, data, request.requestIdForSpace, null, `reasoning-picker:${request.requestIdForSpace}:${step++}`)
-        });
-        await assertCurrent();
-        const current = { modelId: model.id, reasoningEffort: input.reasoningEffort };
-        const updated = await store.updatePaneCliSession(active.sessionId, current, request.requestIdForSpace);
+        const { before, current, updated } = await applyNativePaneModel({ pane, active, modelId: input.modelId,
+          reasoningEffort: input.reasoningEffort, traceId: request.requestIdForSpace,
+          assertControl: (session) => assertCliHttpMutationControl(request, session) });
         const runtime = findRuntime(await cliRuntimeRegistryCache.read(), updated.runtimeId);
         if (!runtime) throw new SpaceNotFoundError("The CLI runtime is unavailable.");
         await recordAudit(store, request, { action: "pane.cli.model-settings", targetType: "pane", targetId: pane.id,
@@ -11884,6 +11894,15 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         },
         request.requestIdForSpace
       );
+      try {
+        await store.updatePane(
+          pane.id,
+          {
+            modelId: input.modelId
+          },
+          request.requestIdForSpace
+        );
+      } catch {}
       const registry = await cliRuntimeRegistryCache.read();
       const runtime = findRuntime(registry, updatedSession.runtimeId);
       if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);
@@ -11953,12 +11972,21 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       // prompt, cancels an active turn, or starts an automatic continuation.
       await before.directControl.updateThreadSettings({
         threadId: before.settings.threadId,
+        ...(before.primaryThreadId !== undefined ? { requireCurrentThread: true } : {}),
         model: input.modelId,
-        reasoningEffort: input.reasoningEffort
+        reasoningEffort: input.reasoningEffort,
+        beforeSend: async () => {
+          await assertCliHttpMutationControl(request, currentSession);
+          await assertNoManagedModelMutation(pane.id);
+          if (before.primaryThreadId !== undefined &&
+              await before.directControl.readCurrentThreadId?.() !== before.settings.threadId) {
+            throw new SpaceConflictError("The active Codex task changed. Try the selection again.");
+          }
+        }
       });
       if (before.directControl.readThreadSettings) {
         const confirmed = await before.directControl.readThreadSettings(before.settings.threadId);
-        if (confirmed.cwd !== before.session.cwd ||
+        if (confirmed.cwd !== before.controlCwd ||
             canonicalCodexAdvertisedModelId(confirmed.modelId, before.settings.models) !== input.modelId ||
             confirmed.reasoningEffort !== input.reasoningEffort) {
           throw new CodexRuntimeModelSettingsUnconfirmedError({ stage: "THREAD_CONFIRMATION",
@@ -12036,6 +12064,35 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     }
     assertRootAdmin(request, active.runtimeId);
     return paneCliTurnActivityResponseSchema.parse(await cliTerminalManager.getTurnActivity(active.sessionId, query.marker));
+  });
+
+  const paneWorkingTimeResponseSchema = z.object({
+    paneId: idSchema,
+    cumulativeWorkingMs: z.number().int().min(0),
+    isWorking: z.boolean(),
+    state: z.string()
+  });
+
+  // Badge polls read only native task timelines (see pane-working-time.ts),
+  // never the full inspectRoomCli; Room Agent inspections are unaffected.
+  const paneWorkingTime = createPaneWorkingTime({
+    latestCliSession: async (paneId) => await store.getActivePaneCliSession(paneId) ?? (await store.listPaneCliSessions(paneId, 1))[0] ?? null,
+    codexTasks: (threadId) => findCodexTaskTimeline({ codexHome: codexDirectParityCodexHome, threadId }),
+    openCodeTasks: async (session) => {
+      const control = await resolveOpenCodeServerControl(session).catch(() => null);
+      return control ? roomOpenCodeTasks(control).catch(() => null) : null;
+    },
+    sessionRootPid: async (session) => (await cliTerminalManager.activeSessionPids([session]).catch(() => null))?.get(session.sessionId) ?? null,
+    geminiTasks: async (input) => (await loadGeminiNativeTurns(input).catch(() => null))?.turns
+      .map(({ finalResponse: _response, inputText: _input, aborted: _aborted, ...task }) => task) ?? null,
+    claudeTasks: (input) => loadClaudeNativeTurns(input).catch(() => null),
+    inspectNonCli: (pane) => roomPaneController.inspect(pane)
+  });
+
+  app.get("/api/panes/:id/working-time", defaultRouteRateLimitOptions, async (request) => {
+    const params = parseQuery(idParamSchema, request.params);
+    const pane = await getPaneById(store, params.id);
+    return paneWorkingTimeResponseSchema.parse(await paneWorkingTime.read(pane));
   });
 
   app.get("/api/panes/:id/browser/frames", defaultWebsocketRateLimitOptions, (socket, request) => {
@@ -12387,6 +12444,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     }
     const paneInputs = await roomPaneCommands.resolve(params.id, input.panes);
     const panes = await store.createPanes(paneInputs, request.requestIdForSpace);
+    for (const pane of panes) await initializeNewPaneGoogleAccount(request.user!.id, pane);
     await recordAudit(store, request, {
       action: "room.panes.create",
       targetType: "room",
@@ -12420,7 +12478,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         throw new SpaceFeatureDisabledError("HARNESS_DISABLED", "DeepSeek Harness is disabled. Enable it in Settings to open a Harness pane.");
       }
     }
-    if ((input.mode === "TERMINAL" || input.mode === "FILES" || input.mode === "CHAT" || input.mode === "HARNESS") && (!input.cwd || input.cwd === "/etc")) {
+    if ((input.mode === "TERMINAL" || input.mode === "FILES" || input.mode === "DATABASES" || input.mode === "CHAT" || input.mode === "HARNESS") && (!input.cwd || input.cwd === "/etc")) {
       try {
         const room = await store.getRoom(input.roomId);
         if (room?.projectPath) {
@@ -12431,11 +12489,18 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       }
     }
     if (input.cwd && typeof input.cwd === "string" && input.cwd.startsWith("/")) {
-      try {
-        await mkdir(input.cwd.trim(), { recursive: true, mode: 0o775 });
-      } catch {}
+      // SEC-009: only create a missing directory where a project or worktree may live.
+      const cwd = input.cwd.trim();
+      if (!existsSync(cwd) && await mayCreatePaneDirectory({
+        cwd, role: request.user?.role, projectsRoot: config.projectsRoot, installRoot: config.installRoot, worktreesRoot: WORKTREES_ROOT
+      })) {
+        try {
+          await mkdir(cwd, { recursive: true, mode: 0o775 });
+        } catch {}
+      }
     }
     const pane = await store.createPane(input, request.requestIdForSpace);
+    await initializeNewPaneGoogleAccount(request.user!.id, pane);
     await recordAudit(store, request, {
       action: "pane.create",
       targetType: "pane",
@@ -12633,86 +12698,53 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       return sendApiError(reply, 400, "BAD_REQUEST", "Agent Files publishing must use multipart/form-data.");
     }
 
-    const uploads: Array<{ buffer: Buffer; filename: string; declaredMimeType: string }> = [];
-    let totalBytes = 0;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") continue;
-      if (uploads.length >= agentFileMaxCount) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", `At most ${agentFileMaxCount} Agent Files can be published at once.`);
-      }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        totalBytes += buffer.byteLength;
-        if (byteSize > agentFileMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each Agent File must be 100 MiB or smaller.");
+    let folder: string | null = null;
+    return withStagedAgentFiles(request, config.browserEvidenceArtifactRoot, async (uploads, totalBytes) => {
+      const artifacts: Artifact[] = [];
+      for (const upload of uploads) {
+        let record: Awaited<ReturnType<typeof persistAgentFile>>;
+        try {
+          record = await persistAgentFile({
+            store,
+            artifactRoot: config.browserEvidenceArtifactRoot,
+            roomId: bridge.claims.roomId,
+            paneId: bridge.claims.paneId,
+            cliSessionId: bridge.claims.cliSessionId,
+            runtimeId: bridge.cliSession.runtimeId,
+            originalFilename: upload.filename,
+            declaredMimeType: upload.declaredMimeType,
+            sourcePath: upload.sourcePath,
+            traceId: request.requestIdForSpace,
+            folder: folder || undefined,
+            docxNormalizer: options.agentFileDocxNormalizer
+          });
+        } catch (error) {
+          if (error instanceof AgentFileDocxNormalizationError) {
+            return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+          }
+          throw error;
         }
-        if (totalBytes > agentFileMaxRequestBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "One Agent Files publish request cannot exceed 250 MiB.");
-        }
-        chunks.push(buffer);
+        eventBus.publish(record.event);
+        artifacts.push(record.artifact);
       }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Agent Files must not be empty.");
-      }
-      uploads.push({
-        buffer: Buffer.concat(chunks),
-        filename: part.filename || "agent-file",
-        declaredMimeType: part.mimetype || "application/octet-stream"
-      });
-    }
-    if (!uploads.length) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Publish at least one Agent File.");
-    }
-
-    const rootStats = await statfs(config.browserEvidenceArtifactRoot);
-    const freeBytes = Number(rootStats.bavail) * Number(rootStats.bsize);
-    if (freeBytes < totalBytes + 1024 * 1024 * 1024) {
-      return sendApiError(reply, 507, "STORAGE_FULL", "Agent Files publishing requires at least 1 GiB of free space after this upload.");
-    }
-
-    const artifacts: Artifact[] = [];
-    for (const upload of uploads) {
-      let record: Awaited<ReturnType<typeof persistAgentFile>>;
-      try {
-        record = await persistAgentFile({
-          store,
-          artifactRoot: config.browserEvidenceArtifactRoot,
+      await recordAudit(store, request, {
+        action: "agent_file.publish",
+        targetType: "pane",
+        targetId: bridge.claims.paneId,
+        metadata: {
           roomId: bridge.claims.roomId,
-          paneId: bridge.claims.paneId,
           cliSessionId: bridge.claims.cliSessionId,
           runtimeId: bridge.cliSession.runtimeId,
-          originalFilename: upload.filename,
-          declaredMimeType: upload.declaredMimeType,
-          buffer: upload.buffer,
-          traceId: request.requestIdForSpace,
-          docxNormalizer: options.agentFileDocxNormalizer
-        });
-      } catch (error) {
-        if (error instanceof AgentFileDocxNormalizationError) {
-          return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+          folder: folder || undefined,
+          artifactCount: artifacts.length,
+          artifactIds: artifacts.map((artifact) => artifact.id),
+          totalBytes
         }
-        throw error;
-      }
-      eventBus.publish(record.event);
-      artifacts.push(record.artifact);
-    }
-    await recordAudit(store, request, {
-      action: "agent_file.publish",
-      targetType: "pane",
-      targetId: bridge.claims.paneId,
-      metadata: {
-        roomId: bridge.claims.roomId,
-        cliSessionId: bridge.claims.cliSessionId,
-        runtimeId: bridge.cliSession.runtimeId,
-        artifactCount: artifacts.length,
-        artifactIds: artifacts.map((artifact) => artifact.id),
-        totalBytes
-      }
+      });
+      return { artifacts };
+    }, (name, value) => {
+      if (name === "folder") folder = typeof value === "string" ? value.trim() : null;
     });
-    return { artifacts };
   });
 
   app.get("/api/cli/browser/context", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -13051,30 +13083,161 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     return (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? `${userId}:proof:${pane.roomId}` : userId;
   }
 
+  async function selectedGoogleBrowserAccount(userId: string, pane: Pane, profileId: string | null) {
+    if (!profileId?.startsWith("google_account:")) return undefined;
+    if ((await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") throw new SpaceConflictError("Real Google accounts are unavailable in proof rooms.");
+    const account = (await store.listGoogleAccounts(userId)).find(account => account.id === profileId);
+    if (!account) throw new SpaceNotFoundError("The selected Google account is no longer available.");
+    return account;
+  }
+  async function paneGoogleAccountSelection(userId: string, pane: Pane): Promise<string | null> {
+    const owner = await youtubeAccountOwner(userId, pane);
+    const selectionStore = pane.mode === "YOUTUBE" ? youtubeAccountStore : browserAccountStore;
+    return selectionStore.get(owner, pane.id);
+  }
+  interface PaneBrowserAccount { selectedProfileId: string | null; account?: GoogleAccount; profileKey: string | null; sharedProfileKey?: string }
+  /** Legacy scope of a stored pane profile id ("profile:<room>:<pane>[:<key>]"). */
+  function paneProfileKeyOf(profileId: string): string | null {
+    const key = profileId.split(":")[3];
+    return key && /^[a-f0-9]{64}$/.test(key) ? key : null;
+  }
+  // What a pane opens: its explicit choice, else the user's primary Google account
+  // (one shared profile for every pane), else the pane's own profile.
+  async function resolvePaneBrowserAccount(userId: string, pane: Pane): Promise<PaneBrowserAccount> {
+    const selectedProfileId = await paneGoogleAccountSelection(userId, pane);
+    if (selectedProfileId === privatePaneProfileId) return { selectedProfileId, profileKey: null };
+    const account = await selectedGoogleBrowserAccount(userId, pane, selectedProfileId);
+    if (account) return { selectedProfileId, account, profileKey: null };
+    if (selectedProfileId !== null) {
+      if (!await store.getCliAccountProfile("cli:gemini", selectedProfileId)) {
+        throw new SpaceConflictError("The selected Google account is no longer available. Choose another account.");
+      }
+      const key = youtubeAccountProfileKey(await youtubeAccountOwner(userId, pane), selectedProfileId)!;
+      // A CLI (Gemini) account is one Chrome profile for all of the user's panes; proof rooms stay per pane.
+      // The per-pane key stays alongside so an older Browser Host keeps the pane's own legacy profile.
+      return (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF"
+        ? { selectedProfileId, profileKey: key }
+        : { selectedProfileId, profileKey: key, sharedProfileKey: key };
+    }
+    if ((await store.getRoom(pane.roomId)).kind !== "AGENT_PROOF") {
+      const primary = (await store.listGoogleAccounts(userId)).find(candidate => candidate.isPrimary);
+      if (primary) return { selectedProfileId: null, account: primary, profileKey: null };
+    }
+    return { selectedProfileId: null, profileKey: null };
+  }
+  // Before a pane opens: when its own profile is verifiably signed in to one of the
+  // user's Google accounts, that sign-in moves once into the account's shared profile
+  // so every Browser and YouTube pane reuses it.
+  async function adoptPaneSignIn(userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext): Promise<PaneBrowserAccount> {
+    if (resolved.selectedProfileId === privatePaneProfileId || resolved.sharedProfileKey || (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF") return resolved;
+    const byDefault = Boolean(resolved.account) && resolved.selectedProfileId === null;
+    const active = await store.getActivePaneBrowserSession(pane.id);
+    if (active) {
+      // A running pane keeps its profile until it next opens fresh; a reconnect (or a new
+      // primary account) never swaps it silently.
+      if (byDefault && active.profileId.startsWith("profile:")) return { selectedProfileId: null, profileKey: paneProfileKeyOf(active.profileId) };
+      if (byDefault && active.profileId.startsWith("google-account:")) {
+        const running = (await store.listGoogleAccounts(userId)).find(candidate => `google-account:${candidate.id}` === active.profileId);
+        if (running) return { selectedProfileId: null, account: running, profileKey: null };
+      }
+      return resolved;
+    }
+    // Without the Browser Host move (older host), prefer the pane's own profile unless the shared one is verified.
+    const ownProfileUnlessShared = async (): Promise<PaneBrowserAccount> => {
+      if (!byDefault || !resolved.account) return resolved;
+      const check = await readGoogleBrowserCheck(googleBrowserProfilePathFor(config.browserSessionsProfileRoot, userId, resolved.account.id)).catch(() => null);
+      return check?.status === "CONNECTED" ? resolved : { selectedProfileId: null, profileKey: null };
+    };
+    if (!browserSessionManager.adoptPaneGoogleProfile) return ownProfileUnlessShared();
+    const accounts = await store.listGoogleAccounts(userId);
+    if (!accounts.length) return resolved;
+    let profileKey: string | null = resolved.profileKey;
+    if (resolved.account && resolved.selectedProfileId !== null) {
+      // An explicit account choice: look at the pane profile it used before, if any.
+      const prior = await store.getLatestPaneBrowserSession(pane.id);
+      if (!prior?.profileId.startsWith("profile:")) return resolved;
+      profileKey = paneProfileKeyOf(prior.profileId);
+    }
+    let adoption: PaneProfileAdoptionResult;
+    try {
+      // An explicit account choice may only receive that account's sign-in.
+      const wanted = resolved.account && resolved.selectedProfileId !== null ? { accountId: resolved.account.id } : {};
+      adoption = await browserSessionManager.adoptPaneGoogleProfile({ ownerUserId: userId, roomId: pane.roomId, paneId: pane.id, profileKey, ...wanted }, actor);
+    } catch (error) {
+      app.log.warn({ err: error, paneId: pane.id }, "Pane Google sign-in adoption failed; opening the current selection.");
+      return ownProfileUnlessShared();
+    }
+    const owner = await youtubeAccountOwner(userId, pane);
+    const selectionStore = pane.mode === "YOUTUBE" ? youtubeAccountStore : browserAccountStore;
+    const verified = adoption.accountId ? accounts.find(candidate => candidate.id === adoption.accountId &&
+      (resolved.selectedProfileId === null || candidate.id === resolved.account?.id)) : undefined;
+    if (verified && (adoption.result === "ADOPTED" || adoption.result === "ALREADY_CONNECTED")) {
+      await selectionStore.save(owner, pane.id, verified.id);
+      return { selectedProfileId: verified.id, account: verified, profileKey: null };
+    }
+    if (adoption.result === "TARGET_IN_USE" && (!resolved.account || resolved.selectedProfileId === null)) {
+      // The shared profile is busy right now; keep this pane's own signed-in profile and retry next time.
+      return { selectedProfileId: resolved.selectedProfileId, profileKey };
+    }
+    if (adoption.result === "OTHER_ACCOUNT" && resolved.account && resolved.selectedProfileId === null) {
+      // Signed in to a Google account that is not linked to this user: keep that pane private.
+      await selectionStore.save(owner, pane.id, privatePaneProfileId);
+      return { selectedProfileId: privatePaneProfileId, profileKey: null };
+    }
+    return resolved;
+  }
+  /** The account a pane opens with; the primary account when nothing was chosen. */
+  async function effectivePaneProfileId(userId: string, pane: Pane): Promise<string | null> {
+    try {
+      const resolved = await resolvePaneBrowserAccount(userId, pane);
+      return resolved.account?.id ?? resolved.selectedProfileId;
+    } catch { return null; }
+  }
+  async function initializeNewPaneGoogleAccount(userId: string, pane: Pane): Promise<void> {
+    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE") return;
+    const owner = await youtubeAccountOwner(userId, pane);
+    const room = await store.getRoom(pane.roomId);
+    const primary = room.kind === "AGENT_PROOF" ? null : (await store.listGoogleAccounts(userId)).find(account => account.isPrimary)?.id ?? null;
+    await (pane.mode === "YOUTUBE" ? youtubeAccountStore : browserAccountStore).initializeSelection(owner, pane.id, primary);
+  }
+  async function browserAccountChoices(userId: string, pane: Pane) {
+    const legacy = (await store.listCliAccountProfiles("cli:gemini")).map(({ profileId, displayName }) => ({ profileId, displayName: `Gemini account · ${displayName}` }));
+    const accounts = (await store.getRoom(pane.roomId)).kind === "AGENT_PROOF" ? [] : await store.listGoogleAccounts(userId);
+    const statuses = await googleAccountBrowserStatuses(accounts);
+    return [...accounts.map(account => ({
+      profileId: account.id,
+      displayName: `Google account · ${account.displayName || account.email}`,
+      browserStatus: statuses.get(account.id)!.browserStatus
+    })), ...legacy];
+  }
+
   app.get("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
     if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
-    const profiles = await store.listCliAccountProfiles("cli:gemini");
-    const selectedProfileId = await browserAccountStore.get(await youtubeAccountOwner(request.user.id, pane), pane.id);
-    return { selectedProfileId, profiles: profiles.map(({ profileId, displayName }) => ({ profileId, displayName })) };
+    const profiles = await browserAccountChoices(request.user.id, pane);
+    const selectedProfileId = await paneGoogleAccountSelection(request.user.id, pane);
+    return { selectedProfileId, effectiveProfileId: await effectivePaneProfileId(request.user.id, pane), profiles };
   });
 
   app.put("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
     const { id } = parseQuery(idParamSchema, request.params);
-    const { profileId } = parseBody(selectYouTubeAccountSchema, request.body);
+    const { profileId, signIn } = parseBody(selectYouTubeAccountSchema, request.body);
     const pane = await getPaneById(store, id);
     if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
-    if (profileId !== null && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
+    const account = await selectedGoogleBrowserAccount(request.user.id, pane, profileId);
+    const privateProfile = profileId === privatePaneProfileId;
+    if (profileId !== null && !privateProfile && !account && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
     // Use metadata from the existing broker; Google credentials never leave Chrome.
-    const details = profileId === null ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null);
+    const details = account ?? (profileId === null || privateProfile ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null));
     return withYouTubeAccountLock(pane.id, async () => {
       await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
       await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
       await browserAccountStore.save(await youtubeAccountOwner(request.user!.id, pane), pane.id, profileId);
-      return { selectedProfileId: profileId, targetUrl: profileId === null ? config.browserSessionsDefaultUrl : googleAccountSignInUrl(details?.email ?? null) };
+      const openSignIn = profileId !== null && (signIn === true || (!account && !privateProfile));
+      return { selectedProfileId: profileId, targetUrl: openSignIn ? googleAccountSignInUrl(details?.email ?? null) : config.browserSessionsDefaultUrl };
     });
   });
 
@@ -13083,25 +13246,28 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
     if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Google account selection requires a YouTube pane.");
-    const profiles = await store.listCliAccountProfiles("cli:gemini");
-    const selectedProfileId = await youtubeAccountStore.get(await youtubeAccountOwner(request.user.id, pane), pane.id);
-    return { selectedProfileId, profiles: profiles.map(({ profileId, displayName }) => ({ profileId, displayName })) };
+    const profiles = await browserAccountChoices(request.user.id, pane);
+    const selectedProfileId = await paneGoogleAccountSelection(request.user.id, pane);
+    return { selectedProfileId, effectiveProfileId: await effectivePaneProfileId(request.user.id, pane), profiles };
   });
 
   app.put("/api/panes/:id/youtube/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
     const { id } = parseQuery(idParamSchema, request.params);
-    const { profileId } = parseBody(selectYouTubeAccountSchema, request.body);
+    const { profileId, signIn } = parseBody(selectYouTubeAccountSchema, request.body);
     const pane = await getPaneById(store, id);
     if (pane.mode !== "YOUTUBE") throw new SpaceConflictError("Google account selection requires a YouTube pane.");
-    if (profileId !== null && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
+    const account = await selectedGoogleBrowserAccount(request.user.id, pane, profileId);
+    const privateProfile = profileId === privatePaneProfileId;
+    if (profileId !== null && !privateProfile && !account && !await store.getCliAccountProfile("cli:gemini", profileId)) throw new SpaceNotFoundError("The selected Google account is no longer available.");
     // The native helper returns only account metadata, never OAuth credentials.
-    const details = profileId === null ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null);
+    const details = account ?? (profileId === null || privateProfile ? null : await readGeminiAccountProfileDetails(profileId).catch(() => null));
     return withYouTubeAccountLock(pane.id, async () => {
       await youtubeSessionStarts.get(pane.id)?.catch(() => undefined);
       await browserSessionManager.stopPane(pane.id, request.requestIdForSpace, operatorBrowserActor(request));
       await youtubeAccountStore.save(await youtubeAccountOwner(request.user!.id, pane), pane.id, profileId);
-      return { selectedProfileId: profileId, targetUrl: profileId === null ? "https://www.youtube.com/" : youtubeAccountSignInUrl(details?.email ?? null) };
+      const openSignIn = profileId !== null && (signIn === true || (!account && !privateProfile));
+      return { selectedProfileId: profileId, targetUrl: openSignIn ? youtubeAccountSignInUrl(details?.email ?? null) : "https://www.youtube.com/" };
     });
   });
 
@@ -13219,12 +13385,11 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     assertBrowserPaneCompatible(pane);
     const startSession = async () => {
       const priorYouTube = pane.mode === "YOUTUBE" ? await store.getLatestPaneBrowserSession(pane.id) : null;
-      const selectedProfileId = await (pane.mode === "YOUTUBE" ? youtubeAccountStore : browserAccountStore).get(await youtubeAccountOwner(request.user!.id, pane), pane.id);
-      if (selectedProfileId !== null && !await store.getCliAccountProfile("cli:gemini", selectedProfileId)) {
-        throw new SpaceConflictError("The selected Google account is no longer available. Choose another account.");
-      }
-      const profileKey = youtubeAccountProfileKey(await youtubeAccountOwner(request.user!.id, pane), selectedProfileId);
-      if (pane.mode === "YOUTUBE" && selectedProfileId && profileKey && !await store.getActivePaneBrowserSession(pane.id)) {
+      const resolved = await adoptPaneSignIn(request.user!.id, pane, await resolvePaneBrowserAccount(request.user!.id, pane), operatorBrowserActor(request));
+      const { selectedProfileId, account } = resolved;
+      const sharedProfileKey = account ? undefined : resolved.sharedProfileKey;
+      const profileKey = account ? undefined : resolved.profileKey ?? undefined;
+      if (pane.mode === "YOUTUBE" && selectedProfileId && profileKey && !sharedProfileKey && !await store.getActivePaneBrowserSession(pane.id)) {
         const owner = await youtubeAccountOwner(request.user!.id, pane);
         const peerIds = await youtubeAccountStore.knownPanes(owner);
         const peers = await Promise.all(peerIds.filter(id => id !== pane.id).map(async (id) => {
@@ -13242,12 +13407,16 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
           throw new SpaceConflictError("Saved Google sign-in could not be loaded. Retry opening this YouTube pane.");
         }
       }
-      const matchesPriorProfile = selectedProfileId === null ? !priorYouTube?.profilePath.includes("/accounts/") : priorYouTube?.profilePath.endsWith(`/accounts/${profileKey}`);
+      const matchesPriorProfile = account ? priorYouTube?.profileId === `google-account:${account.id}`
+        : sharedProfileKey ? priorYouTube?.profileId === `cli-account:${sharedProfileKey}`
+          : profileKey ? priorYouTube?.profilePath.endsWith(`/accounts/${profileKey}`) : !priorYouTube?.profilePath.includes("/accounts/");
       const starting = youtubeSessionStarts.get(pane.id) ?? browserSessionManager.startOrRestore({
         pane,
         viewport: input.viewport,
         targetUrl: priorYouTube && matchesPriorProfile && !priorYouTube.isActive && (!input.targetUrl || input.targetUrl === "https://www.youtube.com/") ? (priorYouTube.currentUrl ?? priorYouTube.targetUrl) : input.targetUrl,
         profileKey: profileKey ?? null,
+        ...(sharedProfileKey ? { sharedProfileKey } : {}),
+        ...(account ? { googleAccount: { ownerUserId: request.user!.id, accountId: account.id } } : {}),
         streamMode: input.streamMode,
         includeInitialFrame: input.includeInitialFrame,
         ownerAgentId: input.ownerAgentId ?? null,
@@ -13621,70 +13790,47 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       return sendApiError(reply, 400, "BAD_REQUEST", "Bookmark import must use multipart/form-data.");
     }
 
-    let fileCount = 0;
-    let uploadBuffer: Buffer | null = null;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") continue;
-      fileCount += 1;
-      if (fileCount > 1) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "Import one Chrome bookmarks JSON file at a time.");
-      }
-      if (!browserBookmarkImportMimeTypes.has(part.mimetype)) {
+    return withStagedUploads(request, config.browserEvidenceArtifactRoot,
+      { maxFiles: 1, fileBytes: browserBookmarkImportMaxBytes }, async uploads => {
+      const upload = uploads[0]!;
+      if (!browserBookmarkImportMimeTypes.has(upload.declaredMimeType)) {
         return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Bookmark import accepts Chrome/Chromium Bookmarks JSON files.");
       }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        if (byteSize > browserBookmarkImportMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Bookmark import files must be 2MB or smaller.");
-        }
-        chunks.push(buffer);
-      }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Bookmark import file must not be empty.");
-      }
-      uploadBuffer = Buffer.concat(chunks);
-    }
-
-    if (!uploadBuffer) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload a Chrome bookmarks JSON file.");
-    }
-
-    let parsedImport: ReturnType<typeof parseChromeBookmarksImport>;
-    try {
-      parsedImport = parseChromeBookmarksImport(uploadBuffer);
-    } catch {
-      return sendApiError(reply, 422, "INVALID_BOOKMARKS_FILE", "Bookmark import must be a valid Chrome/Chromium Bookmarks JSON file.");
-    }
-
-    const safeBookmarks: BrowserBookmarkImportCandidate[] = [];
-    let skippedCount = parsedImport.skippedCount;
-    for (const candidate of parsedImport.bookmarks) {
+      const uploadBuffer = await readStagedUpload(config.browserEvidenceArtifactRoot, upload);
+      let parsedImport: ReturnType<typeof parseChromeBookmarksImport>;
       try {
-        safeBookmarks.push({
-          title: candidate.title,
-          url: await assertSafeBrowserTargetUrl(candidate.url, config.browserEvidenceTargetOrigin)
-        });
+        parsedImport = parseChromeBookmarksImport(uploadBuffer);
       } catch {
-        skippedCount += 1;
+        return sendApiError(reply, 422, "INVALID_BOOKMARKS_FILE", "Bookmark import must be a valid Chrome/Chromium Bookmarks JSON file.");
       }
-    }
-    const imported = await importManagedBrowserBookmarks(session, { bookmarks: safeBookmarks, skippedCount });
-    await recordAudit(store, request, {
-      action: "pane.browser.bookmark.import",
-      targetType: "pane",
-      targetId: pane.id,
-      metadata: {
-        roomId: pane.roomId,
-        sessionId: session.sessionId,
-        importedCount: imported.importedCount,
-        skippedCount: imported.skippedCount,
-        hostnames: safeAuditHostnames(safeBookmarks.map((bookmark) => bookmark.url))
+
+      const safeBookmarks: BrowserBookmarkImportCandidate[] = [];
+      let skippedCount = parsedImport.skippedCount;
+      for (const candidate of parsedImport.bookmarks) {
+        try {
+          safeBookmarks.push({
+            title: candidate.title,
+            url: await assertSafeBrowserTargetUrl(candidate.url, config.browserEvidenceTargetOrigin)
+          });
+        } catch {
+          skippedCount += 1;
+        }
       }
+      const imported = await importManagedBrowserBookmarks(session, { bookmarks: safeBookmarks, skippedCount });
+      await recordAudit(store, request, {
+        action: "pane.browser.bookmark.import",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
+          roomId: pane.roomId,
+          sessionId: session.sessionId,
+          importedCount: imported.importedCount,
+          skippedCount: imported.skippedCount,
+          hostnames: safeAuditHostnames(safeBookmarks.map((bookmark) => bookmark.url))
+        }
+      });
+      return browserBookmarkImportResponseSchema.parse(imported);
     });
-    return browserBookmarkImportResponseSchema.parse(imported);
   });
 
   app.get("/api/panes/:id/browser/bookmarks/export", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -13920,12 +14066,19 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         }))
       });
     }
+    // The worker calls this route with its own HTTP request; link it to the
+    // originating Space request id (input.requestId) for trace lookups.
+    request.log.info(
+      { event: "room_action.bridge", parentTraceId: input.requestId ?? null, missionId: input.missionId, actionCount: input.actions.length },
+      "internal room action request"
+    );
     const result = await roomActionExecutor.execute(input, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "room.agent.actions",
       targetType: "room",
       targetId: input.roomId,
       metadata: {
+        parentTraceId: input.requestId ?? null,
         missionId: input.missionId,
         agentSessionId: input.agentSessionId,
         actionTypes: input.actions.map((action) => action.action.type),
@@ -14061,6 +14214,24 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         ? active
         : null;
     if (rejoinableSession) {
+      // A rejoined Codex session keeps running with its own settings; repair stale pane labels the
+      // same way a reused session is repaired below.
+      const rejoinedCodexReasoningEffort = isCodexDirectParityRuntime(runtime.id)
+        ? reasoningEffortSchema.safeParse(rejoinableSession.reasoningEffort).data
+        : undefined;
+      if (
+        rejoinedCodexReasoningEffort &&
+        (pane.modelId !== rejoinableSession.modelId || pane.reasoningEffort !== rejoinedCodexReasoningEffort)
+      ) {
+        await store.updatePane(
+          pane.id,
+          {
+            modelId: rejoinableSession.modelId,
+            reasoningEffort: rejoinedCodexReasoningEffort
+          },
+          request.requestIdForSpace
+        );
+      }
       await recordAudit(store, request, {
         action: "pane.cli.session",
         targetType: "pane",
@@ -14084,6 +14255,8 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         issueTicket: (paneId, sessionId, ttlMs) => cliTerminalManager.issueTicket(paneId, sessionId, ttlMs)
       });
     }
+    // Reissuing an existing session above is read-only. Replacement requires the current controller.
+    if (active) await assertCliHttpMutationControl(request, active);
     let requestedCwd = input.cwd ?? pane.cwd ?? null;
     if (!requestedCwd || requestedCwd === "/etc") {
       try {
@@ -14096,10 +14269,10 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       }
     }
     const directCodexParity = isCodexDirectParityRuntime(runtime.id);
-    const directClaudeParity = isClaudeDirectParityRuntime(runtime.id);
-    const directKimiParity = isKimiDirectParityRuntime(runtime.id);
-    const directGrokParity = isGrokDirectParityRuntime(runtime.id);
     const directOperatorParity = isDirectOperatorParityRuntime(runtime.id);
+    // Status reasons name the runtime that actually restarted (e.g. "Qoder CLI"), never a hard-coded fallback.
+    const runtimeAgentName = runtime.displayName.endsWith(" CLI") ? runtime.displayName : `${runtime.displayName} CLI`;
+    const runtimeProductName = runtimeAgentName.slice(0, -" CLI".length);
     const activeUsesLegacyWorkspace =
       active &&
       active.runtimeId === runtime.id &&
@@ -14201,7 +14374,27 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     } else if (!input.resume && input.forceRestart && runtime.id === "cli:gemini") {
       await clearGeminiPaneConversation(pane.id);
     }
+    // Claude account profiles share one transcript store, so an account switch continues the same
+    // conversation under the new account. A pane without a written turn switches to a fresh session
+    // instead of opening Claude's session picker.
+    const claudeAccountSwitch = runtime.id === "cli:claude" && active?.runtimeId === "cli:claude" &&
+      active.accountProfileId !== requestedAccountProfileId;
+    let claudeResumeRevision: Awaited<ReturnType<typeof store.getCliTaskRevision>> = null;
+    let claudeResumeNativeSessionId: string | null = null;
+    if (input.resume && claudeAccountSwitch && active?.cliTaskId) {
+      claudeResumeRevision = active.cliTaskRevisionId ? await store.getCliTaskRevision(active.cliTaskRevisionId) : null;
+      if (claudeResumeRevision?.nativeTaskRef && claudeNativeSessionIdPattern.test(claudeResumeRevision.nativeTaskRef)) {
+        claudeResumeNativeSessionId = claudeResumeRevision.nativeTaskRef;
+      } else {
+        const pids = await cliTerminalManager.activeSessionPids([active]).catch(() => null);
+        const native = await loadClaudeNativeTurns({
+          paneId: pane.id, sessionId: active.sessionId, rootPid: pids?.get(active.sessionId) ?? null
+        }, { fresh: true }).catch(() => null);
+        if (native?.tasks.length) claudeResumeNativeSessionId = native.nativeSessionId;
+      }
+    }
     if (active && !reusableSession) {
+      await assertCliHttpMutationControl(request, active);
       await cliTerminalManager.interrupt(active.sessionId);
       await store.updatePaneCliSession(
         active.sessionId,
@@ -14211,24 +14404,10 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
             ? activeUsesLegacyWorkspace
               ? directCodexParity
                 ? "CLI session replaced with direct VS Code/Codex parity workspace."
-                : directClaudeParity
-                  ? "CLI session replaced with direct Claude Code operator parity workspace."
-                  : directKimiParity
-                    ? "CLI session replaced with direct Kimi Code subscription operator parity workspace."
-                    : directGrokParity
-                      ? "CLI session replaced with direct Grok Build account operator parity workspace."
-                    : "CLI session replaced with direct OpenCode operator parity workspace."
+                : `CLI session replaced with direct ${runtimeProductName} operator parity workspace.`
               : input.forceRestart
                 ? "CLI session restarted by operator request."
-                : directCodexParity
-                  ? "CLI session replaced to apply updated Codex CLI session settings."
-                  : directClaudeParity
-                    ? "CLI session replaced to apply updated Claude Code CLI session settings."
-                    : directKimiParity
-                      ? "CLI session replaced to apply updated Kimi Code CLI session settings."
-                      : directGrokParity
-                        ? "CLI session replaced to apply updated Grok Build CLI session settings."
-                      : "CLI session replaced to apply updated OpenCode CLI session settings."
+                : `CLI session replaced to apply updated ${runtimeAgentName} session settings.`
             : activeUsesLegacyWorkspace
               ? "CLI session replaced with a managed writable workspace."
               : input.forceRestart
@@ -14326,9 +14505,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
                             ? pane.reasoningEffort
                             : "high")))
                 : input.reasoningEffort ?? (active?.runtimeId === runtime.id && active?.reasoningEffort ? active.reasoningEffort : pane.reasoningEffort),
-            launchMode: input.resume && (geminiResumeConversationId || runtime.id !== "cli:gemini") ? "RESUME" : "FRESH",
+            launchMode: input.resume && (
+              runtime.id === "cli:gemini" ? geminiResumeConversationId
+                : claudeAccountSwitch ? claudeResumeNativeSessionId
+                  : true
+            ) ? "RESUME" : "FRESH",
             cwd: sessionCwd,
             codexThreadId: null,
+            ...(claudeResumeNativeSessionId && active?.cliTaskId ? { cliTaskId: active.cliTaskId } : {}),
             accountProfileId: requestedAccountProfileId,
             status: "IDLE",
             statusReason: "CLI session allocated; waiting for terminal transport attach."
@@ -14336,6 +14520,22 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
           request.requestIdForSpace
         );
     if (allocatedAtNs !== null) cliTerminalManager.recordSessionAllocation(session.sessionId, allocatedAtNs);
+    if (!reusableSession && claudeResumeNativeSessionId && session.cliTaskRevisionId) {
+      await store.updateCliTaskRevision(
+        session.cliTaskRevisionId,
+        {
+          nativeTaskRef: claudeResumeNativeSessionId,
+          ...(claudeResumeRevision
+            ? {
+                displayTitle: claudeResumeRevision.displayTitle,
+                firstUserMessage: claudeResumeRevision.firstUserMessage,
+                preview: claudeResumeRevision.preview
+              }
+            : {})
+        },
+        request.requestIdForSpace
+      );
+    }
 
     if (runtime.id === "cli:gemini") {
       const nextModelId = session.modelId ?? runtime.defaultModelId;
@@ -14351,6 +14551,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         const modelRecord = JSON.stringify({ modelId: nextModelId, reasoningEffort: nextReasoningEffort ?? session.reasoningEffort });
         await mkdir("/opt/spaceapp/var/gemini-pane-conversations", { recursive: true, mode: 0o777 });
         await writeFile(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}-model.json`, modelRecord, { mode: 0o666 });
+        await chmod(`/opt/spaceapp/var/gemini-pane-conversations/pane-${cleanPaneId}-model.json`, 0o666).catch(() => {});
       } catch {}
     }
 
@@ -14431,158 +14632,133 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     await assertCliHttpMutationControl(request, active);
     await cliRuntimeVisibility.assertEnabled(active.runtimeId);
 
-    const files = [];
-    let fileCount = 0;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") {
-        continue;
-      }
-      fileCount += 1;
-      if (fileCount > paneCliUploadMaxCount) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "At most 8 files can be uploaded to one CLI session at a time.");
-      }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        if (byteSize > paneCliUploadMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each CLI upload must be 10MB or smaller.");
-        }
-        chunks.push(buffer);
-      }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Uploaded files must not be empty.");
-      }
-
-      const buffer = Buffer.concat(chunks);
-      const declaredMimeType = part.mimetype || "application/octet-stream";
-      const sniffedMimeType = sniffImageMime(buffer);
-      const declaredImage = declaredMimeType.startsWith("image/");
-      if (declaredImage) {
-        if (!isAllowedImageMime(declaredMimeType) || sniffedMimeType !== declaredMimeType) {
+    return withStagedUploads(request, config.browserEvidenceArtifactRoot,
+      { maxFiles: paneCliUploadMaxCount, fileBytes: paneCliUploadMaxBytes }, async uploads => {
+      for (const upload of uploads) {
+        if (upload.declaredMimeType.startsWith("image/") && (!isAllowedImageMime(upload.declaredMimeType) || sniffImageMime(upload.sample) !== upload.declaredMimeType)) {
           return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match a supported PNG, JPEG, or WebP image type.");
         }
       }
-
-      const originalFilename = safeOriginalFilename(part.filename || "upload");
-      const storage = buildCliUploadStorage({
-        artifactRoot: config.browserEvidenceArtifactRoot,
-        roomId: pane.roomId,
-        paneId: pane.id,
-        sessionId: active.sessionId,
-        originalFilename
-      });
-      await mkdir(dirname(storage.filePath), { recursive: true });
-      await ensureCliUploadPathReadable({ artifactRoot: config.browserEvidenceArtifactRoot, filePath: storage.filePath });
-      await writeFile(storage.filePath, buffer, { flag: "wx", mode: CLI_UPLOAD_FILE_MODE });
-      await chmod(storage.filePath, CLI_UPLOAD_FILE_MODE);
-      const sha256 = createHash("sha256").update(buffer).digest("hex");
-      const artifactRecord = await store.createArtifact(
-        {
+      const files = [];
+      for (const upload of uploads) {
+        const { byteSize, sha256, declaredMimeType } = upload;
+        const sniffedMimeType = sniffImageMime(upload.sample);
+        const declaredImage = declaredMimeType.startsWith("image/");
+        const originalFilename = safeOriginalFilename(upload.filename);
+        const storage = buildCliUploadStorage({
+          artifactRoot: config.browserEvidenceArtifactRoot,
           roomId: pane.roomId,
           paneId: pane.id,
-          kind: declaredImage ? "IMAGE" : "EXPORT",
-          mimeType: declaredMimeType,
-          storageUri: storage.storageUri,
-          sha256,
-          byteSize,
-          metadata: {
-            source: query.source,
-            cliSessionId: active.sessionId,
-            runtimeId: active.runtimeId,
-            originalFilename,
-            storedFilename: storage.storedFilename,
-            fieldName: part.fieldname,
-            sniffedMimeType,
-            uploadedBy: request.user?.id ?? null
+          sessionId: active.sessionId,
+          originalFilename
+        });
+        const artifactRecord = await withPersistedUpload(config.browserEvidenceArtifactRoot, upload, storage.filePath, async pinnedPath => {
+          await ensureCliUploadPathReadable({ artifactRoot: config.browserEvidenceArtifactRoot, filePath: storage.filePath });
+          return recordUploadedArtifact(store,
+          {
+            roomId: pane.roomId,
+            paneId: pane.id,
+            kind: declaredImage ? "IMAGE" : "EXPORT",
+            mimeType: declaredMimeType,
+            storageUri: storage.storageUri,
+            sha256,
+            byteSize,
+            metadata: {
+              source: query.source,
+              cliSessionId: active.sessionId,
+              runtimeId: active.runtimeId,
+              originalFilename,
+              storedFilename: storage.storedFilename,
+              fieldName: upload.fieldname,
+              sniffedMimeType,
+              uploadedBy: request.user?.id ?? null
+            }
+          },
+          request.requestIdForSpace, pinnedPath
+        );
+        }, CLI_UPLOAD_FILE_MODE);
+        eventBus.publish(artifactRecord.event);
+
+        let terminalPath = storage.filePath;
+        let shellQuoted = shellQuotePath(storage.filePath);
+        if (declaredImage && active.runtimeId === REASONIX_CLI_RUNTIME_ID) {
+          const workspaceRoot = pane.cwd ?? (("cwd" in active && active.cwd) ? active.cwd : null);
+          if (!workspaceRoot) {
+            return sendApiError(reply, 409, "REASONIX_WORKSPACE_ROOT_MISSING", "Reasonix pane has no workspace root; cannot attach image as an image input.");
           }
-        },
-        request.requestIdForSpace
-      );
-      eventBus.publish(artifactRecord.event);
-
-      let terminalPath = storage.filePath;
-      let shellQuoted = shellQuotePath(storage.filePath);
-      if (declaredImage && active.runtimeId === REASONIX_CLI_RUNTIME_ID) {
-        const workspaceRoot = pane.cwd ?? (("cwd" in active && active.cwd) ? active.cwd : null);
-        if (!workspaceRoot) {
-          return sendApiError(reply, 409, "REASONIX_WORKSPACE_ROOT_MISSING", "Reasonix pane has no workspace root; cannot attach image as an image input.");
+          const reasonixAttachment = buildReasonixAttachmentUpload({ workspaceRoot, mimeType: declaredMimeType });
+          try {
+            await withPersistedUpload(workspaceRoot, upload, reasonixAttachment.absolutePath, async () => undefined, CLI_UPLOAD_FILE_MODE, config.browserEvidenceArtifactRoot);
+            terminalPath = reasonixAttachment.terminalPath;
+            shellQuoted = reasonixAttachment.terminalPath;
+          } catch (error) {
+            request.log.warn(
+              { err: error, requestId: request.requestIdForSpace, paneId: pane.id, sessionId: active.sessionId },
+              "reasonix image attachment mirror failed; falling back to plain CLI-upload path"
+            );
+          }
         }
-        const reasonixAttachment = buildReasonixAttachmentUpload({ workspaceRoot, mimeType: declaredMimeType });
-        try {
-          await mkdir(reasonixAttachment.absoluteDir, { recursive: true });
-          await writeFile(reasonixAttachment.absolutePath, buffer, { flag: "wx", mode: CLI_UPLOAD_FILE_MODE });
-          await chmod(reasonixAttachment.absolutePath, CLI_UPLOAD_FILE_MODE);
-          terminalPath = reasonixAttachment.terminalPath;
-          shellQuoted = reasonixAttachment.terminalPath;
-        } catch (error) {
-          request.log.warn(
-            { err: error, requestId: request.requestIdForSpace, paneId: pane.id, sessionId: active.sessionId },
-            "reasonix image attachment mirror failed; falling back to plain CLI-upload path"
-          );
-        }
-      }
 
-      files.push({
-        artifactId: artifactRecord.artifact.id,
-        sessionId: active.sessionId,
-        paneId: pane.id,
-        roomId: pane.roomId,
-        originalFilename,
-        storedFilename: storage.storedFilename,
-        mimeType: declaredMimeType,
-        byteSize,
-        sha256,
-        storageUri: storage.storageUri,
-        terminalPath,
-        shellQuotedPath: shellQuoted,
-        isImage: declaredImage
-      });
-    }
-
-    if (!files.length) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one file.");
-    }
-
-    await recordAudit(store, request, {
-      action: "pane.cli.upload",
-      targetType: "pane",
-      targetId: pane.id,
-      metadata: {
-        roomId: pane.roomId,
-        sessionId: active.sessionId,
-        runtimeId: active.runtimeId,
-        source: query.source,
-        fileCount: files.length,
-        artifactIds: files.map((file) => file.artifactId)
-      }
-    });
-    if (query.source === "CLIPBOARD") {
-      request.log.info(
-        {
-          requestId: request.requestIdForSpace,
+        files.push({
+          artifactId: artifactRecord.artifact.id,
+          sessionId: active.sessionId,
           paneId: pane.id,
+          roomId: pane.roomId,
+          originalFilename,
+          storedFilename: storage.storedFilename,
+          mimeType: declaredMimeType,
+          byteSize,
+          sha256,
+          storageUri: storage.storageUri,
+          terminalPath,
+          shellQuotedPath: shellQuoted,
+          isImage: declaredImage
+        });
+      }
+
+      if (!files.length) {
+        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one file.");
+      }
+
+      await recordAudit(store, request, {
+        action: "pane.cli.upload",
+        targetType: "pane",
+        targetId: pane.id,
+        metadata: {
           roomId: pane.roomId,
           sessionId: active.sessionId,
           runtimeId: active.runtimeId,
           source: query.source,
-          files: files.map((file) => ({
-            artifactId: file.artifactId,
-            originalFilename: file.originalFilename,
-            mimeType: file.mimeType,
-            byteSize: file.byteSize,
-            isImage: file.isImage
-          }))
-        },
-        "CLI clipboard upload accepted"
-      );
-    }
-    return paneCliUploadResponseSchema.parse({
-      sessionId: active.sessionId,
-      paneId: pane.id,
-      roomId: pane.roomId,
-      files
+          fileCount: files.length,
+          artifactIds: files.map((file) => file.artifactId)
+        }
+      });
+      if (query.source === "CLIPBOARD") {
+        request.log.info(
+          {
+            requestId: request.requestIdForSpace,
+            paneId: pane.id,
+            roomId: pane.roomId,
+            sessionId: active.sessionId,
+            runtimeId: active.runtimeId,
+            source: query.source,
+            files: files.map((file) => ({
+              artifactId: file.artifactId,
+              originalFilename: file.originalFilename,
+              mimeType: file.mimeType,
+              byteSize: file.byteSize,
+              isImage: file.isImage
+            }))
+          },
+          "CLI clipboard upload accepted"
+        );
+      }
+      return paneCliUploadResponseSchema.parse({
+        sessionId: active.sessionId,
+        paneId: pane.id,
+        roomId: pane.roomId,
+        files
+      });
     });
   });
 
@@ -14719,6 +14895,555 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
   });
 
   const spaceControlRoutes = registerSpaceControlRoutes(app,spaceControl,{cliRoom:request=>controlCliRooms.get(request)??null,resolveActor:controlUser});
+  const dotGoalsRepository = dotsRepository && config.databaseUrl ? PostgresDotGoalsRepository.fromConnectionString(config.databaseUrl) : null;
+  if (dotGoalsRepository) app.addHook("onClose", () => dotGoalsRepository.dispose());
+  /** Autonomous work (Goal steps, schedules) respects each Dot's concurrent-task limit; the user's own sends never do. */
+  async function dotAtCapacity(input: { sessionId: string; dotId: string; roomId: string }): Promise<boolean> {
+    if (!dotsRepository) return false;
+    const owner = (await store.getRoom(input.roomId)).ownerUserId;
+    const dot = owner ? await dotsRepository.get(owner, input.dotId) : null;
+    if (!dot) return false;
+    return await dotsRepository.countActiveDotRuns(input.dotId, input.sessionId) >= dot.workLimits.maxConcurrentTasks;
+  }
+  const dotGoalService = dotsRepository && dotGoalsRepository ? createDotGoalService({
+    store, dots: dotsRepository, goals: dotGoalsRepository,
+    workflow: options.dotGoalWorkflow ?? createDotGoalWorkflowCoordinator({ enabled: config.enableCodexTurns, address: config.temporalAddress,
+      namespace: config.temporalNamespace, taskQueue: config.temporalTaskQueue }),
+    sendStep: async ({ paneId, sessionId, ownerUserId, content, requestKey }) => {
+      const pane = await getPaneById(store, paneId);
+      const result = await spaceAgentAdapter.sendMessage({ pane, sessionId, content, operatorUserId: ownerUserId, clientRequestId: requestKey,
+        traceId: makeSpaceId("trace") });
+      if (!result.submission) throw new SpaceConflictError(result.session.statusReason ?? "The Goal step could not start.");
+      return { runId: result.submission.runId };
+    },
+    interrupt: async (paneId, reason) => { await spaceAgentAdapter.interrupt({ pane: await getPaneById(store, paneId), reason }); },
+    submission: async (paneId, requestKey) => {
+      const run = await store.getSpaceAgentSubmission(paneId, requestKey);
+      return run ? { runId: run.runId, status: run.status } : null;
+    },
+    atCapacity: dotAtCapacity,
+    supportsGoalTools: (session) => config.dotToolGatewayEnabled && (!session.selectedProviderId || session.selectedProviderId === "codex")
+      && session.permissionMode !== "ask_for_approval",
+    audit: (request, action, roomId, metadata) => request ? recordAudit(store, request, { action, targetType: "room", targetId: roomId, metadata }) : Promise.resolve()
+  }) : null;
+  registerDotGoalRoutes(app, dotGoalService, dotGoalsRepository ? { goals: dotGoalsRepository } : null, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+  let strandedRunTimer: NodeJS.Timeout | null = null;
+  app.addHook("onClose", async () => { if (strandedRunTimer) clearInterval(strandedRunTimer); });
+  async function sweepStrandedChatRuns(): Promise<void> {
+    if (!dotsRepository || !config.enableCodexTurns) return;
+    // One Temporal connection per sweep, opened only when a candidate run needs
+    // checking. If Temporal is unreachable, every run of this sweep stays as it is.
+    const temporal: { client: Client | null; connection: Connection | null; unreachable: boolean } =
+      { client: null, connection: null, unreachable: false };
+    try {
+      await sweepStrandedChatRunsOnce({
+        repository: dotsRepository, store, now: nowIso,
+        warn: (fields, message) => app.log.warn(fields, message),
+        workflowState: async (workflowId) => {
+          if (temporal.unreachable) return "UNKNOWN";
+          try {
+            if (!temporal.client) {
+              temporal.connection = await Connection.connect({ address: config.temporalAddress, connectTimeout: "5s" })
+                .catch((error: unknown) => { temporal.unreachable = true; throw error; });
+              temporal.client = new Client({ connection: temporal.connection, namespace: config.temporalNamespace });
+            }
+            return (await temporal.client.workflow.getHandle(workflowId).describe()).status.name === "RUNNING" ? "RUNNING" : "CLOSED";
+          } catch (error) {
+            return error instanceof WorkflowNotFoundError ? "NOT_FOUND" : "UNKNOWN";
+          }
+        }
+      });
+    } finally { await temporal.connection?.close(); }
+  }
+  const dotSchedulesRepository = dotsRepository && config.databaseUrl ? PostgresDotSchedulesRepository.fromConnectionString(config.databaseUrl) : null;
+  if (dotSchedulesRepository) app.addHook("onClose", () => dotSchedulesRepository.dispose());
+  const dotScheduleService = dotsRepository && dotSchedulesRepository ? createDotScheduleService({
+    store, dots: dotsRepository, schedules: dotSchedulesRepository,
+    activeSessionId: async (paneId) => (await store.getActiveSpaceAgentSession(paneId))?.sessionId ?? null,
+    atCapacity: dotAtCapacity,
+    send: async ({ paneId, sessionId, ownerUserId, content, requestKey }) => {
+      await spaceAgentAdapter.sendMessage({ pane: await getPaneById(store, paneId), sessionId, content, operatorUserId: ownerUserId,
+        clientRequestId: requestKey, traceId: makeSpaceId("trace") });
+    }
+  }) : null;
+  registerDotScheduleRoutes(app, dotScheduleService, dotSchedulesRepository, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+  const dotBrowserActor = (agentSessionId: string) => ({ holderType: "AGENT" as const, holderId: agentSessionId });
+  const dotComputerService = dotsRepository ? createDotComputerService({
+    dots: dotsRepository, goals: dotGoalsRepository, workspaceRoot: config.dotWorkspaceRoot,
+    pauseGoal: async (owner, dotId, goalId, request) => {
+      if (!dotGoalService) return false;
+      await dotGoalService.control(owner, dotId, goalId, { action: "PAUSE" }, request);
+      return true;
+    },
+    interrupt: async (run, reason) => {
+      const pane = await getPaneById(store, run.paneId);
+      // Only the conversation the pane is showing can be interrupted through it.
+      if ((await store.getActiveSpaceAgentSession(pane.id))?.sessionId !== run.sessionId) return false;
+      await spaceAgentAdapter.interrupt({ pane, reason });
+      return true;
+    },
+    browserState: async (paneId) => {
+      const session = await store.getActivePaneBrowserSession(paneId);
+      return { active: Boolean(session?.isActive), currentUrl: session ? safeBrowserObservationUrl(session.currentUrl) : null,
+        title: session?.title ? redactMemoryText(session.title).slice(0, 500) : null };
+    },
+    ...(config.browserSessionsEnabled && config.browserToolBridgeEnabled ? {
+      createBrowserPane: async ({ owner, dotName, roomId }: { owner: string; dotId: string; dotName: string; roomId: string }) => {
+        const traceId = makeSpaceId("trace");
+        const [input] = await roomPaneCommands.resolve(roomId, [{ mode: "BROWSER" }]);
+        const [pane] = await store.createPanes([{ ...input!, title: `${dotName} browser`.slice(0, 120) }], traceId);
+        // Its own profile: never the owner's Google sign-in.
+        await browserAccountStore.save(await youtubeAccountOwner(owner, pane!), pane!.id, privatePaneProfileId);
+        for (const event of (await store.listEvents(roomId)).filter((event) => event.type === "PANE_CREATED" && event.paneId === pane!.id)) eventBus.publish(event);
+        return pane!.id;
+      },
+      closePane: async (paneId: string) => {
+        // A browser pane that lost a creation race never started a browser.
+        await store.updatePane(paneId, { isClosed: true, status: "CLOSED" }, makeSpaceId("trace"));
+      },
+      openBrowser: async (paneId: string, url: string | null, holder: { agentSessionId: string; roomId: string }) => {
+        const pane = await getPaneById(store, paneId);
+        assertBrowserPaneCompatible(pane);
+        if (pane.isClosed || pane.roomId !== holder.roomId) throw new SpaceConflictError("The Dot's browser is no longer in this room. Call computer.browser again.");
+        const traceId = makeSpaceId("trace");
+        const active = await store.getActivePaneBrowserSession(pane.id);
+        const response = !active ? await browserSessionManager.startOrRestore({ pane, targetUrl: url, profileKey: null, traceId }, dotBrowserActor(holder.agentSessionId))
+          : url ? await browserSessionManager.navigate(pane, url, traceId, dotBrowserActor(holder.agentSessionId))
+          : await browserSessionManager.getActive(pane);
+        const session = response?.session ?? active!;
+        return { sessionId: session.sessionId, active: true, currentUrl: safeBrowserObservationUrl(session.currentUrl),
+          title: session.title ? redactMemoryText(session.title).slice(0, 500) : null };
+      }
+    } : {}),
+    audit: (request, action, roomId, metadata) => request ? recordAudit(store, request, { action, targetType: "room", targetId: roomId, metadata })
+      : Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action, targetType: "room", targetId: roomId, metadata }))
+        .then(() => undefined).catch(() => undefined)
+  }) : null;
+  const dotDeliverablesRepository = dotsRepository && config.databaseUrl ? PostgresDotDeliverablesRepository.fromConnectionString(config.databaseUrl) : null;
+  if (dotDeliverablesRepository) app.addHook("onClose", () => dotDeliverablesRepository.dispose());
+  const dotDeliverablesService = dotsRepository && dotDeliverablesRepository ? createDotDeliverablesService({
+    store, dots: dotsRepository, deliverables: dotDeliverablesRepository, workspaceRoot: config.dotWorkspaceRoot, maxBytes: agentFileMaxBytes,
+    publishArtifact: async ({ roomId, dotName, filename, mimeType, buffer }) => {
+      const record = await persistAgentFile({ store, artifactRoot: config.browserEvidenceArtifactRoot, roomId, paneId: null, cliSessionId: null,
+        runtimeId: "dot", originalFilename: filename, declaredMimeType: mimeType, buffer, traceId: makeSpaceId("trace"),
+        folder: `Dots/${dotName}`.slice(0, 120), docxNormalizer: options.agentFileDocxNormalizer });
+      eventBus.publish(record.event);
+      return record.artifact;
+    },
+    audit: async (request, action, metadata) => {
+      if (request) await recordAudit(store, request, { action, targetType: "dot", targetId: String(metadata.dotId ?? ""), metadata });
+      else await Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action, targetType: "dot",
+        targetId: String(metadata.dotId ?? ""), metadata })).catch(() => undefined);
+    }
+  }) : null;
+  const connectorAccountsRepository = dotsRepository && config.databaseUrl ? PostgresConnectorAccountsRepository.fromConnectionString(config.databaseUrl) : null;
+  if (connectorAccountsRepository) app.addHook("onClose", () => connectorAccountsRepository.dispose());
+  const microsoftConnectorConfigured = Boolean(process.env.SPACE_MICROSOFT_CLIENT_ID && process.env.SPACE_MICROSOFT_CLIENT_SECRET);
+  const connectorService = connectorAccountsRepository ? createConnectorService({
+    accounts: connectorAccountsRepository,
+    crypto: createConnectorCrypto(process.env.SPACE_CONNECTOR_SECRET || auth.sessionSecret),
+    google: auth.googleClientId ? createGoogleConnector({ clientId: auth.googleClientId, clientSecret: auth.googleClientSecret }) : null,
+    microsoft: microsoftConnectorConfigured ? createMicrosoftConnector({ clientId: process.env.SPACE_MICROSOFT_CLIENT_ID!,
+      clientSecret: process.env.SPACE_MICROSOFT_CLIENT_SECRET!, tenant: process.env.SPACE_MICROSOFT_TENANT || "common" }) : null,
+    microsoftReason: "Microsoft needs an app registration on this server (SPACE_MICROSOFT_CLIENT_ID and SPACE_MICROSOFT_CLIENT_SECRET).",
+    audit: async (request, action, metadata) => {
+      if (request) await recordAudit(store, request, { action, targetType: "connector", targetId: String(metadata.accountId ?? ""), metadata });
+      else await Promise.resolve(store.recordAuditEvent({ actorUserId: null, traceId: makeSpaceId("trace"), action, targetType: "connector",
+        targetId: String(metadata.accountId ?? ""), metadata })).catch(() => undefined);
+    }
+  }) : null;
+  connectorServiceRef.current = connectorService;
+  registerConnectorRoutes(app, connectorService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: dotsAuthenticatedOwner,
+    state: connectorStateTools
+  });
+  registerDotDeliverableRoutes(app, dotDeliverablesService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+  registerDotMemoryRoutes(app, dotMemoryService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+  // Stage 7: Auto runs in shadow mode; ADMINs see what it would have chosen and how those tasks went.
+  const autoRouteShadowRepository = options.autoRouteShadowRepository
+    ?? (config.databaseUrl ? PostgresAutoRouteShadowRepository.fromConnectionString(config.databaseUrl) : null);
+  if (autoRouteShadowRepository && !options.autoRouteShadowRepository) app.addHook("onClose", () => autoRouteShadowRepository.dispose());
+  app.get("/api/dots/auto-routing/shadow", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Auto routing evidence requires ADMIN.");
+    const query = z.object({ days: z.coerce.number().int().min(1).max(90).default(7) }).strict().safeParse(request.query ?? {});
+    if (!query.success) return sendApiError(reply, 400, "INVALID_QUERY", "days must be a whole number from 1 to 90.");
+    if (!autoRouteShadowRepository) return sendApiError(reply, 503, "AUTO_ROUTING_UNAVAILABLE", "Auto routing evidence needs the database.");
+    const since = new Date(Date.now() - query.data.days * 86_400_000).toISOString();
+    const [runs, facts] = await Promise.all([autoRouteShadowRepository.recent(since, 5_000), autoRouteFactsLoader?.().catch(() => null) ?? null]);
+    return { since, ...summarizeAutoRouteShadow(runs, facts?.prices ?? null) };
+  });
+  const dotDelegationsRepository = dotsRepository && dotGoalsRepository && config.databaseUrl
+    ? PostgresDotDelegationsRepository.fromConnectionString(config.databaseUrl) : null;
+  if (dotDelegationsRepository) app.addHook("onClose", () => dotDelegationsRepository.dispose());
+  const dotDelegationService = dotsRepository && dotGoalsRepository && dotGoalService && dotDelegationsRepository ? createDotDelegationService({
+    store, dots: dotsRepository, goals: dotGoalsRepository, delegations: dotDelegationsRepository,
+    openPane: async ({ roomId, title }) => {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const [input] = await roomPaneCommands.resolve(roomId, [{ mode: "CHAT" }]);
+      const [pane] = await store.createPanes([{ ...input!, title }], makeSpaceId("trace"));
+      for (const event of (await store.listEvents(roomId)).filter((event) => event.type === "PANE_CREATED" && event.paneId === pane!.id)) eventBus.publish(event);
+      return pane!;
+    },
+    startSession: async ({ pane, owner, dotId }) => {
+      const session = await spaceAgentAdapter.createOrRestoreSession({ pane, dotId, ownerUserId: owner });
+      if (!session.binding.sessionId || session.dotId !== dotId) throw new SpaceConflictError("The delegate's conversation could not start.");
+      return { sessionId: session.binding.sessionId };
+    },
+    createGoal: (owner, dotId, input) => dotGoalService.create(owner, dotId, input, null),
+    closePane: async (paneId) => { await store.updatePane(paneId, { isClosed: true, status: "CLOSED" }, makeSpaceId("trace")); },
+    report: async ({ paneId, sessionId, ownerUserId, content, requestKey }) => {
+      await spaceAgentAdapter.sendMessage({ pane: await getPaneById(store, paneId), sessionId, content, operatorUserId: ownerUserId,
+        clientRequestId: requestKey, traceId: makeSpaceId("trace") });
+    }
+  }) : null;
+  // Stage 6: Slack and Teams conversations with Dots. Configured per installation; inbound requests are verified by signature.
+  const channelsRepository = options.channelsRepository
+    ?? (dotsRepository && dotGoalsRepository && config.databaseUrl ? PostgresChannelsRepository.fromConnectionString(config.databaseUrl) : null);
+  if (channelsRepository && !options.channelsRepository) app.addHook("onClose", () => channelsRepository.dispose());
+  const slackSigningSecret = process.env.SPACE_SLACK_SIGNING_SECRET || null;
+  const slackClient = slackSigningSecret && process.env.SPACE_SLACK_BOT_TOKEN ? createSlackClient({ botToken: process.env.SPACE_SLACK_BOT_TOKEN }) : null;
+  const teamsAppId = process.env.SPACE_TEAMS_APP_ID || null;
+  const teamsClient = teamsAppId && process.env.SPACE_TEAMS_APP_PASSWORD
+    ? createTeamsClient({ appId: teamsAppId, appPassword: process.env.SPACE_TEAMS_APP_PASSWORD, tenant: process.env.SPACE_TEAMS_TENANT || null }) : null;
+  const appOrigin = (() => {
+    if (process.env.SPACE_PUBLIC_ORIGIN) return process.env.SPACE_PUBLIC_ORIGIN.replace(/\/$/, "");
+    try { return auth.googleRedirectUri ? new URL(auth.googleRedirectUri).origin : null; } catch { return null; }
+  })();
+  const dotChannelService = channelsRepository && dotsRepository && dotGoalsRepository && dotGoalService ? createDotChannelService({
+    repo: channelsRepository, slack: slackClient, teams: teamsClient,
+    providers: [
+      { provider: "SLACK", configured: Boolean(slackClient), reason: slackClient ? null : "Slack needs an app on this server (SPACE_SLACK_SIGNING_SECRET and SPACE_SLACK_BOT_TOKEN)." },
+      { provider: "TEAMS", configured: Boolean(teamsClient), reason: teamsClient ? null : "Teams needs a bot registration on this server (SPACE_TEAMS_APP_ID and SPACE_TEAMS_APP_PASSWORD)." }
+    ],
+    store, dots: dotsRepository,
+    pickRoom: async (owner) => {
+      const rooms = (await store.listRooms(owner)).filter((room) => room.kind === "WORKSPACE" && room.ownerUserId === owner);
+      return rooms.sort((a, b) => a.order - b.order)[0]?.id ?? null;
+    },
+    openPane: async ({ roomId, title }) => {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const [input] = await roomPaneCommands.resolve(roomId, [{ mode: "CHAT" }]);
+      const [pane] = await store.createPanes([{ ...input!, title }], makeSpaceId("trace"));
+      for (const event of (await store.listEvents(roomId)).filter((event) => event.type === "PANE_CREATED" && event.paneId === pane!.id)) eventBus.publish(event);
+      return pane!;
+    },
+    startSession: async ({ pane, owner, dotId }) => {
+      const session = await spaceAgentAdapter.createOrRestoreSession({ pane, dotId, ownerUserId: owner });
+      if (!session.binding.sessionId || session.dotId !== dotId) throw new SpaceConflictError("The channel conversation could not start.");
+      return { sessionId: session.binding.sessionId };
+    },
+    send: async ({ paneId, sessionId, owner, content, requestKey }) => {
+      await spaceAgentAdapter.sendMessage({ pane: await getPaneById(store, paneId), sessionId, content, operatorUserId: owner, clientRequestId: requestKey,
+        traceId: makeSpaceId("trace") });
+    },
+    pendingApprovals: async (owner, dotId, sessionId) => ((await dotsRepository.listPendingApprovals(owner, dotId, sessionId)) ?? [])
+      .map((item) => ({ invocationId: item.invocationId, summary: item.approvalSummary ?? item.toolId })),
+    goalFor: async (owner, dotId, sessionId) => {
+      const goal = (await dotGoalsRepository.list(owner, dotId, sessionId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      return goal ? { goalId: goal.goalId, status: goal.status, statusReason: goal.statusReason ?? null, createdAt: goal.createdAt, updatedAt: goal.updatedAt } : null;
+    },
+    answerGoal: async (owner, dotId, goalId, text) => {
+      await dotGoalService.steer(owner, dotId, goalId, { text: text.slice(0, 4000) }, null);
+      await dotGoalService.control(owner, dotId, goalId, { action: "RESUME" }, null);
+    },
+    appOrigin,
+    log: (message, error) => app.log.warn({ err: error }, message)
+  }) : null;
+  registerDotChannelRoutes(app, dotChannelService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: dotsAuthenticatedOwner,
+    verifySlack: slackSigningSecret ? (input) => verifySlackSignature({ ...input, signingSecret: slackSigningSecret }) : null,
+    parseSlack: parseSlackEnvelope,
+    verifyTeams: teamsAppId && teamsClient ? createBotFrameworkVerifier({ appId: teamsAppId }) : null,
+    parseTeams: parseTeamsActivity,
+    log: (message, error) => app.log.warn({ err: error }, message)
+  });
+  // Stage 6: Live hands work to a Dot, answers or steers its Goal, and asks how it is going, in that Dot's own conversation.
+  const dotLiveService = dotsRepository && dotGoalsRepository && dotGoalService ? createDotLiveService({
+    store, dots: dotsRepository,
+    openPane: async ({ roomId, title }) => {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const [input] = await roomPaneCommands.resolve(roomId, [{ mode: "CHAT" }]);
+      const [pane] = await store.createPanes([{ ...input!, title }], makeSpaceId("trace"));
+      for (const event of (await store.listEvents(roomId)).filter((event) => event.type === "PANE_CREATED" && event.paneId === pane!.id)) eventBus.publish(event);
+      return pane!;
+    },
+    startSession: async ({ pane, owner, dotId }) => {
+      const session = await spaceAgentAdapter.createOrRestoreSession({ pane, dotId, ownerUserId: owner });
+      if (!session.binding.sessionId || session.dotId !== dotId) throw new SpaceConflictError("The Dot's conversation could not start.");
+      return { sessionId: session.binding.sessionId };
+    },
+    send: async ({ pane, sessionId, owner, content, requestKey }) => {
+      await spaceAgentAdapter.sendMessage({ pane, sessionId, content, operatorUserId: owner, clientRequestId: requestKey, traceId: makeSpaceId("trace") });
+    },
+    openGoal: async (sessionId) => {
+      const goal = await dotGoalsRepository.openForSession(sessionId);
+      return goal ? { goalId: goal.goalId, status: goal.status, objective: goal.objective, statusReason: goal.statusReason ?? null,
+        steps: goal.usage.steps, maxSteps: goal.budget.maxSteps } : null;
+    },
+    steerGoal: async (owner, dotId, goalId, text, resume) => {
+      await dotGoalService.steer(owner, dotId, goalId, { text: text.slice(0, 4000) }, null);
+      if (resume) await dotGoalService.control(owner, dotId, goalId, { action: "RESUME" }, null);
+    },
+    pendingApprovals: async (owner, dotId, sessionId) => ((await dotsRepository.listPendingApprovals(owner, dotId, sessionId)) ?? [])
+      .map((item) => ({ summary: item.approvalSummary ?? item.toolId })),
+    watch: async (owner, roomId, paneId) => ((await spaceControl.watches(await controlUser(owner), roomId, "register", { paneId })) as { id?: string })?.id ?? null,
+    isChannelSession: channelsRepository ? async (sessionId) => Boolean(await channelsRepository.threadForSession(sessionId, "SLACK")
+      ?? await channelsRepository.threadForSession(sessionId, "TEAMS")) : undefined
+  }) : null;
+  registerDotLiveRoutes(app, dotLiveService, { routeOptions: defaultRouteRateLimitOptions, authenticatedOwner: dotsAuthenticatedOwner });
+  // Stage 7: frozen evaluation datasets run on the real runtime, started explicitly by an ADMIN for one of their Dots.
+  const dotEvalRunnerId = `api:${randomBytes(12).toString("hex")}`;
+  const dotEvalsRepository = options.dotEvalsRepository
+    ?? (dotsRepository && dotGoalsRepository && config.databaseUrl ? PostgresDotEvalsRepository.fromConnectionString(config.databaseUrl) : null);
+  if (dotEvalsRepository && !options.dotEvalsRepository) {
+    app.addHook("onClose", () => dotEvalsRepository.dispose());
+    // Cases left open by a stopped API process are closed, never resumed silently, and their Goals are cancelled.
+    app.addHook("onReady", async () => {
+      const abandoned = await dotEvalsRepository.abandon(dotEvalRunnerId, "The server restarted during the evaluation.").catch(() => []);
+      for (const item of abandoned) {
+        if (item.goalId && dotGoalService) await dotGoalService.control(item.ownerUserId, item.dotId, item.goalId, { action: "CANCEL" }, null).catch(() => undefined);
+      }
+    });
+  }
+  const evalMimeTypes: Record<string, string> = { csv: "text/csv", md: "text/markdown", pdf: "application/pdf", png: "image/png",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+  const dotEvalService = dotEvalsRepository && dotsRepository && dotGoalsRepository && dotGoalService && dotDelegationService ? createDotEvalService({
+    datasetsRoot: process.env.SPACE_EVALS_ROOT || fileURLToPath(new URL("../../../evals/", import.meta.url)),
+    evals: dotEvalsRepository,
+    available: async (owner) => {
+      const accounts = connectorService ? (await connectorService.status(owner).catch(() => null))?.accounts ?? [] : [];
+      const capabilities = new Set(accounts.flatMap((account) => account.capabilities));
+      const channels = dotChannelService ? await dotChannelService.available(owner).catch(() => []) : [];
+      return new Set([...(capabilities.has("MAIL_READ") ? ["connector:mail-read"] : []), ...(capabilities.has("MAIL_COMPOSE") ? ["connector:mail-compose"] : []),
+        ...(capabilities.has("CALENDAR") ? ["connector:calendar"] : []), ...channels]);
+    },
+    openPane: async ({ roomId, title }) => {
+      await cliRuntimeVisibility.assertEnabled("cli:codex");
+      const [input] = await roomPaneCommands.resolve(roomId, [{ mode: "CHAT" }]);
+      const [pane] = await store.createPanes([{ ...input!, title }], makeSpaceId("trace"));
+      for (const event of (await store.listEvents(roomId)).filter((event) => event.type === "PANE_CREATED" && event.paneId === pane!.id)) eventBus.publish(event);
+      return pane!;
+    },
+    startSession: async ({ pane, owner, dotId, modelConfigId }) => {
+      // A new conversation per case. Space tool writes wait for approval through the gateway while the case runs;
+      // the runtime itself works in the sandboxed workspace mode when the installation allows it.
+      const session = await spaceAgentAdapter.createOrRestoreSession({ pane, dotId, ownerUserId: owner, sessionId: null,
+        ...(modelConfigId ? { selectedModelConfigId: modelConfigId } : {}) });
+      if (!session.binding.sessionId || session.dotId !== dotId) throw new SpaceConflictError("The evaluation conversation could not start.");
+      await spaceAgentAdapter.updateSettings({ pane, permissionMode: "approve_for_me" }).catch(() => undefined);
+      return { sessionId: session.binding.sessionId };
+    },
+    uploadFixture: async ({ roomId, owner, name, data }) => {
+      const mimeType = evalMimeTypes[name.split(".").pop() ?? ""] ?? "application/octet-stream";
+      const storage = buildGenericUserUploadStorage({ artifactRoot: config.browserEvidenceArtifactRoot, roomId, originalFilename: name });
+      await mkdir(dirname(storage.filePath), { recursive: true });
+      await writeFile(storage.filePath, data, { flag: "wx" });
+      try {
+        const result = await store.createArtifact({ roomId, paneId: null, kind: mimeType.startsWith("image/") ? "IMAGE" : "EXPORT", mimeType,
+          storageUri: storage.storageUri, sha256: createHash("sha256").update(data).digest("hex"), byteSize: data.length,
+          metadata: { source: "USER_UPLOAD", originalFilename: name, storedFilename: storage.storedFilename, uploadedBy: owner, evaluation: true } }, makeSpaceId("trace"));
+        eventBus.publish(result.event);
+        return result.artifact.id;
+      } catch (error) { await unlink(storage.filePath).catch(() => undefined); throw error; }
+    },
+    send: async ({ pane, sessionId, owner, content, artifactIds, requestKey }) => {
+      await spaceAgentAdapter.sendMessage({ pane, sessionId, content, artifactIds, operatorUserId: owner, clientRequestId: requestKey, traceId: makeSpaceId("trace") });
+    },
+    createGoal: (owner, dotId, input) => dotGoalService.create(owner, dotId, input, null),
+    goalStatus: async (goalId) => (await dotGoalsRepository.get(goalId))?.status ?? null,
+    cancelGoal: async (owner, dotId, goalId) => { await dotGoalService.control(owner, dotId, goalId, { action: "CANCEL" }, null); },
+    latestRunStatus: async (sessionId) => (await store.getLatestSpaceAgentRun(sessionId))?.status ?? null,
+    interrupt: async (pane) => { await spaceAgentAdapter.interrupt({ pane }); },
+    runnerId: dotEvalRunnerId,
+    declinePending: async (owner, dotId, sessionId) => {
+      for (const pending of (await dotsRepository.listPendingApprovals(owner, dotId, sessionId)) ?? []) {
+        const decided = await dotsRepository.decideToolApproval(owner, dotId, pending.invocationId, "DECLINE", owner);
+        const payload = decided?.payload as { kind?: string; scheduleId?: string } | undefined;
+        if (payload?.kind === "schedule" && payload.scheduleId && dotScheduleService) {
+          await dotScheduleService.control(owner, dotId, payload.scheduleId, { action: "CANCEL" }).catch(() => undefined);
+        }
+      }
+    },
+    log: (message, error) => app.log.warn({ err: error }, message)
+  }) : null;
+  registerDotEvalRoutes(app, dotEvalService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: dotsAuthenticatedOwner,
+    ownsDot: async (owner, dotId) => Boolean(dotsRepository && await dotsRepository.get(owner, dotId)),
+    ownsRoom: async (owner, roomId) => (await Promise.resolve(store.getRoom(roomId)).catch(() => null))?.ownerUserId === owner
+  });
+  registerDotComputerRoutes(app, dotComputerService, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
+  let dotChannelTimer: NodeJS.Timeout | null = null;
+  let dotScheduleTimer: NodeJS.Timeout | null = null;
+  let dotDelegationTimer: NodeJS.Timeout | null = null;
+  let dotGoalReconcileTimer: NodeJS.Timeout | null = null;
+  app.addHook("onReady", async () => {
+    if (!config.enableCodexTurns) return;
+    if (dotScheduleService) {
+      dotScheduleTimer = setInterval(() => void dotScheduleService.tick().catch((error) => app.log.warn({ err: error }, "Dot schedule tick failed.")), 30_000);
+      dotScheduleTimer.unref();
+    }
+    if (dotChannelService) {
+      // Slack and Teams: answers, Goal questions and approval notices, and messages that waited for a busy Dot.
+      dotChannelTimer = setInterval(() => void dotChannelService.sweep().catch((error) => app.log.warn({ err: error }, "Channel sweep failed.")), 15_000);
+      dotChannelTimer.unref();
+    }
+    if (dotDelegationService) {
+      // Delegated Goals report their outcome to the delegating conversation; a busy conversation is retried.
+      dotDelegationTimer = setInterval(() => void dotDelegationService.reportOutcomes().catch((error) => app.log.warn({ err: error }, "Dot delegation reports failed.")), 60_000);
+      dotDelegationTimer.unref();
+    }
+    if (dotGoalService) {
+      const reconcile = () => void dotGoalService.reconcile().then((restarted) => {
+        if (restarted) app.log.warn({ restarted }, "Restarted drivers for open Dot Goals.");
+      }).catch((error) => app.log.warn({ err: error }, "Dot Goal reconciliation failed."));
+      setTimeout(reconcile, 60_000).unref();
+      dotGoalReconcileTimer = setInterval(reconcile, 5 * 60_000);
+      dotGoalReconcileTimer.unref();
+    }
+  });
+  app.addHook("onClose", async () => { if (dotScheduleTimer) clearInterval(dotScheduleTimer); if (dotGoalReconcileTimer) clearInterval(dotGoalReconcileTimer);
+    if (dotDelegationTimer) clearInterval(dotDelegationTimer); if (dotChannelTimer) clearInterval(dotChannelTimer); });
+  const installedMcpRegistryPath = "/opt/spaceapp/bin/tool-routing-current/mcp-registry.json";
+  const mcpResultRoot = resolve(config.browserEvidenceArtifactRoot, "mcp-executions");
+  registerDotToolGatewayRoutes(app, dotsRepository ? {
+    store, repository: dotsRepository,
+    resolveActor: (userId) => controlUser(userId),
+    callControl: (actor, tool, args) => spaceControlRoutes.call(actor, tool, args),
+    catalogContext: async ({ roomId, role, ownerUserId }) => {
+      const [servers, tools, sessions, registry, connectors, channels] = await Promise.all([
+        store.listMcpServers(), store.listMcpTools(), roomId ? store.listActivePaneBrowserSessions(roomId) : Promise.resolve([]),
+        readFile(installedMcpRegistryPath, "utf8").then((text) => JSON.parse(text) as { servers?: Array<{ id?: unknown; description?: unknown }> })
+          .catch(() => ({ servers: [] })),
+        connectorService && ownerUserId ? connectorService.catalog(ownerUserId).catch(() => null) : Promise.resolve(null),
+        dotChannelService && ownerUserId ? dotChannelService.status(ownerUserId).catch(() => null) : Promise.resolve(null)
+      ]);
+      const serverById = new Map(servers.map((server) => [server.id, server]));
+      return {
+        role,
+        ...(channels ? { channels: channels.providers.map((provider) => ({ provider: provider.provider, configured: provider.configured,
+          linked: channels.identities.some((identity) => identity.provider === provider.provider) })) } : {}),
+        ...(connectors ?? (connectorService ? { connectorAccounts: [], connectorProviders: { google: Boolean(connectorService.client("GOOGLE")),
+          microsoft: Boolean(connectorService.client("MICROSOFT")) } } : {})),
+        browserSessionsEnabled: config.browserSessionsEnabled && config.browserToolBridgeEnabled,
+        browserPaneIds: sessions.map((session) => session.paneId),
+        mcpTools: tools.map((tool) => {
+          const server = serverById.get(tool.serverId);
+          return { toolId: tool.id, serverName: server?.displayName ?? tool.serverId, name: tool.name,
+            available: config.mcpToolBridgeEnabled && tool.status === "VERIFIED" && server?.status === "VERIFIED",
+            approvalRequired: tool.approvalRequired,
+            statusReason: config.mcpToolBridgeEnabled ? tool.statusReason : "The Space MCP tool bridge is disabled." };
+        }),
+        installedMcpServers: (registry.servers ?? []).flatMap((server) =>
+          typeof server.id === "string" && typeof server.description === "string" ? [{ serverId: server.id, description: server.description }] : [])
+      };
+    },
+    executeMcp: async (input, request) => {
+      if (!config.mcpToolBridgeEnabled) return { status: "BLOCKED", message: "The Space MCP tool bridge is disabled.", artifactLocalPath: null };
+      const result = await executeMcpToolWithPolicy(input, request);
+      const localPath = result.artifact?.metadata && typeof (result.artifact.metadata as Record<string, unknown>).localPath === "string"
+        ? (result.artifact.metadata as Record<string, string>).localPath : null;
+      return { status: result.status, message: result.message, artifactLocalPath: localPath ?? null };
+    },
+    readMcpResult: async (localPath) => {
+      const path = resolve(localPath);
+      if (!path.startsWith(`${mcpResultRoot}/`)) return { message: "The MCP result is stored as a Space artifact." };
+      const text = await readFile(path, "utf8");
+      return (JSON.parse(text) as { result?: unknown }).result ?? null;
+    },
+    executeBrowser: async (input, request) => {
+      if (!config.browserSessionsEnabled || !config.browserToolBridgeEnabled) throw new SpaceFeatureDisabledError("BROWSER_TOOL_BRIDGE_DISABLED", "Managed browser tools are disabled.");
+      const browserPane = await getPaneById(store, input.targetPaneId);
+      assertBrowserPaneCompatible(browserPane);
+      if (browserPane.roomId !== input.roomId) throw new SpaceNotFoundError(`Browser pane ${browserPane.id} was not found in room ${input.roomId}.`);
+      const actionResult = await browserSessionManager.action(browserPane, input.action, request.requestIdForSpace,
+        { holderType: "AGENT", holderId: input.agentSessionId });
+      await recordAudit(store, request, { action: "pane.browser.agent_action.executed", targetType: "pane", targetId: browserPane.id,
+        metadata: { roomId: input.roomId, agentSessionId: input.agentSessionId, sessionId: actionResult.session.sessionId, actionType: input.action.type, via: "dot-gateway" } });
+      return { sessionId: actionResult.session.sessionId, paneId: actionResult.session.paneId, actionType: input.action.type,
+        viewport: actionResult.session.viewport, currentUrl: safeBrowserObservationUrl(actionResult.session.currentUrl),
+        title: actionResult.session.title ? redactMemoryText(actionResult.session.title).slice(0, 500) : null,
+        text: safeBrowserObservationText(actionResult.text), capturedAt: actionResult.frame?.capturedAt ?? actionResult.session.lastFrameAt };
+    },
+    goalTool: dotGoalService ? (sessionId, toolId, args) => dotGoalService.tool(sessionId, toolId, args) : undefined,
+    computerBrowser: dotComputerService ? (session, owner, args) => dotComputerService.browser(session, owner, args) : undefined,
+    delegate: dotDelegationService ? (session, owner, args) => dotDelegationService.delegate(session, owner, args) : undefined,
+    memoryTool: dotMemoryService ? (session, owner, toolId, args) => dotMemoryService.tool(session, owner, toolId, args) : undefined,
+    memoryScope: dotMemoryService ? (owner, dotId, memoryId) => dotMemoryService.scope(owner, dotId, memoryId) : undefined,
+    publishDeliverable: dotDeliverablesService ? (owner, dotId, input) => dotDeliverablesService.publish(owner, dotId,
+      { path: input.path, roomId: input.roomId }, "DOT", null, input.expectedSha256) : undefined,
+    deliverableFingerprint: dotDeliverablesService ? (owner, dotId, path) => dotDeliverablesService.fingerprint(owner, dotId, path) : undefined,
+    connectorTool: connectorService ? (owner, toolId, args) => connectorService.tool(owner, toolId, args) : undefined,
+    scheduleTool: dotScheduleService ? (session, owner, args) => dotScheduleService.tool(session, owner, args) : undefined,
+    decideSchedule: dotScheduleService ? async (owner, dotId, scheduleId, decision) => {
+      const schedule = await dotScheduleService.control(owner, dotId, scheduleId, { action: decision === "APPROVE" ? "CONFIRM" : "CANCEL" });
+      return { status: schedule.status, nextRunAt: schedule.nextRunAt };
+    } : undefined,
+    evaluationSession: dotEvalsRepository ? (sessionId) => dotEvalsRepository.isRunningSession(sessionId) : undefined,
+    channelTool: dotChannelService ? async (session, owner, toolId, args) => {
+      try { return await dotChannelService.toolSend(session, owner, toolId, args); }
+      catch (error) { return { status: "BLOCKED" as const, statusReason: `Sending failed: ${error instanceof Error ? error.message.slice(0, 200) : "unknown error"}` }; }
+    } : undefined,
+    continueAfterApproval: async ({ sessionId, paneId, ownerUserId, content, requestKey }) => {
+      const pane = await getPaneById(store, paneId);
+      const active = await store.getActiveSpaceAgentSession(pane.id);
+      if (active?.sessionId !== sessionId) return false;
+      await spaceAgentAdapter.sendMessage({ pane, sessionId, content, operatorUserId: ownerUserId, clientRequestId: requestKey,
+        traceId: makeSpaceId("trace") });
+      return true;
+    },
+    audit: (request, action, roomId, metadata) => recordAudit(store, request, { action, targetType: "room", targetId: roomId, metadata })
+  } : null, {
+    routeOptions: defaultRouteRateLimitOptions,
+    authenticatedOwner: async request => {
+      if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) {
+        throw new GitControlError("UNAUTHENTICATED", "Sign in to use Dots.", 401);
+      }
+      return (await store.upsertUser(request.user)).id;
+    }
+  });
   app.post("/api/control/v1/grant", defaultRouteRateLimitOptions, async request=>{
     if(!request.user||request.user.role!=="ADMIN"||request.user.automationScope)throw new SpaceConflictError("Only the operator may grant control access.");
     const input=z.object({roomId:z.string().min(1),enabled:z.boolean()}).strict().parse(request.body);
@@ -14838,11 +15563,16 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     await cliRuntimeVisibility.assertEnabled("cli:codex");
     const params = parseQuery(idParamSchema, request.params);
     const input = parseBody(createAgentPaneSessionInputSchema, request.body ?? {});
+    if (input.dotId && (request.user?.automationScope || request.user?.proofScope === "READ_ONLY")) {
+      throw new SpaceFeatureDisabledError("DOTS_SCOPE_FORBIDDEN", "An interactive user session is required.");
+    }
     const pane = await getPaneById(store, params.id);
     assertAgentPaneCompatible(pane);
     return spaceAgentAdapter.createOrRestoreSession({
       pane,
       title: input.title,
+      dotId: input.dotId,
+      ownerUserId: request.user!.id,
       sessionId: input.sessionId,
       threadId: input.threadId,
       selectedModelConfigId: input.selectedModelConfigId,
@@ -14858,6 +15588,8 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     assertAgentPaneCompatible(pane);
     const result = await spaceAgentAdapter.sendMessage({
       acceptance: input.acceptance,
+      dotId: input.dotId,
+      sessionId: input.sessionId,
       clientRequestId: input.clientRequestId,
       pane,
       content: input.content,
@@ -15422,43 +16154,37 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     let model = "gpt-4o-mini";
     let prompt = "";
     let provider = "";
-    let file: { buffer: Buffer; mimeType: string; filename: string } | null = null;
-    for await (const part of request.parts()) {
-      if (part.type === "field") {
-        if (part.fieldname === "model" && typeof part.value === "string") model = part.value.trim().slice(0, 120) || model;
-        if (part.fieldname === "prompt" && typeof part.value === "string") prompt = part.value.slice(0, 10000);
-        if (part.fieldname === "provider" && typeof part.value === "string") provider = part.value.trim().slice(0, 60);
-        continue;
+    return withStagedUploads(request, config.browserEvidenceArtifactRoot, {
+      maxFiles: 1, fileBytes: 10 * 1024 * 1024,
+      onField(name, value) {
+        if (typeof value !== "string") return;
+        if (name === "model") model = value.trim().slice(0, 120) || model;
+        if (name === "prompt") prompt = value.slice(0, 10000);
+        if (name === "provider") provider = value.trim().slice(0, 60);
       }
-      if (file) return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "Send one attachment at a time.");
-      const supportedImage = part.mimetype === "image/png" || part.mimetype === "image/jpeg" || part.mimetype === "image/webp";
-      if (!part.mimetype || (!supportedImage && part.mimetype !== "application/pdf" && part.mimetype !== "text/plain")) {
+    }, async uploads => {
+      const upload = uploads[0]!;
+      const mimeType = upload.declaredMimeType;
+      if (!["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain"].includes(mimeType)) {
         return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Only images, PDF, and plain text attachments are supported.");
       }
-      const chunks: Buffer[] = [];
-      let size = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        size += buffer.byteLength;
-        if (size > 10 * 1024 * 1024) return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Live attachments must be 10MB or smaller.");
-        chunks.push(buffer);
+      if (mimeType.startsWith("image/") && sniffImageMime(upload.sample) !== mimeType) {
+        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match the declared image type.");
       }
-      if (!size) return sendApiError(reply, 422, "EMPTY_UPLOAD", "Attachment must not be empty.");
-      file = { buffer: Buffer.concat(chunks), mimeType: part.mimetype, filename: part.filename || "attachment" };
-    }
-    if (!file) return sendApiError(reply, 422, "EMPTY_UPLOAD", "Attach an image or file.");
-    try {
-      const result = await createVoiceAttachmentResponse(config, { ...file, model, prompt, provider });
-      await recordAudit(store, request, {
-        action: "voice.realtime.attachment",
-        targetType: "voice_realtime_attachment",
-        targetId: request.requestIdForSpace,
-        metadata: { mimeType: file.mimeType, byteSize: file.buffer.byteLength, model }
-      });
-      return result;
-    } catch (err) {
-      return sendApiError(reply, 502, "VOICE_ATTACHMENT_FAILED", err instanceof Error ? err.message : "Attachment analysis failed.");
-    }
+      const file = { buffer: await readStagedUpload(config.browserEvidenceArtifactRoot, upload), mimeType, filename: upload.filename };
+      try {
+        const result = await createVoiceAttachmentResponse(config, { ...file, model, prompt, provider });
+        await recordAudit(store, request, {
+          action: "voice.realtime.attachment",
+          targetType: "voice_realtime_attachment",
+          targetId: request.requestIdForSpace,
+          metadata: { mimeType: file.mimeType, byteSize: file.buffer.byteLength, model }
+        });
+        return result;
+      } catch (err) {
+        return sendApiError(reply, 502, "VOICE_ATTACHMENT_FAILED", err instanceof Error ? err.message : "Attachment analysis failed.");
+      }
+    });
   });
 
   app.get("/api/turns", defaultRouteRateLimitOptions, async (request) => {
@@ -15550,7 +16276,8 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         workflowId: planned.workflowId,
         traceId: planned.traceId,
         message: "Temporal workflow failed to start.",
-        reasonCode: error instanceof TurnStarterDisabledError ? "TURN_STARTER_DISABLED" : "TURN_START_FAILED"
+        // TEMPORAL_UNAVAILABLE / TEMPORAL_START_TIMEOUT / TURN_START_FAILED: a stable cause, never the message.
+        reasonCode: error instanceof TurnStarterDisabledError ? "TURN_STARTER_DISABLED" : workflowStartErrorCode(error)
       });
       eventBus.publish(failed.event);
       throw error;
@@ -15706,6 +16433,47 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
     });
   }
 
+  /**
+   * Memory reclaim stops a detached CLI only when its pane is closed or gone.
+   * A pane that is still open (another room, minimized, browser closed) keeps
+   * its agent running; an uncertain pane lookup also protects the session.
+   */
+  async function performClosedPaneCliReap() {
+    const before = cliSessionStatsSchema.parse(await toolbarCliSessionStatsProvider());
+    const killedSessionIds: string[] = [];
+    let protectedSessionCount = 0;
+    let failedCount = 0;
+    let estimatedReclaimedBytes = 0;
+    for (const session of before.sessions.filter((candidate) => candidate.cleanupEligible)) {
+      let paneOpen = true;
+      try {
+        paneOpen = !(await store.getPane(session.paneId)).isClosed;
+      } catch (error) {
+        paneOpen = !(error instanceof SpaceNotFoundError);
+      }
+      if (paneOpen) {
+        protectedSessionCount += 1;
+        continue;
+      }
+      try {
+        if (await toolbarCliSessionTerminator(session.sessionId)) {
+          killedSessionIds.push(session.sessionId);
+          estimatedReclaimedBytes += session.rssBytes;
+        }
+      } catch {
+        failedCount += 1;
+      }
+    }
+    invalidateToolbarProvider(toolbarCliSessionStatsProvider);
+    invalidateToolbarProvider(toolbarHostMemoryProvider);
+    return {
+      status: failedCount > 0 ? "PARTIAL" as const : killedSessionIds.length > 0 ? "COMPLETED" as const : "NOOP" as const,
+      killedSessionIds: killedSessionIds.slice(0, 500),
+      protectedSessionCount,
+      estimatedReclaimedBytes
+    };
+  }
+
   app.get(
     "/api/admin/antigravity-usage-accounts",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
@@ -15715,6 +16483,18 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       }
       await cliRuntimeVisibility.assertEnabled("cli:gemini");
       return antigravityUsageAccountListSchema.parse(await antigravityUsageProvider());
+    }
+  );
+
+  app.get(
+    "/api/admin/claude-usage-accounts",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.user?.role !== "ADMIN") {
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Toolbar system telemetry requires the ADMIN role.");
+      }
+      await cliRuntimeVisibility.assertEnabled("cli:claude");
+      return claudeUsageAccountListSchema.parse(await claudeUsageProvider());
     }
   );
 
@@ -15824,437 +16604,14 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       return hostMemoryDetailsSchema.parse(await toolbarHostMemoryProvider());
     }
   );
-  app.get(
-    "/api/admin/streaming/catalog",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      return streamingCatalogResponseSchema.parse(await streamingService.catalog());
-    }
-  );
-  app.post(
-    "/api/admin/streaming/providers/:provider/oauth/start",
-    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      const { provider } = z.object({ provider: streamingOAuthProviderSchema }).strict().parse(request.params);
-      parseBody(z.object({}).strict(), request.body ?? {});
-      const sessionToken = request.cookies[cookieName] ?? "";
-      const result = streamingOAuthStartResponseSchema.parse(await streamingService.startOAuth(provider, sessionToken));
-      await recordAudit(store, request, {
-        action: "admin.streaming.oauth_started",
-        targetType: "streaming_provider",
-        targetId: provider,
-        metadata: { provider, expiresAt: result.expiresAt }
-      });
-      return result;
-    }
-  );
-  app.get(
-    "/api/admin/streaming/providers/:provider/oauth/callback",
-    { config: { rateLimit: { max: 30, timeWindow: "10 minutes" } } },
-    async (request, reply) => {
-      const params = z.object({ provider: streamingOAuthProviderSchema }).strict().safeParse(request.params);
-      const provider = params.success ? params.data.provider : "YOUTUBE";
-      if (!params.success || request.user?.role !== "ADMIN") {
-        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
-      }
-      const query = z.object({
-        code: z.string().min(1).max(4096).optional(),
-        state: z.string().min(1).max(1024).optional(),
-        error: z.string().max(200).optional()
-      }).passthrough().safeParse(request.query);
-      if (!query.success || query.data.error || !query.data.code || !query.data.state) {
-        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
-      }
-      try {
-        const result = await streamingService.completeOAuth({
-          provider,
-          code: query.data.code,
-          state: query.data.state,
-          sessionToken: request.cookies[cookieName] ?? ""
-        });
-        await recordAudit(store, request, {
-          action: "admin.streaming.oauth_completed",
-          targetType: "streaming_authorization",
-          targetId: result.authorization.id,
-          metadata: { provider, accountCount: result.accounts.length }
-        });
-        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, true));
-      } catch (error) {
-        request.log.info(
-          {
-            errorCode: error instanceof StreamingServiceError
-              ? error.code
-              : error instanceof Error && "code" in error && typeof error.code === "string"
-                ? error.code.slice(0, 100)
-                : "OAUTH_CALLBACK_FAILED",
-            requestId: request.requestIdForSpace,
-            provider
-          },
-          "streaming OAuth callback failed"
-        );
-        return reply.type("text/html; charset=utf-8").send(streamingOAuthPopupHtml(provider, false));
-      }
-    }
-  );
-  app.post(
-    "/api/admin/streaming/accounts/:accountId/verify",
-    { config: { rateLimit: { max: 30, timeWindow: "5 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      const { accountId } = z.object({ accountId: z.string().min(1).max(200) }).strict().parse(request.params);
-      parseBody(z.object({}).strict(), request.body ?? {});
-      return streamingVerifyAccountResponseSchema.parse(await streamingService.verifyAccount(accountId));
-    }
-  );
-  app.delete(
-    "/api/admin/streaming/accounts/:accountId",
-    { config: { rateLimit: { max: 30, timeWindow: "5 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      const { accountId } = z.object({ accountId: z.string().min(1).max(200) }).strict().parse(request.params);
-      const account = await streamingService.removeAccount(accountId);
-      await recordAudit(store, request, {
-        action: "admin.streaming.account_removed",
-        targetType: "streaming_account",
-        targetId: accountId,
-        metadata: { provider: account.provider }
-      });
-      return { account };
-    }
-  );
-  app.delete(
-    "/api/admin/streaming/authorizations/:authorizationId",
-    { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      const { authorizationId } = z.object({ authorizationId: z.string().min(1).max(200) }).strict().parse(request.params);
-      const result = streamingDisconnectAuthorizationResponseSchema.parse(
-        await streamingService.disconnectAuthorization(authorizationId)
-      );
-      await recordAudit(store, request, {
-        action: "admin.streaming.authorization_disconnected",
-        targetType: "streaming_authorization",
-        targetId: authorizationId,
-        metadata: { status: result.status, disconnected: result.disconnected }
-      });
-      return result;
-    }
-  );
-  app.patch(
-    "/api/admin/streaming/overlay-settings",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      const input = parseBody(updateStreamingOverlaySettingsInputSchema, request.body);
-      const settings = await streamingService.updateOverlaySettings(input, request.user.id);
-      await recordAudit(store, request, {
-        action: "admin.streaming.overlay_saved",
-        targetType: "streaming_overlay",
-        targetId: "global",
-        metadata: { version: settings.version, tileCount: settings.tiles.length, customTextEnabled: settings.customTextEnabled }
-      });
-      return settings;
-    }
-  );
-  app.get(
-    "/api/admin/streaming/overlay-snapshot",
-    { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming integrations require the ADMIN role.");
-      }
-      return streamingOverlaySnapshotSchema.parse(await streamingService.overlaySnapshot());
-    }
-  );
-  app.get("/api/internal/streaming/bot/live-metrics", defaultRouteRateLimitOptions, async () => {
-    return { metrics: formatStreamingBotLiveMetrics(await streamingService.overlaySnapshot()) };
+  registerStreamingAdminRoutes(app, {
+    streamingService, recordAudit: (request, input) => recordAudit(store, request, input)
   });
-  app.get(
-    "/api/admin/streaming/bot/settings",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot settings require the ADMIN role.");
-      }
-      const { settings, memoryCount } = await streamingBotService.getSettings();
-      return { settings: streamingBotSettingsSchema.parse(settings), memoryCount };
-    }
-  );
-  app.get("/api/admin/streaming/bot/models", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming model selection requires the ADMIN role.");
-    return { models: await streamingBotService.modelOptions() };
-  });
-  app.patch(
-    "/api/admin/streaming/bot/settings",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot settings require the ADMIN role.");
-      }
-      const input = parseBody(updateStreamingBotSettingsInputSchema, request.body);
-      try {
-        const settings = await streamingBotService.updateSettings(input, request.user.id);
-        await recordAudit(store, request, {
-          action: "admin.streaming.bot_saved",
-          targetType: "streaming_bot_settings",
-          targetId: "global",
-          metadata: { version: settings.version, enabled: settings.enabled, memoryEnabled: settings.memoryEnabled }
-        });
-        return streamingBotSettingsSchema.parse(settings);
-      } catch (error) {
-        if (error instanceof StreamingBotServiceError) {
-          return sendApiError(reply, error.statusCode, error.code, error.message);
-        }
-        throw error;
-      }
-    }
-  );
-  app.post(
-    "/api/admin/streaming/bot/pause",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot controls require the ADMIN role.");
-      }
-      const settings = await streamingBotService.setPaused(true, request.user.id);
-      await recordAudit(store, request, { action: "admin.streaming.bot_paused", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
-      return streamingBotSettingsSchema.parse(settings);
-    }
-  );
-  app.post(
-    "/api/admin/streaming/bot/resume",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot controls require the ADMIN role.");
-      }
-      try {
-        const settings = await streamingBotService.setPaused(false, request.user.id);
-        await recordAudit(store, request, { action: "admin.streaming.bot_resumed", targetType: "streaming_bot_settings", targetId: "global", metadata: { version: settings.version } });
-        return streamingBotSettingsSchema.parse(settings);
-      } catch (error) {
-        if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
-        throw error;
-      }
-    }
-  );
-  app.get(
-    "/api/admin/streaming/bot/status",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot status requires the ADMIN role.");
-      }
-      return streamingBotStatusSchema.parse(await streamingBotService.getStatus());
-    }
-  );
-  app.get(
-    "/api/admin/streaming/bot/activity",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot activity requires the ADMIN role.");
-      }
-      const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict().parse(request.query);
-      const activity = await streamingBotService.listActivity(limit);
-      return { data: activity.map((record) => streamingBotActivitySchema.parse(record)), pagination: { page: 1, pageSize: limit, totalItems: activity.length, totalPages: 1 } };
-    }
-  );
-  app.post(
-    "/api/admin/streaming/bot/test",
-    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot test requires the ADMIN role.");
-      }
-      const input = parseBody(streamingBotTestInputSchema, request.body);
-      const result = await streamingBotService.test(input);
-      await recordAudit(store, request, {
-        action: "admin.streaming.bot_tested",
-        targetType: "streaming_bot_settings",
-        targetId: "global",
-        metadata: { platform: input.platform, errorCode: result.errorCode, model: result.model }
-      });
-      return result;
-    }
-  );
-  app.post(
-    "/api/admin/streaming/bot/memory/clear",
-    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory controls require the ADMIN role.");
-      }
-      parseBody(z.object({}).strict(), request.body ?? {});
-      const result = await streamingBotService.clearMemory();
-      await recordAudit(store, request, {
-        action: "admin.streaming.bot_memory_cleared",
-        targetType: "streaming_bot_settings",
-        targetId: "global",
-        metadata: { removed: result.removed }
-      });
-      return result;
-    }
-  );
-  app.get(
-    "/api/admin/streaming/bot/memory/search",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory search requires the ADMIN role.");
-      }
-      const { q, limit } = z.object({ q: z.string().trim().min(1).max(200), limit: z.coerce.number().int().min(1).max(50).default(20) }).strict().parse(request.query);
-      return streamingBotService.searchMemory(q, limit);
-    }
-  );
-  app.get("/api/admin/streaming/bot/memory", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
-    const input = z.object({ status: z.enum(["PENDING", "APPROVED"]).default("APPROVED"), q: z.string().max(200).default(""), limit: z.coerce.number().int().min(1).max(100).default(50) }).strict().parse(request.query);
-    const entries = await streamingBotService.listReviewedMemory(input.status, input.limit, input.q);
-    return { entries: entries.map(entry => streamingBotReviewedMemorySchema.parse(entry)) };
-  });
-  app.get("/api/admin/streaming/bot/moderation", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");
-    const actions = await streamingBotService.listModerationActions(100);
-    return { actions };
-  });
-  app.get("/api/admin/streaming/live-context", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming Live context requires the ADMIN role.");
-    const [snapshot, activity, memory, bot] = await Promise.all([
-      streamingService.overlaySnapshot(),
-      streamingBotService.listActivity(30),
-      streamingBotService.listReviewedMemory("APPROVED", 30),
-      streamingBotService.getStatus()
-    ]);
-    return {
-      generatedAt: new Date().toISOString(),
-      bot: { enabled: bot.enabled, platforms: Object.fromEntries(Object.entries(bot.platforms).map(([name, state]) => [name, { connected: state.connected, live: state.live, lastPollAt: state.lastPollAt }])) },
-      metrics: snapshot.tiles.filter(tile => tile.provider !== "SPACE").map(tile => ({ provider: tile.provider, label: tile.label, badge: tile.badge, value: tile.value, state: tile.state, sampledAt: tile.sampledAt })),
-      messages: activity.filter(item => item.direction === "IN" && !asksForOperatorPrivateData(item.message) &&
-        !containsSensitiveDisclosure(`${item.author ?? ""} ${item.message}`))
-        .map(item => ({ id: item.id, platform: item.platform, author: item.author, message: item.message.slice(0, 500), at: item.createdAt })),
-      targets: activity.filter(item => item.direction === "IN" && !item.protectedAccount && item.authorId &&
-        !containsSensitiveDisclosure(item.author ?? "") &&
-        Date.now() - Date.parse(item.createdAt) < 10 * 60_000).map(item => ({ id: item.id, platform: item.platform, author: item.author, at: item.createdAt })),
-      moderation: (await streamingBotService.listModerationActions(30)).map(item => ({ id: item.id, platform: item.platform,
-        author: (() => { const name = activity.find(record => record.messageId === item.messageId)?.author ?? null;
-          return name && !containsSensitiveDisclosure(name) ? name : null; })(),
-        decision: item.decision, reason: item.reason, durationSeconds: item.durationSeconds, result: item.result, at: item.createdAt })),
-      memory: memory.filter(item => !containsSensitiveDisclosure(`${item.title} ${item.body}`)).map(item => ({ title: item.title, body: item.body.slice(0, 500) })),
-      knowledge: PUBLIC_SPACEAPP_KNOWLEDGE.map(item => ({ source: item.source, version: item.version, answer: item.answer }))
-    };
-  });
-  app.post("/api/admin/streaming/live-action", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming Live actions require the ADMIN role.");
-    const input = parseBody(z.discriminatedUnion("action", [
-      z.object({ action: z.literal("REPLY"), platform: z.enum(["YOUTUBE", "TWITCH"]), message: z.string().trim().min(1).max(500) }).strict(),
-      z.object({ action: z.literal("PAUSE") }).strict(),
-      z.object({ action: z.literal("TIMEOUT"), activityId: z.string().min(1).max(200), durationSeconds: z.union([z.literal(300), z.literal(1800)]) }).strict(),
-      z.object({ action: z.literal("UNDO"), moderationActionId: z.string().min(1).max(200) }).strict()
-    ]), request.body);
-    try {
-      const result = input.action === "REPLY" ? await streamingBotService.sendOperatorReply(input.platform, input.message)
-        : input.action === "PAUSE" ? await streamingBotService.setPaused(true, request.user.id)
-        : input.action === "TIMEOUT" ? await streamingBotService.timeoutFromActivity(input.activityId, input.durationSeconds)
-        : await streamingBotService.undoModerationAction(input.moderationActionId);
-      await recordAudit(store, request, { action: `admin.streaming.live_${input.action.toLowerCase()}`, targetType: "streaming_live_action",
-        targetId: input.action === "TIMEOUT" ? input.activityId : input.action === "UNDO" ? input.moderationActionId : input.action,
-        metadata: { result: "SUCCEEDED" } });
-      return { ok: true, result };
-    } catch (error) {
-      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
-      throw error;
-    }
-  });
-  app.post("/api/admin/streaming/bot/moderation/:id/undo", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming moderation requires the ADMIN role.");
-    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
-    parseBody(z.object({}).strict(), request.body ?? {});
-    try {
-      const action = await streamingBotService.undoModerationAction(id);
-      await recordAudit(store, request, { action: "admin.streaming.moderation_undone", targetType: "streaming_moderation_action", targetId: id, metadata: { platform: action.platform, result: action.result } });
-      return action;
-    } catch (error) {
-      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
-      throw error;
-    }
-  });
-  app.post("/api/internal/streaming/bot/moderation-triage", defaultRouteRateLimitOptions, async (request) => {
-    const { message } = parseBody(z.object({ message: z.string().trim().min(1).max(2000) }).strict(), request.body);
-    const result = await decisionsService.decide({
-      state: message,
-      questions: { verdict: { type: "choice", instructions: "Classify a public live-chat message for moderation. Criticism, disagreement, capitals or one isolated swear are SAFE. Clear threats or publication of private information are SEVERE. Repeated targeted insults or harassment are ABUSE. Uncertain intent is AMBIGUOUS.",
-        criteria: { SAFE: "No action", ABUSE: "Targeted verbal abuse or harassment", SEVERE: "Clear threat or doxxing", AMBIGUOUS: "Needs human review" } } }
-    });
-    if (!result.available) return { available: false, verdict: null };
-    const answer = result.answers.verdict;
-    const choice = answer && typeof answer === "object" && !Array.isArray(answer) ? (answer as Record<string, unknown>).choice : null;
-    return { available: true, verdict: typeof choice === "string" && ["SAFE", "ABUSE", "SEVERE", "AMBIGUOUS"].includes(choice) ? choice : "AMBIGUOUS" };
-  });
-  app.post("/api/admin/streaming/bot/memory", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
-    const input = parseBody(createStreamingBotMemoryInputSchema, request.body);
-    const entry = await streamingBotService.createReviewedMemory(input);
-    await recordAudit(store, request, { action: "admin.streaming.bot_memory_created", targetType: "streaming_bot_memory", targetId: entry.id, metadata: { status: entry.status } });
-    return streamingBotReviewedMemorySchema.parse(entry);
-  });
-  app.patch("/api/admin/streaming/bot/memory/:id", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
-    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
-    const input = parseBody(updateStreamingBotMemoryInputSchema, request.body);
-    try {
-      const entry = await streamingBotService.updateReviewedMemory(id, input);
-      await recordAudit(store, request, { action: "admin.streaming.bot_memory_updated", targetType: "streaming_bot_memory", targetId: id, metadata: { status: entry.status, version: entry.version } });
-      return streamingBotReviewedMemorySchema.parse(entry);
-    } catch (error) {
-      if (error instanceof StreamingBotServiceError) return sendApiError(reply, error.statusCode, error.code, error.message);
-      throw error;
-    }
-  });
-  app.delete("/api/admin/streaming/bot/memory/:id", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Streaming bot memory requires the ADMIN role.");
-    const { id } = z.object({ id: z.string().min(1).max(200) }).strict().parse(request.params);
-    const deleted = await streamingBotService.deleteReviewedMemory(id);
-    if (deleted) await recordAudit(store, request, { action: "admin.streaming.bot_memory_deleted", targetType: "streaming_bot_memory", targetId: id, metadata: {} });
-    return { deleted };
-  });
-  app.post("/api/internal/streaming/bot/mcp-execute", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(streamingBotMcpExecuteInputSchema, request.body ?? {});
-    const result = await executeMcpToolWithPolicy({
-      toolId: input.toolId,
-      arguments: input.arguments ?? {}
-    }, request);
-    return toMcpExecuteResponse({
-      status: result.status === "EXECUTED" ? "EXECUTED" : "FAILED",
-      code: result.code,
-      message: result.message,
-      serverId: result.serverId,
-      toolName: result.toolName,
-      observation: result.artifact?.storageUri ?? null
-    });
-  });
-  app.get("/api/internal/streaming/bot/skills/:name", defaultRouteRateLimitOptions, async (request) => {
-    const { name } = z.object({ name: z.string().trim().min(1).max(160) }).strict().parse(request.params);
-    const skills = await store.listSkills();
-    const skill = skills.find((candidate) => candidate.id === name || candidate.displayName === name);
-    if (!skill || skill.status !== "VERIFIED") {
-      throw new SpaceNotFoundError(`Skill ${name} was not found or is not active.`);
-    }
-    return { content: skill.body };
+  registerStreamingBotRoutes(app, {
+    streamingService, streamingBotService, decisionsService, store,
+    recordAudit: (request, input) => recordAudit(store, request, input),
+    executeMcpToolWithPolicy: (input, request) => executeMcpToolWithPolicy(input, request),
+    routeOptions: defaultRouteRateLimitOptions
   });
   app.get(
     "/api/admin/system-analytics/overview",
@@ -16374,7 +16731,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
       toolbarCleanupInFlight = true;
       try {
         const before = hostMemoryDetailsSchema.parse(await toolbarHostMemoryProvider());
-        const cli = await performToolbarCliReap();
+        const cli = await performClosedPaneCliReap();
         const kernelCache: KernelCacheReclaimResult = !before.pressure.isUnderPressure
           ? { status: "SKIPPED_LOW_PRESSURE", reclaimedBytes: 0, message: null }
           : !before.pressure.canDropPageCache || before.memory.reclaimableBytes < minimumKernelCacheReclaimBytes
@@ -16399,7 +16756,8 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
           status,
           cli: {
             killedSessionIds: cli.killedSessionIds,
-            estimatedReclaimedBytes: cli.estimatedReclaimedBytes
+            estimatedReclaimedBytes: cli.estimatedReclaimedBytes,
+            protectedSessionCount: cli.protectedSessionCount
           },
           kernelCache,
           before: before.memory,
@@ -16413,6 +16771,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
           metadata: {
             status: result.status,
             killedCliCount: result.cli.killedSessionIds.length,
+            protectedCliCount: cli.protectedSessionCount,
             estimatedCliReclaimedBytes: result.cli.estimatedReclaimedBytes,
             kernelCacheStatus: result.kernelCache.status,
             kernelCacheReclaimedBytes: result.kernelCache.reclaimedBytes
@@ -16801,152 +17160,85 @@ app.post(
       }
     }
   );
-  app.get("/api/providers", defaultRouteRateLimitOptions, async () => {
-    const providers = await store.listProviders();
-    return { data: providers, pagination: { page: 1, pageSize: 100, totalItems: providers.length, totalPages: providers.length ? 1 : 0 } };
+  registerTelegramRoutes(app, {
+    manager: telegramIntegrationManager,
+    visibility: cliRuntimeVisibility,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
-  app.get(
-    "/api/integrations/telegram",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async () => telegramIntegrationManager.getStatus()
-  );
-  app.get(
-    "/api/admin/cli-maintenance/runs",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance requires the ADMIN role.");
-      }
-      return { data: await cliMaintenanceManager.list() };
+  registerCliMaintenanceRoutes(app, {
+    store, cliMaintenanceManager, cliUpdateAllRunner,
+    recordAudit: (request, input) => recordAudit(store, request, input)
+  });
+  const maintenanceAutopilotTesting = process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+  const recordAutopilotAudit = async (actorId: string, action: string, targetId: string, metadata: Record<string, unknown>) => {
+    try {
+      await store.recordAuditEvent({
+        actorUserId: actorId,
+        traceId: `maintenance_autopilot:${randomUUID()}`,
+        action,
+        targetType: "maintenance_autopilot",
+        targetId,
+        metadata: { ...metadata, source: "maintenance_autopilot" }
+      });
+    } catch (error) {
+      app.log.warn({ err: error, action }, "Maintenance autopilot audit event could not be recorded");
     }
-  );
-  app.get(
-    "/api/admin/cli-maintenance/runs/:runId",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance requires the ADMIN role.");
-      }
-      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
-      return cliMaintenanceManager.get(params.runId);
-    }
-  );
-  app.get(
-    "/api/admin/cli-maintenance/runs/:runId/replay",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance replay requires the ADMIN role.");
-      }
-      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
-      const query = parseQuery(cliMaintenanceReplayQuerySchema, request.query);
-      return cliMaintenanceManager.replay(params.runId, query.afterSequence);
-    }
-  );
-  app.get(
-    "/api/admin/cli-maintenance/runs/:runId/export",
-    { config: { rateLimit: { max: 12, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance export requires the ADMIN role.");
-      }
-      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
-      const exported = await cliMaintenanceManager.export(params.runId);
-      const suffix = params.runId.slice(params.runId.indexOf(":") + 1);
-      reply.header("Cache-Control", "private, no-store");
-      reply.header("Content-Disposition", `attachment; filename="cli-health-repair-${suffix}.json"`);
-      return exported;
-    }
-  );
-  app.get(
-    "/api/admin/cli-maintenance/runs/:runId/stream",
-    {
-      compress: false,
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } }
+  };
+  const maintenanceAutopilot = options.maintenanceAutopilot ?? new MaintenanceAutopilot({
+    stateFile: maintenanceAutopilotTesting ? null : config.maintenanceAutopilotStateFile,
+    steps: {
+      cleanup: createStorageCleanupStep({
+        anyCliEnabled: async () => (await cliRuntimeVisibility.enabledRuntimeIds()).length > 0,
+        withExclusive: (operation) => codexHistoryAccessCoordinator.withExclusivePurge(operation),
+        protectedThreadIds: () => Promise.resolve(store.listActiveManagedCodexThreadIds()),
+        codexEnabled: () => cliRuntimeVisibility.isEnabled("cli:codex"),
+        service: cliSessionCleanupService,
+        audit: (result, actorId) => recordAutopilotAudit(actorId, "admin.cli_sessions.cleaned", result.previewId, {
+          status: result.status,
+          cleaned: result.cleaned,
+          totalBytes: result.totalBytes,
+          failures: result.failures
+        })
+      }),
+      memory: createMemoryReliefStep({
+        acquire: () => {
+          if (toolbarCleanupInFlight) return false;
+          toolbarCleanupInFlight = true;
+          return true;
+        },
+        release: () => { toolbarCleanupInFlight = false; },
+        readMemory: async () => hostMemoryDetailsSchema.parse(await toolbarHostMemoryProvider()),
+        stopClosedPaneClis: () => performClosedPaneCliReap(),
+        reclaimPageCache: async () => {
+          try {
+            return await toolbarKernelCacheReclaimer();
+          } finally {
+            invalidateToolbarProvider(toolbarHostMemoryProvider);
+          }
+        },
+        minimumReclaimBytes: minimumKernelCacheReclaimBytes,
+        audit: (result, actorId) => recordAutopilotAudit(actorId, "admin.memory.reclaimed", "vm207", {
+          status: result.status,
+          killedCliCount: result.stoppedCliCount,
+          kernelCacheStatus: result.status,
+          kernelCacheReclaimedBytes: result.reclaimedBytes
+        })
+      }),
+      ...createCliMaintenanceAutopilotSteps({ manager: cliMaintenanceManager })
     },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance live progress requires the ADMIN role.");
-      }
-      const params = parseQuery(cliMaintenanceRunParamSchema, request.params);
-      const query = parseQuery(cliMaintenanceReplayQuerySchema, request.query);
-      const rawLastEventId = request.headers["last-event-id"];
-      const lastEventId = Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId;
-      const parsedLastEventId = /^\d{1,10}$/.test(String(lastEventId ?? ""))
-        ? Math.min(1_000_000_000, Number(lastEventId))
-        : 0;
-      let afterSequence = Math.max(query.afterSequence, parsedLastEventId);
-      const replay = await cliMaintenanceManager.replay(params.runId, afterSequence);
-
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no"
-      });
-      reply.raw.write(formatSseMessage("ready", {
-        runId: replay.run.id,
-        afterSequence,
-        requestId: request.requestIdForSpace
-      }));
-      for (const event of replay.events) {
-        afterSequence = event.sequence;
-        reply.raw.write(formatSseMessage("progress", event, event.sequence));
-      }
-      reply.raw.write(formatSseMessage("run", replay.run));
-      if (cliMaintenanceManager.isStreamTerminal(replay)) {
-        reply.raw.end();
-        return;
-      }
-
-      let isClosed = false;
-      let polling = false;
-      let lastRunUpdatedAt = replay.run.updatedAt;
-      let pollTimer: ReturnType<typeof setInterval> | null = null;
-      const stopHeartbeat = startSseHeartbeat((frame) => {
-        if (!isClosed) reply.raw.write(frame);
-      });
-      const closeStream = () => {
-        if (isClosed) return;
-        isClosed = true;
-        if (pollTimer) clearInterval(pollTimer);
-        stopHeartbeat();
-      };
-      const poll = async () => {
-        if (isClosed || polling) return;
-        polling = true;
-        try {
-          const current = await cliMaintenanceManager.replay(params.runId, afterSequence);
-          for (const event of current.events) {
-            afterSequence = event.sequence;
-            reply.raw.write(formatSseMessage("progress", event, event.sequence));
-          }
-          if (current.run.updatedAt !== lastRunUpdatedAt || cliMaintenanceManager.isStreamTerminal(current)) {
-            lastRunUpdatedAt = current.run.updatedAt;
-            reply.raw.write(formatSseMessage("run", current.run));
-          }
-          if (cliMaintenanceManager.isStreamTerminal(current)) {
-            closeStream();
-            reply.raw.end();
-          }
-        } catch {
-          if (!isClosed) {
-            reply.raw.write(formatSseMessage("stream-error", {
-              code: "CLI_MAINTENANCE_STREAM_UNAVAILABLE",
-              message: "Live progress paused; durable replay remains available."
-            }));
-            closeStream();
-            reply.raw.end();
-          }
-        } finally {
-          polling = false;
-        }
-      };
-      pollTimer = setInterval(() => void poll(), 500);
-      reply.raw.once("close", closeStream);
-      request.raw.once("aborted", closeStream);
-    }
-  );
+    onRunFinished: (run, actorId) => recordAutopilotAudit(actorId, "admin.maintenance_autopilot.finished", run.id, {
+      trigger: run.trigger,
+      status: run.status,
+      steps: run.steps.map((step) => ({ id: step.id, status: step.status }))
+    }),
+    onError: (error, message) => app.log.warn({ err: error }, message)
+  });
+  if (!options.maintenanceAutopilot && !maintenanceAutopilotTesting) maintenanceAutopilot.startScheduler();
+  app.addHook("onClose", () => maintenanceAutopilot.stop());
+  registerMaintenanceAutopilotRoutes(app, {
+    autopilot: maintenanceAutopilot,
+    recordAudit: (request, input) => recordAudit(store, request, input)
+  });
   app.post(
     "/api/admin/cli-maintenance/auth-handoffs/open",
     { config: { rateLimit: { max: 8, timeWindow: "15 minutes" } } },
@@ -17089,92 +17381,31 @@ app.post(
       };
     }
   );
-  app.post("/api/admin/cli-maintenance/plans", { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } }, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Maintenance requires ADMIN.");
-    const run = await cliMaintenanceManager.createPlan(parseBody(maintenancePlanRequestSchema, request.body ?? {}), request.user.id);
-    await recordAudit(store, request, { action: "cli_maintenance.plan_queued", targetType: "admin_operation_run", targetId: run.id, metadata: {} });
-    return reply.code(202).send(run);
-  });
-  app.post("/api/admin/cli-maintenance/plans/:planId/apply", { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } }, async (request, reply) => {
-    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Maintenance requires ADMIN.");
-    const { planId } = request.params as { planId: string };
-    const run = await cliMaintenanceManager.applyPlan(planId, parseBody(maintenanceApplyRequestSchema, request.body), request.user.id);
-    await recordAudit(store, request, { action: "cli_maintenance.plan_applied", targetType: "admin_operation_run", targetId: run.id, metadata: { planId } });
-    return reply.code(202).send(run);
-  });
   app.post(
-    "/api/admin/cli-maintenance/runs",
-    { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } },
+    "/api/admin/panes/prune",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
       if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI maintenance requires the ADMIN role.");
+        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Pane pruning requires the ADMIN role.");
       }
-      const input = parseBody(cliMaintenanceRequestSchema, request.body);
-      const run = await cliMaintenanceManager.start(input, request.user.id);
+      const body = (request.body as { olderThanHours?: number; roomId?: string; batchSize?: number } | undefined) ?? {};
+      const olderThanHours = typeof body.olderThanHours === "number" ? Math.max(0, body.olderThanHours) : 24;
+      const roomId = typeof body.roomId === "string" && body.roomId ? body.roomId : undefined;
+      const batchSize = typeof body.batchSize === "number" ? Math.max(1, Math.min(body.batchSize, 5000)) : undefined;
+      const pruneFn = (store as {
+        pruneClosedPanes?: (opts?: { olderThanHours?: number; roomId?: string; batchSize?: number }) => Promise<{ deletedPanes: number }>;
+      }).pruneClosedPanes;
+      if (typeof pruneFn !== "function") {
+        return reply.send({ deletedPanes: 0, olderThanHours, roomId });
+      }
+      const result = await pruneFn.call(store, { olderThanHours, roomId, batchSize });
       await recordAudit(store, request, {
-        action: input.mode === "CHECK"
-          ? "cli_maintenance.check_queued"
-          : input.mode === "REPAIR"
-            ? "cli_maintenance.repair_queued"
-            : "cli_maintenance.update_queued",
-        targetType: "admin_operation_run",
-        targetId: run.id,
-        metadata: {
-          operationType: run.operationType,
-          status: run.status
-        }
+        action: "pane.prune",
+        targetType: "panes",
+        targetId: roomId ?? "global",
+        metadata: { olderThanHours, roomId, deletedPanes: result.deletedPanes }
       });
-      return reply.status(202).send(run);
-    }
-  );
-  app.get(
-    "/api/admin/cli-maintenance/update-all/detect",
-    { config: { rateLimit: { max: 30, timeWindow: "15 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI update-all detection requires the ADMIN role.");
-      }
-      try {
-        const detection = await cliUpdateAllRunner.detect(await store.listCliRuntimeSettings());
-        return reply.send(detection);
-      } catch (error) {
-        request.log.error({ err: error }, "CLI update-all detection failed");
-        return sendApiError(reply, 502, "UPDATE_ALL_DETECTION_FAILED", "CLI update-all detection could not be completed.");
-      }
-    }
-  );
-  app.post(
-    "/api/admin/cli-maintenance/update-all/run",
-    { config: { rateLimit: { max: 4, timeWindow: "15 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "CLI update-all requires the ADMIN role.");
-      }
-      let input: ReturnType<typeof cliUpdateAllRequestSchema.parse> = {};
-      try {
-        input = cliUpdateAllRequestSchema.parse(request.body ?? {});
-      } catch {
-        return sendApiError(reply, 400, "INVALID_UPDATE_ALL_REQUEST", "Invalid CLI update-all request body.");
-      }
-      try {
-        const result = await cliUpdateAllRunner.updateAll(input);
-        await recordAudit(store, request, {
-          action: "cli_maintenance.update_all_completed",
-          targetType: "cli_update_all",
-          targetId: `admin_run:${Date.now().toString(36)}`,
-          metadata: {
-            mode: result.mode,
-            overallStatus: result.overallStatus,
-            runtimeCount: result.runtimes?.length ?? 0,
-            scope: result.scope,
-            reinstall: result.reinstall
-          }
-        });
-        return reply.send(result);
-      } catch (error) {
-        request.log.error({ err: error }, "CLI update-all run failed");
-        return sendApiError(reply, 502, "UPDATE_ALL_FAILED", "CLI update-all could not be completed.");
-      }
+      return reply.send({ ...result, olderThanHours, roomId });
     }
   );
   app.post(
@@ -17332,103 +17563,6 @@ app.post(
       return connection;
     }
   );
-  app.post(
-    "/api/integrations/telegram/pairings",
-    { config: { rateLimit: { max: 8, timeWindow: "15 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
-      }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-      const input = parseBody(createTelegramPairingInputSchema, request.body);
-      const pairing = await telegramIntegrationManager.createPairing(input.botToken, request.user.id);
-      await recordAudit(store, request, {
-        action: "telegram.pairing.created",
-        targetType: "telegram_integration",
-        targetId: "global",
-        metadata: {
-          pairingId: pairing.pairing.id,
-          connectionStatus: pairing.integration.connectionStatus,
-          expiresAt: pairing.pairing.expiresAt
-        }
-      });
-      return reply.status(201).send(pairing);
-    }
-  );
-  app.post(
-    "/api/integrations/telegram/pairings/:id/check",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
-      }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-      const params = parseQuery(idParamSchema, request.params);
-      const status = await telegramIntegrationManager.checkPairing(params.id);
-      await recordAudit(store, request, {
-        action: "telegram.pairing.checked",
-        targetType: "telegram_integration",
-        targetId: "global",
-        metadata: { pairingId: params.id, connectionStatus: status.connectionStatus }
-      });
-      return status;
-    }
-  );
-  app.post(
-    "/api/integrations/telegram/test-deliveries",
-    { config: { rateLimit: { max: 5, timeWindow: "5 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
-      }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-      const status = await telegramIntegrationManager.sendTest();
-      await recordAudit(store, request, {
-        action: "telegram.test_delivery.sent",
-        targetType: "telegram_integration",
-        targetId: "global",
-        metadata: { connectionStatus: status.connectionStatus }
-      });
-      return status;
-    }
-  );
-  app.patch(
-    "/api/integrations/telegram",
-    { config: { rateLimit: { max: 10, timeWindow: "5 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
-      }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-      const input = parseBody(updateTelegramIntegrationInputSchema, request.body);
-      const status = await telegramIntegrationManager.setEnabled(input.isEnabled);
-      await recordAudit(store, request, {
-        action: input.isEnabled ? "telegram.enabled" : "telegram.disabled",
-        targetType: "telegram_integration",
-        targetId: "global",
-        metadata: { connectionStatus: status.connectionStatus, isEnabled: status.isEnabled }
-      });
-      return status;
-    }
-  );
-  app.delete(
-    "/api/integrations/telegram",
-    { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } },
-    async (request, reply) => {
-      if (request.user?.role !== "ADMIN") {
-        return sendApiError(reply, 403, "ADMIN_REQUIRED", "Telegram integration changes require the ADMIN role.");
-      }
-      await cliRuntimeVisibility.assertEnabled("cli:codex");
-      const status = await telegramIntegrationManager.disconnect();
-      await recordAudit(store, request, {
-        action: "telegram.disconnected",
-        targetType: "telegram_integration",
-        targetId: "global",
-        metadata: { connectionStatus: status.connectionStatus }
-      });
-      return status;
-    }
-  );
   app.get("/api/provider-settings", defaultRouteRateLimitOptions, async () => store.getProviderSettings());
   app.patch("/api/provider-settings", defaultRouteRateLimitOptions, async (request) => {
     await cliRuntimeVisibility.assertEnabled("cli:codex");
@@ -17437,7 +17571,7 @@ app.post(
     const nextDefaultProviderId = input.defaultProviderId ?? currentSettings.defaultProviderId;
     const providers = await store.listProviders();
     const provider = providers.find((candidate) => candidate.id === nextDefaultProviderId);
-    await applyGlobalProviderRoute(config, provider);
+    await applyGlobalProviderRoute(config, provider).finally(() => codexParity.invalidateRouteStatus?.());
     const settings = await store.updateProviderSettings(input);
     await recordAudit(store, request, {
       action: "provider_settings.update",
@@ -17450,11 +17584,11 @@ app.post(
     });
     return settings;
   });
-  app.get("/api/user-settings", defaultRouteRateLimitOptions, async (request, reply) => {
+  const getUserSettingsHandler = async (request: any, reply: any) => {
     if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
     return store.getUserSettings(request.user.id);
-  });
-  app.patch("/api/user-settings", defaultRouteRateLimitOptions, async (request, reply) => {
+  };
+  const patchUserSettingsHandler = async (request: any, reply: any) => {
     if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
     const input = parseBody(updateUserSettingsInputSchema, request.body);
     const updated = await store.updateUserSettings(request.user.id, input);
@@ -17465,374 +17599,29 @@ app.post(
       metadata: { userId: request.user.id }
     });
     return updated;
-  });
-
-  const configurationRouteRateLimitOptions = {
-    ...defaultRouteRateLimitOptions,
-    bodyLimit: 50 * 1024 * 1024
   };
+  app.get("/api/user-settings", defaultRouteRateLimitOptions, getUserSettingsHandler);
+  app.get("/api/user/settings", defaultRouteRateLimitOptions, getUserSettingsHandler);
+  app.patch("/api/user-settings", defaultRouteRateLimitOptions, patchUserSettingsHandler);
+  app.patch("/api/user/settings", defaultRouteRateLimitOptions, patchUserSettingsHandler);
 
-  app.get("/api/configuration/export", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
-    const bundle = await store.exportConfigurationBundle({
-      userId: request.user.id
-    });
-    const filename = `spaceapp-config-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    reply.header("Content-Disposition", `attachment; filename="${filename}"`);
-    reply.header("Content-Type", "application/json; charset=utf-8");
-    return bundle;
+  registerConfigurationRoutes(app, {
+    store, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
 
-  app.post("/api/configuration/export", defaultRouteRateLimitOptions, async (request, reply) => {
-    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
-    const input = parseBody(exportConfigOptionsSchema, request.body ?? {});
-    const isAdmin = request.user.role === "ADMIN" || request.user.role === "OPERATOR";
-    const userId = (isAdmin && input.userId) ? input.userId : request.user.id;
-    const bundle = await store.exportConfigurationBundle({
-      ...input,
-      userId
-    });
-    return bundle;
-  });
-
-  app.post("/api/configuration/inspect", { ...configurationRouteRateLimitOptions, config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit } }, async (request, reply) => {
-    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
-    const rawBundle = (request.body && typeof request.body === "object" && "bundle" in (request.body as Record<string, unknown>))
-      ? (request.body as Record<string, unknown>).bundle
-      : request.body;
-    const parsed = spaceConfigBundleSchema.safeParse(rawBundle);
-    if (!parsed.success) {
-      return reply.status(400).send({
-        valid: false,
-        error: "Invalid configuration bundle structure.",
-        issues: parsed.error.issues
-      });
-    }
-    const b = parsed.data;
-    return {
-      valid: true,
-      version: b.version,
-      exportedAt: b.exportedAt,
-      source: b.source,
-      summary: {
-        roomsCount: b.metadata.roomsCount,
-        panesCount: b.metadata.panesCount,
-        hasUserSettings: Boolean(b.data.userSettings),
-        userLinksCount: b.metadata.userLinksCount,
-        clipboardItemsCount: b.metadata.clipboardItemsCount,
-        taskItemsCount: b.metadata.taskItemsCount,
-        cliRuntimeSettingsCount: b.metadata.cliRuntimesCount,
-        hasCodexCliModeDefaults: Boolean(b.data.codexCliModeDefaults),
-        providersCount: b.metadata.providersCount
-      },
-      rooms: b.data.rooms.map((r) => ({
-        id: r.id,
-        name: r.name,
-        order: r.order,
-        panesCount: r.panes?.length || 0
-      }))
-    };
-  });
-
-  app.post("/api/configuration/import", { ...configurationRouteRateLimitOptions, config: { rateLimit: defaultRouteRateLimitOptions.config.rateLimit } }, async (request, reply) => {
-    if (!request.user) return sendApiError(reply, 401, "UNAUTHORIZED", "Authentication required.");
-    const input = parseBody(importConfigRequestSchema, request.body);
-    const isAdmin = request.user.role === "ADMIN" || request.user.role === "OPERATOR";
-    const targetUserId = (isAdmin && input.targetUserId) ? input.targetUserId : request.user.id;
-    const result = await store.importConfigurationBundle(input.bundle, {
-      mode: input.mode,
-      targetUserId,
-      pathRewrite: input.pathRewrite,
-      sections: input.sections
-    });
-    await recordAudit(store, request, {
-      action: "configuration.import",
-      targetType: "configuration",
-      targetId: request.user.id,
-      metadata: {
-        mode: result.mode,
-        stats: result.stats
-      }
-    });
-    return result;
-  });
-
-  app.post("/api/providers", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
-    const input = parseBody(createProviderInputSchema, request.body);
-    const provider = await store.createProvider(input);
-    await recordAudit(store, request, {
-      action: "provider.create",
-      targetType: "provider",
-      targetId: provider.id,
-      metadata: {
-        type: provider.type,
-        routeProfile: provider.routeProfile,
-        backingProviderId: provider.backingProviderId
-      }
-    });
-    return provider;
-  });
-  app.patch("/api/providers/:id", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
-    const params = request.params as { id: string };
-    const input = parseBody(updateProviderInputSchema, request.body);
-    const provider = await store.updateProvider(params.id, input);
-    await recordAudit(store, request, {
-      action: "provider.update",
-      targetType: "provider",
-      targetId: provider.id,
-      metadata: {
-        type: provider.type,
-        routeProfile: provider.routeProfile,
-        backingProviderId: provider.backingProviderId
-      }
-    });
-    return provider;
-  });
-  app.post("/api/providers/:id/validate", defaultRouteRateLimitOptions, async (request) => {
-    await cliRuntimeVisibility.assertEnabled("cli:codex");
-    const params = request.params as { id: string };
-    const providers = await store.listProviders();
-    const provider = providers.find((candidate) => candidate.id === params.id);
-    if (!provider) {
-      throw new SpaceNotFoundError(`Provider ${params.id} was not found.`);
-    }
-    const result = await validateProviderCredential(params.id, config, provider);
-    const recorded = await store.recordProviderValidation(result);
-    const persistedModels =
-      recorded.status === "VERIFIED" && result.models ? await store.replaceProviderModels(params.id, result.models) : [];
-    await recordAudit(store, request, {
-      action: "provider.validate",
-      targetType: "provider",
-      targetId: params.id,
-      metadata: {
-        status: recorded.status,
-        code: recorded.code,
-        modelCount: recorded.modelCount,
-        persistedModelCount: persistedModels.length,
-        credentialLabel: recorded.credentialLabel
-      }
-    });
-    return result.models ? { ...recorded, models: persistedModels } : recorded;
-  });
-  app.get("/api/providers/:id/validation", defaultRouteRateLimitOptions, async (request) => {
-    const params = request.params as { id: string };
-    const providers = await store.listProviders();
-    if (!providers.some((provider) => provider.id === params.id)) {
-      throw new SpaceNotFoundError(`Provider ${params.id} was not found.`);
-    }
-    return { data: await store.getLatestProviderValidation(params.id) };
+  registerProviderRoutes(app, {
+    store, config, visibility: cliRuntimeVisibility, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
   app.get("/api/models", defaultRouteRateLimitOptions, async () => {
     const models = await store.listModels();
     return { data: models, pagination: { page: 1, pageSize: 100, totalItems: models.length, totalPages: models.length ? 1 : 0 } };
   });
-  async function executeMcpToolWithPolicy(input: z.infer<typeof createMcpToolExecutionInputSchema>, request: FastifyRequest): Promise<McpToolExecutionResult> {
-    const startedAt = nowIso();
-    const auditResult = async (result: McpToolExecutionResult) => {
-      await recordAudit(store, request, {
-        action: "mcp.tool.execute",
-        targetType: "mcp_tool",
-        targetId: input.toolId,
-        metadata: {
-          status: result.status,
-          code: result.code,
-          serverId: result.serverId,
-          toolName: result.toolName,
-          approved: result.approved,
-          policyDecision: result.policy?.decision ?? null,
-          policyReasonCode: result.policy?.reasonCode ?? null,
-          artifactId: result.artifact?.id ?? null
-        }
-      });
-      return result;
-    };
-
-    if (!config.mcpToolExecutionEnabled) {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: "GATEWAY_DISABLED",
-          message: "SPACE_MCP_TOOL_EXECUTION_ENABLED=true is required before MCP tool execution can run.",
-          toolId: input.toolId,
-          serverId: null,
-          toolName: null,
-          startedAt,
-          policy: null,
-          approved: false,
-          artifact: null
-        })
-      );
-    }
-
-    const [gateway, servers, tools] = await Promise.all([store.getMcpGatewayStatus(), store.listMcpServers(), store.listMcpTools()]);
-    const tool = tools.find((candidate) => candidate.id === input.toolId);
-    if (!tool) {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: "TOOL_NOT_FOUND",
-          message: "MCP tool was not found in the verified Space registry.",
-          toolId: input.toolId,
-          serverId: null,
-          toolName: null,
-          startedAt,
-          policy: null,
-          approved: false,
-          artifact: null
-        })
-      );
-    }
-
-    const server = servers.find((candidate) => candidate.id === tool.serverId);
-    if (!server) {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: "SERVER_NOT_FOUND",
-          message: "MCP server for the selected tool was not found.",
-          toolId: input.toolId,
-          serverId: tool.serverId,
-          toolName: tool.name,
-          startedAt,
-          policy: null,
-          approved: false,
-          artifact: null
-        })
-      );
-    }
-
-    const policy = decideMcpToolPolicy({
-      gatewayApprovalMode: "ALLOWLISTED",
-      serverStatus: server.status,
-      toolStatus: tool.status,
-      riskLevel: tool.riskLevel,
-      schemaHash: tool.schemaHash,
-      toolApprovalRequired: tool.approvalRequired,
-      allowlistedSchemaHashes: config.mcpAllowlistedSchemaHashes
-    });
-    if (policy.decision === "BLOCKED") {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: policy.reasonCode,
-          message: "MCP tool execution was blocked by Space policy.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt,
-          policy,
-          approved: false,
-          artifact: null
-        })
-      );
-    }
-    if (policy.decision === "REQUIRES_APPROVAL" && !input.approvalReason) {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "APPROVAL_REQUIRED",
-          code: policy.reasonCode,
-          message: "MCP tool execution requires an operator approval reason.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt,
-          policy,
-          approved: false,
-          artifact: null
-        })
-      );
-    }
-
-    const serverConfig = (config.mcpServerConfigs ?? []).find((candidate) => candidate.id === server.id && candidate.enabled);
-    if (!serverConfig) {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: "SERVER_CONFIG_MISSING",
-          message: "Enabled MCP server config is missing; execution remains blocked.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt,
-          policy,
-          approved: input.approvalReason !== undefined,
-          artifact: null
-        })
-      );
-    }
-    if (server.transport !== "stdio" || serverConfig.transport !== "stdio") {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "BLOCKED",
-          code: "TRANSPORT_NOT_SUPPORTED",
-          message: "Only stdio MCP tool execution is supported in this slice.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt,
-          policy,
-          approved: input.approvalReason !== undefined,
-          artifact: null
-        })
-      );
-    }
-
-    try {
-      const capture = await executeMcpTool(
-        config,
-        { gatewayStatus: gateway, server, tool },
-        input,
-        {
-          artifactRoot: config.browserEvidenceArtifactRoot,
-          timeoutMs: config.mcpToolExecutionTimeoutMs
-        }
-      );
-      const artifactRecord = await store.createArtifact(
-        {
-          roomId: input.roomId ?? null,
-          paneId: input.paneId ?? null,
-          turnId: null,
-          workflowId: null,
-          ...capture.artifact
-        },
-        request.requestIdForSpace
-      );
-      eventBus.publish(artifactRecord.event);
-      return auditResult(
-        buildMcpToolExecutionResult({
-          executionId: capture.executionId,
-          status: capture.isError ? "FAILED" : "EXECUTED",
-          code: capture.isError ? "TOOL_RETURNED_ERROR" : "TOOL_EXECUTION_OK",
-          message: capture.isError ? "MCP tool returned an error result." : "MCP tool execution completed.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt: capture.startedAt,
-          finishedAt: capture.finishedAt,
-          policy,
-          approved: input.approvalReason !== undefined,
-          artifact: artifactRecord.artifact
-        })
-      );
-    } catch {
-      return auditResult(
-        buildMcpToolExecutionResult({
-          status: "FAILED",
-          code: "EXECUTION_FAILED",
-          message: "MCP tool execution failed without exposing process details.",
-          toolId: input.toolId,
-          serverId: server.id,
-          toolName: tool.name,
-          startedAt,
-          policy,
-          approved: input.approvalReason !== undefined,
-          artifact: null
-        })
-      );
-    }
-  }
+  const executeMcpToolWithPolicy = createMcpToolExecutor({
+    store, config, eventBus,
+    recordAudit: (request, input) => recordAudit(store, request, input)
+  });
 
   app.get("/api/mcp", defaultRouteRateLimitOptions, async () => {
     const capabilities = (await store.listCapabilities()).filter((item) => item.kind === "MCP_SERVER" || item.kind === "MCP_TOOL");
@@ -18150,124 +17939,10 @@ app.post(
     });
     return updated;
   });
-  app.get("/api/artifacts", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listArtifactsQuerySchema, request.query);
-    const artifacts = await store.listArtifacts(page);
-    const start = (page.page - 1) * page.pageSize;
-    return {
-      data: artifacts.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: artifacts.length,
-        totalPages: Math.ceil(artifacts.length / page.pageSize)
-      }
-    };
-  });
-  app.get("/api/artifacts/:id/file", defaultRouteRateLimitOptions, async (request, reply) => {
-    const params = parseBody(idParamSchema, request.params);
-    const artifact = await store.getArtifact(params.id);
-    if (artifact.deletedAt) {
-      throw new SpaceNotFoundError(`Artifact ${artifact.id} was not found.`);
-    }
-    const filePath = localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact });
-    let fileStat: Awaited<ReturnType<typeof stat>>;
-    try {
-      fileStat = await stat(filePath);
-    } catch (error) {
-      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new SpaceNotFoundError(`Artifact file for ${artifact.id} was not found.`);
-      }
-      throw error;
-    }
-    if (!fileStat.isFile()) {
-      throw new SpaceConflictError(`Artifact ${artifact.id} does not point to a readable file.`);
-    }
-    const filename = artifactFilename(artifact);
-    reply
-      .type(artifact.mimeType)
-      .header("content-length", String(fileStat.size))
-      .header("content-disposition", `inline; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
-    return reply.send(createReadStream(filePath));
-  });
-  app.get("/api/artifacts/:id/download", defaultRouteRateLimitOptions, async (request, reply) => {
-    const params = parseBody(idParamSchema, request.params);
-    const artifact = await store.getArtifact(params.id);
-    if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
-      throw new SpaceNotFoundError(`Agent File ${artifact.id} was not found.`);
-    }
-    const filePath = localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact });
-    const fileStat = await stat(filePath).catch((error) => {
-      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new SpaceNotFoundError(`Agent File contents for ${artifact.id} were not found.`);
-      }
-      throw error;
-    });
-    if (!fileStat.isFile()) {
-      throw new SpaceConflictError(`Agent File ${artifact.id} does not point to a readable file.`);
-    }
-    const filename = artifactFilename(artifact);
-    reply
-      .type(artifact.mimeType)
-      .header("content-length", String(fileStat.size))
-      .header("cache-control", "private, no-store")
-      .header("content-disposition", `attachment; filename="${filename.replace(/["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
-    return reply.send(createReadStream(filePath));
-  });
-  app.get("/api/artifacts/:id/preview", defaultRouteRateLimitOptions, async (request, reply) => {
-    const params = parseBody(idParamSchema, request.params);
-    const artifact = await store.getArtifact(params.id);
-    if (artifact.deletedAt || !isAgentFileArtifact(artifact)) {
-      throw new SpaceNotFoundError(`Agent File ${artifact.id} was not found.`);
-    }
-    const filePath = localArtifactFilePath({ artifactRoot: config.browserEvidenceArtifactRoot, artifact });
-    const fileStat = await stat(filePath).catch((error) => {
-      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new SpaceNotFoundError(`Agent File contents for ${artifact.id} were not found.`);
-      }
-      throw error;
-    });
-    if (!fileStat.isFile()) {
-      throw new SpaceConflictError(`Agent File ${artifact.id} does not point to a readable file.`);
-    }
-    const previewKind = agentFilePreviewKind(artifact);
-    reply.header("cache-control", "private, no-store");
-    if (previewKind === "TEXT") {
-      const preview = await readAgentFileTextPreview(filePath);
-      reply
-        .type("text/plain; charset=utf-8")
-        .header("x-space-preview-truncated", preview.truncated ? "true" : "false");
-      return reply.send(preview.content);
-    }
-    if (previewKind === "DOCX") {
-      try {
-        const html = await renderAgentFileDocxPreview(filePath);
-        reply
-          .type("text/html; charset=utf-8")
-          .header(
-            "content-security-policy",
-            "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox"
-          );
-        return reply.send(html);
-      } catch (error) {
-        request.log.info(
-          {
-            artifactId: artifact.id,
-            errorCode: error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : "UNKNOWN"
-          },
-          "Agent File DOCX preview unavailable"
-        );
-        return sendApiError(reply, 422, "PREVIEW_UNAVAILABLE", "This DOCX could not be rendered safely. Download remains available.");
-      }
-    }
-    if (previewKind === "IMAGE" || previewKind === "VIDEO" || previewKind === "AUDIO" || previewKind === "PDF") {
-      reply
-        .type(artifact.mimeType)
-        .header("content-length", String(fileStat.size))
-        .header("content-disposition", "inline");
-      return reply.send(createReadStream(filePath));
-    }
-    return sendApiError(reply, 415, "PREVIEW_UNSUPPORTED", "Preview is not available for this file type. Download remains available.");
+  registerArtifactReadRoutes(app, {
+    store,
+    artifactRoot: config.browserEvidenceArtifactRoot,
+    routeOptions: defaultRouteRateLimitOptions
   });
   app.patch("/api/artifacts/:id/retention", defaultRouteRateLimitOptions, async (request) => {
     const params = parseBody(idParamSchema, request.params);
@@ -18362,86 +18037,53 @@ app.post(
       return sendApiError(reply, 400, "BAD_REQUEST", "Agent Files uploads must use multipart/form-data.");
     }
 
-    const uploads: Array<{ buffer: Buffer; filename: string; declaredMimeType: string }> = [];
-    let totalBytes = 0;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") continue;
-      if (uploads.length >= agentFileMaxCount) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", `At most ${agentFileMaxCount} Agent Files can be uploaded at once.`);
-      }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        totalBytes += buffer.byteLength;
-        if (byteSize > agentFileMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each Agent File must be 100 MiB or smaller.");
+    let folder: string | null = null;
+    return withStagedAgentFiles(request, config.browserEvidenceArtifactRoot, async (uploads, totalBytes) => {
+      const artifacts: Artifact[] = [];
+      for (const upload of uploads) {
+        let record: Awaited<ReturnType<typeof persistAgentFile>>;
+        try {
+          record = await persistAgentFile({
+            store,
+            artifactRoot: config.browserEvidenceArtifactRoot,
+            roomId: params.id,
+            paneId: null,
+            cliSessionId: null,
+            runtimeId: "user",
+            originalFilename: upload.filename,
+            declaredMimeType: upload.declaredMimeType,
+            sourcePath: upload.sourcePath,
+            traceId: request.requestIdForSpace,
+            source: "USER_UPLOAD",
+            folder: folder || undefined,
+            docxNormalizer: options.agentFileDocxNormalizer
+          });
+        } catch (error) {
+          if (error instanceof AgentFileDocxNormalizationError) {
+            return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+          }
+          throw error;
         }
-        if (totalBytes > agentFileMaxRequestBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "One Agent Files upload request cannot exceed 250 MiB.");
-        }
-        chunks.push(buffer);
+        eventBus.publish(record.event);
+        artifacts.push(record.artifact);
       }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Agent Files must not be empty.");
-      }
-      uploads.push({
-        buffer: Buffer.concat(chunks),
-        filename: part.filename || "agent-file",
-        declaredMimeType: part.mimetype || "application/octet-stream"
-      });
-    }
-    if (!uploads.length) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one Agent File.");
-    }
-
-    const rootStats = await statfs(config.browserEvidenceArtifactRoot);
-    const freeBytes = Number(rootStats.bavail) * Number(rootStats.bsize);
-    if (freeBytes < totalBytes + 1024 * 1024 * 1024) {
-      return sendApiError(reply, 507, "STORAGE_FULL", "Agent Files uploading requires at least 1 GiB of free space after this upload.");
-    }
-
-    const artifacts: Artifact[] = [];
-    for (const upload of uploads) {
-      let record: Awaited<ReturnType<typeof persistAgentFile>>;
-      try {
-        record = await persistAgentFile({
-          store,
-          artifactRoot: config.browserEvidenceArtifactRoot,
+      await recordAudit(store, request, {
+        action: "agent_file.upload",
+        targetType: "room",
+        targetId: params.id,
+        metadata: {
           roomId: params.id,
-          paneId: null,
-          cliSessionId: null,
-          runtimeId: "user",
-          originalFilename: upload.filename,
-          declaredMimeType: upload.declaredMimeType,
-          buffer: upload.buffer,
-          traceId: request.requestIdForSpace,
-          source: "USER_UPLOAD",
-          docxNormalizer: options.agentFileDocxNormalizer
-        });
-      } catch (error) {
-        if (error instanceof AgentFileDocxNormalizationError) {
-          return sendApiError(reply, 422, "DOCX_NORMALIZATION_FAILED", error.message);
+          userId: request.user?.id ?? null,
+          folder: folder || undefined,
+          artifactCount: artifacts.length,
+          artifactIds: artifacts.map((artifact) => artifact.id),
+          totalBytes
         }
-        throw error;
-      }
-      eventBus.publish(record.event);
-      artifacts.push(record.artifact);
-    }
-    await recordAudit(store, request, {
-      action: "agent_file.upload",
-      targetType: "room",
-      targetId: params.id,
-      metadata: {
-        roomId: params.id,
-        userId: request.user?.id ?? null,
-        artifactCount: artifacts.length,
-        artifactIds: artifacts.map((artifact) => artifact.id),
-        totalBytes
-      }
+      });
+      return { artifacts };
+    }, (name, value) => {
+      if (name === "folder") folder = typeof value === "string" ? value.trim() : null;
     });
-    return { artifacts };
   });
 
   app.delete("/api/rooms/:id/agent-files", defaultRouteRateLimitOptions, async (request) => {
@@ -18503,106 +18145,57 @@ app.post(
       return sendApiError(reply, 400, "BAD_REQUEST", "Image uploads must use multipart/form-data.");
     }
 
-    const uploads: Array<{
-      buffer: Buffer;
-      byteSize: number;
-      mimeType: ImageArtifactMimeType;
-      filename: string;
-      fieldname: string;
-      sha256: string;
-      sniffedMimeType: ImageArtifactMimeType;
-    }> = [];
-    let fileCount = 0;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") {
-        continue;
-      }
-      fileCount += 1;
-      if (fileCount > turnArtifactMaxCount) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "At most 8 images can be uploaded for one turn.");
-      }
-      if (!isAllowedImageMime(part.mimetype)) {
-        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Only PNG, JPEG, and WebP images can be uploaded.");
-      }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        if (byteSize > imageArtifactMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each image upload must be 10MB or smaller.");
+    return withStagedUploads(request, config.browserEvidenceArtifactRoot,
+      { maxFiles: turnArtifactMaxCount, fileBytes: imageArtifactMaxBytes }, async uploads => {
+      for (const upload of uploads) {
+        if (!isAllowedImageMime(upload.declaredMimeType) || sniffImageMime(upload.sample) !== upload.declaredMimeType) {
+          return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match a supported PNG, JPEG, or WebP image type.");
         }
-        chunks.push(buffer);
       }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Uploaded images must not be empty.");
+      const artifacts: Artifact[] = [];
+      for (const upload of uploads) {
+        const storage = buildUserUploadStorage({
+          artifactRoot: config.browserEvidenceArtifactRoot,
+          roomId: query.roomId,
+          mimeType: upload.declaredMimeType as ImageArtifactMimeType
+        });
+        const record = await withPersistedUpload(config.browserEvidenceArtifactRoot, upload, storage.filePath, pinnedPath => recordUploadedArtifact(store,
+          {
+            roomId: query.roomId,
+            paneId: query.paneId ?? null,
+            kind: "IMAGE",
+            mimeType: upload.declaredMimeType as ImageArtifactMimeType,
+            storageUri: storage.storageUri,
+            sha256: upload.sha256,
+            byteSize: upload.byteSize,
+            metadata: {
+              source: query.source,
+              originalFilename: safeOriginalFilename(upload.filename),
+              fieldName: upload.fieldname,
+              declaredMimeType: upload.declaredMimeType,
+              sniffedMimeType: sniffImageMime(upload.sample),
+              uploadedBy: request.user?.id ?? null
+            }
+          },
+          request.requestIdForSpace, pinnedPath
+        ));
+        eventBus.publish(record.event);
+        artifacts.push(record.artifact);
       }
-      const buffer = Buffer.concat(chunks);
-      const sniffedMimeType = sniffImageMime(buffer);
-      if (sniffedMimeType !== part.mimetype) {
-        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match the declared image type.");
-      }
-      const sha256 = createHash("sha256").update(buffer).digest("hex");
-      uploads.push({
-        buffer,
-        byteSize,
-        mimeType: part.mimetype,
-        filename: part.filename,
-        fieldname: part.fieldname,
-        sha256,
-        sniffedMimeType
-      });
-    }
-
-    if (!uploads.length) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one image.");
-    }
-
-    const artifacts: Artifact[] = [];
-    for (const upload of uploads) {
-      const storage = buildUserUploadStorage({
-        artifactRoot: config.browserEvidenceArtifactRoot,
-        roomId: query.roomId,
-        mimeType: upload.mimeType
-      });
-      await mkdir(dirname(storage.filePath), { recursive: true });
-      await writeFile(storage.filePath, upload.buffer, { flag: "wx" });
-      const record = await store.createArtifact(
-        {
+      await recordAudit(store, request, {
+        action: "artifact.upload",
+        targetType: "room",
+        targetId: query.roomId,
+        metadata: {
           roomId: query.roomId,
           paneId: query.paneId ?? null,
-          kind: "IMAGE",
-          mimeType: upload.mimeType,
-          storageUri: storage.storageUri,
-          sha256: upload.sha256,
-          byteSize: upload.byteSize,
-          metadata: {
-            source: query.source,
-            originalFilename: safeOriginalFilename(upload.filename),
-            fieldName: upload.fieldname,
-            declaredMimeType: upload.mimeType,
-            sniffedMimeType: upload.sniffedMimeType,
-            uploadedBy: request.user?.id ?? null
-          }
-        },
-        request.requestIdForSpace
-      );
-      eventBus.publish(record.event);
-      artifacts.push(record.artifact);
-    }
-    await recordAudit(store, request, {
-      action: "artifact.upload",
-      targetType: "room",
-      targetId: query.roomId,
-      metadata: {
-        roomId: query.roomId,
-        paneId: query.paneId ?? null,
-        source: query.source,
-        artifactCount: artifacts.length,
-        artifactIds: artifacts.map((artifact) => artifact.id)
-      }
+          source: query.source,
+          artifactCount: artifacts.length,
+          artifactIds: artifacts.map((artifact) => artifact.id)
+        }
+      });
+      return { artifacts };
     });
-    return { artifacts };
   });
 
   app.post("/api/artifacts/file-uploads", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -18613,116 +18206,61 @@ app.post(
       return sendApiError(reply, 400, "BAD_REQUEST", "File uploads must use multipart/form-data.");
     }
 
-    const uploads: Array<{
-      buffer: Buffer;
-      byteSize: number;
-      mimeType: string;
-      declaredMimeType: string;
-      kind: Artifact["kind"];
-      filename: string;
-      fieldname: string;
-      sha256: string;
-      sniffedMimeType: ImageArtifactMimeType | null;
-      storedFilename: string;
-      storageUri: string;
-      filePath: string;
-    }> = [];
-    let fileCount = 0;
-    for await (const part of request.parts()) {
-      if (part.type !== "file") {
-        continue;
-      }
-      fileCount += 1;
-      if (fileCount > paneCliUploadMaxCount) {
-        return sendApiError(reply, 422, "UPLOAD_LIMIT_EXCEEDED", "At most 8 files can be uploaded at once.");
-      }
-      const chunks: Buffer[] = [];
-      let byteSize = 0;
-      for await (const chunk of part.file) {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        byteSize += buffer.byteLength;
-        if (byteSize > paneArtifactUploadMaxBytes) {
-          return sendApiError(reply, 413, "UPLOAD_TOO_LARGE", "Each file upload must be 100MB or smaller.");
+    return withStagedUploads(request, config.browserEvidenceArtifactRoot,
+      { maxFiles: paneCliUploadMaxCount, fileBytes: paneArtifactUploadMaxBytes }, async staged => {
+      for (const upload of staged) {
+        if (upload.declaredMimeType.startsWith("image/") && (!isAllowedImageMime(upload.declaredMimeType) || sniffImageMime(upload.sample) !== upload.declaredMimeType)) {
+          return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match the declared image type.");
         }
-        chunks.push(buffer);
       }
-      if (byteSize === 0) {
-        return sendApiError(reply, 422, "EMPTY_UPLOAD", "Uploaded files must not be empty.");
-      }
-      const buffer = Buffer.concat(chunks);
-      const declaredMimeType = part.mimetype || "application/octet-stream";
-      const sniffedMimeType = sniffImageMime(buffer);
-      if (declaredMimeType.startsWith("image/") && (!isAllowedImageMime(declaredMimeType) || sniffedMimeType !== declaredMimeType)) {
-        return sendApiError(reply, 422, "UNSUPPORTED_MEDIA_TYPE", "Uploaded image bytes do not match the declared image type.");
-      }
-      const resolvedMimeType = sniffedMimeType ?? inferUploadMimeType(part.filename || "upload", declaredMimeType);
-      const storage = buildGenericUserUploadStorage({
-        artifactRoot: config.browserEvidenceArtifactRoot,
-        roomId: query.roomId,
-        originalFilename: part.filename || "upload"
+      const uploads = staged.map(upload => {
+        const sniffedMimeType = sniffImageMime(upload.sample);
+        const mimeType = sniffedMimeType ?? inferUploadMimeType(upload.filename, upload.declaredMimeType);
+        return { ...upload, sniffedMimeType, mimeType,
+          kind: (sniffedMimeType ? "IMAGE" : isVideoMimeType(mimeType) ? "VIDEO" : "EXPORT") as Artifact["kind"],
+          ...buildGenericUserUploadStorage({ artifactRoot: config.browserEvidenceArtifactRoot, roomId: query.roomId, originalFilename: upload.filename }) };
       });
-      uploads.push({
-        buffer,
-        byteSize,
-        mimeType: resolvedMimeType,
-        declaredMimeType,
-        kind: sniffedMimeType ? "IMAGE" : isVideoMimeType(resolvedMimeType) ? "VIDEO" : "EXPORT",
-        filename: part.filename || "upload",
-        fieldname: part.fieldname,
-        sha256: createHash("sha256").update(buffer).digest("hex"),
-        sniffedMimeType,
-        storedFilename: storage.storedFilename,
-        storageUri: storage.storageUri,
-        filePath: storage.filePath
-      });
-    }
-
-    if (!uploads.length) {
-      return sendApiError(reply, 422, "EMPTY_UPLOAD", "Upload at least one file.");
-    }
-
-    const artifacts: Artifact[] = [];
-    for (const upload of uploads) {
-      await mkdir(dirname(upload.filePath), { recursive: true });
-      await writeFile(upload.filePath, upload.buffer, { flag: "wx" });
-      const record = await store.createArtifact(
-        {
+      const artifacts: Artifact[] = [];
+      for (const upload of uploads) {
+        const record = await withPersistedUpload(config.browserEvidenceArtifactRoot, upload, upload.filePath, pinnedPath => recordUploadedArtifact(store,
+          {
+            roomId: query.roomId,
+            paneId: query.paneId ?? null,
+            kind: upload.kind,
+            mimeType: upload.mimeType,
+            storageUri: upload.storageUri,
+            sha256: upload.sha256,
+            byteSize: upload.byteSize,
+            metadata: {
+              source: query.source,
+              originalFilename: safeOriginalFilename(upload.filename),
+              storedFilename: upload.storedFilename,
+              fieldName: upload.fieldname,
+              declaredMimeType: upload.declaredMimeType,
+              resolvedMimeType: upload.mimeType,
+              sniffedMimeType: upload.sniffedMimeType,
+              uploadedBy: request.user?.id ?? null
+            }
+          },
+          request.requestIdForSpace, pinnedPath
+        ));
+        eventBus.publish(record.event);
+        artifacts.push(record.artifact);
+      }
+      await recordAudit(store, request, {
+        action: "artifact.upload",
+        targetType: "room",
+        targetId: query.roomId,
+        metadata: {
           roomId: query.roomId,
           paneId: query.paneId ?? null,
-          kind: upload.kind,
-          mimeType: upload.mimeType,
-          storageUri: upload.storageUri,
-          sha256: upload.sha256,
-          byteSize: upload.byteSize,
-          metadata: {
-            source: query.source,
-            originalFilename: safeOriginalFilename(upload.filename),
-            storedFilename: upload.storedFilename,
-            fieldName: upload.fieldname,
-            declaredMimeType: upload.declaredMimeType,
-            resolvedMimeType: upload.mimeType,
-            sniffedMimeType: upload.sniffedMimeType,
-            uploadedBy: request.user?.id ?? null
-          }
-        },
-        request.requestIdForSpace
-      );
-      eventBus.publish(record.event);
-      artifacts.push(record.artifact);
-    }
-    await recordAudit(store, request, {
-      action: "artifact.upload",
-      targetType: "room",
-      targetId: query.roomId,
-      metadata: {
-        roomId: query.roomId,
-        paneId: query.paneId ?? null,
-        source: query.source,
-        artifactCount: artifacts.length,
-        artifactIds: artifacts.map((artifact) => artifact.id)
-      }
+          source: query.source,
+          artifactCount: artifacts.length,
+          artifactIds: artifacts.map((artifact) => artifact.id)
+        }
+      });
+      return { artifacts };
     });
-    return { artifacts };
   });
 
   app.post("/api/rooms/:id/screen-capture", defaultRouteRateLimitOptions, async (request) => {
@@ -18857,322 +18395,14 @@ app.post(
       artifacts
     });
   });
-  app.get("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
-    const decisions = await store.listReviewDecisions(page);
-    const start = (page.page - 1) * page.pageSize;
-    return {
-      data: decisions.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: decisions.length,
-        totalPages: Math.ceil(decisions.length / page.pageSize)
-      }
-    };
+  registerReviewRoutes(app, {
+    store, eventBus, routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
-  app.post("/api/reviews", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createReviewDecisionInputSchema, request.body);
-    const record = await store.createReviewDecision(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "review.decision.create",
-      targetType: "review_decision",
-      targetId: record.decision.id,
-      metadata: {
-        roomId: record.decision.roomId,
-        workflowId: record.decision.workflowId,
-        decision: record.decision.decision,
-        evidenceArtifactCount: record.decision.evidenceArtifactIds.length
-      }
-    });
-    return record.decision;
-  });
-  app.get("/api/reviews/state", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listReviewDecisionsQuerySchema, request.query);
-    const [decisions, checks, diffs, artifacts] = await Promise.all([
-      store.listReviewDecisions(page),
-      store.listReviewChecks({ page: 1, pageSize: 100, sortOrder: "desc", roomId: page.roomId }),
-      store.listReviewDiffSummaries({ page: 1, pageSize: 100, sortOrder: "desc", roomId: page.roomId }),
-      store.listArtifacts({ page: 1, pageSize: 100, sortOrder: "desc", roomId: page.roomId })
-    ]);
-    return reviewRoomStateSchema.parse({
-      decisions,
-      checks,
-      diffs,
-      artifacts,
-      ...reviewGateStatus(checks)
-    });
-  });
-  app.get("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listReviewChecksQuerySchema, request.query);
-    const checks = await store.listReviewChecks(page);
-    const start = (page.page - 1) * page.pageSize;
-    return {
-      data: checks.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: checks.length,
-        totalPages: Math.ceil(checks.length / page.pageSize)
-      }
-    };
-  });
-  app.post("/api/review-checks", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createReviewCheckInputSchema, request.body);
-    const record = await store.createReviewCheck(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "review.check.create",
-      targetType: "review_check",
-      targetId: record.check.id,
-      metadata: {
-        roomId: record.check.roomId,
-        reviewDecisionId: record.check.reviewDecisionId,
-        status: record.check.status,
-        artifactCount: record.check.artifactIds.length
-      }
-    });
-    return record.check;
-  });
-  app.get("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listReviewDiffSummariesQuerySchema, request.query);
-    const diffs = await store.listReviewDiffSummaries(page);
-    const start = (page.page - 1) * page.pageSize;
-    return {
-      data: diffs.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: diffs.length,
-        totalPages: Math.ceil(diffs.length / page.pageSize)
-      }
-    };
-  });
-  app.post("/api/review-diffs", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createReviewDiffSummaryInputSchema, request.body);
-    const record = await store.createReviewDiffSummary(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "review.diff.create",
-      targetType: "review_diff",
-      targetId: record.diff.id,
-      metadata: {
-        roomId: record.diff.roomId,
-        reviewDecisionId: record.diff.reviewDecisionId,
-        status: record.diff.status,
-        additions: record.diff.additions,
-        deletions: record.diff.deletions,
-        patchArtifactId: record.diff.patchArtifactId
-      }
-    });
-    return record.diff;
-  });
-  app.get("/api/swarm", defaultRouteRateLimitOptions, async (request) => {
-    const query = parseQuery(swarmStateQuerySchema, request.query);
-    return swarmStateForResponse(await store.getSwarmState(query.roomId), config);
-  });
-  app.get("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
-    const page = parseQuery(listSwarmTasksQuerySchema, request.query);
-    const tasks = await store.listSwarmTasks(page);
-    const start = (page.page - 1) * page.pageSize;
-    return {
-      data: tasks.slice(start, start + page.pageSize),
-      pagination: {
-        page: page.page,
-        pageSize: page.pageSize,
-        totalItems: tasks.length,
-        totalPages: Math.ceil(tasks.length / page.pageSize)
-      }
-    };
-  });
-  app.post("/api/swarm/tasks", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createSwarmTaskInputSchema, request.body);
-    const record = await store.createSwarmTask(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.task.create",
-      targetType: "swarm_task",
-      targetId: record.task.id,
-      metadata: {
-        roomId: record.task.roomId,
-        role: record.task.role,
-        status: record.task.status,
-        parentTaskId: record.task.parentTaskId,
-        dependencyCount: record.task.dependsOnTaskIds.length
-      }
-    });
-    return record.task;
-  });
-  app.patch("/api/swarm/tasks/:id", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseBody(idParamSchema, request.params);
-    const input = parseBody(updateSwarmTaskInputSchema, request.body);
-    const record = await store.updateSwarmTask(params.id, input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.task.update",
-      targetType: "swarm_task",
-      targetId: record.task.id,
-      metadata: {
-        roomId: record.task.roomId,
-        role: record.task.role,
-        status: record.task.status,
-        lockCount: record.task.lockIds.length,
-        dependencyCount: record.task.dependsOnTaskIds.length
-      }
-    });
-    return record.task;
-  });
-  app.post("/api/swarm/tasks/:id/run", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseBody(idParamSchema, request.params);
-    const input = parseBody(runSwarmTaskInputSchema, request.body ?? {});
-    const gate = swarmExecutionGate(config);
-    if (gate) {
-      throw new SpaceFeatureDisabledError("SWARM_EXECUTION_DISABLED", gate);
-    }
-    const worker = workerReadinessSchema.parse(await workerReadinessChecker());
-    if (worker.status !== "RUNNING" || worker.pollerCount < 1) {
-      throw new SpaceFeatureDisabledError("SWARM_EXECUTION_DISABLED", worker.statusReason);
-    }
-
-    const task = await getSwarmTaskById(store, params.id);
-    if (task.status === "DONE" || task.status === "CANCELLED") {
-      throw new SpaceConflictError(`Swarm task ${task.id} is ${task.status} and cannot be run.`);
-    }
-    await assertSwarmDependenciesDone(store, task);
-    const pane = await selectSwarmAgentPane(store, task, input.paneId);
-    const queuedSummary = `Queued to Space agent pane ${pane.title} (${pane.id}).`;
-    const running = await store.updateSwarmTask(
-      task.id,
-      {
-        status: "RUNNING",
-        assignee: pane.title,
-        resultSummary: queuedSummary
-      },
-      request.requestIdForSpace
-    );
-    eventBus.publish(running.event);
-
-    let agentResult;
-    try {
-      agentResult = await spaceAgentAdapter.sendMessage({
-        pane,
-        content: buildSwarmTaskPrompt(running.task, input.prompt),
-        operatorUserId: request.user!.id,
-        traceId: request.requestIdForSpace
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Swarm task could not start a Space agent run.";
-      const blocked = await store.updateSwarmTask(
-        task.id,
-        {
-          status: "BLOCKED",
-          resultSummary: redactMemoryText(message).slice(0, 4000)
-        },
-        request.requestIdForSpace
-      );
-      eventBus.publish(blocked.event);
-      throw error;
-    }
-
-    const messageRecord = await store.postSwarmMessage(
-      {
-        roomId: running.task.roomId,
-        taskId: running.task.id,
-        fromRole: running.task.role,
-        toRole: null,
-        body: `Queued ${running.task.role.toLowerCase()} task to Space agent pane ${pane.title}.`
-      },
-      request.requestIdForSpace
-    );
-    eventBus.publish(messageRecord.event);
-    await recordAudit(store, request, {
-      action: "swarm.task.run",
-      targetType: "swarm_task",
-      targetId: running.task.id,
-      metadata: {
-        roomId: running.task.roomId,
-        role: running.task.role,
-        status: running.task.status,
-        paneId: pane.id,
-        agentSessionId: agentResult.binding.sessionId
-      }
-    });
-    return runSwarmTaskResponseSchema.parse({
-      task: running.task,
-      agentSession: agentResult.session,
-      message: messageRecord.message
-    });
-  });
-  app.post("/api/swarm/locks", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(claimSwarmLockInputSchema, request.body);
-    const record = await store.claimSwarmLock(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.lock.claim",
-      targetType: "swarm_lock",
-      targetId: record.lock.id,
-      metadata: {
-        roomId: record.lock.roomId,
-        taskId: record.lock.taskId,
-        resource: record.lock.resource,
-        holder: record.lock.holder,
-        status: record.lock.status
-      }
-    });
-    return record.lock;
-  });
-  app.post("/api/swarm/locks/:id/release", defaultRouteRateLimitOptions, async (request) => {
-    const params = parseBody(idParamSchema, request.params);
-    const input = parseBody(releaseSwarmLockInputSchema, request.body ?? {});
-    const record = await store.releaseSwarmLock(params.id, input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.lock.release",
-      targetType: "swarm_lock",
-      targetId: record.lock.id,
-      metadata: {
-        roomId: record.lock.roomId,
-        taskId: record.lock.taskId,
-        resource: record.lock.resource,
-        holder: record.lock.holder,
-        status: record.lock.status
-      }
-    });
-    return record.lock;
-  });
-  app.post("/api/swarm/messages", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(postSwarmMessageInputSchema, request.body);
-    const record = await store.postSwarmMessage(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.message.post",
-      targetType: "swarm_message",
-      targetId: record.message.id,
-      metadata: {
-        roomId: record.message.roomId,
-        taskId: record.message.taskId,
-        fromRole: record.message.fromRole,
-        toRole: record.message.toRole
-      }
-    });
-    return record.message;
-  });
-  app.post("/api/swarm/reconciles", defaultRouteRateLimitOptions, async (request) => {
-    const input = parseBody(createSwarmReconcileInputSchema, request.body);
-    const record = await store.createSwarmReconcile(input, request.requestIdForSpace);
-    eventBus.publish(record.event);
-    await recordAudit(store, request, {
-      action: "swarm.reconcile.create",
-      targetType: "swarm_reconcile",
-      targetId: record.reconcile.id,
-      metadata: {
-        roomId: record.reconcile.roomId,
-        taskCount: record.reconcile.taskIds.length,
-        decision: record.reconcile.decision
-      }
-    });
-    return record.reconcile;
+  registerSwarmRoutes(app, {
+    store, eventBus, config, workerReadinessChecker, spaceAgentAdapter,
+    routeOptions: defaultRouteRateLimitOptions,
+    recordAudit: (request, input) => recordAudit(store, request, input)
   });
   app.get("/api/admin/integrations/space", defaultRouteRateLimitOptions, async () =>
     spaceCapabilitySnapshotSchema.parse(await spaceCapabilityInventoryCollector({ store, config }))

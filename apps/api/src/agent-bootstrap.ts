@@ -61,7 +61,8 @@ function webChatSkillBridgeLine(channel: SpaceAgentBootstrapInput["channel"]): s
 function cliAgentFilesLine(channel: SpaceAgentBootstrapInput["channel"]): string | null {
   if (channel !== "CLI") return null;
   return [
-    "- Agent Files delivery: after creating a final user-requested file, run `space-publish-file <absolute-path> [more-paths...]` before the final response.",
+    "- Agent Files delivery: ONLY create and publish an Agent File if the user EXPLICITLY requested file delivery/creation in their prompt. NEVER publish files, reports, test logs, benchmarks, diffs, or screenshots automatically as proof of work.",
+    "  When explicitly requested by the user: run `space-publish-file <absolute-path> [more-paths...]` before the final response.",
     "  Publish only final deliverables. Never publish credentials, secrets, user inputs, temporary files, caches, logs, or whole source trees.",
     "  Confirm the command returned an Agent Files artifact id. If it fails, report the exact gate and do not claim the file is downloadable."
   ].join("\n");

@@ -122,9 +122,9 @@ export function createCodexHistoryPurgeService(options: {
     try {
       const output = await runCommand(command, [action], JSON.stringify(input), { timeoutMs: options.timeoutMs });
       return parse(JSON.parse(output));
-    } catch (error) {
-      const detail = error instanceof Error ? ` ${error.message}` : "";
-      throw new SpaceConflictError(`${options.failureMessage ?? unavailableMessage}${detail}`);
+    } catch {
+      // Helper stderr and parser diagnostics can contain private paths or data.
+      throw new SpaceConflictError(options.failureMessage ?? unavailableMessage);
     }
   }
 

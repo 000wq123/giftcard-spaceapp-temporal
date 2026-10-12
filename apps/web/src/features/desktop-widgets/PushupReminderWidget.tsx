@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Dumbbell, Flame, Pause, Play, RotateCcw } from "lucide-react";
-import { playChime } from "./audio-chime.js";
-import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bell, BellOff, BellRing, Check, Dumbbell, Pause, Play, RotateCcw, Volume2 } from "../ui-theme/app-icons.js";
 import type { DesktopWidgetState, PushupReminderWidgetConfig } from "./types.js";
-import { DEFAULT_PUSHUP_CONFIG, loadWidgetConfig, saveWidgetConfig } from "./widget-storage.js";
+import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
+import {
+  DEFAULT_PUSHUP_CONFIG,
+  loadWidgetConfig,
+  saveWidgetConfig,
+  WIDGET_CONFIG_CHANGED_EVENT
+} from "./widget-storage.js";
+import { playChime } from "./audio-chime.js";
 
 const INTERVAL_OPTIONS = [15, 20, 30, 45, 60];
 
@@ -35,11 +40,23 @@ export function PushupReminderWidget({
         ...loaded,
         totalRepsToday: 0,
         setsCompletedToday: 0,
-        lastActiveDate: today
+        lastActiveDate: today,
+        isAlertActive: false
       };
     }
     return loaded;
   });
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const customEvent = e as CustomEvent<{ id: string; config: PushupReminderWidgetConfig }>;
+      if (customEvent.detail?.id === "pushup-reminder" && customEvent.detail.config) {
+        setConfig(customEvent.detail.config);
+      }
+    };
+    window.addEventListener(WIDGET_CONFIG_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(WIDGET_CONFIG_CHANGED_EVENT, handler);
+  }, []);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alertAudioTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -53,6 +70,7 @@ export function PushupReminderWidget({
 
   const startAlertSound = useCallback(() => {
     stopAlertSound();
+    if (config.soundEnabled === false) return;
     playChime("pushup-alert");
     let ringsCount = 1;
     const maxRings = 5;
@@ -63,36 +81,29 @@ export function PushupReminderWidget({
       }
       playChime("pushup-alert");
     }, 1000);
-  }, [stopAlertSound]);
+  }, [stopAlertSound, config.soundEnabled]);
 
-  // Handle alert sound lifecycle: chime for 5 seconds on alert trigger, stop when dismissed
-  const prevAlertActiveRef = useRef(config.isAlertActive);
-  useEffect(() => {
-    if (!prevAlertActiveRef.current && config.isAlertActive) {
-      startAlertSound();
-    } else if (!config.isAlertActive) {
-      stopAlertSound();
-    }
-    prevAlertActiveRef.current = config.isAlertActive;
-  }, [config.isAlertActive, startAlertSound, stopAlertSound]);
-
+  // Stop sound on unmount
   useEffect(() => {
     return () => {
       stopAlertSound();
     };
   }, [stopAlertSound]);
 
-  const updateConfig = useCallback((patch: Partial<PushupReminderWidgetConfig>) => {
-    setConfig((prev) => {
-      const next = { ...prev, ...patch };
-      saveWidgetConfig("pushup-reminder", next);
-      return next;
-    });
-  }, []);
+  const updateConfig = useCallback(
+    (partial: Partial<PushupReminderWidgetConfig>) => {
+      setConfig((prev) => {
+        const next = { ...prev, ...partial };
+        saveWidgetConfig("pushup-reminder", next);
+        return next;
+      });
+    },
+    []
+  );
 
-  // Interval countdown loop
+  // Timer tick for workout countdown
   useEffect(() => {
-    if (!config.isRunning || config.isAlertActive) {
+    if (!config.isRunning) {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -102,21 +113,24 @@ export function PushupReminderWidget({
 
     timerRef.current = setInterval(() => {
       setConfig((prev) => {
+        if (!prev.isRunning || prev.isAlertActive) return prev;
         if (prev.remainingSeconds <= 1) {
+          // Time is up! Trigger pushup workout alert
           const next = {
             ...prev,
-            remainingSeconds: 0,
-            isAlertActive: true
+            remainingSeconds: prev.intervalMinutes * 60,
+            isAlertActive: true,
+            alertReason: "pushups" as const
           };
           saveWidgetConfig("pushup-reminder", next);
           return next;
         }
-
         const next = {
           ...prev,
           remainingSeconds: prev.remainingSeconds - 1
         };
-        saveWidgetConfig("pushup-reminder", next);
+        // Local-only: the alert transition above and user actions sync the config.
+        saveWidgetConfig("pushup-reminder", next, { syncToServer: false });
         return next;
       });
     }, 1000);
@@ -127,74 +141,111 @@ export function PushupReminderWidget({
         timerRef.current = null;
       }
     };
-  }, [config.isRunning, config.isAlertActive]);
+  }, [config.isRunning]);
 
-  const handleLogDone = (customReps?: number) => {
+  // Audio alert playback
+  const prevAlertActiveRef = useRef(config.isAlertActive);
+  useEffect(() => {
+    if (!prevAlertActiveRef.current && config.isAlertActive) {
+      startAlertSound();
+    } else if (!config.isAlertActive) {
+      stopAlertSound();
+    }
+    prevAlertActiveRef.current = config.isAlertActive;
+  }, [config.isAlertActive, startAlertSound, stopAlertSound]);
+
+  const handleDismissAlert = useCallback(() => {
     stopAlertSound();
-    const repsToAdd = customReps ?? config.targetReps;
-    playChime("log-done");
+    playChime("click");
     updateConfig({
-      totalRepsToday: config.totalRepsToday + repsToAdd,
-      setsCompletedToday: config.setsCompletedToday + 1,
       remainingSeconds: config.intervalMinutes * 60,
-      isAlertActive: false,
-      isRunning: true
-    });
-  };
-
-  const handleSnooze = (minutes = 5) => {
-    stopAlertSound();
-    playChime("click");
-    updateConfig({
-      remainingSeconds: minutes * 60,
-      isAlertActive: false,
-      isRunning: true
-    });
-  };
-
-  const handleIntervalChange = (newIntervalMinutes: number) => {
-    stopAlertSound();
-    playChime("click");
-    updateConfig({
-      intervalMinutes: newIntervalMinutes,
-      remainingSeconds: newIntervalMinutes * 60,
       isAlertActive: false
     });
-  };
+  }, [stopAlertSound, config.intervalMinutes, updateConfig]);
 
-  const handleTargetRepsChange = (delta: number) => {
-    playChime("click");
-    const nextTarget = Math.max(5, Math.min(100, config.targetReps + delta));
-    updateConfig({ targetReps: nextTarget });
-  };
+  const handleLogDone = useCallback(
+    (repsToAdd?: number) => {
+      stopAlertSound();
+      playChime("log-done");
+      const addCount = repsToAdd ?? config.targetReps;
+      updateConfig({
+        totalRepsToday: config.totalRepsToday + addCount,
+        setsCompletedToday: config.setsCompletedToday + 1,
+        remainingSeconds: config.intervalMinutes * 60,
+        isAlertActive: false,
+        isRunning: true
+      });
+    },
+    [config.targetReps, config.totalRepsToday, config.setsCompletedToday, config.intervalMinutes, stopAlertSound, updateConfig]
+  );
 
-  const handleToggleRunning = () => {
-    stopAlertSound();
+  const handleSnooze = useCallback(
+    (minutes: number) => {
+      stopAlertSound();
+      playChime("click");
+      updateConfig({
+        remainingSeconds: minutes * 60,
+        isAlertActive: false,
+        isRunning: true
+      });
+    },
+    [stopAlertSound, updateConfig]
+  );
+
+  const handleIntervalChange = useCallback(
+    (minutes: number) => {
+      playChime("click");
+      updateConfig({
+        intervalMinutes: minutes,
+        remainingSeconds: minutes * 60
+      });
+    },
+    [updateConfig]
+  );
+
+  const handleTargetRepsChange = useCallback(
+    (delta: number) => {
+      playChime("click");
+      const next = Math.max(5, Math.min(100, config.targetReps + delta));
+      updateConfig({ targetReps: next });
+    },
+    [config.targetReps, updateConfig]
+  );
+
+  const handleToggleRunning = useCallback(() => {
     playChime("click");
     updateConfig({ isRunning: !config.isRunning });
-  };
+  }, [config.isRunning, updateConfig]);
 
-  const handleResetToday = () => {
-    stopAlertSound();
+  const handleResetToday = useCallback(() => {
     playChime("click");
     updateConfig({
       totalRepsToday: 0,
-      setsCompletedToday: 0,
-      remainingSeconds: config.intervalMinutes * 60,
-      isAlertActive: false
+      setsCompletedToday: 0
+    });
+  }, [updateConfig]);
+
+  const handleTestAlert = () => {
+    stopAlertSound();
+    playChime("click");
+    updateConfig({
+      isAlertActive: true,
+      alertReason: "pushups"
     });
   };
 
-  const formatCountdown = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const formatCountdown = (totalSeconds: number): string => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const progressFraction = Math.max(
-    0,
-    Math.min(1, config.remainingSeconds / (config.intervalMinutes * 60 || 1))
-  );
+  const progressFraction = useMemo(() => {
+    const total = config.intervalMinutes * 60;
+    if (total <= 0) return 0;
+    const elapsed = total - config.remainingSeconds;
+    return Math.max(0, Math.min(1, elapsed / total));
+  }, [config.intervalMinutes, config.remainingSeconds]);
 
   const displayTitle = state.minimized ? "Push-up" : "Push-up Reminder";
 
@@ -209,7 +260,7 @@ export function PushupReminderWidget({
       }}
       title={config.isAlertActive ? "Click to stop alert and log set" : undefined}
     >
-      {config.isAlertActive ? "Push-ups!" : formatCountdown(config.remainingSeconds)}
+      {config.isAlertActive ? "Time's up!" : formatCountdown(config.remainingSeconds)}
     </span>
   );
 
@@ -231,9 +282,53 @@ export function PushupReminderWidget({
           <span className="widget-docked-alert-action">✓ Stop</span>
         </>
       ) : (
-        <span className="widget-docked-countdown">{formatCountdown(config.remainingSeconds)}</span>
+        <span className="widget-docked-countdown">
+          {formatCountdown(config.remainingSeconds)}
+        </span>
       )}
     </div>
+  );
+
+  const headerControls = (
+    <>
+      {config.isAlertActive ? (
+        <button
+          type="button"
+          className="desktop-widget-btn-action is-alert-stop-btn"
+          onClick={handleDismissAlert}
+          title="Stop alarm / Dismiss alert"
+          aria-label="Stop alarm"
+        >
+          <BellRing aria-hidden="true" className="widget-header-svg is-ringing" />
+          <span>Stop</span>
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="desktop-widget-btn-action"
+        onClick={handleTestAlert}
+        title="Test push-up workout alert"
+        aria-label="Test workout alert"
+      >
+        <Volume2 aria-hidden="true" className="widget-header-svg" />
+      </button>
+      <button
+        type="button"
+        className={`desktop-widget-btn-action ${config.soundEnabled === false ? "is-muted" : ""}`}
+        onClick={() => {
+          playChime("click");
+          updateConfig({ soundEnabled: config.soundEnabled === false });
+        }}
+        title={config.soundEnabled === false ? "Sound muted (click to unmute)" : "Sound enabled (click to mute)"}
+        aria-label={config.soundEnabled === false ? "Unmute sound" : "Mute sound"}
+      >
+        {config.soundEnabled === false ? (
+          <BellOff aria-hidden="true" className="widget-header-svg" />
+        ) : (
+          <Bell aria-hidden="true" className="widget-header-svg" />
+        )}
+      </button>
+    </>
   );
 
   return (
@@ -252,7 +347,8 @@ export function PushupReminderWidget({
       minimizedSummary={minimizedSummary}
       dockedSummary={dockedSummary}
       isAlertActive={config.isAlertActive}
-      onStopAlert={() => handleLogDone()}
+      onStopAlert={handleDismissAlert}
+      headerControls={headerControls}
       onPositionChange={onPositionChange}
       onToggleMinimize={onToggleMinimize}
       onClose={onClose}
@@ -260,133 +356,153 @@ export function PushupReminderWidget({
       className={`widget-pushup-container ${config.isAlertActive ? "is-alert" : ""}`}
     >
       <div className="widget-pushup-content">
-        {/* Urgent reminder alert banner when time is up */}
-        {config.isAlertActive ? (
-          <div className="widget-pushup-banner" role="alert">
-            <div className="widget-pushup-banner-header">
-              <Flame className="widget-banner-icon" />
-              <strong>Time for {config.targetReps} Push-ups!</strong>
-            </div>
-            <p className="widget-pushup-banner-sub">Drop down and power through your set!</p>
+        <div className="widget-pushups-panel">
+          {/* Urgent reminder alert banner when time is up */}
+          {config.isAlertActive ? (
+            <div className="widget-pushup-banner" role="alert">
+              <div className="widget-pushup-banner-header">
+                <BellRing className="widget-banner-icon is-ringing" />
+                <strong>Time for {config.targetReps} Push-ups!</strong>
+              </div>
+              <p className="widget-pushup-banner-sub">Drop down and power through your set!</p>
 
-            <div className="widget-pushup-banner-actions">
+              <div className="widget-pushup-banner-actions">
+                <button
+                  type="button"
+                  className="widget-primary-btn is-alert-action"
+                  onClick={() => handleLogDone()}
+                >
+                  <Check className="widget-btn-svg" /> Completed (+{config.targetReps})
+                </button>
+                <button
+                  type="button"
+                  className="widget-secondary-btn is-stop-alert"
+                  onClick={handleDismissAlert}
+                  title="Stop alarm and dismiss alert"
+                >
+                  <BellOff className="widget-btn-svg" /> Stop Alert
+                </button>
+                <button
+                  type="button"
+                  className="widget-secondary-btn"
+                  onClick={() => handleSnooze(5)}
+                >
+                  Snooze 5m
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Next set countdown & stats overview */}
+          <div className="widget-pushup-status-card">
+            <div className="widget-pushup-timer-col">
+              <span className="widget-pushup-label">
+                {config.isAlertActive ? "Time is up!" : "Next set in"}
+              </span>
+              <span className={`widget-pushup-time ${config.isAlertActive ? "is-alert" : ""}`}>
+                {config.isAlertActive ? (
+                  <>
+                    <BellRing className="widget-timer-bell-icon" /> ALERT!
+                  </>
+                ) : (
+                  formatCountdown(config.remainingSeconds)
+                )}
+              </span>
+            </div>
+
+            <div className="widget-pushup-stats-col">
+              <span className="widget-pushup-label">Today</span>
+              <div className="widget-pushup-total-score">
+                <strong>{config.totalRepsToday}</strong>
+                <small>reps ({config.setsCompletedToday} sets)</small>
+              </div>
+            </div>
+          </div>
+
+          {/* Interval Progress Bar */}
+          <div className="widget-timer-progress-track">
+            <div
+              className="widget-timer-progress-fill is-pushup-fill"
+              style={{ width: `${progressFraction * 100}%` }}
+            />
+          </div>
+
+          {/* Interval options row */}
+          <div className="widget-pushup-config-row">
+            <span className="widget-config-label">Interval:</span>
+            <div className="widget-pushup-interval-pills">
+              {INTERVAL_OPTIONS.map((min) => (
+                <button
+                  key={min}
+                  type="button"
+                  className={`widget-tag-btn ${config.intervalMinutes === min ? "is-active" : ""}`}
+                  onClick={() => handleIntervalChange(min)}
+                >
+                  {min}m
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Target reps row */}
+          <div className="widget-pushup-config-row">
+            <span className="widget-config-label">Target per set:</span>
+            <div className="widget-pushup-reps-adjuster">
               <button
                 type="button"
-                className="widget-primary-btn is-alert-action"
-                onClick={() => handleLogDone()}
+                className="widget-mini-step-btn"
+                onClick={() => handleTargetRepsChange(-5)}
+                title="Minus 5 push-ups"
               >
-                <Check className="widget-btn-svg" /> Completed (+{config.targetReps})
+                -5
               </button>
+              <span className="widget-reps-val">{config.targetReps} reps</span>
               <button
                 type="button"
-                className="widget-secondary-btn"
-                onClick={() => handleSnooze(5)}
+                className="widget-mini-step-btn"
+                onClick={() => handleTargetRepsChange(5)}
+                title="Add 5 push-ups"
               >
-                Snooze 5m
+                +5
               </button>
             </div>
           </div>
-        ) : null}
 
-        {/* Next set countdown & stats overview */}
-        <div className="widget-pushup-status-card">
-          <div className="widget-pushup-timer-col">
-            <span className="widget-pushup-label">Next set in</span>
-            <span className="widget-pushup-time">{formatCountdown(config.remainingSeconds)}</span>
-          </div>
-
-          <div className="widget-pushup-stats-col">
-            <span className="widget-pushup-label">Today</span>
-            <div className="widget-pushup-total-score">
-              <strong>{config.totalRepsToday}</strong>
-              <small>reps ({config.setsCompletedToday} sets)</small>
-            </div>
-          </div>
-        </div>
-
-        {/* Interval Progress Bar */}
-        <div className="widget-timer-progress-track">
-          <div
-            className="widget-timer-progress-fill is-pushup-fill"
-            style={{ width: `${progressFraction * 100}%` }}
-          />
-        </div>
-
-        {/* Interval options row */}
-        <div className="widget-pushup-config-row">
-          <span className="widget-config-label">Interval:</span>
-          <div className="widget-pushup-interval-pills">
-            {INTERVAL_OPTIONS.map((min) => (
-              <button
-                key={min}
-                type="button"
-                className={`widget-tag-btn ${config.intervalMinutes === min ? "is-active" : ""}`}
-                onClick={() => handleIntervalChange(min)}
-              >
-                {min}m
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Target reps row */}
-        <div className="widget-pushup-config-row">
-          <span className="widget-config-label">Target per set:</span>
-          <div className="widget-pushup-reps-adjuster">
+          {/* Bottom action controls */}
+          <div className="widget-pushup-actions-row">
             <button
               type="button"
-              className="widget-mini-step-btn"
-              onClick={() => handleTargetRepsChange(-5)}
-              title="Minus 5 push-ups"
+              className="widget-primary-btn"
+              onClick={() => handleLogDone()}
+              title="Log set done now and reset interval timer"
             >
-              -5
+              <Check aria-hidden="true" className="widget-btn-svg" /> Log Set (+{config.targetReps})
             </button>
-            <span className="widget-reps-val">{config.targetReps} reps</span>
+
             <button
               type="button"
-              className="widget-mini-step-btn"
-              onClick={() => handleTargetRepsChange(5)}
-              title="Add 5 push-ups"
+              className={`widget-icon-btn ${config.isRunning ? "is-active" : ""}`}
+              onClick={handleToggleRunning}
+              title={config.isRunning ? "Pause interval timer" : "Resume interval timer"}
+              aria-label={config.isRunning ? "Pause interval timer" : "Resume interval timer"}
             >
-              +5
+              {config.isRunning ? (
+                <Pause aria-hidden="true" className="widget-btn-svg" />
+              ) : (
+                <Play aria-hidden="true" className="widget-btn-svg" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              className="widget-icon-btn"
+              onClick={handleResetToday}
+              title="Reset today's push-up counts"
+              aria-label="Reset daily push-up count"
+            >
+              <RotateCcw aria-hidden="true" className="widget-btn-svg" />
             </button>
           </div>
-        </div>
-
-        {/* Bottom action controls */}
-        <div className="widget-pushup-actions-row">
-          <button
-            type="button"
-            className="widget-primary-btn"
-            onClick={() => handleLogDone()}
-            title="Log set done now and reset interval timer"
-          >
-            <Check aria-hidden="true" className="widget-btn-svg" /> Log Set (+{config.targetReps})
-          </button>
-
-          <button
-            type="button"
-            className={`widget-icon-btn ${config.isRunning ? "is-active" : ""}`}
-            onClick={handleToggleRunning}
-            title={config.isRunning ? "Pause interval timer" : "Resume interval timer"}
-            aria-label={config.isRunning ? "Pause interval timer" : "Resume interval timer"}
-          >
-            {config.isRunning ? (
-              <Pause aria-hidden="true" className="widget-btn-svg" />
-            ) : (
-              <Play aria-hidden="true" className="widget-btn-svg" />
-            )}
-          </button>
-
-          <button
-            type="button"
-            className="widget-icon-btn"
-            onClick={handleResetToday}
-            title="Reset today's push-up counts"
-            aria-label="Reset daily push-up count"
-          >
-            <RotateCcw aria-hidden="true" className="widget-btn-svg" />
-          </button>
         </div>
       </div>
     </DesktopWidgetContainer>

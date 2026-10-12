@@ -27,6 +27,7 @@ import {
   Zap
 } from "../ui-theme/app-icons.js";
 import "./system-analytics.css";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { groupModelTokens, recordedTotal, sumTokenCounts } from "./token-totals.js";
 
@@ -499,7 +500,7 @@ export function SystemAnalyticsWorkspace({
               <button type="button" aria-pressed={benchProvider==="opencode-go"} onClick={() => setBenchProvider("opencode-go")}>opencode-go</button>
               <button type="button" aria-pressed={benchProvider==="openrouter"} onClick={() => setBenchProvider("openrouter")}>openrouter free</button>
             </div>
-            <label className="opencode-bench-toggle"><input type="checkbox" checked={benchVisionOnly} onChange={(e) => setBenchVisionOnly(e.currentTarget.checked)} /> Vision only</label>
+            <SpaceToggle className="opencode-bench-toggle-switch" label="Vision only" checked={benchVisionOnly} onChange={setBenchVisionOnly} />
             <div className="opencode-bench-filter-group">
               <span>Sort</span>
               <select aria-label="Sort bench" value={benchSortKey} onChange={(e) => { const v = e.currentTarget.value as typeof benchSortKey; setBenchSortKey(v); setBenchSortDir(v === "provider" || v === "ttft" ? "asc" : "desc"); }}>

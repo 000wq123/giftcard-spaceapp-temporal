@@ -2,28 +2,26 @@ import { BrainCircuit, Check, ChevronLeft } from "../ui-theme/app-icons.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AgentPaneModelProvider, PaneCliModelSettings } from "@space/contracts";
 
-type Selection = { modelId: string; reasoningEffort: string; providerId: string | null };
+type Selection = { modelId: string; reasoningEffort: string; providerId: string | null; scope?: string };
 
 const MODEL_POPOVER_MAX_HEIGHT_PX = 31 * 16;
 const QUICK_MODEL_RESULT_LIMIT = 20;
+const QUICK_MODEL_SEARCH_THRESHOLD = 8;
+// Arrow-key browsing in the model list waits for a pause (or Enter) before switching.
+const KEYBOARD_MODEL_SETTLE_MS = 600;
 const MODEL_POPOVER_GAP_PX = 11;
 const MODEL_POPOVER_BOUNDARY_INSET_PX = 8;
 
-function reasoningEffortLabel(value: string): string {
-  const labels: Record<string, string> = {
-    auto: "Auto",
-    disabled: "Disabled",
-    unknown: "Unknown",
-    none: "None",
-    minimal: "Minimal",
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "XHigh",
-    max: "Max",
-    ultra: "Ultra"
-  };
-  return labels[value] ?? value;
+import { reasoningEffortLabel, reasoningEffortBadge, reasoningEffortColor } from "./reasoning-effort.js";
+export { reasoningEffortLabel, reasoningEffortBadge, reasoningEffortColor };
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+
+// "DeepSeek V4 Flash (free)" -> "DeepSeek V4 Flash"; "opencode/deepseek-v4" -> "deepseek-v4".
+export function shortModelName(name: string): string {
+  const withoutQualifier = name.replace(/\s*\([^)]*\)\s*$/, "").trim() || name;
+  return withoutQualifier.includes("/") && !withoutQualifier.includes(" ")
+    ? withoutQualifier.slice(withoutQualifier.lastIndexOf("/") + 1)
+    : withoutQualifier;
 }
 
 export interface CodexModelPickerProps {
@@ -34,13 +32,19 @@ export interface CodexModelPickerProps {
   disabled?: boolean;
   allowSelectionWithoutCurrent?: boolean;
   onRefreshCatalog?: () => Promise<void>;
+  selectionScope?: string;
+  // Shown on the chip while it is disabled, so the operator knows why it cannot be changed now.
+  disabledReason?: string | null;
+  // Compact chips name the current model next to the icon (the CLI pane toolbar has room for it).
+  showLabel?: boolean;
   onSwitch: (
     modelId: string,
     reasoningEffort: string,
     providerId: string | null
   ) => Promise<{
-    current: NonNullable<PaneCliModelSettings["current"]>;
+    current: PaneCliModelSettings["current"];
     message: string | null;
+    pending?: boolean;
   }>;
 }
 
@@ -52,6 +56,9 @@ export function CodexModelPicker({
   disabled = false,
   allowSelectionWithoutCurrent = false,
   onRefreshCatalog,
+  selectionScope,
+  disabledReason = null,
+  showLabel = false,
   onSwitch
 }: CodexModelPickerProps) {
   const [open, setOpen] = useState(false);
@@ -59,7 +66,7 @@ export function CodexModelPicker({
   const [switching, setSwitching] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [step, setStep] = useState<"providers" | "models" | "reasoning">("models");
-  const [feedback, setFeedback] = useState<{ message: string; tone: "good" | "bad" } | null>(null);
+  const [feedback, setFeedback] = useState<{ message: string; tone: "good" | "bad" | "pending"; retry?: boolean } | null>(null);
   const [draft, setDraft] = useState<{
     modelId: string;
     reasoningEffort: string;
@@ -77,8 +84,13 @@ export function CodexModelPicker({
   const mountedRef = useRef(true);
   const switchGenerationRef = useRef(0);
   const switchingRef = useRef(false);
+  const selectionScopeRef = useRef(selectionScope);
+  selectionScopeRef.current = selectionScope;
   const queuedSelectionRef = useRef<Selection | null>(null);
   const requestedSelectionRef = useRef<Selection | null>(null);
+  const keyboardModelBrowseRef = useRef(false);
+  const pendingKeyboardModelRef = useRef<string | null>(null);
+  const pendingKeyboardModelTimerRef = useRef<number | null>(null);
   const hasProviders = providers.length > 1;
   const currentSettings = settings.current;
   const currentProviderId = providers.find((provider) => provider.isCurrent)?.providerId ?? null;
@@ -148,7 +160,7 @@ export function CodexModelPicker({
     try {
       await onRefreshCatalog();
     } catch {
-      if (mountedRef.current) setFeedback({ tone: "bad", message: "Could not refresh the model catalog. Close and reopen the picker to retry." });
+      if (mountedRef.current) setFeedback({ tone: "bad", message: "Could not refresh the model catalog.", retry: true });
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
@@ -164,9 +176,16 @@ export function CodexModelPicker({
     setStep(hasProviders && activeProviderId === null ? "providers" : "models");
   }
 
+  function clearPendingKeyboardModel() {
+    if (pendingKeyboardModelTimerRef.current !== null) window.clearTimeout(pendingKeyboardModelTimerRef.current);
+    pendingKeyboardModelTimerRef.current = null;
+    pendingKeyboardModelRef.current = null;
+  }
+
   function closeAndCollapse(restoreFocus: boolean) {
     switchGenerationRef.current += 1;
     clearCollapseTimer();
+    clearPendingKeyboardModel();
     setOpen(false);
     setExpanded(false);
     setDraft(null);
@@ -206,6 +225,7 @@ export function CodexModelPicker({
       queuedSelectionRef.current = null;
       switchGenerationRef.current += 1;
       clearCollapseTimer();
+      if (pendingKeyboardModelTimerRef.current !== null) window.clearTimeout(pendingKeyboardModelTimerRef.current);
     };
   }, []);
 
@@ -226,6 +246,7 @@ export function CodexModelPicker({
       closeAndCollapse(true);
     };
     const handlePointerDown = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
@@ -318,11 +339,38 @@ export function CodexModelPicker({
       ? `${selectedModel?.displayName ?? current.modelId} · ${reasoningEffortLabel(current.reasoningEffort)}`
       : (selectedModel?.displayName ?? current.modelId)
     : "Select model";
+  // The compact chip names the model itself, so the current model is visible without a hover tooltip.
+  const chipModelName = current ? shortModelName(selectedModel?.displayName ?? current.modelId) : null;
+  const showChipLabel = compact && showLabel && Boolean(chipModelName);
+  const chipTitle = disabled && disabledReason
+    ? `${current ? chipLabel : "Select model and reasoning"} — ${disabledReason}`
+    : current ? chipLabel : "Select model and reasoning";
 
   function modelReasoningOptions(
     model: NonNullable<PaneCliModelSettings["models"][number]>
   ): Array<{ reasoningEffort: string; description?: string }> {
     return model.reasoningOptions ?? model.supportedReasoningEfforts.map((reasoningEffort) => ({ reasoningEffort })) ?? [];
+  }
+
+  // Keep the confirmed reasoning effort when the new model supports it instead of resetting to its default.
+  // Read the confirmed value, not the draft, so browsing through models never drifts the effort.
+  function effortForModel(model: NonNullable<PaneCliModelSettings["models"][number]>): string {
+    const keep = effectiveCurrentRef.current?.reasoningEffort;
+    return keep && modelReasoningOptions(model).some((option) => option.reasoningEffort === keep)
+      ? keep
+      : model.defaultReasoningEffort;
+  }
+
+  function applyQuickModel(modelId: string) {
+    const model = quickModels.find(entry => entry.id === modelId);
+    const providerId = hasProviders ? quickGroup?.provider.providerId ?? null : null;
+    if (model) void apply(model.id, effortForModel(model), providerId);
+  }
+
+  function flushKeyboardModel() {
+    const modelId = pendingKeyboardModelRef.current;
+    clearPendingKeyboardModel();
+    if (modelId) applyQuickModel(modelId);
   }
 
   function selectProvider(providerId: string) {
@@ -361,7 +409,7 @@ export function CodexModelPicker({
   // later selections, so a slow response cannot overwrite the user's latest choice.
   async function applyCompact(selection: Selection) {
     const confirmedCurrent = effectiveCurrentRef.current;
-    if (!switchingRef.current && confirmedCurrent && selection.modelId === confirmedCurrent.modelId &&
+    if (!selectionScope && !switchingRef.current && confirmedCurrent && selection.modelId === confirmedCurrent.modelId &&
         selection.reasoningEffort === confirmedCurrent.reasoningEffort &&
         (selection.providerId === null || selection.providerId === confirmedProviderId)) return;
     requestedSelectionRef.current = selection;
@@ -376,15 +424,20 @@ export function CodexModelPicker({
         const next = queuedSelectionRef.current;
         queuedSelectionRef.current = null;
         try {
+          if (next.scope !== selectionScopeRef.current) throw new Error("The active stage or pane context changed. Select the current stage explicitly.");
           const outcome = await onSwitch(next.modelId, next.reasoningEffort, next.providerId);
           if (!mountedRef.current) return;
-          effectiveCurrentRef.current = outcome.current;
-          setConfirmed(outcome.current);
+          if (next.scope !== selectionScopeRef.current) throw new Error("The active stage or pane context changed. Its previous response was discarded.");
+          if (outcome.current) {
+            effectiveCurrentRef.current = outcome.current;
+            setConfirmed(outcome.current);
+          }
           if (next.providerId !== null) setConfirmedProviderId(next.providerId);
           if (requestedSelectionRef.current === next) {
+            const confirmedCurrent = outcome.current ?? effectiveCurrentRef.current;
             setDraft(previous => previous?.modelId === next.modelId && previous.reasoningEffort === next.reasoningEffort
-              ? { ...outcome.current, providerId: next.providerId } : previous);
-            setFeedback(outcome.message ? { message: outcome.message, tone: "good" } : null);
+              ? confirmedCurrent ? { ...confirmedCurrent, providerId: next.providerId } : null : previous);
+            setFeedback(outcome.message ? { message: outcome.message, tone: outcome.pending ? "pending" : "good" } : null);
           }
         } catch (error) {
           if (!mountedRef.current) return;
@@ -402,11 +455,11 @@ export function CodexModelPicker({
 
   async function apply(modelId: string, effort: string, providerId: string | null) {
     if (disabled) return;
-    if (compact) return applyCompact({ modelId, reasoningEffort: effort, providerId });
+    if (compact) return applyCompact({ modelId, reasoningEffort: effort, providerId, scope: selectionScope });
     if (switching) return;
     const selection = { modelId, reasoningEffort: effort, providerId };
     const sameProvider = providerId === null || providerId === currentProviderId;
-    if (sameProvider && current && modelId === current.modelId && effort === current.reasoningEffort) {
+    if (!selectionScope && sameProvider && current && modelId === current.modelId && effort === current.reasoningEffort) {
       completeSelection(selection);
       return;
     }
@@ -417,7 +470,12 @@ export function CodexModelPicker({
     try {
       const outcome = await onSwitch(modelId, effort, providerId);
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
-      completeSelection(outcome.current);
+      if (selectionScope !== selectionScopeRef.current) throw new Error("The active stage or pane context changed. Its previous response was discarded.");
+      if (outcome.pending) {
+        if (outcome.current) setConfirmed(outcome.current);
+        setDraft(outcome.current ? { ...outcome.current, providerId } : null);
+        setFeedback({ message: outcome.message || "Pending native confirmation", tone: "pending" });
+      } else if (outcome.current) completeSelection(outcome.current);
     } catch (error) {
       if (!mountedRef.current || switchGenerationRef.current !== generation) return;
       setFeedback({
@@ -434,8 +492,10 @@ export function CodexModelPicker({
       <button
         ref={triggerRef}
         type="button"
-        className={`terminal-model-chip${expanded && !compact ? " is-expanded" : ""}`}
-        aria-label={current ? `Change model and reasoning. Current ${chipLabel}` : "Select model and reasoning"}
+        className={`terminal-model-chip${expanded && !compact ? " is-expanded" : ""}${showChipLabel ? " has-label" : ""}${current?.reasoningEffort && hasReasoningOptions ? " has-reasoning" : ""}`}
+        data-effort={current?.reasoningEffort && hasReasoningOptions ? current.reasoningEffort.toLowerCase() : undefined}
+        title={chipTitle}
+        aria-label={`${current ? `Change model and reasoning. Current ${chipLabel}` : "Select model and reasoning"}${disabled && disabledReason ? `. ${disabledReason}` : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -453,6 +513,10 @@ export function CodexModelPicker({
       >
         <BrainCircuit aria-hidden="true" />
         {expanded && !compact ? <span>{chipLabel}</span> : null}
+        {showChipLabel ? <span className="terminal-model-chip-name" aria-hidden="true">{chipModelName}</span> : null}
+        {showChipLabel && current?.reasoningEffort && hasReasoningOptions ? (
+          <span className="terminal-model-chip-effort" aria-hidden="true">{reasoningEffortBadge(current.reasoningEffort)}</span>
+        ) : null}
       </button>
       {open ? (
         <div
@@ -481,7 +545,7 @@ export function CodexModelPicker({
                   </select>
                 </label>
               ) : null}
-              {quickModels.length > QUICK_MODEL_RESULT_LIMIT || quickQuery ? (
+              {quickModels.length > QUICK_MODEL_SEARCH_THRESHOLD || quickQuery ? (
                 <input
                   type="search"
                   className="terminal-quick-model-search"
@@ -497,10 +561,24 @@ export function CodexModelPicker({
                 aria-label="Model"
                 value={quickShowsCurrent ? displayedCurrent?.modelId ?? "" : ""}
                 disabled={disabled || !quickVisibleModels.length}
+                onPointerDown={() => { keyboardModelBrowseRef.current = false; }}
+                onKeyDown={(event) => {
+                  if (["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) keyboardModelBrowseRef.current = true;
+                  else if (event.key === "Enter") flushKeyboardModel();
+                }}
+                onBlur={flushKeyboardModel}
                 onChange={(event) => {
-                  const model = quickModels.find(entry => entry.id === event.target.value);
-                  const providerId = hasProviders ? quickGroup?.provider.providerId ?? null : null;
-                  if (model) void apply(model.id, model.defaultReasoningEffort, providerId);
+                  const modelId = event.target.value;
+                  if (!keyboardModelBrowseRef.current) {
+                    applyQuickModel(modelId);
+                    return;
+                  }
+                  const model = quickModels.find(entry => entry.id === modelId);
+                  if (!model) return;
+                  setDraft({ modelId, reasoningEffort: effortForModel(model), providerId: hasProviders ? quickGroup?.provider.providerId ?? null : null });
+                  pendingKeyboardModelRef.current = modelId;
+                  if (pendingKeyboardModelTimerRef.current !== null) window.clearTimeout(pendingKeyboardModelTimerRef.current);
+                  pendingKeyboardModelTimerRef.current = window.setTimeout(flushKeyboardModel, KEYBOARD_MODEL_SETTLE_MS);
                 }}
               >
                 {!quickShowsCurrent ? <option value="" disabled>{quickQuery && !quickSearchMatches.length ? "No matching model" : "Select model"}</option> : null}
@@ -516,19 +594,27 @@ export function CodexModelPicker({
                   Showing {quickVisibleModels.length} of {quickModels.length} models — search to find the rest.
                 </div>
               ) : null}
-              {refreshing ? <div role="status">Refreshing models…</div> : null}
+              {refreshing && !quickModels.length ? <div role="status">Refreshing models…</div> : null}
               {switching ? <div role="status">Applying selection…</div> : null}
               {activeReasoningOptions.length > 0 && displayedCurrent && quickShowsCurrent ? (
                 <div className="terminal-quick-effort">
                   <strong>
                     Reasoning{" "}
-                    <span>{reasoningEffortLabel(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)}</span>
+                    <span
+                      className="terminal-quick-effort-pill"
+                      data-effort={(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort).toLowerCase()}
+                    >
+                      {reasoningEffortLabel(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)}
+                    </span>
                   </strong>
                   <input
                     type="range"
                     aria-label="Reasoning effort"
                     aria-valuetext={reasoningEffortLabel(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort)}
-                    style={{ background: `linear-gradient(to right, var(--model-slider-fill, #3385ff) ${100 * Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort))) / Math.max(1, activeReasoningOptions.length - 1)}%, var(--model-slider-track, #505050) 0)` }}
+                    style={{
+                      background: `linear-gradient(to right, ${reasoningEffortColor(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort).border} ${100 * Math.max(0, activeReasoningOptions.findIndex((option) => option.reasoningEffort === (draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort))) / Math.max(1, activeReasoningOptions.length - 1)}%, var(--model-slider-track, #505050) 0)`,
+                      accentColor: reasoningEffortColor(draft?.reasoningEffort ?? displayedCurrent!.reasoningEffort).border
+                    }}
                     min={0}
                     max={Math.max(0, activeReasoningOptions.length - 1)}
                     step={1}
@@ -625,17 +711,31 @@ export function CodexModelPicker({
                     model.id === current?.modelId && current
                       ? current.reasoningEffort
                       : model.defaultReasoningEffort;
+                  const effortLabel = selected && current?.reasoningEffort
+                    ? reasoningEffortLabel(current.reasoningEffort)
+                    : null;
                   return (
                     <button
                       key={model.id}
                       type="button"
                       role="radio"
                       aria-checked={selected}
+                      aria-label={model.displayName}
+                      aria-description={effortLabel ? `Reasoning effort: ${effortLabel}` : undefined}
                       className={selected ? "is-selected" : ""}
                       disabled={disabled || switching}
                       onClick={() => selectModel(model.id, modelEffort)}
                     >
-                      <span>{model.displayName}</span>
+                      <span className="terminal-model-option-name">{model.displayName}</span>
+                      {effortLabel ? (
+                        <span
+                          className="terminal-model-option-effort-badge"
+                          data-effort={current!.reasoningEffort.toLowerCase()}
+                          title={`Reasoning effort: ${effortLabel}`}
+                        >
+                          {effortLabel}
+                        </span>
+                      ) : null}
                       {selected ? <Check className="terminal-model-selection-check" size={16} strokeWidth={2.5} aria-hidden="true" /> : null}
                     </button>
                   );
@@ -694,6 +794,19 @@ export function CodexModelPicker({
           {feedback ? (
             <div className={`terminal-model-feedback ${feedback.tone}`} role={feedback.tone === "bad" ? "alert" : "status"}>
               {feedback.message}
+              {feedback.retry && onRefreshCatalog ? (
+                <button
+                  type="button"
+                  className="terminal-model-feedback-retry"
+                  disabled={refreshing}
+                  onClick={() => {
+                    setFeedback(null);
+                    void refreshCatalog();
+                  }}
+                >
+                  Retry
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>

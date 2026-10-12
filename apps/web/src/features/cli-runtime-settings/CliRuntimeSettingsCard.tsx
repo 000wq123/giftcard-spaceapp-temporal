@@ -1,7 +1,7 @@
 import {
   cliRuntimeDisablePreviewSchema,
-  type CliAccountProfile,
   type CliAccountProfileDetailsResponse,
+  type CliAccountIdentitiesResponse,
   type CliRuntimeDisablePreview,
   type CliRuntimeRestartSessionsResult,
   type CliRuntimeSettingsResponse,
@@ -26,9 +26,9 @@ import {
   type UpdateCliRuntimeVpnInput,
   type UpdateCliRuntimeVpnResult
 } from "@space/contracts";
-import { AlertTriangle, Check, CircleHelp, Loader2, Pencil, Plus, Recycle, RefreshCw, Shield, Terminal, Trash2, Upload, Users, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, Loader2, Recycle, RefreshCw, Shield, Terminal, Trash2, Upload, Users } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { api, SpaceApiError } from "../../api.js";
 import { SettingsActionMenu, type SettingsActionMenuItem } from "../settings/SettingsActionMenu.js";
 import { SettingsDisclosure } from "../settings/SettingsDisclosure.js";
@@ -40,9 +40,12 @@ import {
   readCliRuntimeVisibilityChange
 } from "../../cli-runtime-visibility-events.js";
 import { publishCliVpnRoutingStatus } from "../../cli-vpn-routing.js";
-import { dispatchCliAccountProfilesChange } from "../../cli-account-profile-events.js";
+import { CliAccountsPanel } from "../cli-accounts/CliAccountsPanel.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { readStoredSuppressNotifications } from "../../notifications-settings.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { DockNotice, DockState } from "../dock-kit/DockKit.js";
+import "./cli-runtime-settings.css";
 
 const VPN_PROFILE_MANAGER_STORAGE_KEY = "space.cliVpnProfileManager.profileId";
 const VPN_PROFILE_IDS = ["greece", "thailand", "mullvad", "nord"] as const;
@@ -101,6 +104,7 @@ export interface CliRuntimeSettingsClient {
   createCliAccountProfile?: (input: CreateCliAccountProfileInput) => Promise<CreateCliAccountProfileResponse>;
   updateCliAccountProfile?: (runtimeId: string, profileId: string, input: UpdateCliAccountProfileInput) => Promise<UpdateCliAccountProfileResponse>;
   getCliAccountProfileDetails?: (runtimeId: string, profileId: string) => Promise<CliAccountProfileDetailsResponse>;
+  cliAccountIdentities?: (refresh?: boolean) => Promise<CliAccountIdentitiesResponse>;
   removeCliAccountProfile?: (runtimeId: string, profileId: string) => Promise<RemoveCliAccountProfileResponse>;
   invalidateCliRuntimes: (change?: { runtimeId?: string; enabled?: boolean }) => void;
   invalidateCliRuntimeSettings?: () => void;
@@ -185,6 +189,18 @@ function cliEgressRouteLabel(routeId: CliEgressRouteId): string {
   return cliEgressRoutes.find((route) => route.id === routeId)?.label ?? routeId;
 }
 
+/** Readable connection states instead of raw codes such as NOT_CONFIGURED. */
+function cliVpnStatusLabel(status: string): string {
+  switch (status) {
+    case "DIRECT": return "Direct";
+    case "CONNECTED": return "Connected";
+    case "NOT_CONFIGURED": return "Not set up";
+    case "ERROR": return "Error";
+    case "BLOCKED": return "Blocked";
+    default: return status.charAt(0) + status.slice(1).toLowerCase().replace(/_/g, " ");
+  }
+}
+
 function cliVpnProfileLabel(profileId: CliVpnProfileId): string {
   return profileId === "greece" ? "Greece WireGuard" : profileId === "thailand" ? "Thailand WireGuard" : profileId === "mullvad" ? "Mullvad WireGuard" : "NordVPN WireGuard";
 }
@@ -242,7 +258,7 @@ function DisableRuntimeDialog({
     <div className="cli-runtime-disable-backdrop" onClick={() => { if (!pending) onCancel(); }}>
       <div
         ref={bodyRef}
-        className="cli-runtime-disable-dialog"
+        className="cli-runtime-disable-dialog dock-kit-scope"
         role="dialog"
         aria-modal="true"
         aria-labelledby="cli-runtime-disable-title"
@@ -276,12 +292,8 @@ function DisableRuntimeDialog({
         <p className="cli-runtime-disable-note">
           Saved task history and transcripts stay intact. Enabling the runtime later will not reopen these sessions or panes.
         </p>
-        {dialog.notice ? (
-          <p className="cli-runtime-disable-stale" role="status">{dialog.notice}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={onDismissNotice}><X aria-hidden="true" /></button></p>
-        ) : null}
-        {dialog.error ? (
-          <p className="cli-runtime-disable-error" role="alert">{dialog.error}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={onDismissError}><X aria-hidden="true" /></button></p>
-        ) : null}
+        {dialog.notice ? <DockNotice tone="warning" className="cli-runtime-notice" onDismiss={onDismissNotice}>{dialog.notice}</DockNotice> : null}
+        {dialog.error ? <DockNotice className="cli-runtime-notice" onDismiss={onDismissError}>{dialog.error}</DockNotice> : null}
         <div className="cli-runtime-disable-actions">
           <button ref={cancelRef} type="button" onClick={onCancel} disabled={pending}>Cancel</button>
           <button className="is-danger" type="button" onClick={onConfirm} disabled={pending}>
@@ -341,7 +353,7 @@ function RestartRuntimeDialog({
     <div className="cli-runtime-disable-backdrop" onClick={() => { if (!pending) onCancel(); }}>
       <div
         ref={bodyRef}
-        className="cli-runtime-disable-dialog"
+        className="cli-runtime-disable-dialog dock-kit-scope"
         role="dialog"
         aria-modal="true"
         aria-labelledby="cli-runtime-restart-title"
@@ -397,24 +409,16 @@ export function CliRuntimeSettingsCard({
   const [vpnProfilePending, setVpnProfilePending] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState<CliVpnProfileId>(readManagedVpnProfileId);
   const [removeConfirmationProfileId, setRemoveConfirmationProfileId] = useState<CliVpnProfileId | null>(null);
-  const [accountProfiles, setAccountProfiles] = useState<CliAccountProfile[] | null>(null);
-  const [accountProfileRuntimeId, setAccountProfileRuntimeId] = useState<"cli:gemini" | "cli:copilot" | "cli:cursor">("cli:gemini");
-  const [accountProfilePending, setAccountProfilePending] = useState(false);
-  const [addAccountOpen, setAddAccountOpen] = useState(false);
-  const [newAccountDisplayName, setNewAccountDisplayName] = useState("");
-  const [removeAccountConfirmation, setRemoveAccountConfirmation] = useState<string | null>(null);
-  const [editingAccountProfileId, setEditingAccountProfileId] = useState<string | null>(null);
-  const [editingAccountDisplayName, setEditingAccountDisplayName] = useState("");
-  const [accountDetailsProfileId, setAccountDetailsProfileId] = useState<string | null>(null);
-  const [accountDetails, setAccountDetails] = useState<CliAccountProfileDetailsResponse["details"] | null>(null);
-  const [accountDetailsLoading, setAccountDetailsLoading] = useState(false);
-  const [accountDetailsError, setAccountDetailsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A failed first load has nothing to show behind it, so it stays until Try again (not auto-dismissed).
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [feedbackSensitive, setFeedbackSensitive] = useState(false);
   const [dialog, setDialog] = useState<DisableDialogState | null>(null);
   const [restartDialog, setRestartDialog] = useState<RestartDialogState | null>(null);
-  const toggleRefs = useRef(new Map<CliToggleRuntimeId, HTMLInputElement>());
+  const rowRefs = useRef(new Map<MaintenanceRuntimeId, HTMLDivElement>());
+  const responseRef = useRef(response);
+  responseRef.current = response;
   const restartRefs = useRef(new Map<MaintenanceRuntimeId, HTMLButtonElement>());
   const vpnProfileFileInputRef = useRef<HTMLInputElement | null>(null);
   const mountedRef = useRef(true);
@@ -443,17 +447,6 @@ export function CliRuntimeSettingsCard({
   }, [dialog?.error]);
   const loadRequestIdRef = useRef(0);
 
-  const loadAccountProfiles = useCallback(async () => {
-    if (!canManage) return;
-    if (!client.listCliAccountProfiles) return;
-    try {
-      const result = await client.listCliAccountProfiles(accountProfileRuntimeId);
-      if (mountedRef.current) setAccountProfiles(result.profiles);
-    } catch {
-      setAccountProfiles(null);
-    }
-  }, [accountProfileRuntimeId, canManage, client]);
-
   const loadSettings = useCallback(async (options: { forceRefresh?: boolean } = {}) => {
     const requestId = ++loadRequestIdRef.current;
     if (!canManage) return;
@@ -463,11 +456,14 @@ export function CliRuntimeSettingsCard({
       const next = await client.cliRuntimeSettings(options);
       if (mountedRef.current && requestId === loadRequestIdRef.current) {
         setResponse(next);
+        setLoadError(null);
         publishCliVpnRoutingStatus();
       }
-    } catch (loadError) {
+    } catch (cause) {
       if (mountedRef.current && requestId === loadRequestIdRef.current) {
-        setError(errorMessage(loadError, "CLI runtime settings could not be loaded."));
+        const message = errorMessage(cause, "CLI runtime settings could not be loaded.");
+        if (responseRef.current) setError(message);
+        else setLoadError(message);
       }
     } finally {
       if (mountedRef.current && requestId === loadRequestIdRef.current) setLoading(false);
@@ -477,11 +473,10 @@ export function CliRuntimeSettingsCard({
   useEffect(() => {
     mountedRef.current = true;
     void loadSettings();
-    void loadAccountProfiles();
     return () => {
       mountedRef.current = false;
     };
-  }, [loadSettings, loadAccountProfiles]);
+  }, [loadSettings]);
 
   useEffect(() => {
     if (!canManage) return;
@@ -509,7 +504,8 @@ export function CliRuntimeSettingsCard({
     [response]
   );
   function restoreToggleFocus(runtimeId: CliToggleRuntimeId) {
-    window.requestAnimationFrame(() => toggleRefs.current.get(runtimeId)?.focus());
+    window.requestAnimationFrame(() => rowRefs.current.get(runtimeId)
+      ?.querySelector<HTMLInputElement>('input[role="switch"][name^="cli-runtime-enabled-"]')?.focus());
   }
 
   function restoreRestartFocus(runtimeId: MaintenanceRuntimeId) {
@@ -754,150 +750,6 @@ export function CliRuntimeSettingsCard({
     }
   }
 
-  function slugifyProfileId(displayName: string): string {
-    return displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
-  }
-
-  function openAddAccount() {
-    setAddAccountOpen(true);
-    setNewAccountDisplayName("");
-    setError(null);
-    setFeedback(null);
-  }
-
-  function closeAddAccount() {
-    if (accountProfilePending) return;
-    setAddAccountOpen(false);
-  }
-
-  async function createAccountProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (accountProfilePending) return;
-    const displayName = newAccountDisplayName.trim();
-    if (!displayName) {
-      setError("Account name is required.");
-      return;
-    }
-    const baseProfileId = slugifyProfileId(displayName) || "account";
-    const existingIds = new Set(accountProfiles?.map((profile) => profile.profileId) ?? []);
-    let profileId = baseProfileId;
-    for (let suffix = 2; existingIds.has(profileId); suffix += 1) {
-      profileId = `${baseProfileId.slice(0, Math.max(1, 63 - String(suffix).length))}-${suffix}`;
-    }
-    if (!client.createCliAccountProfile) {
-      setError("Account profile controls are unavailable.");
-      return;
-    }
-    setAccountProfilePending(true);
-    setError(null);
-    setFeedback(null);
-    try {
-      const result = await client.createCliAccountProfile({ runtimeId: accountProfileRuntimeId, profileId, displayName });
-      setAccountProfiles((current) => current
-        ? [...current.filter((profile) => profile.profileId !== profileId), result.profile]
-        : [result.profile]);
-      setAddAccountOpen(false);
-      setNewAccountDisplayName("");
-      dispatchCliAccountProfilesChange();
-      const runtimeLabel = accountProfileRuntimeId === "cli:copilot" ? "GitHub Copilot" : accountProfileRuntimeId === "cli:cursor" ? "Cursor" : "Gemini";
-      setFeedback(`${displayName} added. Select it in a ${runtimeLabel} pane to complete sign-in.`);
-    } catch (createError) {
-      setError(errorMessage(createError, "Account profile could not be added."));
-    } finally {
-      setAccountProfilePending(false);
-    }
-  }
-
-  async function removeAccountProfile(profile: CliAccountProfile) {
-    if (accountProfilePending) return;
-    if (!client.removeCliAccountProfile) {
-      setError("Account profile controls are unavailable.");
-      return;
-    }
-    setAccountProfilePending(true);
-    setError(null);
-    setFeedback(null);
-    try {
-      const result = await client.removeCliAccountProfile(accountProfileRuntimeId, profile.profileId);
-      setRemoveAccountConfirmation(null);
-      if (result.removed) {
-        setAccountProfiles((current) => current?.filter((candidate) => candidate.profileId !== profile.profileId) ?? null);
-        dispatchCliAccountProfilesChange();
-        setFeedback(`${profile.displayName} removed.`);
-      } else {
-        setFeedback(`${profile.displayName} was not found.`);
-      }
-    } catch (removeError) {
-      setError(errorMessage(removeError, "Account profile could not be removed."));
-    } finally {
-      setAccountProfilePending(false);
-    }
-  }
-
-  function startRenameAccountProfile(profile: CliAccountProfile) {
-    if (accountProfilePending) return;
-    setEditingAccountProfileId(profile.profileId);
-    setEditingAccountDisplayName(profile.displayName);
-    setRemoveAccountConfirmation(null);
-  }
-
-  async function renameAccountProfile(event: FormEvent<HTMLFormElement>, profile: CliAccountProfile) {
-    event.preventDefault();
-    if (accountProfilePending) return;
-    const displayName = editingAccountDisplayName.trim();
-    if (!displayName) {
-      setError("Account name is required.");
-      return;
-    }
-    if (!client.updateCliAccountProfile) {
-      setError("Account rename is unavailable.");
-      return;
-    }
-    setAccountProfilePending(true);
-    setError(null);
-    setFeedback(null);
-    try {
-      const result = await client.updateCliAccountProfile(accountProfileRuntimeId, profile.profileId, { displayName });
-      setAccountProfiles((current) => current?.map((candidate) => candidate.profileId === profile.profileId ? result.profile : candidate) ?? null);
-      setEditingAccountProfileId(null);
-      dispatchCliAccountProfilesChange();
-      setFeedback(`${displayName} saved.`);
-    } catch (renameError) {
-      setError(errorMessage(renameError, "Account name could not be changed."));
-    } finally {
-      setAccountProfilePending(false);
-    }
-  }
-
-  async function toggleAccountDetails(profile: CliAccountProfile) {
-    if (accountDetailsProfileId === profile.profileId) {
-      setAccountDetailsProfileId(null);
-      setAccountDetails(null);
-      setAccountDetailsError(null);
-      return;
-    }
-    setAccountDetailsProfileId(profile.profileId);
-    setAccountDetails({
-      runtimeId: accountProfileRuntimeId,
-      profileId: profile.profileId,
-      displayName: profile.displayName,
-      email: null,
-      authStatus: "UNAVAILABLE"
-    });
-    setAccountDetailsError(null);
-    setAccountDetailsLoading(true);
-    setError(null);
-    try {
-      const detailsReader = client.getCliAccountProfileDetails ?? api.getCliAccountProfileDetails;
-      const result = await detailsReader(accountProfileRuntimeId, profile.profileId);
-      setAccountDetails(result.details);
-    } catch (detailsError) {
-      setAccountDetailsError(errorMessage(detailsError, "Account details could not be loaded."));
-    } finally {
-      setAccountDetailsLoading(false);
-    }
-  }
-
   async function rotateMullvadCity() {
     if (vpnProfilePending) return;
     setVpnProfilePending(true);
@@ -1079,10 +931,10 @@ export function CliRuntimeSettingsCard({
         <Shield aria-hidden="true" />
         <span>
           <strong>CLI VPN route</strong>
-          <small>One route with independent per-runtime switches.</small>
+          <small>Choose one route, then turn VPN on for each CLI that should use it.</small>
         </span>
         <span className={`cli-vpn-health is-${selectedRouteStatus === "DIRECT" ? "connected" : selectedRouteStatus.toLowerCase()}`}>
-          {selectedRouteStatus}
+          {cliVpnStatusLabel(selectedRouteStatus)}
         </span>
       </div>
       {response?.vpnSupported ? (
@@ -1095,7 +947,7 @@ export function CliRuntimeSettingsCard({
           <label className="settings-flat-row cli-egress-route-select">
             <span className="settings-flat-row-copy">
               <strong>Route</strong>
-              <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Applied to VPN-enabled CLI runtimes."}</small>
+              <small>{pendingEgressRoute ? `Applying ${cliEgressRouteLabel(pendingEgressRoute)}…` : "Used by every CLI whose VPN switch is on."}</small>
             </span>
             <select
               id="cli-egress-route"
@@ -1138,10 +990,10 @@ export function CliRuntimeSettingsCard({
                   <div className="cli-egress-profile-title">
                     <span className="settings-flat-row-copy">
                       <strong>{managedProfileLabel}</strong>
-                      <small>Root-managed WireGuard configuration.</small>
+                      <small>WireGuard settings stored on the server.</small>
                     </span>
                     <div className="settings-flat-heading-actions">
-                      <span data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "manual" : undefined}>{managedProfile?.status ?? "NOT_CONFIGURED"}</span>
+                      <span data-sensitive-masked={vpnProfileId === "mullvad" || vpnProfileId === "nord" ? "manual" : undefined}>{cliVpnStatusLabel(managedProfile?.status ?? "NOT_CONFIGURED")}</span>
                       <SettingsActionMenu
                         label={`${managedProfileLabel} actions`}
                         actions={profileMenuActions}
@@ -1196,135 +1048,18 @@ export function CliRuntimeSettingsCard({
     </div>
   );
 
-  const accountProviderLabel = accountProfileRuntimeId === "cli:copilot" ? "GitHub" : accountProfileRuntimeId === "cli:cursor" ? "Cursor" : "Gemini";
-  const accountProfilesContent = (
-    <div className="cli-account-profiles settings-flat-vpn" aria-label={`${accountProviderLabel} account profiles`}>
-      <div className="cli-vpn-profile-heading">
-        <Users aria-hidden="true" />
-        <span>
-          <strong>{accountProviderLabel} accounts</strong>
-          <small>Add isolated {accountProviderLabel} account profiles, then choose one inside each {accountProviderLabel} pane.</small>
-        </span>
-      </div>
-      <div className="cli-account-profile-runtime-switch" role="tablist" aria-label="CLI account provider">
-        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:gemini"} onClick={() => setAccountProfileRuntimeId("cli:gemini")}>Gemini</button>
-        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:copilot"} onClick={() => setAccountProfileRuntimeId("cli:copilot")}>GitHub Copilot</button>
-        <button type="button" role="tab" aria-selected={accountProfileRuntimeId === "cli:cursor"} onClick={() => setAccountProfileRuntimeId("cli:cursor")}>Cursor</button>
-      </div>
-      {accountProfiles === null ? (
-        <small className="cli-account-profiles-note">Account profiles could not be loaded.</small>
-      ) : accountProfiles.length === 0 ? (
-        <small className="cli-account-profiles-note">No {accountProviderLabel} account profiles yet.</small>
-      ) : (
-        <ul className="cli-account-profiles-list">
-          {accountProfiles.map((profile) => (
-            <li className="cli-account-profile-row" key={profile.profileId}>
-              {editingAccountProfileId === profile.profileId ? (
-                <form className="cli-account-profile-rename" onSubmit={(event) => void renameAccountProfile(event, profile)}>
-                  <input
-                    autoFocus
-                    aria-label={`New name for ${profile.displayName}`}
-                    value={editingAccountDisplayName}
-                    maxLength={80}
-                    disabled={accountProfilePending}
-                    onChange={(event) => setEditingAccountDisplayName(event.currentTarget.value)}
-                  />
-                  <button type="submit" aria-label="Save account name" title="Save name" disabled={accountProfilePending}>
-                    {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Check aria-hidden="true" />}
-                  </button>
-                  <button type="button" aria-label="Cancel account rename" title="Cancel" disabled={accountProfilePending} onClick={() => setEditingAccountProfileId(null)}>
-                    <X aria-hidden="true" />
-                  </button>
-                </form>
-              ) : (
-                <div className="cli-account-profile-name">
-                  <strong>{profile.displayName}</strong>
-                </div>
-              )}
-              <div className="cli-account-profile-actions">
-                <button
-                  type="button"
-                  className="cli-account-profile-icon"
-                  aria-label={`Rename ${profile.displayName}`}
-                  title="Rename account"
-                  disabled={accountProfilePending || editingAccountProfileId === profile.profileId}
-                  onClick={() => startRenameAccountProfile(profile)}
-                >
-                  <Pencil aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="cli-account-profile-icon"
-                  aria-label={`Show details for ${profile.displayName}`}
-                  title="Account details"
-                  aria-expanded={accountDetailsProfileId === profile.profileId}
-                  disabled={accountDetailsLoading && accountDetailsProfileId === profile.profileId}
-                  onClick={() => void toggleAccountDetails(profile)}
-                >
-                  {accountDetailsLoading && accountDetailsProfileId === profile.profileId ? <Loader2 className="spin" aria-hidden="true" /> : <CircleHelp aria-hidden="true" />}
-                </button>
-                {profile.profileId !== "main" ? (
-                  removeAccountConfirmation === profile.profileId ? (
-                    <span className="cli-account-profile-remove-confirm">
-                      <button type="button" disabled={accountProfilePending} onClick={() => setRemoveAccountConfirmation(null)}>Cancel</button>
-                      <button type="button" className="is-danger" disabled={accountProfilePending} onClick={() => void removeAccountProfile(profile)}>Remove</button>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="cli-account-profile-remove"
-                      aria-label={`Remove ${profile.displayName}`}
-                      title="Remove account"
-                      disabled={accountProfilePending}
-                      onClick={() => setRemoveAccountConfirmation(profile.profileId)}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  )
-                ) : null}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {addAccountOpen ? (
-        <form className="cli-account-profile-add" onSubmit={(event) => void createAccountProfile(event)}>
-          <label className="settings-flat-row">
-            <span className="settings-flat-row-copy">
-              <strong>Account name</strong>
-              <small>Shown in this list, e.g. Work account.</small>
-            </span>
-            <input
-              autoFocus
-              name="cli-account-display-name"
-              value={newAccountDisplayName}
-              maxLength={80}
-              disabled={accountProfilePending}
-              onChange={(event) => setNewAccountDisplayName(event.currentTarget.value)}
-            />
-          </label>
-          <div className="cli-account-profile-add-actions">
-            <button type="button" disabled={accountProfilePending} onClick={closeAddAccount}>Cancel</button>
-            <button type="submit" disabled={accountProfilePending}>
-              {accountProfilePending ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-              Add account
-            </button>
-          </div>
-        </form>
-      ) : (
-        <button type="button" className="cli-account-profile-add-button" disabled={accountProfilePending} onClick={openAddAccount}>
-          <Plus aria-hidden="true" />
-          Add account
-        </button>
-      )}
-      <small className="cli-account-profiles-note">
-        The main profile is the default account. Other profiles use separate native OAuth storage.
-      </small>
-    </div>
-  );
+  const accountProfilesContent = <CliAccountsPanel canManage={canManage} client={client} />;
 
   const runtimeListContent = (
     <div hidden={!response} className="cli-runtime-settings-list">
+      <div className="cli-runtime-settings-columns" aria-hidden="true">
+        <span>CLI Runtime</span>
+        <div className="cli-runtime-settings-columns-actions">
+          <span>Restart</span>
+          <span>VPN</span>
+          <span>Active</span>
+        </div>
+      </div>
       {CLI_MAINTENANCE_PRESENTATIONS.map((presentation) => {
         const runtimeId = presentation.id as MaintenanceRuntimeId;
         const isHarness = runtimeId === "cli:harness";
@@ -1332,7 +1067,15 @@ export function CliRuntimeSettingsCard({
         const enabled = setting?.enabled ?? true;
         const vpnEnabled = setting?.vpnEnabled ?? false;
         return (
-          <div className={`cli-runtime-settings-row${enabled ? "" : " is-disabled"}`} key={runtimeId} data-runtime-id={runtimeId}>
+          <div
+            ref={(element) => {
+              if (element) rowRefs.current.set(runtimeId, element);
+              else rowRefs.current.delete(runtimeId);
+            }}
+            className={`cli-runtime-settings-row${enabled ? "" : " is-disabled"}`}
+            key={runtimeId}
+            data-runtime-id={runtimeId}
+          >
             <img src={presentation.iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={presentation.brand} draggable={false} />
             <div className="cli-runtime-settings-name">
               <strong>{presentation.displayName}</strong>
@@ -1358,58 +1101,28 @@ export function CliRuntimeSettingsCard({
               >
                 {pendingRestartRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : <Recycle aria-hidden="true" />}
               </button>
-              <label
-                className="cli-runtime-vpn-toggle"
+              <SpaceToggle
+                className="cli-runtime-switch cli-runtime-vpn-switch"
+                name={`cli-runtime-vpn-${presentation.brand}`}
+                ariaLabel={`Use VPN for ${presentation.displayName}`}
+                label={pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" aria-hidden="true" /> : "VPN"}
                 title={selectedRoute === "direct" && !vpnEnabled
                   ? "Choose a VPN route before enabling this CLI."
                   : `VPN ${vpnEnabled ? "on" : "off"} for ${presentation.displayName}`}
-              >
-                <span className="cli-runtime-vpn-label" aria-hidden="true">
-                  {pendingVpnRuntimeId === runtimeId ? <Loader2 className="spin" /> : "VPN"}
-                </span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  name={`cli-runtime-vpn-${presentation.brand}`}
-                  aria-label={`Use VPN for ${presentation.displayName}`}
-                  aria-busy={pendingVpnRuntimeId === runtimeId}
-                  checked={vpnEnabled}
-                  disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
-                  onChange={(event) => void updateRuntimeVpn(runtimeId, event.target.checked)}
-                />
-                <span className="sr-only">VPN {vpnEnabled ? "on" : "off"}</span>
-              </label>
-              {!isHarness ? (
-                <label className="cli-runtime-visibility-toggle" title={`${presentation.displayName} ${enabled ? "on" : "off"}`}>
-                  <input
-                    ref={(element) => {
-                      if (element) toggleRefs.current.set(runtimeId, element);
-                      else toggleRefs.current.delete(runtimeId);
-                    }}
-                    type="checkbox"
-                    role="switch"
-                    name={`cli-runtime-enabled-${presentation.brand}`}
-                    aria-label={`Enable ${presentation.displayName}`}
-                    checked={enabled}
-                    disabled={!response || runtimeActionsPending || restartAllPending}
-                    onChange={(event) => void requestToggle(runtimeId, event.target.checked)}
-                  />
-                  <span className="sr-only">{enabled ? "On" : "Off"}</span>
-                </label>
-              ) : (
-                <label className="cli-runtime-visibility-toggle" title={`DeepSeek Harness ${enabled ? "active" : "inactive"}`}>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    name="cli-runtime-enabled-harness"
-                    aria-label="Enable DeepSeek Harness"
-                    checked={enabled}
-                    disabled={!response || runtimeActionsPending || restartAllPending}
-                    onChange={(event) => void updateHarnessEnabled(event.target.checked)}
-                  />
-                  <span className="sr-only">{enabled ? "Active" : "Inactive"}</span>
-                </label>
-              )}
+                checked={vpnEnabled}
+                disabled={!response || !enabled || runtimeActionsPending || restartAllPending || (selectedRoute === "direct" && !vpnEnabled)}
+                onChange={(checked) => void updateRuntimeVpn(runtimeId, checked)}
+              />
+              <SpaceToggle
+                className="cli-runtime-switch cli-runtime-enabled-switch"
+                name={isHarness ? "cli-runtime-enabled-harness" : `cli-runtime-enabled-${presentation.brand}`}
+                ariaLabel={`Enable ${presentation.displayName}`}
+                label="Active"
+                title={isHarness ? `DeepSeek Harness ${enabled ? "active" : "inactive"}` : `${presentation.displayName} ${enabled ? "on" : "off"}`}
+                checked={enabled}
+                disabled={!response || runtimeActionsPending || restartAllPending}
+                onChange={(checked) => void (isHarness ? updateHarnessEnabled(checked) : requestToggle(runtimeId as CliToggleRuntimeId, checked))}
+              />
             </div>
           </div>
         );
@@ -1419,15 +1132,11 @@ export function CliRuntimeSettingsCard({
 
   const runtimeDialogsContent = (
     <>
-      {error ? (
-        <p className="cli-runtime-settings-error" role="alert">{error}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
-      ) : null}
+      {error ? <DockNotice className="cli-runtime-notice" onDismiss={() => setError(null)}>{error}</DockNotice> : null}
       {!readStoredSuppressNotifications() && feedback ? (
-        <p
-          className="cli-runtime-settings-feedback"
-          role="status"
-          data-sensitive-masked={feedbackSensitive ? "manual" : undefined}
-        >{feedback}<button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setFeedback(null)}><X aria-hidden="true" /></button></p>
+        <DockNotice tone="success" className="cli-runtime-notice" onDismiss={() => setFeedback(null)}>
+          <span data-sensitive-masked={feedbackSensitive ? "manual" : undefined}>{feedback}</span>
+        </DockNotice>
       ) : null}
       {dialog ? (
         <DisableRuntimeDialog
@@ -1450,59 +1159,26 @@ export function CliRuntimeSettingsCard({
     </>
   );
 
-  const accountDetailsModalPortal = accountDetailsProfileId && accountDetails && typeof document !== "undefined" ? createPortal(
-    <div
-      className="cli-account-details-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Account details for ${accountDetails.displayName}`}
-      onClick={() => {
-        setAccountDetailsProfileId(null);
-        setAccountDetails(null);
-        setAccountDetailsError(null);
-      }}
-    >
-      <div className="cli-account-details-modal-body" onClick={(event) => event.stopPropagation()}>
-        <div className="cli-account-details-modal-head">
-          <strong>Google account details</strong>
-          <button
-            type="button"
-            aria-label="Close account details"
-            onClick={() => {
-              setAccountDetailsProfileId(null);
-              setAccountDetails(null);
-              setAccountDetailsError(null);
-            }}
-          >
-            <X aria-hidden="true" />
-          </button>
-        </div>
-        <div className="cli-account-profile-details" role="status">
-          <span><strong>Name</strong> {accountDetails.displayName}</span>
-          <span><strong>Email</strong> {accountDetailsLoading ? "Loading…" : accountDetails.email ?? "Not available"}</span>
-          <span>
-            <strong>Status</strong>{" "}
-            {accountDetailsLoading
-              ? "Checking…"
-              : accountDetails.authStatus === "CONNECTED"
-                ? "Connected"
-                : accountDetails.authStatus === "NOT_CONNECTED"
-                  ? "Not connected"
-                  : "Unavailable"}
-          </span>
-          {accountDetailsError ? <span className="cli-account-details-error" role="alert">{accountDetailsError}</span> : null}
-        </div>
-      </div>
-    </div>,
-    document.body
-  ) : null;
+  // Plain computation: hooks must not run after the ADMIN-only early return above.
+  const enabledCount = CLI_MAINTENANCE_PRESENTATIONS.filter((presentation) => {
+    const runtimeId = presentation.id as MaintenanceRuntimeId;
+    const setting = runtimeId === "cli:harness" ? response?.harness : settingById.get(runtimeId);
+    return setting?.enabled ?? true;
+  }).length;
+
+  const loadState = response ? null : loadError ? (
+    <DockState kind="error" title="CLI runtime settings could not be loaded" detail={loadError}
+      action={{ label: "Try again", icon: RefreshCw, onClick: () => void loadSettings({ forceRefresh: true }) }} />
+  ) : (
+    <DockState kind="loading" title="Loading CLI runtime settings…" />
+  );
 
   if (disclosures) {
     return (
       <>
         <SettingsDisclosure
           title="CLI runtimes"
-          description="Runtime visibility, restart and VPN routing."
+          description="Turn CLIs on or off, restart them and choose which use the VPN."
           scope="Installation"
           icon={Terminal}
         >
@@ -1511,7 +1187,7 @@ export function CliRuntimeSettingsCard({
               <Terminal aria-hidden="true" />
               <span>
                 <strong>CLI runtimes</strong>
-                <small>Runtime visibility, restart and VPN routing.</small>
+                <small>{!response && loadError ? "Not loaded" : !response || loading ? "Loading CLI runtime settings…" : `${enabledCount} of ${CLI_MAINTENANCE_PRESENTATIONS.length} runtimes active`}</small>
               </span>
               <SettingsActionMenu
                 label="CLI runtime actions"
@@ -1520,11 +1196,7 @@ export function CliRuntimeSettingsCard({
               />
             </div>
 
-            {!response ? (
-              <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
-                Loading CLI runtime settings…
-              </small>
-            ) : null}
+            {loadState}
 
             {runtimeListContent}
             {runtimeDialogsContent}
@@ -1533,18 +1205,19 @@ export function CliRuntimeSettingsCard({
 
         <SettingsDisclosure
           title="CLI VPN route"
-          description="One route with independent per-runtime switches."
+          description="Send CLI traffic through a VPN route of your choice."
           scope="Installation"
           icon={Shield}
         >
           <section className="agent-settings-card settings-flat-card cli-vpn-settings-card" aria-label="CLI VPN route settings">
+            {loadState}
             {vpnProfileContent}
           </section>
         </SettingsDisclosure>
 
         <SettingsDisclosure
           title="CLI accounts"
-          description="Manage isolated Gemini, GitHub Copilot, and Cursor account profiles."
+          description="Manage isolated Gemini, Claude, GitHub Copilot, and Cursor account profiles."
           scope="Installation"
           icon={Users}
         >
@@ -1553,7 +1226,6 @@ export function CliRuntimeSettingsCard({
           </section>
         </SettingsDisclosure>
 
-        {accountDetailsModalPortal}
       </>
     );
   }
@@ -1564,7 +1236,7 @@ export function CliRuntimeSettingsCard({
         <Terminal aria-hidden="true" />
         <span>
           <strong>CLI runtimes</strong>
-          <small>Runtime visibility, restart and VPN routing.</small>
+          <small>Turn CLIs on or off, restart them and choose which use the VPN.</small>
         </span>
         <SettingsActionMenu
           label="CLI runtime actions"
@@ -1573,17 +1245,12 @@ export function CliRuntimeSettingsCard({
         />
       </div>
 
-      {!response ? (
-        <small className="cli-vpn-profile-note cli-runtime-settings-loading" role="status">
-          Loading CLI runtime settings…
-        </small>
-      ) : null}
+      {loadState}
 
       {vpnProfileContent}
       {accountProfilesContent}
       {runtimeListContent}
       {runtimeDialogsContent}
-      {accountDetailsModalPortal}
     </section>
   );
 }

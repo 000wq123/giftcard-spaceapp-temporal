@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { X, Lock, Check } from "lucide-react";
+import { X, Lock, Check } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import type { FileItem } from "@space/contracts";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 export interface FilePermissionsModalProps {
   entry: FileItem;
@@ -94,7 +95,7 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
           )}
 
           {/* Permissions Matrix */}
-          <table style={{ width: "100%", textAlign: "center", borderCollapse: "collapse", fontSize: "0.85rem" }}>
+          <table className="fm-permissions-matrix" style={{ width: "100%", textAlign: "center", borderCollapse: "collapse", fontSize: "0.85rem" }}>
             <thead>
               <tr style={{ color: "var(--modern-muted)" }}>
                 <th style={{ textAlign: "left", padding: "6px" }}>Scope</th>
@@ -106,21 +107,21 @@ export function FilePermissionsModal({ entry, mode, onClose, onSuccess }: FilePe
             <tbody>
               <tr>
                 <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Owner (User)</td>
-                <td><input type="checkbox" checked={ownerR} onChange={(e) => setOwnerR(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={ownerW} onChange={(e) => setOwnerW(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={ownerX} onChange={(e) => setOwnerX(e.target.checked)} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Read" label="" checked={ownerR} onChange={setOwnerR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Write" label="" checked={ownerW} onChange={setOwnerW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Owner Execute" label="" checked={ownerX} onChange={setOwnerX} /></td>
               </tr>
               <tr>
                 <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Group</td>
-                <td><input type="checkbox" checked={groupR} onChange={(e) => setGroupR(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={groupW} onChange={(e) => setGroupW(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={groupX} onChange={(e) => setGroupX(e.target.checked)} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Read" label="" checked={groupR} onChange={setGroupR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Write" label="" checked={groupW} onChange={setGroupW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Group Execute" label="" checked={groupX} onChange={setGroupX} /></td>
               </tr>
               <tr>
                 <td style={{ textAlign: "left", padding: "6px", fontWeight: 600 }}>Others</td>
-                <td><input type="checkbox" checked={otherR} onChange={(e) => setOtherR(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={otherW} onChange={(e) => setOtherW(e.target.checked)} /></td>
-                <td><input type="checkbox" checked={otherX} onChange={(e) => setOtherX(e.target.checked)} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Read" label="" checked={otherR} onChange={setOtherR} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Write" label="" checked={otherW} onChange={setOtherW} /></td>
+                <td><SpaceToggle className="fm-perm-toggle" ariaLabel="Others Execute" label="" checked={otherX} onChange={setOtherX} /></td>
               </tr>
             </tbody>
           </table>

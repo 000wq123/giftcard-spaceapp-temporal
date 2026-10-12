@@ -11,6 +11,7 @@ import {
   type WheelEvent as ReactWheelEvent
 } from "react";
 import { getSpaceRuntime } from "./runtime/SpaceRuntime.js";
+import { shouldPreserveForSnipTool } from "./features/snip-tool/snip-guard.js";
 
 export type IconActionMenuState = {
   actionId: string;
@@ -28,6 +29,11 @@ export type IconToolbarAction = {
   onClick: () => void;
   disabled?: boolean;
   disabledReason?: string;
+  /** Key the action sends to the CLI, shown as a hint beside the menu label. */
+  shortcut?: string;
+  tone?: "danger";
+  /** Leave the action out of overflow menus while it is disabled. */
+  hideWhenDisabled?: boolean;
   ariaControls?: string;
   ariaExpanded?: boolean;
   ariaHasPopup?: AriaAttributes["aria-haspopup"];
@@ -156,15 +162,20 @@ function useStoredStringList(key: string) {
 
 export function normalizeActionOrder(actionIds: string[], storedOrder: string[], preserveUnknownActionIds = false): string[] {
   const ordered = uniqueStringList(preserveUnknownActionIds ? storedOrder : storedOrder.filter((id) => actionIds.includes(id)));
-  for (const actionId of actionIds) {
-    if (!ordered.includes(actionId)) {
-      if (actionId === "new-task") {
-        ordered.unshift(actionId);
-      } else {
-        ordered.push(actionId);
+  actionIds.forEach((actionId, index) => {
+    if (ordered.includes(actionId)) return;
+    // A stored order can come from a toolbar with fewer actions (toolbars share keys). Place each
+    // missing action after its closest default predecessor so it keeps its group instead of
+    // falling to the end; with no predecessor it leads.
+    for (let previous = index - 1; previous >= 0; previous -= 1) {
+      const anchor = ordered.indexOf(actionIds[previous]!);
+      if (anchor !== -1) {
+        ordered.splice(anchor + 1, 0, actionId);
+        return;
       }
     }
-  }
+    ordered.unshift(actionId);
+  });
   return ordered;
 }
 
@@ -214,7 +225,7 @@ export function useDismissibleToolbarLayer({
   useEffect(() => {
     if (!active) return;
     function handlePointerDown(event: PointerEvent) {
-      if (event.button === 1) return;
+      if (event.button === 1 || shouldPreserveForSnipTool(event)) return;
       if (containerRef.current?.contains(event.target as Node)) return;
       onDismiss();
     }
@@ -360,6 +371,15 @@ export function usePersistentIconToolbar({
     [actionIds, orderedActionIds, preserveUnknownActionIds, setOrderedActionIds]
   );
 
+  const isOrderCustomized = useMemo(() => {
+    const persistentOrder = orderedActions.filter((action) => !nonPersistentSet.has(action.id)).map((action) => action.id);
+    return !stringListsEqual(persistentOrder, actionIds);
+  }, [actionIds, nonPersistentSet, orderedActions]);
+
+  const resetOrder = useCallback(() => {
+    setOrderedActionIds([]);
+  }, [setOrderedActionIds]);
+
   const moveActionToEnd = useCallback(() => {
     if (!draggedActionId) return;
     const nextOrder = moveActionIdToEnd(normalizeActionOrder(actionIds, orderedActionIds, preserveUnknownActionIds), draggedActionId);
@@ -426,11 +446,13 @@ export function usePersistentIconToolbar({
     hiddenActionIds,
     hiddenActions,
     hideAction,
+    isOrderCustomized,
     isOverflowOpen,
     moveAction,
     moveActionToEnd,
     orderedActions,
     overflowDropProps,
+    resetOrder,
     restoreHiddenActions,
     setActionMenu,
     setIsOverflowOpen,

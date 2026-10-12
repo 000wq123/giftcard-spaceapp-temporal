@@ -15,8 +15,12 @@ import {
   type ConcurrencyAction,
   type ConcurrencyConflictOutcome,
   type ToolSurfaceOutcome,
-  type MemoryRelevanceOutcome
+  type MemoryRelevanceOutcome,
+  type TacticalMovementOutcome,
+  type TacticalTargetPreference,
+  type TacticalCombatStyle
 } from "@space/contracts";
+
 import {
   createRoomDecisionsClient,
   resolveJevConfig,
@@ -415,14 +419,16 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       });
 
       if (!raw.available) {
-        // Classification failure is not evidence that a selected capability is
-        // unnecessary. Preserve the authorized surface for every language,
-        // including research requests without URLs and misspelled prompts.
+        // Without the classifier, keep browser tools for anything that looks
+        // like browsing or web research in English or Greek (accents ignored,
+        // misspellings such as "πλιροφοριες" included); drop them otherwise.
+        const folded = prompt.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
+        const needsBrowser = /https?:\/\/|www\.|navigate|screenshot|browser|playwright|chrome|render web|web ?page|website|search|research|look up|find|compare|price|google|ψαξ|βρες|βρειτε|ερευν|συγκριν|τιμ[εηω]|πληροφορ|πλιροφορ|ιστοσελιδ|σελιδα/.test(folded);
         return {
           available: false,
-          needsBrowser: true,
-          filteredTools: availableTools,
-          confidence: 0,
+          needsBrowser,
+          filteredTools: needsBrowser ? availableTools : availableTools.filter((t) => !browserToolPattern.test(t)),
+          confidence: needsBrowser ? 0.8 : 0.0,
           reason: raw.reason,
           degraded: true
         };
@@ -562,6 +568,143 @@ export function createDecisionsService(options: DecisionsServiceOptions = {}) {
       return {
         available: true,
         ranked: scored.slice(0, max)
+      };
+    },
+    async decideTacticalMovement(gameState: unknown): Promise<TacticalMovementOutcome> {
+      const start = Date.now();
+      const promptState = typeof gameState === "object" && gameState !== null
+        ? JSON.stringify(gameState)
+        : String(gameState ?? "Standard dogfight sector with moving asteroids and hostile gunships");
+
+      const raw = await decide({
+        state: `Combat State: ${promptState}`,
+        questions: {
+          target_preference: {
+            type: "choice",
+            instructions: "Select targeting priority for starship combat engagement.",
+            criteria: {
+              nearest: "Engage nearest target immediately",
+              threat: "Prioritize highest threat hostile gunship",
+              rocks: "Focus on clearing navigational asteroid hazards",
+              enemies: "Focus exclusively on enemy starships"
+            }
+          },
+          combat_style: {
+            type: "choice",
+            instructions: "Select tactical combat style.",
+            criteria: {
+              interceptor: "Precision interceptor hunting high-value threats",
+              blitz: "High-speed aggressive combat assault with heavy ordnance",
+              kiting: "Defensive standoff evasion",
+              defensive: "Low-risk perimeter sweep"
+            }
+          },
+          aggression: {
+            type: "score",
+            instructions: "Combat aggression and tactical bomb deployment authorization.",
+            criteria: ["Cautious standoff", "Standard patrol", "Aggressive tactical dogfight", "Full combat assault with heavy bombs"]
+          },
+          mobility: {
+            type: "score",
+            instructions: "Thruster mobility and emergency evasive dash readiness.",
+            criteria: ["Stationary drift", "Gentle maneuvers", "Active evasive thrusting", "High-mobility tactical dashing"]
+          },
+          precision: {
+            type: "score",
+            instructions: "Marksman targeting discipline and ballistic lead calculation.",
+            criteria: ["Wide spread fire", "Focused burst fire", "Pinpoint marksman precision"]
+          },
+          lead_aiming: {
+            type: "score",
+            instructions: "Ballistic trajectory deflection prediction.",
+            criteria: ["Direct aim without lead", "Moderate lead estimation", "Full predictive trajectory intercept calculation"]
+          }
+        }
+      });
+
+      if (!raw.available) {
+        let pref: TacticalTargetPreference = "nearest";
+        let style: TacticalCombatStyle = "interceptor";
+        let agg = 0.6;
+        let mob = 0.55;
+        let prec = 0.65;
+        let lead = 0.5;
+
+        if (typeof gameState === "object" && gameState !== null) {
+          const obj = gameState as Record<string, unknown>;
+          const rocks = typeof obj.rocks === "number" ? obj.rocks : (Array.isArray(obj.radar) ? obj.radar.length : 0);
+          const hostiles = typeof obj.hostiles === "number" ? obj.hostiles : (typeof obj.enemiesCount === "number" ? obj.enemiesCount : 0);
+          const difficulty = typeof obj.difficulty === "number" ? obj.difficulty : 3;
+
+          if (hostiles > 0) {
+            pref = "enemies";
+            style = difficulty > 5 ? "kiting" : "blitz";
+            agg = 0.8;
+            prec = 0.8;
+            lead = 0.7;
+          } else if (rocks > 6) {
+            pref = "rocks";
+            style = "defensive";
+            agg = 0.45;
+            mob = 0.75;
+          }
+        }
+
+        return {
+          available: false,
+          targetPreference: pref,
+          combatStyle: style,
+          aggression: agg,
+          mobility: mob,
+          precision: prec,
+          leadAiming: lead,
+          tactic: "Tactical doctrine active (heuristic fallback)",
+          confidence: null,
+          latencyMs: Date.now() - start,
+          source: "fallback",
+          reason: raw.reason,
+          degraded: true
+        };
+      }
+
+      const answers = (raw.answers ?? {}) as Record<string, any>;
+      const targetChoice = answers.target_preference?.choice;
+      const validPrefs: TacticalTargetPreference[] = ["nearest", "threat", "rocks", "enemies"];
+      const targetPreference: TacticalTargetPreference = validPrefs.includes(targetChoice) ? targetChoice : "nearest";
+
+      const styleChoice = answers.combat_style?.choice;
+      const validStyles: TacticalCombatStyle[] = ["interceptor", "blitz", "kiting", "defensive"];
+      const combatStyle: TacticalCombatStyle = validStyles.includes(styleChoice) ? styleChoice : "interceptor";
+
+      const aggScore = Number(answers.aggression?.score);
+      const mobScore = Number(answers.mobility?.score);
+      const precScore = Number(answers.precision?.score);
+      const leadScore = Number(answers.lead_aiming?.score);
+
+      const agg = Number.isFinite(aggScore) ? Math.min(0.95, Math.max(0.4, 0.45 + (aggScore / 3) * 0.5)) : 0.6;
+      const mob = Number.isFinite(mobScore) ? Math.min(0.95, Math.max(0.4, 0.45 + (mobScore / 3) * 0.45)) : 0.55;
+      const prec = Number.isFinite(precScore) ? Math.max(0.4, Math.min(0.95, 0.45 + (precScore / 2) * 0.45)) : 0.65;
+      const lead = Number.isFinite(leadScore) ? Math.max(0.4, Math.min(0.95, 0.45 + (leadScore / 2) * 0.45)) : 0.5;
+
+      const tacticLines: Record<TacticalCombatStyle, string> = {
+        blitz: "JEV: High-speed blitz assault",
+        interceptor: "JEV: Precision interceptor lock",
+        kiting: "JEV: Standoff evasive deflection",
+        defensive: "JEV: Perimeter defensive sweep"
+      };
+
+      return {
+        available: true,
+        targetPreference,
+        combatStyle,
+        aggression: Math.round(agg * 100) / 100,
+        mobility: Math.round(mob * 100) / 100,
+        precision: Math.round(prec * 100) / 100,
+        leadAiming: Math.round(lead * 100) / 100,
+        tactic: tacticLines[combatStyle] ?? "JEV: Tactical doctrine active",
+        confidence: 0.88,
+        latencyMs: raw.latencyMs,
+        source: "model"
       };
     }
   };

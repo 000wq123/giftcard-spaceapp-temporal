@@ -85,6 +85,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
   const canvasRef = useRef<BrowserCanvasHandle | null>(null);
   const paneRef = useRef<HTMLElement | null>(null);
   const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
+  const latestControlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
   const controlAcquirePromiseRef = useRef<Promise<BrowserControlLeasePayload | null> | null>(null);
   const legacyControlRef = useRef(false);
   const legacyPointerDownRef = useRef<{ x: number; y: number; button: string } | null>(null);
@@ -537,6 +538,7 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
+    latestControlLeaseRef.current = controlLease;
   }, [controlLease]);
 
   useEffect(() => {
@@ -552,12 +554,16 @@ export function ManagedYouTubeBrowser({ pane, agentNumber, observerOnly = false,
   useEffect(() => {
     if (!controlLease) return;
     const interval = window.setInterval(() => {
-      if (Date.parse(controlLease.expiresAt) <= Date.now()) {
+      // Renewals keep the lease id and only extend expiresAt, so this effect does not
+      // restart; read the latest lease instead of the one captured when it started.
+      const lease = latestControlLeaseRef.current;
+      if (!lease) return;
+      if (Date.parse(lease.expiresAt) <= Date.now()) {
         setControlLease(null);
         setHandoff(false);
         return;
       }
-      api.heartbeatBrowserControl(pane.id, { leaseId: controlLease.leaseId, ttlSeconds: 60 })
+      api.heartbeatBrowserControl(pane.id, { leaseId: lease.leaseId, ttlSeconds: 60 })
         .then((next) => {
           if (next.lease.status === "ACTIVE") {
             setControlLease(next.lease);

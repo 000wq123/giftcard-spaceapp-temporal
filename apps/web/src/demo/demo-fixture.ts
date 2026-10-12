@@ -130,7 +130,7 @@ function pane(input: Pick<Pane, "id" | "roomId" | "title" | "mode" | "order"> & 
     titleSource: "auto",
     providerId: input.mode === "CHAT" ? "demo-codex" : null,
     modelId: input.mode === "CHAT" ? "gpt-5.6-sol" : null,
-    terminalRuntimeId: input.mode === "TERMINAL" ? "codex" : null,
+    terminalRuntimeId: input.mode === "TERMINAL" ? "cli:codex" : null,
     reasoningEffort: "high",
     cwd: input.mode === "TERMINAL" ? "/workspace/space-demo" : null,
     columnSpan: 1,
@@ -584,12 +584,12 @@ export function createDemoFixture(): DemoFixture {
     pane({ id: "pane:demo-review", roomId: rooms[0]!.id, title: "Release Review", mode: "REVIEW", order: 3 }),
     pane({ id: "pane:demo-swarm", roomId: rooms[0]!.id, title: "Launch Swarm", mode: "SWARM", order: 4 }),
     pane({ id: "pane:demo-design", roomId: rooms[0]!.id, title: "Design Notes", mode: "DESIGN", order: 5 }),
-    pane({ id: "pane:demo-root", roomId: rooms[0]!.id, title: "Root CLI", mode: "TERMINAL", order: 6, terminalRuntimeId: "root", isMinimized: true }),
+    pane({ id: "pane:demo-root", roomId: rooms[0]!.id, title: "Root CLI", mode: "TERMINAL", order: 6, terminalRuntimeId: "cli:root", isMinimized: true }),
     pane({ id: "pane:demo-research-chat", roomId: rooms[1]!.id, title: "Research Brief", mode: "CHAT", order: 0 }),
     pane({ id: "pane:demo-research-browser", roomId: rooms[1]!.id, title: "Sources", mode: "BROWSER", order: 1 }),
     pane({ id: "pane:demo-research-code", roomId: rooms[1]!.id, title: "Research Code", mode: "CODE", order: 2 }),
     pane({ id: "pane:demo-ops-health", roomId: rooms[2]!.id, title: "Health Review", mode: "REVIEW", order: 0 }),
-    pane({ id: "pane:demo-ops-cli", roomId: rooms[2]!.id, title: "OpenCode CLI", mode: "TERMINAL", order: 1, terminalRuntimeId: "opencode" })
+    pane({ id: "pane:demo-ops-cli", roomId: rooms[2]!.id, title: "OpenCode CLI", mode: "TERMINAL", order: 1, terminalRuntimeId: "cli:opencode" })
   ];
   const emptySwarm = (roomId: string): SwarmState => ({
     tasks: roomId === rooms[0]!.id ? [{
@@ -694,6 +694,7 @@ export function createDemoFixture(): DemoFixture {
       text: clipboardSafetyText,
       source: "AGENT_NOTE",
       title: null,
+      minimumModel: null,
       isCompleted: false,
       executionStatus: "PLANNED",
       progressPercentage: 0,
@@ -712,6 +713,7 @@ export function createDemoFixture(): DemoFixture {
       text: "# Demo rollout plan\n\n1. Enable the feature flag.\n2. Run scoped tests.\n3. Deploy and verify.",
       source: "PLAN",
       title: "Demo rollout plan",
+      minimumModel: "gpt-5.6-sol",
       isCompleted: false,
       executionStatus: "IN_PROGRESS",
       progressPercentage: 33,
@@ -1071,7 +1073,7 @@ export function createDemoFixture(): DemoFixture {
         {
           sessionId: "cli_session:demo-codex",
           hostId: "main",
-          runtimeId: "codex",
+          runtimeId: "cli:codex",
           roomId: "room:demo-launch",
           paneId: "pane:demo-codex",
           pid: 4101,
@@ -1085,7 +1087,7 @@ export function createDemoFixture(): DemoFixture {
         {
           sessionId: "cli_session:demo-root",
           hostId: "root",
-          runtimeId: "root",
+          runtimeId: "cli:root",
           roomId: "room:demo-launch",
           paneId: "pane:demo-root",
           pid: 4102,
@@ -1099,7 +1101,7 @@ export function createDemoFixture(): DemoFixture {
         {
           sessionId: "cli_session:demo-opencode",
           hostId: "main",
-          runtimeId: "opencode",
+          runtimeId: "cli:opencode",
           roomId: "room:demo-ops",
           paneId: "pane:demo-ops-cli",
           pid: 4103,

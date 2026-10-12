@@ -12,6 +12,8 @@ import {
   listMemoryGraphQuerySchema,
   listMemoryChangeSetsQuerySchema,
   listMemoryIssuesQuerySchema,
+  memoryCalendarQuerySchema,
+  memoryCalendarResponseSchema,
   memoryGraphNodeDetailSchema,
   memoryGraphOverviewPayloadSchema,
   memoryGraphPayloadSchema,
@@ -416,6 +418,115 @@ export function registerMemoryGraphRoutes(
       months: availableMonths
     });
     return { data };
+  });
+
+function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string; isoCreatedAt: string } | null {
+  if (record.createdAt && !record.createdAt.startsWith("1970")) {
+    return { dateKey: record.createdAt.slice(0, 10), isoCreatedAt: record.createdAt };
+  }
+  const titleMatch = record.title?.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (titleMatch?.[1]) {
+    return { dateKey: titleMatch[1], isoCreatedAt: `${titleMatch[1]}T00:00:00.000Z` };
+  }
+  const pathMatch = record.sourcePath?.match(/gemini_history_(\d{4})-(\d{2})/);
+  if (pathMatch?.[1] && pathMatch?.[2]) {
+    const fallbackKey = `${pathMatch[1]}-${pathMatch[2]}-01`;
+    return { dateKey: fallbackKey, isoCreatedAt: `${fallbackKey}T00:00:00.000Z` };
+  }
+  if (record.createdAt) {
+    return { dateKey: record.createdAt.slice(0, 10), isoCreatedAt: record.createdAt };
+  }
+  return null;
+}
+
+  app.get("/api/admin/memory/calendar", async (request, reply) => {
+    requireMemoryGraph(options.config);
+    const query = memoryCalendarQuerySchema.parse(request.query);
+    const archiveSnapshot = await options.service.getArchiveSnapshot();
+    const availableMonths = await options.service.listAvailableMonths();
+
+    const yearSet = new Set<number>();
+    const heatMap: Record<string, { count: number; bytes: number }> = {};
+    let totalMemories = 0;
+
+    for (const record of archiveSnapshot.records) {
+      const resolved = resolveRecordCalendarDate(record);
+      if (!resolved) continue;
+      const { dateKey } = resolved;
+      const year = Number.parseInt(dateKey.slice(0, 4), 10);
+      if (year && !Number.isNaN(year) && year >= 2000) {
+        yearSet.add(year);
+      }
+      totalMemories++;
+      if (!heatMap[dateKey]) {
+        heatMap[dateKey] = { count: 0, bytes: 0 };
+      }
+      heatMap[dateKey].count++;
+      heatMap[dateKey].bytes += record.body?.length ?? 0;
+    }
+
+    const availableYears = [...yearSet].sort((a, b) => a - b);
+    const currentYear = new Date().getUTCFullYear();
+    const activeYear = query.year ?? (availableYears.includes(currentYear) ? currentYear : (availableYears[availableYears.length - 1] ?? currentYear));
+
+    const now = new Date();
+    const currentMonthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const activeMonth = query.month && query.month !== "all"
+      ? query.month
+      : (availableMonths.includes(currentMonthKey) ? currentMonthKey : (availableMonths[availableMonths.length - 1] ?? currentMonthKey));
+
+    let yearMemories = 0;
+    let yearMaxDailyCount = 0;
+    const yearPrefix = `${activeYear}-`;
+    for (const [date, entry] of Object.entries(heatMap)) {
+      if (date.startsWith(yearPrefix)) {
+        yearMemories += entry.count;
+        if (entry.count > yearMaxDailyCount) {
+          yearMaxDailyCount = entry.count;
+        }
+      }
+    }
+
+    const datePrefix = query.date ? query.date : (activeMonth ? `${activeMonth}-` : null);
+
+    const filteredRecords = archiveSnapshot.records
+      .map((record) => ({ record, resolved: resolveRecordCalendarDate(record) }))
+      .filter(({ resolved }) => {
+        if (!resolved) return false;
+        if (datePrefix) {
+          return resolved.dateKey.startsWith(datePrefix);
+        }
+        return true;
+      })
+      .sort((a, b) => b.resolved!.isoCreatedAt.localeCompare(a.resolved!.isoCreatedAt))
+      .slice(0, 200)
+      .map(({ record, resolved }) => ({
+        id: record.id,
+        title: redactMemoryText(record.title),
+        createdAt: resolved!.isoCreatedAt,
+        sourcePath: record.sourcePath,
+        excerpt: redactMemoryText(record.body.slice(0, 280).trim()),
+        tags: (record.tags ?? []).map((tag) => redactMemoryText(tag)),
+        topics: (record.topics ?? []).map((t) => redactMemoryText(t.label)),
+        charCount: record.body.length
+      }));
+
+    const response = memoryCalendarResponseSchema.parse({
+      year: activeYear,
+      month: activeMonth,
+      selectedDate: query.date ?? null,
+      availableMonths,
+      availableYears,
+      stats: {
+        totalMemories,
+        activeDays: Object.keys(heatMap).length,
+        yearMemories,
+        maxDailyCount: yearMaxDailyCount > 0 ? yearMaxDailyCount : 1
+      },
+      heatMap,
+      records: filteredRecords
+    });
+    return { data: response };
   });
 
   app.get("/api/admin/memory/graph", async (request, reply) => {

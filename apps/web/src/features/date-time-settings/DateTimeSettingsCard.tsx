@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw } from "../ui-theme/app-icons.js";
 import { Clock3 } from "../ui-theme/app-icons.js";
 import {
   defaultDateTimeSettings,

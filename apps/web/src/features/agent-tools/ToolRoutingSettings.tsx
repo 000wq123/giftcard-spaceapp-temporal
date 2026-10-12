@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { EffectiveToolPlanV1, ModelCapabilityProfileV1, ToolRoutingStateV1, ToolRoutingOverride } from "@space/contracts";
+import { nativeToolRoutingRuntimeIds, type EffectiveToolPlanV1, type ModelCapabilityProfileV1, type ToolRoutingStateV1, type ToolRoutingOverride } from "@space/contracts";
 import { api } from "../../api.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 const modes: Array<[ToolRoutingOverride["mode"], string]> = [
   ["AUTOMATIC", "Automatic"], ["NATIVE_ONLY", "Native only"],
@@ -15,6 +16,7 @@ export function ToolRoutingSettings() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const nativeRuntime = (nativeToolRoutingRuntimeIds as readonly string[]).includes(runtimeId);
   useEffect(() => {
     let active = true;
     api.modelCapabilities().then((result) => {
@@ -64,14 +66,19 @@ export function ToolRoutingSettings() {
         {profiles.filter((entry) => entry.runtimeId === runtimeId).map((entry) => <option key={entry.modelId} value={entry.modelId} />)}
       </datalist>
     </label>
-    {state && runtimeId === "cli:codex" && <label>
-      <input type="checkbox" checked={state.enabledRuntimeIds.includes(runtimeId)} onChange={(event) => {
-        setState({ ...state, enabledRuntimeIds: event.target.checked ? [...new Set([...state.enabledRuntimeIds, runtimeId])] : state.enabledRuntimeIds.filter((id) => id !== runtimeId) });
-        setDirty(true);
-      }} /> Enable capability routing for new sessions
-    </label>}
+    {state && nativeRuntime && (
+      <SpaceToggle
+        className="tool-routing-toggle"
+        label="Enable capability routing for new sessions"
+        checked={state.enabledRuntimeIds.includes(runtimeId)}
+        onChange={(checked) => {
+          setState({ ...state, enabledRuntimeIds: checked ? [...new Set([...state.enabledRuntimeIds, runtimeId])] : state.enabledRuntimeIds.filter((id) => id !== runtimeId) });
+          setDirty(true);
+        }}
+      />
+    )}
     <p>Saved startup policy: {plan?.registration ?? "Loading"}. Existing sessions keep their current configuration.</p>
-    {runtimeId !== "cli:codex" && <p>Startup migration is currently available for Codex. Other runtimes keep their existing configuration.</p>}
+    {!nativeRuntime && <p>Startup migration is currently available for Codex and Claude Code. Other runtimes keep their existing configuration.</p>}
     {dirty && <p>Unsaved changes. Route explanations show the last saved policy.</p>}
     <ul>{plan?.routes.map((route) => {
       const mode = state?.overrides.find((entry) => entry.toolId === route.toolId && entry.runtimeId === runtimeId && entry.modelId === modelId)?.mode ?? route.mode;

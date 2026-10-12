@@ -9,6 +9,7 @@ import {
   clipboardCharacterCount,
   notifyClipboardUpdated
 } from "./clipboard-events.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 
 export type StickyNoteColor = "yellow" | "green" | "blue" | "pink" | "orange" | "purple";
 
@@ -45,6 +46,7 @@ function loadStickyWindows(): StickyWindowState[] {
 function saveStickyWindows(windows: StickyWindowState[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(windows));
+    saveUserSettingDebounced("stickyNotes", windows as any);
   } catch {
     // Storage unavailable
   }
@@ -133,6 +135,8 @@ interface StickyNoteWindowProps {
   onUpdateText?: (text: string) => void;
   onUpdateColor?: (color: StickyNoteColor) => void;
   onUpdatePosition?: (x: number, y: number) => void;
+  /** The clipboard item that now holds this note's text. */
+  onUpdateItemId?: (itemId: string) => void;
   onFocus?: () => void;
 }
 
@@ -140,7 +144,7 @@ interface StickyNoteWindowProps {
 export function StickyNoteWindow({
   id: _id,
   initialText = "",
-  itemId: _itemId,
+  itemId,
   color: initialColor = "yellow",
   initialX = 120,
   initialY = 120,
@@ -150,6 +154,7 @@ export function StickyNoteWindow({
   onUpdateText,
   onUpdateColor,
   onUpdatePosition,
+  onUpdateItemId,
   onFocus
 }: StickyNoteWindowProps) {
   const embedded = useWorkspaceSurface();
@@ -174,13 +179,17 @@ export function StickyNoteWindow({
     isDragging
   });
 
-  // Keep local text updated if initialText prop changes externally (e.g. from parent sync)
+  // Follow the initialText prop only when the parent changes it (e.g. the note was
+  // reopened from the clipboard); local typing never snaps back to an old prop value.
+  const lastInitialTextPropRef = useRef(initialText);
   useEffect(() => {
-    if (initialText !== initialTextRef.current && initialText !== text) {
+    if (initialText === lastInitialTextPropRef.current) return;
+    lastInitialTextPropRef.current = initialText;
+    if (initialText !== text) {
       initialTextRef.current = initialText;
       setText(initialText);
     }
-  }, [initialText, text]);
+  }, [initialText]);
 
   const lastInitialColorRef = useRef(initialColor);
   // Keep color updated if prop changes externally
@@ -191,35 +200,59 @@ export function StickyNoteWindow({
     }
   }, [initialColor]);
 
+  // One clipboard item holds the note: each save stores the new text and
+  // removes the item that held the previous version.
+  const itemIdRef = useRef(itemId);
+  const latestTextRef = useRef(text);
+  latestTextRef.current = text;
+  const persistRef = useRef<(value: string) => Promise<void>>(async () => undefined);
+  persistRef.current = async (value: string) => {
+    setSaving(true);
+    try {
+      const saved = await api.createClipboardItem({ text: value, source: "MANUAL_NOTE" });
+      initialTextRef.current = value;
+      const previousId = itemIdRef.current;
+      itemIdRef.current = saved.id;
+      if (saved.id !== previousId) {
+        onUpdateItemId?.(saved.id);
+        if (previousId) await api.deleteClipboardItem(previousId).catch(() => undefined);
+      }
+      notifyClipboardUpdated();
+      setSaved(true);
+      onSaved?.();
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save note.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hasUnsavedText = (value: string) =>
+    value !== initialTextRef.current && Boolean(value.trim()) && clipboardCharacterCount(value) <= clipboardTextMaxCharacters;
+
   // Auto-save debounced when text is modified by user
   useEffect(() => {
-    if (text === initialTextRef.current) return;
-    if (!text.trim()) return;
+    if (!hasUnsavedText(text)) return;
     if (charCount > clipboardTextMaxCharacters) return;
 
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     setSaved(false);
 
-    saveTimerRef.current = setTimeout(async () => {
-      setSaving(true);
-      try {
-        await api.createClipboardItem({ text, source: "MANUAL_NOTE" });
-        initialTextRef.current = text;
-        notifyClipboardUpdated();
-        setSaved(true);
-        onSaved?.();
-        setTimeout(() => setSaved(false), 2000);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not save note.");
-      } finally {
-        setSaving(false);
-      }
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      void persistRef.current(text);
     }, 1200);
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [text, charCount, onSaved]);
+  }, [text, charCount]);
+
+  // Closing the note right after typing still saves the last edit.
+  useEffect(() => () => {
+    if (hasUnsavedText(latestTextRef.current)) void persistRef.current(latestTextRef.current);
+  }, []);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.currentTarget.value;
@@ -385,6 +418,7 @@ export function StickyNoteLayer({
   onUpdateText,
   onUpdateColor,
   onUpdatePosition,
+  onUpdateItemId,
   onBringToFront
 }: {
   windows: StickyWindowState[];
@@ -392,6 +426,7 @@ export function StickyNoteLayer({
   onUpdateText?: (id: string, text: string) => void;
   onUpdateColor?: (id: string, color: StickyNoteColor) => void;
   onUpdatePosition?: (id: string, x: number, y: number) => void;
+  onUpdateItemId?: (id: string, itemId: string) => void;
   onBringToFront?: (id: string) => void;
 }) {
   if (windows.length === 0) return null;
@@ -412,6 +447,7 @@ export function StickyNoteLayer({
           onUpdateText={(text) => onUpdateText?.(win.id, text)}
           onUpdateColor={(color) => onUpdateColor?.(win.id, color)}
           onUpdatePosition={(x, y) => onUpdatePosition?.(win.id, x, y)}
+          onUpdateItemId={(itemId) => onUpdateItemId?.(win.id, itemId)}
           onFocus={() => onBringToFront?.(win.id)}
         />
       ))}

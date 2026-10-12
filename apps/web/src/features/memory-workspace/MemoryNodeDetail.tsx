@@ -1,22 +1,30 @@
 import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { X } from "../ui-theme/app-icons.js";
+import { ArrowLeft, X } from "../ui-theme/app-icons.js";
 import type { MemoryGraphNodeDetail } from "@space/contracts";
 
-export function MemoryNodeDetail({ detail, loading, onClose, onSelectNode }: {
+export function MemoryNodeDetail({ detail, loading, onClose, onSelectNode, backLabel }: {
   detail: MemoryGraphNodeDetail | null;
   loading: boolean;
   onClose: () => void;
   onSelectNode?: (id: string) => void;
   onOpenChanges?: () => void;
+  backLabel?: string;
 }) {
   const panelRef = useRef<HTMLElement>(null);
   useEffect(() => { if (detail) panelRef.current?.focus(); }, [detail?.node.id]);
   const record = detail?.record;
   const related = detail?.relatedNodes.filter(node => node.type === "MEMORY" || node.type === "TOPIC" || node.type === "SOURCE") ?? [];
   return <aside ref={panelRef} className="memory-node-detail" aria-label="Memory node detail" tabIndex={-1}>
-    <button type="button" className="memory-node-detail-close" aria-label="Close memory node detail" onClick={onClose}><X aria-hidden="true" /></button>
+    <div className="memory-node-detail-header-actions">
+      {backLabel ? (
+        <button type="button" className="memory-node-detail-back" aria-label={backLabel} onClick={onClose}>
+          <ArrowLeft aria-hidden="true" /> <span>{backLabel}</span>
+        </button>
+      ) : <span />}
+      <button type="button" className="memory-node-detail-close" aria-label="Close memory node detail" onClick={onClose}><X aria-hidden="true" /></button>
+    </div>
     {loading ? <p role="status">Opening memory…</p> : detail ? <>
       <span className="memory-atlas-eyebrow">{detail.node.type === "MEMORY" ? "MEMORY" : detail.node.type === "TOPIC" ? "CONNECTED THEME" : "KNOWLEDGE SOURCE"}</span>
       <h3>{detail.node.label}</h3>

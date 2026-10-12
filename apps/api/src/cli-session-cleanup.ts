@@ -10,7 +10,6 @@ import {
   type CliSessionCleanupResponse
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
-import type { CodexHistoryPurgeService } from "./codex-history-purge.js";
 
 const defaultCommand = "/opt/spaceapp/bin/space-cli-session-cleanup";
 const maxOutputBytes = 32_000;
@@ -92,15 +91,6 @@ function runFixedCommand(
   });
 }
 
-const zeroCodexPreview = (): CliSessionCleanupCodexPreview => ({
-  status: "UNAVAILABLE",
-  previewId: null,
-  threads: 0,
-  indexEntries: 0,
-  rolloutFiles: 0,
-  shellSnapshots: 0
-});
-
 const noopCodexPreview = (): CliSessionCleanupCodexPreview => ({
   status: "NOOP",
   previewId: null,
@@ -118,15 +108,18 @@ const skippedCodexCleaned = (): CliSessionCleanupCodexCleaned => ({
   shellSnapshots: 0
 });
 
+/**
+ * Safe cleanup: empty sessions, orphaned rollouts and pane homes, temp files.
+ * It never runs the Codex history purge, which removes every inactive Codex
+ * thread with its full history; that stays in "Purge inactive history".
+ */
 export function createCliSessionCleanupService(options: {
   command?: string;
   runCommand?: CliSessionCleanupCommandRunner;
-  codexPurge?: CodexHistoryPurgeService;
   now?: () => Date;
 } = {}): CliSessionCleanupService {
   const command = options.command ?? defaultCommand;
   const runCommand = options.runCommand ?? runFixedCommand;
-  const codexPurge = options.codexPurge;
   const now = options.now ?? (() => new Date());
 
   async function runWorker<T>(
@@ -141,24 +134,6 @@ export function createCliSessionCleanupService(options: {
     } catch (error) {
       const detail = error instanceof Error ? ` ${error.message}` : "";
       throw new SpaceConflictError(`${unavailableMessage}${detail}`);
-    }
-  }
-
-  async function collectCodexPreview(actorId: string, protectedThreadIds: string[], codexEnabled: boolean) {
-    if (!codexPurge || !codexEnabled) return noopCodexPreview();
-    try {
-      const purgePreview = await codexPurge.preview({ actorId, protectedThreadIds });
-      return cliSessionCleanupPreviewResponseSchema.shape.counts.shape.codex.parse({
-        status: purgePreview.status === "READY" ? "READY" : "NOOP",
-        previewId: purgePreview.status === "READY" ? purgePreview.previewId : null,
-        threads: purgePreview.candidates.threads,
-        indexEntries: purgePreview.candidates.indexEntries,
-        rolloutFiles: purgePreview.candidates.rolloutFiles,
-        shellSnapshots: purgePreview.candidates.shellSnapshots
-      });
-    } catch (error) {
-      if (error instanceof Error) process.stderr.write(`CLI session cleanup codex preview failed: ${error.message}\n`);
-      return zeroCodexPreview();
     }
   }
 
@@ -185,7 +160,7 @@ export function createCliSessionCleanupService(options: {
           return {
             opencode: strip(parsed.opencode),
             opencodeTmp: strip(parsed.opencodeTmp),
-            codex: zeroCodexPreview(),
+            codex: noopCodexPreview(),
             codexOrphans: strip(parsed.codexOrphans),
             codexPaneHomes: strip(parsed.codexPaneHomes),
             cliStores: (parsed.cliStores ?? []).map((store) => strip(store)),
@@ -194,7 +169,7 @@ export function createCliSessionCleanupService(options: {
         },
         { timeoutMs: previewTimeoutMs }
       );
-      const codex = await collectCodexPreview(input.actorId, input.protectedThreadIds, input.codexEnabled);
+      const codex = noopCodexPreview();
       const counts: CliSessionCleanupCounts = {
         ...workerCounts,
         codex
@@ -215,32 +190,7 @@ export function createCliSessionCleanupService(options: {
 
     async execute(input: CliSessionCleanupExecuteInput): Promise<CliSessionCleanupResponse> {
       const failures: string[] = [];
-      let codexCleaned = skippedCodexCleaned();
-      if (codexPurge && input.codexEnabled) {
-        try {
-          const purgePreview = await codexPurge.preview({ actorId: input.actorId, protectedThreadIds: input.protectedThreadIds });
-          if (purgePreview.status === "READY") {
-            const purgeResult = await codexPurge.execute({
-              actorId: input.actorId,
-              previewId: purgePreview.previewId,
-              protectedThreadIds: input.protectedThreadIds
-            });
-            codexCleaned = cliSessionCleanupResponseSchema.shape.cleaned.shape.codex.parse({
-              status: purgeResult.status === "COMPLETED" ? "COMPLETED" : "NOOP",
-              threads: purgeResult.purged.threads,
-              indexEntries: purgeResult.purged.indexEntries,
-              rolloutFiles: purgeResult.purged.rolloutFiles,
-              shellSnapshots: purgeResult.purged.shellSnapshots
-            });
-          } else {
-            codexCleaned = { ...skippedCodexCleaned(), status: "NOOP" };
-          }
-        } catch (error) {
-          failures.push(`codex: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500));
-        }
-      } else {
-        codexCleaned = { ...skippedCodexCleaned(), status: "NOOP" };
-      }
+      const codexCleaned: CliSessionCleanupCodexCleaned = { ...skippedCodexCleaned(), status: "NOOP" };
       const workerResult = await runWorker(
         "execute",
         { actorId: input.actorId, previewId: input.previewId, protectedThreadIds: input.protectedThreadIds },

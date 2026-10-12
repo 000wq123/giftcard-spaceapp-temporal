@@ -4,8 +4,16 @@ import { resolve } from "node:path";
 import { manualChunkForModule } from "./vite.config.js";
 import { demoBundleBoundaryPlugin } from "./vite.demo-boundary.js";
 
+// The public demo lives at /spaceappmock/; a review build can use another
+// folder (for example /demonew/spaceappmock/) through SPACE_MOCK_BASE.
+export const MOCK_BASE = normalizeMockBase(process.env.SPACE_MOCK_BASE ?? "/spaceappmock/");
+export function normalizeMockBase(value: string): string {
+  if (!/^\/(?:[a-z0-9-]+\/)+$/.test(value)) throw new Error(`SPACE_MOCK_BASE must look like /folder/ or /folder/sub/, got ${value}`);
+  return value;
+}
+
 export default defineConfig({
-  base: "/demoappnew/",
+  base: MOCK_BASE,
   plugins: [{
     name: "mock-local-media-adapter", enforce: "pre",
     resolveId(source, importer) {
@@ -20,10 +28,10 @@ export default defineConfig({
         // The public preview uses a desktop canvas. Phone hardware hints must
         // not hide three panes inside an otherwise wide homepage iframe.
         const adapted = code.replace(marker, `${marker}\n  return detectShellMode(width, MOBILE_SHELL_MAX_WIDTH);`);
-        return { code: adapted.replace(/(["'`])\/brand\//g, "$1/demoappnew/brand/"), map: null };
+        return { code: adapted.replace(/(["'`])\/(brand|dots)\//g, `$1${MOCK_BASE}$2/`), map: null };
       }
       if (!id.endsWith("/features/live-pane/live-session.ts")) {
-        const rebased = code.replace(/(["'`])\/brand\//g, "$1/demoappnew/brand/");
+        const rebased = code.replace(/(["'`])\/(brand|dots)\//g, `$1${MOCK_BASE}$2/`);
         return rebased === code ? null : { code: rebased, map: null };
       }
       const marker = "  const provider = options.provider ?? inferProviderFromModel(options.model);";
@@ -39,6 +47,6 @@ export default defineConfig({
     emptyOutDir: true,
     minify: "terser",
     terserOptions: { compress: { passes: 2 }, mangle: true },
-    rollupOptions: { input: resolve(import.meta.dirname, "mock.html"), output: { manualChunks: manualChunkForModule } }
+    rollupOptions: { input: { mock: resolve(import.meta.dirname, "mock.html"), feature: resolve(import.meta.dirname, "feature.html") }, output: { manualChunks: manualChunkForModule } }
   }
 });

@@ -46,5 +46,7 @@ projects/
 .DS_Store
 .cache/
 .autohand/
+.config/
+.local/
 
 run-spaceapp-*.tgz

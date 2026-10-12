@@ -181,6 +181,8 @@ export interface SystemAnalyticsServiceOptions {
   readProcStat?: () => Promise<string>;
   stateRoot?: string;
   codexHome?: string;
+  /** Hermes Agent home holding state.db and sessions/ (tests pass an owned root). */
+  hermesHome?: string;
   coreCount?: number;
 }
 
@@ -450,37 +452,18 @@ function normalizeProviderId(providerId: string | null | undefined): string {
   return providerId;
 }
 
+const hermesDefaultModelId = findCliRuntimeDescriptor("cli:hermes")?.defaultModelId ?? "default";
+
 function defaultModelForProvider(providerId: string | null | undefined): string {
   switch (providerId) {
     case "codex":
     case "codex-lb":
       return "gpt-5.6-sol";
-    case "google":
-      return "gemini-3.8-flash";
-    case "hermes":
-      return "hermes-3-llama-3.1-8b";
-    case "opencode":
-      return "big-pickle";
     case "opencode-go":
       return "mimo-v2.5-pro";
-    case "alibaba":
-      return "qwen-2.5-coder-32b";
-    case "cursor":
-      return "claude-3-5-sonnet";
-    case "deepseek":
-      return "deepseek-chat";
-    case "github":
-      return "gpt-4o";
-    case "kimi-code":
-      return "kimi-k1.5";
-    case "xai":
-      return "grok-3";
-    case "anthropic":
-      return "claude-3-7-sonnet";
-    case "openrouter":
-      return "openrouter/auto";
     default:
-      return "default";
+      // Same launch default the CLI runtime descriptors carry (one source of truth).
+      return cliRuntimeDescriptors.find((descriptor) => descriptor.providerId === providerId)?.defaultModelId ?? "default";
   }
 }
 
@@ -502,6 +485,7 @@ export class SystemAnalyticsService {
   private readonly readProcStat: () => Promise<string>;
   private readonly stateRoot: string;
   private readonly codexHome: string;
+  private readonly hermesHome: string;
   private readonly coreCount: number;
   private sampleInFlight: Promise<void> | null = null;
   private modelIngestInFlight: Promise<void> | null = null;
@@ -523,6 +507,7 @@ export class SystemAnalyticsService {
     this.readProcStat = options.readProcStat ?? (() => readFile("/proc/stat", "utf8"));
     this.stateRoot = options.stateRoot ?? "/var/lib/spaceapp-user/.codex/space-opencode/state";
     this.codexHome = options.codexHome ?? "/var/lib/spaceapp-user/.codex";
+    this.hermesHome = options.hermesHome ?? "/var/lib/spaceapp-user/.hermes";
     this.coreCount = Math.max(Math.trunc(options.coreCount ?? cpus().length), 1);
   }
 
@@ -752,6 +737,7 @@ export class SystemAnalyticsService {
       entities: entitySnapshots,
       sessions: sessionIdentities
     };
+    if (this.disposed) return;
     await this.repository.insertResourceSamples([hostSample, ...[...entitySnapshots.values()].map((entity) => entity.sample)]);
     if (sampledAtMs - this.lastModelIngestAt >= modelIngestIntervalMs) {
       void this.ingestModels().catch(() => undefined);
@@ -800,6 +786,7 @@ export class SystemAnalyticsService {
     if (this.disposed) return;
     if (this.modelIngestInFlight) return this.modelIngestInFlight;
     const request = this.collectModels(windowMinutes, false).then(async (events) => {
+      if (this.disposed) return;
       if (events.length > 0) await this.repository.upsertModelEvents(events);
       this.lastModelIngestAt = this.now().getTime();
     });
@@ -920,6 +907,7 @@ export class SystemAnalyticsService {
     }
 
     for (const [threadId, path] of threadPaths) {
+      if (this.disposed) return events;
       const session = sessionByThreadId.get(threadId);
       try {
         const turns = parseCodexNativeTurns(await readCodexRolloutTail(path), sinceMs, this.now().getTime());
@@ -943,6 +931,7 @@ export class SystemAnalyticsService {
       }
     }
 
+    if (this.disposed) return events;
     const openCodeSessions = normalSessions.filter((session) => session.runtimeId === "cli:opencode");
     if (openCodeSessions.length > 0) {
       const nativeBySession = new Map<string, string>();
@@ -963,12 +952,15 @@ export class SystemAnalyticsService {
       }
     }
 
+    if (this.disposed) return events;
     const geminiSessions = normalSessions.filter((session) => session.runtimeId === "cli:gemini");
     events.push(...await this.collectGeminiNativeEvents(geminiSessions, sinceMs));
 
+    if (this.disposed) return events;
     const hermesSessions = normalSessions.filter((session) => session.runtimeId === "cli:hermes");
     events.push(...await this.collectHermesNativeEvents(hermesSessions, sinceMs));
 
+    if (this.disposed) return events;
     const deepSeekSessions = normalSessions.filter((session) => session.runtimeId === "cli:deepseek");
     events.push(...await this.collectDeepSeekNativeEvents(deepSeekSessions, sinceMs));
 
@@ -1000,6 +992,7 @@ export class SystemAnalyticsService {
       try {
         const entries = await readdir(baseDir).catch(() => []);
         for (const dirName of entries) {
+          if (this.disposed) return events;
           if (seenTurns.has(dirName)) continue;
           const transcriptPath = join(baseDir, dirName, ".system_generated", "logs", "transcript.jsonl");
           try {
@@ -1083,7 +1076,7 @@ export class SystemAnalyticsService {
     sinceMs: number
   ): Promise<SystemAnalyticsModelEventRecord[]> {
     const events: SystemAnalyticsModelEventRecord[] = [];
-    const stateDbPath = "/var/lib/spaceapp-user/.hermes/state.db";
+    const stateDbPath = join(this.hermesHome, "state.db");
     const sinceSec = Math.floor(sinceMs / 1000);
     const seenTurns = new Set<string>();
 
@@ -1104,7 +1097,7 @@ export class SystemAnalyticsService {
       for (const row of rows) {
         const nativeSessionId = stringValue(row.session_id);
         const rawModel = stringValue(row.model);
-        const modelId = rawModel && rawModel !== "unknown" ? rawModel : "hermes-3-llama-3.1-8b";
+        const modelId = rawModel && rawModel !== "unknown" ? rawModel : hermesDefaultModelId;
         const tokensIn = nonNegativeInt(row.input_tokens);
         const tokensOut = nonNegativeInt(row.output_tokens);
         const tokensReasoning = nonNegativeInt(row.reasoning_tokens);
@@ -1140,10 +1133,11 @@ export class SystemAnalyticsService {
       }
     } catch {}
 
-    const baseDir = "/var/lib/spaceapp-user/.hermes/sessions";
+    const baseDir = join(this.hermesHome, "sessions");
     try {
       const files = await readdir(baseDir).catch(() => []);
       for (const fileName of files) {
+        if (this.disposed) return events;
         if (!fileName.startsWith("request_dump_") || !fileName.endsWith(".json")) continue;
         const filePath = join(baseDir, fileName);
         try {
@@ -1152,7 +1146,7 @@ export class SystemAnalyticsService {
           const content = await readFile(filePath, "utf8");
           const parsed = JSON.parse(content);
           const reqBody = parsed.request?.body;
-          const modelId = (typeof reqBody?.model === "string" && reqBody.model) ? reqBody.model : "hermes-3-llama-3.1-8b";
+          const modelId = (typeof reqBody?.model === "string" && reqBody.model) ? reqBody.model : hermesDefaultModelId;
           const startedAt = parsed.timestamp ?? new Date(stats.mtimeMs).toISOString();
           const session = sessions[0] ?? null;
           const turnId = fileName;
@@ -1192,6 +1186,7 @@ export class SystemAnalyticsService {
     try {
       const files = await readdir(statsDir).catch(() => []);
       for (const fileName of files) {
+        if (this.disposed) return events;
         if (!fileName.endsWith(".jsonl")) continue;
         const filePath = join(statsDir, fileName);
         try {
@@ -1329,6 +1324,8 @@ export class SystemAnalyticsService {
     const errors: string[] = [];
     try {
       const events = await this.collectModels(30 * 24 * 60, true);
+      // A partial scan cut short by dispose must not be recorded as COMPLETE.
+      if (this.disposed) return;
       const chunkSize = 250;
       for (let index = 0; index < events.length; index += chunkSize) {
         await this.repository.upsertModelEvents(events.slice(index, index + chunkSize));

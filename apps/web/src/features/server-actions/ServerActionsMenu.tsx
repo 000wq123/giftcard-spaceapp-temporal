@@ -10,21 +10,23 @@ export interface ServerActionCommand {
   disabled?: boolean; title?: string; categoryHeader?: string;
 }
 const groups = [
-  { id: "maintenance", label: "Maintenance", detail: "Check, update and clean up", icon: Wrench },
+  { id: "maintenance", label: "Maintenance", detail: "One tap: clean up, free memory, check and update", icon: Wrench },
   { id: "connections", label: "Connections", detail: "Tools, accounts and providers", icon: LinkIcon },
   { id: "services", label: "Services", detail: "Services and runtime controls", icon: ServerCog },
   { id: "administration", label: "Administration", detail: "Users, permissions and releases", icon: Users }
 ] as const;
 export function managementGroup(id: string) {
-  if (["setup-connections", "codex-lb-speed-control"].includes(id)) return "connections";
+  if (["setup-connections", "space-gateway", "codex-lb-speed-control"].includes(id)) return "connections";
   if (["restart-server", "restart-all-cli-runtimes", "system-services"].includes(id)) return "services";
   if (["user-management", "publish-space-release"].includes(id)) return "administration";
   return "maintenance";
 }
-export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, initialAction, suspended = false }: {
+export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, renderGroupIntro, initialAction, suspended = false }: {
   actions: ServerActionCommand[]; mobile: boolean; onClose: () => void;
   triggerRef: RefObject<HTMLButtonElement | null>;
   renderAction?: (id: string, back: () => void, navigate: (id: string) => void) => ReactNode;
+  /** Shown above a section's actions, e.g. one-tap maintenance; `open` activates an action of the menu. */
+  renderGroupIntro?: (group: string, open: (id: string) => void) => ReactNode;
   initialAction?: string | null;
   suspended?: boolean;
 }) {
@@ -58,6 +60,8 @@ export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, 
     if (renderAction?.(action.id, back, setSelected)) setSelected(action.id);
     else { action.onSelect(); }
   }
+  const openById = (id: string) => { const action = actions.find(a => a.id === id); if (action) activate(action); };
+  const intro = group && !query ? renderGroupIntro?.(group, openById) : null;
   const menu = <div className="manage-backdrop" style={suspended ? { display: "none" } : undefined} onPointerDown={e => { if (e.target === e.currentTarget) close(); }}>
     <section ref={ref} id={SERVER_ACTIONS_MENU_ID} className="manage-workspace" role="dialog" aria-modal={embedded ? undefined : true} aria-label="Manage"
       data-ui-theme={source?.dataset.uiTheme} data-color-mode={source?.dataset.colorMode} data-room-theme={source?.dataset.roomTheme}
@@ -76,6 +80,7 @@ export function ServerActionsMenu({ actions, onClose, triggerRef, renderAction, 
           <label className="manage-search"><Search aria-hidden="true" /><input aria-label="Find an action" placeholder="Find an action…" value={query} onChange={e => setQuery(e.target.value)} /></label>
           {!group && !query ? <div className="manage-groups">{groups.map(g => <button type="button" key={g.id} aria-label={g.label} onClick={() => setGroup(g.id)}><g.icon aria-hidden="true" /><span><strong>{g.label}</strong><small>{g.detail}</small></span></button>)}</div> : <>
             <button type="button" className="manage-back" onClick={() => { setGroup(null); setQuery(""); }}>← All sections</button>
+            {intro ? <>{intro}<h3 className="manage-subheading">Individual tools</h3></> : null}
             <div className="manage-actions">{filtered.map(a => <button type="button" key={a.id} aria-label={a.label} disabled={a.disabled} title={a.title} onClick={() => activate(a)}><a.icon aria-hidden="true" /><span><strong>{a.label}</strong><small>{a.description}</small></span></button>)}{!filtered.length && <p>No matching actions.</p>}</div>
           </>}
         </>}

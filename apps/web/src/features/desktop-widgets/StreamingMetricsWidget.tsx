@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { StreamingOverlaySnapshot } from "@space/contracts";
-import { Radio } from "lucide-react";
+import { Radio } from "../ui-theme/app-icons.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
 import type { DesktopWidgetState } from "./types.js";
 import { formatStreamingValue } from "../streaming/StreamingOverlay.js";

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ExternalLink, Globe, Rocket, Sparkles } from "lucide-react";
+import { ExternalLink, Globe, Rocket, Sparkles } from "../ui-theme/app-icons.js";
 import { DesktopWidgetContainer } from "./DesktopWidgetContainer.js";
 import type { DesktopWidgetState, SpaceAppPromoWidgetConfig } from "./types.js";
 import { DEFAULT_PROMO_CONFIG, loadWidgetConfig } from "./widget-storage.js";

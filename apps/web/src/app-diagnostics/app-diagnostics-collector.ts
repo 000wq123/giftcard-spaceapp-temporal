@@ -725,10 +725,8 @@ export function createAppDiagnosticsCollector(
     ? new MutationObserver((records) => {
         if (mutationTimer === null) mutationWindowStartedAt = performance.now();
         for (const mutation of records) {
-          if (
-            mutation.target instanceof Element &&
-            mutation.target.closest(".terminal-xterm, .xterm")
-          ) {
+          const targetElement = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+          if (targetElement?.closest(".terminal-xterm, .xterm")) {
             continue;
           }
           addedNodes += mutation.addedNodes.length;

@@ -1,6 +1,6 @@
 import type { ControlAction, RoomQuickCommand } from "@space/contracts";
 type MusicCommand = Extract<RoomQuickCommand, { type: "MUSIC" }>;
-interface PlaybackTarget {
+export interface PlaybackTarget {
   roomId: string;
   kind: "YOUTUBE" | "MUSIC";
   playing: boolean;
@@ -13,6 +13,19 @@ const playbackTails = new Map<string, Promise<boolean>>();
 export function registerRoomPlaybackTarget(id: string, target: PlaybackTarget) {
   targets.set(id, target);
   return () => { if (targets.get(id) === target) targets.delete(id); };
+}
+/** Resolve once a different target registers under `id` for `roomId` (null on timeout). */
+export function waitForRoomPlaybackTarget(id: string, roomId: string, exclude: PlaybackTarget, timeoutMs = 10_000): Promise<PlaybackTarget | null> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const check = () => {
+      const target = targets.get(id);
+      if (target && target !== exclude && target.roomId === roomId) resolve(target);
+      else if (Date.now() >= deadline) resolve(null);
+      else setTimeout(check, 50);
+    };
+    check();
+  });
 }
 export function runRoomPlaybackCommand(roomId: string, requestId: string, command: MusicCommand): Promise<boolean> {
   const key = JSON.stringify([roomId, requestId]);

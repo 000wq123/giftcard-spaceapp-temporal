@@ -1,4 +1,9 @@
-import { transitionAgentRunLedger, agentRunEvaluationSchema } from "@space/contracts";
+import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
+import { type PlanExecutionEvent } from "./plan-execution-repository.js";
+import { managedPlanProjection } from "./plan-execution-projection.js";
+import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
+import type { GoogleAccount, VerifiedGoogleIdentity } from "./google-accounts.js";
+import { transitionAgentRunLedger, agentRunEvaluationSchema, pickNextAvailablePaneName, normalizePaneName, resolvePaneByName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
@@ -347,6 +352,12 @@ import type {
   UpsertMemoryIssueStateInput
 } from "@space/contracts";
 import { hashMcpSchema } from "./mcp-policy.js";
+import {
+  collectExportableApiKeys,
+  collectExportableCredentials,
+  writeImportedApiKeys,
+  writeImportedCredentials
+} from "./configuration-secrets.js";
 
 export const ACTIVE_PANE_CAP = 16;
 export const PANE_CLI_TRANSCRIPT_CHUNK_CAP = 200;
@@ -714,7 +725,8 @@ export interface ListEventChangesInput {
 }
 
 export type CreateUserLinkInput = CreateUserLinkRequest & { ownerUserId: string };
-export type CreateRoomStoreInput = CreateRoomInput & { kind?: Room["kind"] };
+// API callers resolve an omitted name before creating the persisted room.
+export type CreateRoomStoreInput = CreateRoomInput & { name: string; kind?: Room["kind"] };
 
 export interface PublicWaitlistSignupInput {
   email: string;
@@ -846,6 +858,11 @@ export function updateSetupConnectionCheckRunRecord(
 }
 
 export interface SpaceStore {
+  readonly planExecutions: PlanExecutionRepository;
+  /** Cheap round trip to durable storage for readiness probes. In-memory stores omit it. */
+  checkReadiness?(): Promise<void>;
+  publishManagedPlanExecutionEvent(event: PlanExecutionEvent): Promise<Event>;
+  projectManagedPlanExecution(ownerUserId: string, executionId: string, revision: number): Promise<ClipboardItem>;
   upsertUser(user: AuthUser): MaybePromise<AuthUser>;
   getUserSettings(userId: string): MaybePromise<UserSettings>;
   updateUserSettings(userId: string, input: UpdateUserSettingsInput): MaybePromise<UserSettings>;
@@ -926,6 +943,10 @@ export interface SpaceStore {
   listUsersWithRoomCounts?(): MaybePromise<AdminUserItem[]>;
   updateUserRole?(userId: string, role: "ADMIN" | "USER"): MaybePromise<AuthUser>;
   ensureUserStarterRoom?(userId: string, email: string, traceId?: string): MaybePromise<Room | null>;
+  listGoogleAccounts(userId: string): MaybePromise<GoogleAccount[]>;
+  linkGoogleAccount(userId: string, identity: VerifiedGoogleIdentity): MaybePromise<GoogleAccount>;
+  setPrimaryGoogleAccount(userId: string, accountId: string): MaybePromise<GoogleAccount>;
+  removeGoogleAccount(userId: string, accountId: string, hasAlternativeLogin: boolean): MaybePromise<void>;
   updateUserGoogleInfo?(userId: string, googleId: string, avatarUrl?: string, email?: string): MaybePromise<void>;
   unlinkGoogleAccount?(userId: string): MaybePromise<void>;
   getUserByGoogleId?(googleId: string): MaybePromise<AuthUser | null>;
@@ -987,6 +1008,7 @@ export interface SpaceStore {
   reorderPanes(roomId: string, paneIds: string[], traceId?: string): MaybePromise<Pane[]>;
   deleteRoom(roomId: string): MaybePromise<Room>;
   getPane(paneId: string): MaybePromise<Pane>;
+  compareAndSetT3CodeMetadata(paneId: string, expectedRevision: number, metadata: T3CodePaneMetadata): MaybePromise<Pane | null>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -1197,6 +1219,13 @@ export interface SpaceStore {
   listEventChanges(input: ListEventChangesInput): MaybePromise<EventChange[]>;
   recordAuditEvent(input: CreateAuditEventInput): MaybePromise<AuditEvent>;
   listAuditEvents(): MaybePromise<AuditEvent[]>;
+  /**
+   * Durable records that carry one Space trace id (the API request id):
+   * events (for example TURN_QUEUED/TURN_FAILED with payload.reasonCode),
+   * audit events and workflow rows. Newest first, bounded. Optional so
+   * partial test stores keep compiling.
+   */
+  listTraceRecords?(traceId: string, options?: ListTraceRecordsOptions): MaybePromise<TraceRecords>;
   listProviders(): MaybePromise<Provider[]>;
   getProviderSettings(): MaybePromise<ProviderSettings>;
   updateProviderSettings(input: UpdateProviderSettingsInput): MaybePromise<ProviderSettings>;
@@ -1269,6 +1298,16 @@ export interface SpaceStore {
   listArtifacts(query?: ListArtifactsQuery): MaybePromise<Artifact[]>;
   updateArtifactRetention(artifactId: string, input: UpdateArtifactRetentionInput): MaybePromise<Artifact>;
   deleteExpiredBrowserArtifacts(at?: string): MaybePromise<Artifact[]>;
+  pruneExpiredCliTranscriptChunks(input?: {
+    olderThanDays?: number;
+    batchSize?: number;
+  }): MaybePromise<{ deletedChunks: number }>;
+  pruneClosedPanes(input?: {
+    olderThanHours?: number;
+    roomId?: string;
+    batchSize?: number;
+  }): MaybePromise<{ deletedPanes: number }>;
+  probe?(): MaybePromise<void>;
   deleteArtifact(artifactId: string): MaybePromise<Artifact>;
   createReviewDecision(input: CreateReviewDecisionInput, traceId?: string): MaybePromise<ReviewDecisionRecord>;
   listReviewDecisions(query?: ListReviewDecisionsQuery): MaybePromise<ReviewDecision[]>;
@@ -1697,6 +1736,7 @@ export const defaultPaneTitles = [
 export interface SpaceStoreSnapshot {
   rooms: Room[];
   panes: Pane[];
+  managedPlanExecutions?: import("@space/contracts").ManagedPlanExecution[];
   clipboardItems: Array<{ ownerUserId: string; item: ClipboardItem }>;
   taskItems: Array<{ ownerUserId: string; item: TaskItem }>;
   userLinks: Array<{ ownerUserId: string; item: UserLink }>;
@@ -2341,7 +2381,32 @@ function inMemoryAuditChainHash(input: {
   return createHash("sha256").update(serialized, "utf8").digest("hex");
 }
 
+export interface ListTraceRecordsOptions {
+  /** Maximum rows per record kind (1-500, default 100). */
+  limit?: number;
+  /** Event lookback window in days (1-90, default 14). */
+  sinceDays?: number;
+}
+
+export interface TraceRecords {
+  events: Event[];
+  auditEvents: AuditEvent[];
+  workflows: WorkflowRun[];
+}
+
+export function traceRecordLimits(options: ListTraceRecordsOptions = {}): { limit: number; sinceDays: number } {
+  const bounded = (value: number | undefined, fallback: number, max: number) =>
+    Number.isInteger(value) && value! >= 1 ? Math.min(value!, max) : fallback;
+  return { limit: bounded(options.limit, 100, 500), sinceDays: bounded(options.sinceDays, 14, 90) };
+}
+
 export class InMemorySpaceStore implements SpaceStore {
+  readonly planExecutions = new InMemoryPlanExecutionRepository([], execution => {
+    const record = this.clipboardItems.get(execution.planId);
+    if (!record || record.ownerUserId !== execution.ownerUserId || record.item.source !== "PLAN")
+      throw new SpaceConflictError("Managed PLAN is unavailable.");
+    record.item = { ...record.item, ...managedPlanProjection(execution) };
+  });
   private rooms = new Map<string, Room>();
   private panes = new Map<string, Pane>();
   private roomAgentPaneIds = new Map<string, string>();
@@ -2379,6 +2444,7 @@ export class InMemorySpaceStore implements SpaceStore {
   private codexAppServerHandshakeChecks: CodexAppServerHandshakeCheck[] = [];
   private codexAppServerTurnSmokeChecks: CodexAppServerTurnSmokeCheck[] = [];
   private users = new Map<string, AuthUser>();
+  private googleAccounts = new Map<string, GoogleAccount>();
   private userPasswordHashes = new Map<string, string>();
   private userSettings = new Map<string, UserSettings>();
   private ownerSetup: {
@@ -2473,6 +2539,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return {
       rooms: this.listRooms(),
       panes: [...this.panes.values()],
+      managedPlanExecutions: this.planExecutions.snapshot(),
       clipboardItems: [...this.clipboardItems.values()].map((record) => ({
         ownerUserId: record.ownerUserId,
         item: { ...record.item }
@@ -2549,9 +2616,82 @@ export class InMemorySpaceStore implements SpaceStore {
 
   upsertUser(user: AuthUser): AuthUser {
     const existing = [...this.users.values()].find((candidate) => candidate.email.toLowerCase() === user.email.toLowerCase());
-    const persisted = existing ? { ...user, id: existing.id } : user;
+    // Session upserts must not erase or overwrite the registry's primary mirror.
+    const persisted = existing ? { ...user, id: existing.id, googleId: existing.googleId, avatarUrl: existing.avatarUrl } : user;
     this.users.set(persisted.id, persisted);
     return persisted;
+  }
+
+  listGoogleAccounts(userId: string): GoogleAccount[] {
+    return [...this.googleAccounts.values()].filter(account => account.ownerUserId === userId)
+      .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .map(account => ({ ...account }));
+  }
+
+  linkGoogleAccount(userId: string, identity: VerifiedGoogleIdentity): GoogleAccount {
+    const user = this.users.get(userId);
+    if (!user) throw new SpaceNotFoundError("User not found.");
+    const existing = [...this.googleAccounts.values()].find(account => account.googleSub === identity.sub);
+    const legacyOwner = [...this.users.values()].find(candidate => candidate.googleId === identity.sub);
+    if ((existing && existing.ownerUserId !== userId) || (legacyOwner && legacyOwner.id !== userId)) {
+      throw new SpaceConflictError("This Google account is already linked to another Space user.");
+    }
+    // Match the database migration for legacy fixtures loaded into the memory store.
+    if (user.googleId && !this.listGoogleAccounts(userId).some(account => account.googleSub === user.googleId)) {
+      const now = new Date().toISOString();
+      const legacy: GoogleAccount = { id: makeSpaceId("google_account"), ownerUserId: userId, googleSub: user.googleId,
+        email: user.email, displayName: null, avatarUrl: user.avatarUrl ?? null, isPrimary: true, createdAt: now, updatedAt: now };
+      this.googleAccounts.set(legacy.id, legacy);
+    }
+    const current = [...this.googleAccounts.values()].find(account => account.googleSub === identity.sub);
+    const now = new Date().toISOString();
+    const account: GoogleAccount = {
+      id: current?.id ?? makeSpaceId("google_account"), ownerUserId: userId, googleSub: identity.sub,
+      email: identity.email, displayName: identity.name ?? current?.displayName ?? null,
+      avatarUrl: identity.picture ?? current?.avatarUrl ?? null,
+      isPrimary: current?.isPrimary ?? this.listGoogleAccounts(userId).length === 0,
+      createdAt: current?.createdAt ?? now, updatedAt: now
+    };
+    this.googleAccounts.set(account.id, account);
+    if (account.isPrimary) this.users.set(userId, { ...user, googleId: account.googleSub, avatarUrl: account.avatarUrl ?? user.avatarUrl });
+    return { ...account };
+  }
+
+  setPrimaryGoogleAccount(userId: string, accountId: string): GoogleAccount {
+    const account = this.googleAccounts.get(accountId);
+    if (!account || account.ownerUserId !== userId) throw new SpaceNotFoundError("Google account not found.");
+    for (const current of this.googleAccounts.values()) if (current.ownerUserId === userId) current.isPrimary = current.id === accountId;
+    account.updatedAt = new Date().toISOString();
+    this.users.set(userId, { ...this.users.get(userId)!, googleId: account.googleSub, avatarUrl: account.avatarUrl });
+    return { ...account };
+  }
+
+  removeGoogleAccount(userId: string, accountId: string, hasAlternativeLogin: boolean): void {
+    const account = this.googleAccounts.get(accountId);
+    if (!account || account.ownerUserId !== userId) throw new SpaceNotFoundError("Google account not found.");
+    const remaining = this.listGoogleAccounts(userId).filter(current => current.id !== accountId);
+    if (!remaining.length && !hasAlternativeLogin) throw new SpaceConflictError("Cannot remove the last usable login method. Set up another login first.");
+    this.googleAccounts.delete(accountId);
+    if (account.isPrimary) {
+      if (remaining[0]) this.setPrimaryGoogleAccount(userId, remaining[0].id);
+      else this.users.set(userId, { ...this.users.get(userId)!, googleId: null });
+    }
+  }
+
+  getUserByGoogleId(googleId: string): AuthUser | null {
+    const account = [...this.googleAccounts.values()].find(account => account.googleSub === googleId);
+    return (account ? this.users.get(account.ownerUserId) : [...this.users.values()].find(user => user.googleId === googleId)) ?? null;
+  }
+
+  updateUserGoogleInfo(userId: string, googleId: string, avatarUrl?: string, email?: string): void {
+    const user = this.users.get(userId);
+    if (!user) throw new SpaceNotFoundError("User not found.");
+    this.linkGoogleAccount(userId, { sub: googleId, email: email ?? user.email, picture: avatarUrl });
+  }
+
+  unlinkGoogleAccount(userId: string): void {
+    const primary = this.listGoogleAccounts(userId).find(account => account.isPrimary);
+    if (primary) this.removeGoogleAccount(userId, primary.id, this.getOwnerCredentials()?.user.id === userId);
   }
 
   getUserSettings(userId: string): UserSettings {
@@ -2579,6 +2719,24 @@ export class InMemorySpaceStore implements SpaceStore {
         ...current.livePane,
         ...(input.livePane ?? {})
       },
+      desktopWidgets: input.desktopWidgets !== undefined
+        ? { ...(current.desktopWidgets ?? {}), ...input.desktopWidgets }
+        : current.desktopWidgets,
+      roomExtraEmptySlots: input.roomExtraEmptySlots !== undefined
+        ? { ...(current.roomExtraEmptySlots ?? {}), ...input.roomExtraEmptySlots }
+        : current.roomExtraEmptySlots,
+      roomWorktreeOverrides: input.roomWorktreeOverrides !== undefined
+        ? { ...(current.roomWorktreeOverrides ?? {}), ...input.roomWorktreeOverrides }
+        : current.roomWorktreeOverrides,
+      osk: input.osk !== undefined
+        ? { ...(current.osk ?? {}), ...input.osk }
+        : current.osk,
+      accountFilters: input.accountFilters !== undefined
+        ? { ...(current.accountFilters ?? {}), ...input.accountFilters }
+        : current.accountFilters,
+      railVisibility: input.railVisibility !== undefined
+        ? { ...(current.railVisibility ?? {}), ...input.railVisibility }
+        : current.railVisibility,
       updatedAt: nowIso()
     });
     this.userSettings.set(userId, updated);
@@ -2631,7 +2789,8 @@ export class InMemorySpaceStore implements SpaceStore {
       {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
-        initialPaneCount: 0
+        initialPaneCount: 0,
+        projectPath: "/opt/spaceapp"
       },
       makeSpaceId("trace"),
       owner.id
@@ -2646,7 +2805,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: "/etc"
+          cwd: "/opt/spaceapp"
         }
       ],
       makeSpaceId("trace")
@@ -2687,7 +2846,8 @@ export class InMemorySpaceStore implements SpaceStore {
       {
         name: "Getting Started",
         description: "SpaceApp setup and connection workspace.",
-        initialPaneCount: 0
+        initialPaneCount: 0,
+        projectPath: "/opt/spaceapp"
       },
       traceId
     );
@@ -2701,7 +2861,7 @@ export class InMemorySpaceStore implements SpaceStore {
             title: "OpenCode CLI",
             mode: "TERMINAL",
             terminalRuntimeId: "cli:opencode",
-            cwd: "/etc"
+            cwd: "/opt/spaceapp"
           }
         ],
         traceId
@@ -2870,7 +3030,12 @@ export class InMemorySpaceStore implements SpaceStore {
       text: parsed.text,
       source: parsed.source,
       title: parsed.title ?? null,
+      minimumModel: parsed.minimumModel ?? existing?.item.minimumModel ?? null,
+      minimumReasoning: parsed.minimumReasoning ?? existing?.item.minimumReasoning ?? null,
       isCompleted: existing?.item.isCompleted ?? false,
+      steps: existing && this.planExecutions.hasManagedPlan(parsed.ownerUserId, existing.item.id) ? existing.item.steps : parsed.steps ?? existing?.item.steps ?? [],
+      executionStatus: existing?.item.executionStatus ?? "PLANNED",
+      progressPercentage: existing?.item.progressPercentage ?? 0,
       roomId: parsed.roomId ?? null,
       paneId: parsed.paneId ?? null,
       paneTitle: parsed.paneTitle ?? null,
@@ -2910,6 +3075,7 @@ export class InMemorySpaceStore implements SpaceStore {
       .filter((record) => record.ownerUserId === ownerUserId)
       .filter((record) => !parsed.source || record.item.source === parsed.source)
       .filter((record) => parsed.includeCompleted !== false || !record.item.isCompleted)
+      .filter((record) => !parsed.paneId || record.item.paneId === parsed.paneId)
       .filter((record) => !search || record.item.text.toLocaleLowerCase().includes(search))
       .sort((left, right) => right.sequence - left.sequence);
     const offset = (parsed.page - 1) * parsed.pageSize;
@@ -3049,11 +3215,34 @@ export class InMemorySpaceStore implements SpaceStore {
     return { deletedCount };
   }
 
+  async publishManagedPlanExecutionEvent(event: PlanExecutionEvent): Promise<Event> {
+    const record = await this.planExecutions.get(event.ownerUserId,event.executionId);
+    const stored = record?.events.find(entry=>entry.revision===event.revision);
+    if (!record || !stored) throw new SpaceConflictError("Execution event was not found.");
+    const id = `plan_event:${record.id}:${stored.revision}`;
+    const existing = this.events.find(entry=>entry.id===id);
+    if (existing) return existing;
+    const pane = this.getPane(record.paneId);
+    const result: Event = {id,roomId:pane.roomId,paneId:pane.id,turnId:null,workflowId:null,traceId:record.id,
+      type:"PLAN_EXECUTION_UPDATED",message:"Managed plan execution updated.",createdAt:stored.createdAt,
+      payload:{executionId:record.id,planId:record.planId,ownerUserId:record.ownerUserId,...stored}};
+    this.events.push(result);
+    this.lastEventRelaySequence += 1n;
+    this.eventRelaySequences.set(id,this.lastEventRelaySequence.toString());
+    return result;
+  }
+
+  async projectManagedPlanExecution(owner: string, id: string, revision: number): Promise<ClipboardItem> {
+    const execution = this.planExecutions.projectCurrent(owner, id, revision);
+    return structuredClone(this.clipboardItems.get(execution.planId)!.item);
+  }
+
   setClipboardItemCompleted(
     ownerUserId: string,
     clipboardItemId: string,
     completed: boolean
   ): ClipboardItem {
+    if (this.planExecutions.hasManagedPlan(ownerUserId, clipboardItemId)) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
     const record = this.clipboardItems.get(clipboardItemId);
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
@@ -3067,6 +3256,7 @@ export class InMemorySpaceStore implements SpaceStore {
     clipboardItemId: string,
     input: UpdatePlanProgressRequest
   ): ClipboardItem {
+    if (this.planExecutions.hasManagedPlan(ownerUserId, clipboardItemId)) throw new SpaceConflictError("Managed plan progress is controlled by its execution.");
     const record = this.clipboardItems.get(clipboardItemId);
     if (!record || record.ownerUserId !== ownerUserId) {
       throw new SpaceNotFoundError(`Clipboard item ${clipboardItemId} was not found.`);
@@ -3124,6 +3314,12 @@ export class InMemorySpaceStore implements SpaceStore {
     const isCompleted = executionStatus === "COMPLETED" || finalPercentage === 100;
     const activeAgent = input.activeAgent !== undefined ? input.activeAgent : record.item.activeAgent;
 
+    const inputExt = input as UpdatePlanProgressRequest & {
+      roomId?: string | null;
+      paneId?: string | null;
+      paneTitle?: string | null;
+    };
+
     record.item = {
       ...record.item,
       executionStatus,
@@ -3131,6 +3327,9 @@ export class InMemorySpaceStore implements SpaceStore {
       activeAgent,
       steps,
       isCompleted,
+      roomId: inputExt.roomId !== undefined ? inputExt.roomId : record.item.roomId,
+      paneId: inputExt.paneId !== undefined ? inputExt.paneId : record.item.paneId,
+      paneTitle: inputExt.paneTitle !== undefined ? inputExt.paneTitle : record.item.paneTitle,
       lastProgressAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString()
     };
@@ -3313,7 +3512,12 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   listRooms(ownerUserId?: string | null): Room[] {
-    const all = [...this.rooms.values()].sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+    const all = [...this.rooms.values()].map((r) => {
+      if (!r.projectPath) {
+        r.projectPath = "/opt/spaceapp";
+      }
+      return r;
+    }).sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt));
     if (ownerUserId) {
       return all.filter((r) => r.ownerUserId === ownerUserId || (!r.ownerUserId && ownerUserId === "user:operator"));
     }
@@ -3358,7 +3562,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const existing = [...this.rooms.values()].find((r) => (r.ownerUserId === userId || !r.ownerUserId) && r.name === "Getting Started")
       ?? [...this.rooms.values()].find((r) => r.ownerUserId === userId);
     if (existing) return existing;
-    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0 }, traceId, userId);
+    const room = this.createRoom({ name: "Getting Started", initialPaneCount: 0, projectPath: "/opt/spaceapp" }, traceId, userId);
     this.createPanes(
       [
         {
@@ -3366,7 +3570,7 @@ export class InMemorySpaceStore implements SpaceStore {
           title: "OpenCode CLI",
           mode: "TERMINAL",
           terminalRuntimeId: "cli:opencode",
-          cwd: "/etc"
+          cwd: "/opt/spaceapp"
         }
       ],
       traceId
@@ -3376,6 +3580,10 @@ export class InMemorySpaceStore implements SpaceStore {
 
   listRunningCliSessionCountsByRoom(runtimeIds?: string[]): RoomCliActivity[] {
     const allowedRuntimeIds = runtimeIds ? new Set(runtimeIds) : null;
+    const paneCounts = new Map<string, number>();
+    for (const pane of this.panes.values()) {
+      if (!pane.isClosed) paneCounts.set(pane.roomId, (paneCounts.get(pane.roomId) ?? 0) + 1);
+    }
     const runningCounts = new Map<string, number>();
     const runningRuntimeIds = new Map<string, Set<string>>();
     for (const session of this.paneCliSessions.values()) {
@@ -3389,6 +3597,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return this.listRooms().map((room) => ({
       roomId: room.id,
       runningCliCount: runningCounts.get(room.id) ?? 0,
+      paneCount: paneCounts.get(room.id) ?? 0,
       runtimeIds: [...(runningRuntimeIds.get(room.id) ?? [])].sort()
     }));
   }
@@ -3702,6 +3911,9 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!room) {
       throw new SpaceNotFoundError(`Room ${roomId} was not found.`);
     }
+    if (!room.projectPath) {
+      room.projectPath = "/opt/spaceapp";
+    }
     return room;
   }
 
@@ -3711,7 +3923,7 @@ export class InMemorySpaceStore implements SpaceStore {
       id: makeSpaceId("room"),
       name: input.name,
       description: input.description ?? null,
-      projectPath: input.projectPath ?? null,
+      projectPath: input.projectPath ?? "/opt/spaceapp",
       kind: input.kind ?? "WORKSPACE",
       order: this.rooms.size,
       paneLayoutColumns: null,
@@ -3996,11 +4208,17 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     const timestamp = nowIso();
+    const usedNames = new Set(existing.map((p) => p.paneName?.toLowerCase()).filter(Boolean));
+    const paneName = (input.paneName && !usedNames.has(input.paneName.toLowerCase()))
+      ? input.paneName
+      : pickNextAvailablePaneName(existing.map((p) => p.paneName));
+
     const pane: Pane = {
       id: makeSpaceId("pane"),
       roomId: input.roomId,
       title: input.title,
       titleSource: "auto",
+      paneName,
       mode: input.mode,
       status: "IDLE",
       providerId: input.providerId ?? null,
@@ -4060,29 +4278,37 @@ export class InMemorySpaceStore implements SpaceStore {
 
     const timestamp = nowIso();
     const firstOrder = this.nextOpenPaneOrder(roomId);
-    const panes = inputs.map((input, index): Pane => ({
-      id: makeSpaceId("pane"),
-      roomId,
-      title: `${input.title} ${firstOrder + index + 1}`,
-      titleSource: "auto",
-      mode: input.mode,
-      status: "IDLE",
-      providerId: input.providerId ?? null,
-      modelId: input.modelId ?? null,
-      terminalRuntimeId: input.terminalRuntimeId ?? null,
-      reasoningEffort: "medium",
-      cwd: input.cwd ?? null,
-      vncTarget: input.vncTarget ?? null,
-      order: firstOrder + index,
-      columnSpan: 1,
-      isMaximized: false,
-      isMinimized: false,
-      isClosed: false,
-      split: input.split ?? { parentId: null, direction: null, size: null },
-      categoryColor: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    }));
+    const allocatedNames = new Set(existing.map((p) => p.paneName?.toLowerCase()).filter(Boolean));
+    const panes = inputs.map((input, index): Pane => {
+      const paneName = (input.paneName && !allocatedNames.has(input.paneName.toLowerCase()))
+        ? input.paneName
+        : pickNextAvailablePaneName(allocatedNames);
+      allocatedNames.add(paneName.toLowerCase());
+      return {
+        id: makeSpaceId("pane"),
+        roomId,
+        title: `${input.title} ${firstOrder + index + 1}`,
+        titleSource: "auto",
+        paneName,
+        mode: input.mode,
+        status: "IDLE",
+        providerId: input.providerId ?? null,
+        modelId: input.modelId ?? null,
+        terminalRuntimeId: input.terminalRuntimeId ?? null,
+        reasoningEffort: "medium",
+        cwd: input.cwd ?? null,
+        vncTarget: input.vncTarget ?? null,
+        order: firstOrder + index,
+        columnSpan: 1,
+        isMaximized: false,
+        isMinimized: false,
+        isClosed: false,
+        split: input.split ?? { parentId: null, direction: null, size: null },
+        categoryColor: null,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+    });
 
     for (const pane of panes) {
       this.panes.set(pane.id, pane);
@@ -4480,6 +4706,17 @@ export class InMemorySpaceStore implements SpaceStore {
     return updated;
   }
 
+  compareAndSetT3CodeMetadata(paneId: string, expectedRevision: number, metadata: T3CodePaneMetadata): Pane | null {
+    const current = this.getPane(paneId);
+    if (current.mode !== "T3CODE" || current.isClosed) throw new SpaceConflictError("An open T3 Code pane is required.");
+    const parsed = t3CodePaneMetadataSchema.parse(metadata);
+    if (parsed.revision !== expectedRevision + 1) throw new SpaceConflictError("Invalid T3 metadata revision.");
+    if ((current.t3CodeMetadata?.revision ?? 0) !== expectedRevision) return null;
+    const updated = { ...current, t3CodeMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -4496,6 +4733,14 @@ export class InMemorySpaceStore implements SpaceStore {
 
     const timestamp = nowIso();
     const reopening = input.isClosed === false && current.isClosed;
+    let paneName = input.paneName !== undefined ? (input.paneName?.trim() || null) : current.paneName;
+    if (reopening) {
+      const activePanes = this.listPanes(current.roomId, false).filter((p) => p.id !== paneId);
+      const used = new Set(activePanes.map((p) => p.paneName?.toLowerCase()).filter(Boolean));
+      if (!paneName || used.has(paneName.toLowerCase())) {
+        paneName = pickNextAvailablePaneName(activePanes.map((p) => p.paneName));
+      }
+    }
     const isMinimized = reopening
       ? false
       : input.isMaximized === true
@@ -4509,6 +4754,7 @@ export class InMemorySpaceStore implements SpaceStore {
     const updated: Pane = {
       ...current,
       ...input,
+      paneName,
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
@@ -4531,7 +4777,7 @@ export class InMemorySpaceStore implements SpaceStore {
         this.paneCliSessions.set(sessionId, {
           ...session,
           status: "EXITED",
-          statusReason: session.statusReason ?? "Pane closed by operator.",
+          statusReason: "Pane closed by operator.",
           isActive: false,
           endedAt: session.endedAt ?? timestamp,
           updatedAt: timestamp
@@ -4659,8 +4905,14 @@ export class InMemorySpaceStore implements SpaceStore {
 
     const timestamp = nowIso();
     const sourcePane: Pane = { ...current };
+    const targetUsed = new Set(targetOpenPanes.map((p) => p.paneName?.toLowerCase()).filter(Boolean));
+    let targetPaneName = current.paneName;
+    if (!targetPaneName || targetUsed.has(targetPaneName.toLowerCase())) {
+      targetPaneName = pickNextAvailablePaneName(targetOpenPanes.map((p) => p.paneName));
+    }
     const targetPane: Pane = {
       ...current,
+      paneName: targetPaneName,
       roomId: parsed.targetRoomId,
       order: this.nextOpenPaneOrder(parsed.targetRoomId),
       columnSpan: 1,
@@ -4939,6 +5191,9 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!this.rooms.has(parsed.roomId)) {
       throw new SpaceNotFoundError(`Room ${parsed.roomId} was not found.`);
     }
+    if (parsed.isActive !== false && [...this.spaceAgentRuns.values()].some(run => run.paneId === parsed.paneId && (run.status === "QUEUED" || run.status === "RUNNING"))) {
+      throw new SpaceConflictError("Finish or stop the current action before switching Dots.");
+    }
     const timestamp = nowIso();
     const session = spaceAgentSessionRecordSchema.parse({
       ...parsed,
@@ -4976,6 +5231,11 @@ export class InMemorySpaceStore implements SpaceStore {
     input: UpdateSpaceAgentSessionInput,
     _traceId = makeSpaceId("trace")
   ): SpaceAgentSessionRecord {
+    return this.writeSpaceAgentSession(sessionId, input, true);
+  }
+
+  /** Run completion records its own thread directly, like the Postgres store; client updates go through the busy-run guard. */
+  private writeSpaceAgentSession(sessionId: string, input: UpdateSpaceAgentSessionInput, guardBusyRuns: boolean): SpaceAgentSessionRecord {
     const current = this.spaceAgentSessions.get(sessionId);
     if (!current) {
       throw new SpaceNotFoundError(`Space agent session ${sessionId} was not found.`);
@@ -4989,6 +5249,22 @@ export class InMemorySpaceStore implements SpaceStore {
     }
     if (!this.rooms.has(nextRoomId)) {
       throw new SpaceNotFoundError(`Room ${nextRoomId} was not found.`);
+    }
+    const isActive = parsed.isActive === undefined ? current.isActive : parsed.isActive;
+    const switchingSession = !current.isActive || nextPaneId !== current.paneId;
+    const changingThread = parsed.threadId !== undefined && parsed.threadId !== current.threadId;
+    if (guardBusyRuns && isActive && (switchingSession || changingThread)) {
+      const busy = [...this.spaceAgentRuns.values()].filter(run =>
+        [current.paneId, nextPaneId].includes(run.paneId) && (run.status === "QUEUED" || run.status === "RUNNING")
+      );
+      // Match the worker's run-before-session checkpoint order without allowing
+      // a different session or pane to claim the active run's thread.
+      const runCheckpoint = !switchingSession && parsed.threadId != null && busy.every(run =>
+        run.sessionId === current.sessionId && run.paneId === current.paneId && run.codexThreadId === parsed.threadId
+      );
+      // Reactivating a session in its own pane while its own run finishes claims nothing another session holds.
+      const ownRunsOnly = !changingThread && nextPaneId === current.paneId && busy.every(run => run.sessionId === current.sessionId);
+      if (busy.length && !runCheckpoint && !ownRunsOnly) throw new SpaceConflictError("Finish or stop the current action before switching Dots.");
     }
     const timestamp = nowIso();
     const updated = spaceAgentSessionRecordSchema.parse({
@@ -5173,14 +5449,14 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!current) {
       throw new SpaceNotFoundError(`Space agent run ${runId} was not found.`);
     }
-    const parsed = updateSpaceAgentRunInputSchema.parse(input);
+    const { usage, cost, ...parsed } = updateSpaceAgentRunInputSchema.parse(input);
     const terminal = parsed.status === "COMPLETED" || parsed.status === "FAILED" || parsed.status === "INTERRUPTED";
     const updated = spaceAgentRunRecordSchema.parse({
       ...current,
       ...parsed,
       ledger: transitionAgentRunLedger({ current: current.ledger ?? transitionAgentRunLedger({ status: current.status, at: null,
           runtimeModelAtStart: current.runtimeModelAtStart }), status: parsed.status ?? current.status, at: nowIso(),
-        runtimeModelAtStart: parsed.runtimeModelAtStart, evaluation: parsed.evaluation }),
+        runtimeModelAtStart: parsed.runtimeModelAtStart, evaluation: parsed.evaluation, usage, cost }),
       startedAt: current.startedAt ?? (parsed.status === "RUNNING" ? nowIso() : null),
       temporalRunId: parsed.temporalRunId === undefined ? current.temporalRunId : parsed.temporalRunId,
       codexThreadId: parsed.codexThreadId === undefined ? current.codexThreadId : parsed.codexThreadId,
@@ -5260,12 +5536,12 @@ export class InMemorySpaceStore implements SpaceStore {
     const hasOtherRunningRun = [...this.spaceAgentRuns.values()].some(
       (candidate) => candidate.sessionId === input.sessionId && candidate.status === "RUNNING" && candidate.runId !== input.runId
     );
-    const session = this.updateSpaceAgentSession(input.sessionId, {
+    const session = this.writeSpaceAgentSession(input.sessionId, {
       status: "READY",
       threadId: input.codexThreadId,
       lastSyncedAt: input.completedAt,
       isActive: currentSession.isActive && (!paneClosed || this.roomAgentPaneIds.get(currentSession.roomId) === currentSession.paneId || hasOtherRunningRun)
-    });
+    }, false);
     const event = this.appendEvent({
       roomId: run.roomId,
       paneId: run.paneId,
@@ -6035,6 +6311,63 @@ export class InMemorySpaceStore implements SpaceStore {
     return cappedLimit === 0 ? [] : chunks.slice(-cappedLimit);
   }
 
+  pruneExpiredCliTranscriptChunks(input: {
+    olderThanDays?: number;
+    batchSize?: number;
+  } = {}): { deletedChunks: number } {
+    const olderThanDays = Math.max(1, input.olderThanDays ?? 7);
+    const batchSize = Math.max(1, Math.min(input.batchSize ?? 500, 5000));
+    const cutoff = Date.now() - olderThanDays * 86_400_000;
+    const expiredSessionIds = new Set(
+      [...this.paneCliSessions.values()]
+        .filter((session) => session.status === "EXITED" && Date.parse(session.updatedAt) < cutoff)
+        .map((session) => session.sessionId)
+    );
+    let deletedChunks = 0;
+    for (const [chunkId, chunk] of this.paneCliTranscriptChunks) {
+      if (expiredSessionIds.has(chunk.sessionId)) {
+        this.paneCliTranscriptChunks.delete(chunkId);
+        deletedChunks += 1;
+        if (deletedChunks >= batchSize) break;
+      }
+    }
+    return { deletedChunks };
+  }
+
+  pruneClosedPanes(input: {
+    olderThanHours?: number;
+    roomId?: string;
+    batchSize?: number;
+  } = {}): { deletedPanes: number } {
+    const olderThanHours = Math.max(0, input.olderThanHours ?? 24);
+    const batchSize = Math.max(1, Math.min(input.batchSize ?? 500, 5000));
+    const cutoff = Date.now() - olderThanHours * 3_600_000;
+    const roomAgentPaneIds = new Set(this.roomAgentPaneIds.values());
+    const candidatePanes = [...this.panes.values()]
+      .filter((pane) =>
+        pane.isClosed &&
+        Date.parse(pane.updatedAt) < cutoff &&
+        (!input.roomId || pane.roomId === input.roomId) &&
+        !roomAgentPaneIds.has(pane.id)
+      )
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .slice(0, batchSize);
+
+    for (const pane of candidatePanes) {
+      this.panes.delete(pane.id);
+      this.agentPaneBindings.delete(pane.id);
+      for (const [k, v] of this.paneCliSessions) {
+        if (v.paneId === pane.id) this.paneCliSessions.delete(k);
+      }
+      for (const [k, v] of this.roomAgentTaskRuns) {
+        if (v.paneId === pane.id) this.roomAgentTaskRuns.delete(k);
+      }
+    }
+    return { deletedPanes: candidatePanes.length };
+  }
+
+  probe(): void {}
+
   listManagedCodexThreadIds(): string[] {
     return [...new Set([
       ...this.paneCliCodexThreadOwnerships.keys(),
@@ -6219,6 +6552,24 @@ export class InMemorySpaceStore implements SpaceStore {
       lockedBy: null,
       safeErrorCode: input.safeErrorCode,
       updatedAt: input.now
+    });
+    this.appendEvent({
+      roomId: marker.roomId,
+      paneId: marker.paneId,
+      turnId: null,
+      workflowId: null,
+      traceId: `cli-turn:${marker.markerId}`,
+      type: "TURN_FAILED",
+      message: input.safeErrorCode === "CODEX_CLI_TURN_ABORTED"
+        ? "Codex terminal turn aborted."
+        : "Terminal turn ended.",
+      payload: {
+        status: "FAILED",
+        sourceType: "TERMINAL",
+        markerId: marker.markerId,
+        clientTurnMarker: marker.clientTurnMarker,
+        safeErrorCode: input.safeErrorCode
+      }
     });
   }
 
@@ -6901,20 +7252,7 @@ export class InMemorySpaceStore implements SpaceStore {
   }
 
   recordRoomEvent(input: Omit<Event, "id" | "createdAt" | "workflowId"> & { workflowId?: string | null }): Event {
-    const event: Event = {
-      id: makeSpaceId("event"),
-      roomId: input.roomId,
-      paneId: input.paneId,
-      turnId: input.turnId,
-      workflowId: input.workflowId ?? null,
-      traceId: input.traceId,
-      type: input.type,
-      message: input.message,
-      payload: input.payload ?? {},
-      createdAt: nowIso()
-    };
-    this.events.push(event);
-    return event;
+    return this.appendEvent({ ...input, workflowId: input.workflowId ?? null });
   }
 
   listEventChanges(input: ListEventChangesInput): EventChange[] {
@@ -6942,6 +7280,21 @@ export class InMemorySpaceStore implements SpaceStore {
 
   listAuditEvents(): AuditEvent[] {
     return [...this.auditEvents].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  listTraceRecords(traceId: string, options: ListTraceRecordsOptions = {}): TraceRecords {
+    const { limit, sinceDays } = traceRecordLimits(options);
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
+    const newestFirst = <T extends { createdAt: string; id: string }>(left: T, right: T) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+    return {
+      events: this.events.filter((event) => event.traceId === traceId && event.createdAt >= since).sort(newestFirst).slice(0, limit),
+      auditEvents: this.auditEvents.filter((event) => event.traceId === traceId).sort(newestFirst).slice(0, limit),
+      workflows: [...this.workflows.values()]
+        .filter((workflow) => workflow.traceId === traceId)
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+        .slice(0, limit)
+    };
   }
 
   listProviders(): Provider[] {
@@ -7604,6 +7957,11 @@ export class InMemorySpaceStore implements SpaceStore {
       if (!finding || finding.runId !== run.id) {
         throw new SpaceNotFoundError(`Memory consolidation finding ${parsed.findingId} was not found.`);
       }
+      // One operation per finding, as in the PostgreSQL store.
+      const existing = [...this.memoryConsolidationOperations.values()]
+        .filter((operation) => operation.runId === run.id && operation.findingId === parsed.findingId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0];
+      if (existing) return existing;
     }
     const timestamp = nowIso();
     const operation = memoryConsolidationOperationSchema.parse({
@@ -8395,6 +8753,16 @@ export class InMemorySpaceStore implements SpaceStore {
       providerSettings = this.getProviderSettings();
     } catch {}
 
+    let apiKeys: Record<string, string> | undefined;
+    if (options.includeApiKeys) {
+      apiKeys = collectExportableApiKeys();
+    }
+
+    let credentials: Record<string, string> | undefined;
+    if (options.includeCredentials) {
+      credentials = collectExportableCredentials();
+    }
+
     return {
       format: "spaceapp-configuration-bundle",
       version: "1.0.0",
@@ -8411,7 +8779,9 @@ export class InMemorySpaceStore implements SpaceStore {
         clipboardItemsCount: clipboardItems.length,
         taskItemsCount: taskItems.length,
         cliRuntimesCount: cliRuntimeSettings.length,
-        providersCount: providers.length
+        providersCount: providers.length,
+        apiKeysCount: apiKeys ? Object.keys(apiKeys).length : undefined,
+        credentialsCount: credentials ? Object.keys(credentials).length : undefined
       },
       data: {
         userSettings,
@@ -8422,7 +8792,9 @@ export class InMemorySpaceStore implements SpaceStore {
         cliRuntimeSettings,
         codexCliModeDefaults,
         providerSettings,
-        providers
+        providers,
+        apiKeys,
+        credentials
       }
     };
   }
@@ -8608,6 +8980,20 @@ export class InMemorySpaceStore implements SpaceStore {
       };
     }
 
+    let apiKeysImported = 0;
+    if (options.importApiKeys !== false && parsedBundle.data.apiKeys && Object.keys(parsedBundle.data.apiKeys).length > 0) {
+      const res = writeImportedApiKeys(parsedBundle.data.apiKeys, { secretsDir: options.secretsDir });
+      apiKeysImported = res.imported;
+      warnings.push(`Imported ${apiKeysImported} provider API key(s) to ${res.targetDir}`);
+    }
+
+    let credentialsImported = 0;
+    if (options.importCredentials !== false && parsedBundle.data.credentials && Object.keys(parsedBundle.data.credentials).length > 0) {
+      const res = writeImportedCredentials(parsedBundle.data.credentials, { credentialsDir: options.credentialsDir });
+      credentialsImported = res.imported;
+      warnings.push(`Imported ${credentialsImported} login credential(s) to ${res.targetDir}`);
+    }
+
     return {
       success: true,
       mode,
@@ -8620,7 +9006,9 @@ export class InMemorySpaceStore implements SpaceStore {
         tasksImported,
         settingsUpdated,
         cliRuntimesImported,
-        providersImported
+        providersImported,
+        apiKeysImported,
+        credentialsImported
       },
       warnings
     };

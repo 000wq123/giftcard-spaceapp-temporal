@@ -8,3 +8,4 @@ export * from "./PushupReminderWidget.js";
 export * from "./SpaceAppPromoWidget.js";
 export * from "./AiQuotaWidget.js";
 export * from "./DesktopWidgetsLayer.js";
+export * from "./use-widgets-visibility.js";

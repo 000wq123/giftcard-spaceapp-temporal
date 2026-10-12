@@ -26,6 +26,8 @@ export type BrowserHostActorContext = BrowserHostActionContext;
 export interface BrowserHostStartInput {
   pane: Pane;
   profileKey?: string | null;
+  sharedProfileKey?: string;
+  googleAccount?: { ownerUserId: string; accountId: string };
   viewport?: BrowserSessionViewport;
   targetUrl?: string | null;
   streamMode?: BrowserStreamMode;
@@ -120,6 +122,32 @@ export interface BrowserHostPageList {
   pages: BrowserPageSummary[];
 }
 
+export interface BrowserHostGoogleAccountIdentity {
+  ownerUserId: string;
+  accountId: string;
+}
+
+/** Redacted Google session state of a verified account's persistent profile. */
+export interface BrowserHostGoogleAccountCheck {
+  status: "NOT_CONNECTED" | "CONNECTED" | "REAUTHENTICATION_REQUIRED" | "UNKNOWN";
+  reason: string;
+  checkedAt: string | null;
+  connectedAt: string | null;
+}
+
+export interface BrowserHostPaneProfileSource {
+  ownerUserId: string;
+  roomId: string;
+  paneId: string;
+  profileKey: string | null;
+  accountId?: string;
+}
+
+export interface BrowserHostPaneProfileAdoption {
+  result: "ADOPTED" | "ALREADY_CONNECTED" | "TARGET_IN_USE" | "SOURCE_IN_USE" | "SOURCE_MISSING" | "NO_SIGN_IN" | "OTHER_ACCOUNT" | "CHECK_FAILED";
+  accountId: string | null;
+}
+
 export interface BrowserHostDiagnostics {
   sessionId: string;
   events: Array<Record<string, unknown>>;
@@ -152,6 +180,8 @@ export interface BrowserHostRuntime {
   stopCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<BrowserHostDiagnostics>;
+  checkGoogleAccount?(identity: BrowserHostGoogleAccountIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<BrowserHostGoogleAccountCheck>;
+  adoptPaneGoogleProfile?(source: BrowserHostPaneProfileSource, context?: BrowserHostActorContext): Promise<BrowserHostPaneProfileAdoption>;
   startFrameStream?(
     sessionId: string,
     mode: BrowserStreamMode,
@@ -190,6 +220,8 @@ export type BrowserHostMethod =
   | "stopCapture"
   | "cancelCapture"
   | "diagnostics"
+  | "checkGoogleAccount"
+  | "adoptPaneGoogleProfile"
   | "startFrameStream"
   | "stopFrameStream"
   | "startAudioStream"

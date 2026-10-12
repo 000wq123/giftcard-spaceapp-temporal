@@ -25,6 +25,10 @@ import type {
   BrowserHostBinaryFrame,
   BrowserHostCaptureContext,
   BrowserHostDiagnostics,
+  BrowserHostGoogleAccountCheck,
+  BrowserHostGoogleAccountIdentity,
+  BrowserHostPaneProfileAdoption,
+  BrowserHostPaneProfileSource,
   BrowserHostHealth,
   BrowserHostPageList,
   BrowserHostRuntimeInput,
@@ -88,6 +92,13 @@ export class BrowserHostClient {
   stopCapture(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob> { return this.request("stopCapture", { pane, jobId, traceId, context }) as Promise<BrowserCaptureJob>; }
   cancelCapture(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob> { return this.request("cancelCapture", { pane, jobId, traceId, context }) as Promise<BrowserCaptureJob>; }
   diagnostics(pane: Pane, includeNetwork: boolean, limit: number): Promise<BrowserHostDiagnostics> { return this.request("diagnostics", { pane, includeNetwork, limit }) as Promise<BrowserHostDiagnostics>; }
+  checkGoogleAccount(identity: BrowserHostGoogleAccountIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<BrowserHostGoogleAccountCheck> {
+    return this.request("checkGoogleAccount", { identity, launch, context }) as Promise<BrowserHostGoogleAccountCheck>;
+  }
+  adoptPaneGoogleProfile(source: BrowserHostPaneProfileSource, context?: BrowserHostActorContext): Promise<BrowserHostPaneProfileAdoption> {
+    // paneId scopes the request so it is ordered with that pane's other host work.
+    return this.request("adoptPaneGoogleProfile", { source, paneId: source.paneId, context }) as Promise<BrowserHostPaneProfileAdoption>;
+  }
 
   async startFrameStream(
     sessionId: string,

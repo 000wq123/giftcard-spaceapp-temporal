@@ -7,29 +7,43 @@ import type {
   StreamingOverlaySettings,
   StreamingOverlaySnapshot,
   StreamingOverlayTile,
-  StreamingPlatformAccount,
-  StreamingProvider
+  StreamingPlatformAccount
 } from "@space/contracts";
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   GripVertical,
+  LayoutGrid,
   Loader2,
   Music2,
+  Plug,
   Radio,
   RefreshCw,
   Save,
   Trash2,
+  Unplug,
   Youtube,
   Discord,
   XSocialIcon
 } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { SpaceApiError, api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
+import { useIsDockActive } from "../docks/dock-active-context.js";
+import {
+  DockButton,
+  DockIconButton,
+  DockNotice,
+  DockState,
+  DockToolbar,
+  useDockConfirm
+} from "../dock-kit/DockKit.js";
 import {
   StreamingMetricGrid,
   useStreamingOverlay
@@ -39,6 +53,14 @@ import { StreamingMemoryTab } from "./StreamingMemoryTab.js";
 import { StreamingModerationTab } from "./StreamingModerationTab.js";
 import { StreamingActivityTab } from "./StreamingActivityTab.js";
 import { streamingCapabilities } from "./streaming-capabilities.js";
+import {
+  accountStatusLabel,
+  authorizationStatusLabel,
+  providerLabel,
+  readableCode,
+  readinessCodeLabel,
+  readinessStatusLabel
+} from "./streaming-labels.js";
 import "./streaming.css";
 
 type StreamingDraft = Pick<StreamingOverlaySettings, "tiles" | "customTextEnabled" | "customText"> & {
@@ -48,14 +70,22 @@ type StreamingDraft = Pick<StreamingOverlaySettings, "tiles" | "customTextEnable
 const PROVIDERS: StreamingOAuthProvider[] = ["YOUTUBE", "TWITCH", "TIKTOK", "X", "DISCORD"];
 const PERIODS: StreamingAnalyticsPeriod[] = [7, 28, 90];
 
-function providerLabel(provider: StreamingProvider): string {
-  if (provider === "YOUTUBE") return "YouTube";
-  if (provider === "TWITCH") return "Twitch";
-  if (provider === "TIKTOK") return "TikTok";
-  if (provider === "X") return "X";
-  if (provider === "DISCORD") return "Discord";
-  return "Space";
-}
+type StreamingTab = "overview" | "bot" | "memory" | "moderation" | "display" | "activity";
+
+const TABS: ReadonlyArray<{ id: StreamingTab; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "bot", label: "Bot" },
+  { id: "memory", label: "Memory" },
+  { id: "moderation", label: "Moderation" },
+  { id: "display", label: "Display" },
+  { id: "activity", label: "Activity" }
+];
+
+const readinessTone: Record<string, string> = {
+  READY: "is-success",
+  UNCONFIGURED: "is-warning",
+  ERROR: "is-danger"
+};
 
 function ProviderIcon({ provider }: { provider: StreamingOAuthProvider }) {
   if (provider === "YOUTUBE") return <Youtube aria-hidden="true" />;
@@ -135,7 +165,11 @@ function draftPreview(
 
 export function StreamingDock() {
   const runtime = getSpaceRuntime();
-  const [activeTab, setActiveTab] = useState<"overview" | "bot" | "memory" | "moderation" | "display" | "activity">("overview");
+  const isDockActive = useIsDockActive();
+  const { confirm, confirmDialog } = useDockConfirm();
+  const tabsId = useId();
+  const tabRefs = useRef(new Map<StreamingTab, HTMLButtonElement>());
+  const [activeTab, setActiveTab] = useState<StreamingTab>("overview");
   const {
     enabled,
     setEnabled,
@@ -149,14 +183,20 @@ export function StreamingDock() {
   const [draft, setDraft] = useState<StreamingDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [copiedProvider, setCopiedProvider] = useState<StreamingOAuthProvider | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<StreamingOAuthProvider>>(() => new Set());
+  /** The preview the operator asked for; it only polls while the dock is visible. */
+  const [previewRequested, setPreviewRequested] = useState(false);
+  /** Shows "saved" after an overlay save until the next edit. */
+  const [justSaved, setJustSaved] = useState(false);
   const mounted = useRef(true);
   const savingRef = useRef(false);
   const queuedDraftRef = useRef<StreamingDraft | null>(null);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasUnsavedChangesRef = useRef(false);
 
   const toggleProviderExpanded = useCallback((provider: StreamingOAuthProvider) => {
@@ -190,7 +230,7 @@ export function StreamingDock() {
       const nextDraft = settingsDraft(saved);
       setDraft(nextDraft);
       setCatalog((current) => current ? { ...current, settings: saved } : current);
-      setNotice("Overlay settings saved.");
+      setJustSaved(true);
       await refreshSnapshot();
     } catch (saveError) {
       if (saveError instanceof SpaceApiError && saveError.status === 409) {
@@ -246,9 +286,35 @@ export function StreamingDock() {
     return () => {
       mounted.current = false;
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
       setPreviewActive(false);
     };
   }, [loadCatalog, setPreviewActive]);
+
+  // The draft preview polls the overlay snapshot; pause it while the dock is hidden.
+  useEffect(() => {
+    setPreviewActive(previewRequested && isDockActive);
+  }, [isDockActive, previewRequested, setPreviewActive]);
+
+  // Window focus (for example after finishing OAuth in another tab) reloads
+  // the catalog, but only while the dock is visible. Becoming visible again
+  // catches up once.
+  const wasDockActiveRef = useRef(isDockActive);
+  useEffect(() => {
+    const becameActive = isDockActive && !wasDockActiveRef.current;
+    wasDockActiveRef.current = isDockActive;
+    if (!isDockActive) return;
+    if (becameActive) {
+      void loadCatalog();
+      void refreshSnapshot();
+    }
+    function handleWindowFocus() {
+      void loadCatalog();
+      void refreshSnapshot();
+    }
+    window.addEventListener("focus", handleWindowFocus);
+    return () => window.removeEventListener("focus", handleWindowFocus);
+  }, [isDockActive, loadCatalog, refreshSnapshot]);
 
   useEffect(() => {
     function handleOAuthMessage(event: MessageEvent) {
@@ -304,6 +370,7 @@ export function StreamingDock() {
       return nextDraft;
     });
     setNotice(null);
+    setJustSaved(false);
   }
 
   function toggleMetric(metric: StreamingMetricDefinition, account: StreamingPlatformAccount | null) {
@@ -471,89 +538,209 @@ export function StreamingDock() {
     }
   }
 
+  async function copyConnectLink(provider: StreamingOAuthProvider) {
+    setPendingAction(`copy:${provider}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.startStreamingOAuth(provider);
+      const targetUrl = result.authorizationUrl.startsWith("http")
+        ? result.authorizationUrl
+        : new URL(result.authorizationUrl, window.location.origin).toString();
+      await writeClipboardText(targetUrl);
+      setCopiedProvider(provider);
+      if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = setTimeout(() => {
+        setCopiedProvider((current) => (current === provider ? null : current));
+      }, 2500);
+      setNotice(`${providerLabel(provider)} login link copied to clipboard.`);
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : "Provider login link could not be copied.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   async function saveOverlay() {
     if (!draft) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     await saveDraftDirect(draft);
   }
 
+  async function removeAccount(account: StreamingPlatformAccount) {
+    const accepted = await confirm({
+      title: `Remove ${account.displayName}?`,
+      message: "Space stops reading this account and its overlay tiles show no value. You can connect it again later.",
+      confirmLabel: "Remove account"
+    });
+    if (!accepted) return;
+    await runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`);
+  }
+
+  async function disconnectAuthorization(authorizationId: string, provider: StreamingOAuthProvider, accountCount: number) {
+    const label = providerLabel(provider);
+    const accepted = await confirm({
+      title: `Disconnect ${label}?`,
+      message: `Space loses access to ${accountCount === 1 ? "the connected account" : `${accountCount} connected accounts`} until you connect ${label} again.`,
+      confirmLabel: "Disconnect"
+    });
+    if (!accepted) return;
+    await runAction(`disconnect:${authorizationId}`, () => api.disconnectStreamingAuthorization(authorizationId), `${label} authorization was disconnected.`);
+  }
+
+  function updateCustomText(update: Partial<Pick<StreamingDraft, "customText" | "customTextEnabled">>) {
+    setDraft((current) => {
+      if (!current) return current;
+      const nextDraft = { ...current, ...update };
+      scheduleAutoSave(nextDraft);
+      return nextDraft;
+    });
+    setJustSaved(false);
+  }
+
+  function selectTab(tab: StreamingTab, focus = false) {
+    setActiveTab(tab);
+    if (focus) tabRefs.current.get(tab)?.focus();
+  }
+
+  function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next = -1;
+    if (event.key === "ArrowRight") next = (index + 1) % TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = TABS.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    selectTab(TABS[next]!.id, true);
+  }
+
   if (loading && !catalog) {
-    return <div className="dock-panel streaming-dock" role="status"><Loader2 className="spin" aria-hidden="true" /> Loading streaming integrations…</div>;
+    return (
+      <div className="dock-panel streaming-dock">
+        <DockState kind="loading" title="Loading streaming integrations…" />
+      </div>
+    );
   }
 
   if (!catalog || !draft) {
     return (
       <div className="dock-panel streaming-dock">
-        <h2>Streaming</h2>
-        {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
-        <button type="button" onClick={() => void loadCatalog()}><RefreshCw aria-hidden="true" /> Retry</button>
+        <DockState
+          kind="error"
+          title="Streaming integrations could not be loaded"
+          detail={error ?? "Try again in a moment."}
+          action={{ label: "Try again", icon: RefreshCw, onClick: () => void loadCatalog() }}
+        />
       </div>
     );
   }
 
   const preview = draftPreview(catalog, draft, snapshot);
+  const saving = pendingAction === "save";
+  const spaceMetrics = catalog.metrics.filter((metric) => metric.provider === "SPACE");
+  const allSpaceMetricsSelected = spaceMetrics.every((metric) =>
+    draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000SPACE`)
+  );
+  const showsOverlaySettings = activeTab === "overview" || activeTab === "display";
 
   return (
     <div className="dock-panel streaming-dock" aria-label="Streaming controls">
-      <header className="streaming-dock-header">
-        <div>
-          <span className="streaming-eyebrow">Broadcast companion</span>
-          <h2><Radio aria-hidden="true" /> Streaming</h2>
-        </div>
-        <button type="button" className="icon-button" aria-label="Refresh streaming integrations" title="Refresh" onClick={() => void loadCatalog()} disabled={loading}>
-          <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
-        </button>
-      </header>
-      <nav className="streaming-dock-tabs" aria-label="Streaming dock sections">
-        <button type="button" className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
-        <button type="button" className={activeTab === "bot" ? "active" : ""} onClick={() => setActiveTab("bot")}>Bot</button>
-        <button type="button" className={activeTab === "memory" ? "active" : ""} onClick={() => setActiveTab("memory")}>Memory</button>
-        <button type="button" className={activeTab === "moderation" ? "active" : ""} onClick={() => setActiveTab("moderation")}>Moderation</button>
-        <button type="button" className={activeTab === "display" ? "active" : ""} onClick={() => setActiveTab("display")}>Display</button>
-        <button type="button" className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Activity</button>
-      </nav>
-
-      {activeTab === "bot" ? <StreamingBotTab /> : activeTab === "memory" ? <StreamingMemoryTab /> :
-        activeTab === "moderation" ? <StreamingModerationTab /> : activeTab === "activity" ? <StreamingActivityTab /> : (<>
-      {activeTab === "display" ? (
-      <section className="streaming-session-card" aria-labelledby="streaming-session-heading">
-        <div>
-          <h3 id="streaming-session-heading">This window</h3>
-          <p>Overlay activation stays in this tab and is never saved globally.</p>
-        </div>
-        <SpaceToggle
-          className="streaming-session-toggle"
-          checked={enabled}
-          label="Overlay"
-          onChange={setEnabled}
+      <DockToolbar
+        className="streaming-toolbar"
+        summary={<>Broadcast companion · overlay <strong>{enabled ? "on" : "off"}</strong> in this window</>}
+      >
+        <DockIconButton
+          label="Refresh streaming integrations"
+          icon={RefreshCw}
+          busy={loading}
+          disabled={loading}
+          onClick={() => void loadCatalog()}
         />
-      </section>
+      </DockToolbar>
+
+      <div className="streaming-dock-tabs" role="tablist" aria-label="Streaming dock sections">
+        {TABS.map((tab, index) => {
+          const selected = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              ref={(element) => {
+                if (element) tabRefs.current.set(tab.id, element);
+                else tabRefs.current.delete(tab.id);
+              }}
+              type="button"
+              role="tab"
+              id={`${tabsId}-tab-${tab.id}`}
+              aria-selected={selected}
+              aria-controls={`${tabsId}-panel`}
+              tabIndex={selected ? 0 : -1}
+              className={`streaming-dock-tab${selected ? " is-selected" : ""}`}
+              onClick={() => selectTab(tab.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        className="streaming-tab-panel"
+        role="tabpanel"
+        id={`${tabsId}-panel`}
+        aria-labelledby={`${tabsId}-tab-${activeTab}`}
+      >
+      {activeTab === "bot" ? <StreamingBotTab /> : activeTab === "memory" ? <StreamingMemoryTab /> :
+        activeTab === "moderation" ? <StreamingModerationTab /> : activeTab === "activity" ? <StreamingActivityTab /> : null}
+
+      {showsOverlaySettings ? (
+        <div className="streaming-status-stack">
+          {saving ? (
+            <DockNotice tone="info" className="streaming-save-status">Saving overlay changes…</DockNotice>
+          ) : isDirty ? (
+            <DockNotice tone="warning" className="streaming-save-status">
+              <span>Unsaved overlay changes</span>
+              <DockButton icon={Save} className="streaming-save-now" onClick={() => void saveOverlay()} disabled={pendingAction !== null}>
+                Save now
+              </DockButton>
+            </DockNotice>
+          ) : justSaved ? (
+            <DockNotice tone="success" className="streaming-save-status" onDismiss={() => setJustSaved(false)}>Overlay changes saved.</DockNotice>
+          ) : null}
+          {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+          {notice ? <DockNotice tone="info" onDismiss={() => setNotice(null)}>{notice}</DockNotice> : null}
+        </div>
       ) : null}
 
-      {error ? <div className="streaming-message error" role="alert">{error}</div> : null}
-      {notice ? <div className="streaming-message notice" role="status">{notice}</div> : null}
-      {isDirty ? (
-        <div className="streaming-unsaved-banner" role="status">
-          <span>Unsaved overlay changes</span>
-          <button type="button" onClick={() => void saveOverlay()} disabled={pendingAction !== null}>
-            {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save now
-          </button>
-        </div>
+      {activeTab === "display" ? (
+        <section className="streaming-session-card" aria-labelledby="streaming-session-heading">
+          <div>
+            <h3 id="streaming-session-heading" className="dock-kit-section-title">This window</h3>
+            <p className="streaming-hint">Overlay activation stays in this tab and is never saved globally.</p>
+          </div>
+          <SpaceToggle
+            className="streaming-session-toggle"
+            checked={enabled}
+            label="Overlay"
+            onChange={setEnabled}
+          />
+        </section>
       ) : null}
 
       {activeTab === "overview" ? <>
       <section className="streaming-section" aria-labelledby="streaming-providers-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Official connections</span><h3 id="streaming-providers-heading">Providers <small>{draft.tiles.length}/64</small></h3></div>
+          <h3 id="streaming-providers-heading" className="dock-kit-section-title">Providers</h3>
+          <span className="streaming-tile-count" title="Overlay tiles in use"><span>{draft.tiles.length}/64</span> tiles</span>
           {catalog.accounts.length > 0 ? (
-            <button
-              type="button"
+            <DockButton
+              tone="ghost"
               className="streaming-select-all-button"
               onClick={toggleAllProviderMetrics}
               aria-label={allProviderMetricsSelected ? "Deselect all provider metrics" : "All provider metrics"}
             >
               {allProviderMetricsSelected ? "Deselect all" : "All provider metrics"}
-            </button>
+            </DockButton>
           ) : null}
         </div>
         <div className="streaming-provider-list">
@@ -573,6 +760,7 @@ export function StreamingDock() {
                   aria-label={`Toggle ${providerLabel(provider)}`}
                   onClick={() => toggleProviderExpanded(provider)}
                   onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return;
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       toggleProviderExpanded(provider);
@@ -583,29 +771,45 @@ export function StreamingDock() {
                   <div className="streaming-provider-meta">
                     <div className="streaming-provider-meta-row">
                       <h4>{providerLabel(provider)}</h4>
-                      <span className={`streaming-readiness status-${readiness?.status.toLowerCase() ?? "error"}`}>{readiness?.status ?? "ERROR"}</span>
+                      <span className={`dock-kit-badge streaming-readiness ${readinessTone[readiness?.status ?? "ERROR"] ?? ""}`}>{readinessStatusLabel(readiness?.status)}</span>
                       {accounts.length > 0 ? (
-                        <span className="streaming-provider-account-badge">
+                        <span className="dock-kit-badge">
                           {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
                         </span>
                       ) : null}
                     </div>
                     {readiness?.status !== "READY" && readiness?.code ? (
-                      <code className="streaming-safe-code">{readiness.code}</code>
+                      <span className="streaming-readiness-detail">{readinessCodeLabel(readiness.code)}</span>
                     ) : null}
                   </div>
                   <div className="streaming-provider-header-actions">
-                    <button
-                      type="button"
+                    <DockButton
+                      tone={accounts.length > 0 ? "default" : "primary"}
+                      icon={Plug}
+                      busy={pendingAction === `connect:${provider}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         void connect(provider);
                       }}
                       disabled={!ready || pendingAction !== null}
                     >
-                      {pendingAction === `connect:${provider}` ? <Loader2 className="spin" aria-hidden="true" /> : null}
                       {accounts.length > 0 ? "Connect another" : "Connect"}
-                    </button>
+                    </DockButton>
+                    <DockButton
+                      tone="ghost"
+                      className={`streaming-copy-link-btn ${copiedProvider === provider ? "is-copied" : ""}`}
+                      icon={copiedProvider === provider ? Check : Copy}
+                      busy={pendingAction === `copy:${provider}`}
+                      title={copiedProvider === provider ? "Link copied" : `Copy ${providerLabel(provider)} login link`}
+                      aria-label={copiedProvider === provider ? "Link copied" : `Copy ${providerLabel(provider)} login link`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void copyConnectLink(provider);
+                      }}
+                      disabled={!ready || pendingAction !== null}
+                    >
+                      {copiedProvider === provider ? "Copied" : "Copy link"}
+                    </DockButton>
                     <span
                       className="streaming-provider-chevron"
                       role="button"
@@ -630,9 +834,9 @@ export function StreamingDock() {
 
                 {isExpanded ? (
                   <div className="streaming-provider-body">
-                    <p className="streaming-provider-detail">{readiness?.message ?? "Provider readiness is unavailable."}</p>
+                    <p className="streaming-hint">{readiness?.message ?? "Provider readiness is unavailable."}</p>
 
-                    {accounts.length === 0 ? <p className="streaming-empty">No connected accounts.</p> : (
+                    {accounts.length === 0 ? <p className="streaming-hint">No accounts connected yet.</p> : (
                       <ul className="streaming-account-list">
                         {accounts.map((account) => {
                           const capabilities = streamingCapabilities(account, authorizations.find(item => item.id === account.authorizationId));
@@ -642,14 +846,17 @@ export function StreamingDock() {
                           return (
                             <li key={account.id} className="streaming-account-card">
                               <div className="streaming-account-heading">
-                                <div><strong>{account.displayName}</strong><span>{account.badge} · {account.status}</span></div>
+                                <div><strong>{account.displayName}</strong><span>{account.badge} · {accountStatusLabel(account.status)}</span></div>
                                 <div className="streaming-inline-actions">
-                                  <button type="button" onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)} disabled={pendingAction !== null}>
-                                    <CheckCircle2 aria-hidden="true" /> Verify
-                                  </button>
-                                  <button type="button" className="danger" onClick={() => void runAction(`remove:${account.id}`, () => api.removeStreamingAccount(account.id), `${account.displayName} was removed.`)} disabled={pendingAction !== null}>
-                                    <Trash2 aria-hidden="true" /> Remove account
-                                  </button>
+                                  <DockButton icon={CheckCircle2} busy={pendingAction === `verify:${account.id}`}
+                                    onClick={() => void runAction(`verify:${account.id}`, () => api.verifyStreamingAccount(account.id), `${account.displayName} was verified.`)}
+                                    disabled={pendingAction !== null}>
+                                    Verify
+                                  </DockButton>
+                                  <DockButton icon={Trash2} className="streaming-danger-button" busy={pendingAction === `remove:${account.id}`}
+                                    onClick={() => void removeAccount(account)} disabled={pendingAction !== null}>
+                                    Remove account
+                                  </DockButton>
                                 </div>
                               </div>
                               <div className="streaming-capability-grid" aria-label={`Capabilities for ${account.displayName}`}>
@@ -674,18 +881,16 @@ export function StreamingDock() {
                                   <span className="streaming-capability-status">{capabilities.moderate ? "ON" : "OFF"}</span>
                                 </div>
                               </div>
-                              {capabilities.reason ? <small>{capabilities.reason}</small> : null}
-                              {account.safeErrorMessage ? <div className="streaming-safe-error"><code>{account.safeErrorCode}</code><span>{account.safeErrorMessage}</span></div> : null}
+                              {capabilities.reason ? <small className="streaming-hint">{capabilities.reason}</small> : null}
+                              {account.safeErrorMessage ? (
+                                <p className="streaming-safe-error" title={account.safeErrorCode ? readableCode(account.safeErrorCode) : undefined}>{account.safeErrorMessage}</p>
+                              ) : null}
                               <fieldset className="streaming-metric-options" aria-label={`Metrics for ${account.displayName}`}>
                                 <div className="streaming-metric-header">
                                   <span className="streaming-metric-title">Metrics for {account.displayName}</span>
-                                  <button
-                                    type="button"
-                                    className="streaming-select-all-button"
-                                    onClick={() => toggleAllAccountMetrics(account)}
-                                  >
+                                  <DockButton tone="ghost" className="streaming-select-all-button" onClick={() => toggleAllAccountMetrics(account)}>
                                     {allSelected ? "Deselect all" : "All metrics"}
-                                  </button>
+                                  </DockButton>
                                 </div>
                                 {accountMetrics(catalog, account).map((metric) => {
                                   const checked = draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000${account.id}`);
@@ -694,21 +899,11 @@ export function StreamingDock() {
                                       key={metric.key}
                                       checked={checked}
                                       label={metric.label}
-                                      detail={metric.category.toLowerCase()}
+                                      detail={readableCode(metric.category)}
                                       onChange={() => toggleMetric(metric, account)}
                                     />
                                   );
                                 })}
-                                {isDirty ? (
-                                  <button
-                                    type="button"
-                                    className="streaming-quick-save"
-                                    onClick={() => void saveOverlay()}
-                                    disabled={pendingAction !== null}
-                                  >
-                                    {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save changes
-                                  </button>
-                                ) : null}
                               </fieldset>
                             </li>
                           );
@@ -720,11 +915,15 @@ export function StreamingDock() {
                       <div className="streaming-authorizations">
                         {authorizations.map((authorization) => (
                           <div key={authorization.id}>
-                            <span>{authorization.accountCount} account{authorization.accountCount === 1 ? "" : "s"} · {authorization.status}</span>
-                            <button type="button" className="danger" onClick={() => void runAction(`disconnect:${authorization.id}`, () => api.disconnectStreamingAuthorization(authorization.id), `${providerLabel(provider)} authorization was disconnected.`)} disabled={pendingAction !== null}>
+                            <span>{authorization.accountCount} account{authorization.accountCount === 1 ? "" : "s"} · {authorizationStatusLabel(authorization.status)}</span>
+                            <DockButton icon={Unplug} className="streaming-danger-button" busy={pendingAction === `disconnect:${authorization.id}`}
+                              onClick={() => void disconnectAuthorization(authorization.id, provider, authorization.accountCount)}
+                              disabled={pendingAction !== null}>
                               Disconnect authorization
-                            </button>
-                            {authorization.safeErrorMessage ? <p className="streaming-safe-error"><code>{authorization.safeErrorCode}</code><span>{authorization.safeErrorMessage}</span></p> : null}
+                            </DockButton>
+                            {authorization.safeErrorMessage ? (
+                              <p className="streaming-safe-error" title={authorization.safeErrorCode ? readableCode(authorization.safeErrorCode) : undefined}>{authorization.safeErrorMessage}</p>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -738,21 +937,15 @@ export function StreamingDock() {
       </section>
 
       <section className="streaming-section" aria-labelledby="streaming-space-heading">
-        <div className="streaming-section-heading"><div><span className="streaming-eyebrow">Built in</span><h3 id="streaming-space-heading">Space metrics</h3></div></div>
+        <div className="streaming-section-heading"><h3 id="streaming-space-heading" className="dock-kit-section-title">Space metrics</h3></div>
         <fieldset className="streaming-metric-options streaming-space-options" aria-label="Metrics from this Space installation">
           <div className="streaming-metric-header">
             <span className="streaming-metric-title">Metrics from this Space installation</span>
-            <button
-              type="button"
-              className="streaming-select-all-button"
-              onClick={toggleAllSpaceMetrics}
-            >
-              {catalog.metrics.filter((metric) => metric.provider === "SPACE").every((metric) =>
-                draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000SPACE`)
-              ) ? "Deselect all" : "All metrics"}
-            </button>
+            <DockButton tone="ghost" className="streaming-select-all-button" onClick={toggleAllSpaceMetrics}>
+              {allSpaceMetricsSelected ? "Deselect all" : "All metrics"}
+            </DockButton>
           </div>
-          {catalog.metrics.filter((metric) => metric.provider === "SPACE").map((metric) => (
+          {spaceMetrics.map((metric) => (
             <SpaceToggle
               key={metric.key}
               checked={draft.tiles.some((tile) => tileIdentity(tile) === `${metric.key}\u0000SPACE`)}
@@ -767,14 +960,23 @@ export function StreamingDock() {
       {activeTab === "display" ? (
       <section className="streaming-section" aria-labelledby="streaming-layout-heading">
         <div className="streaming-section-heading">
-          <div><span className="streaming-eyebrow">Global order</span><h3 id="streaming-layout-heading">Overlay layout</h3></div>
-          <strong className={draft.tiles.length >= 64 ? "at-limit" : ""}>{draft.tiles.length}/64</strong>
+          <h3 id="streaming-layout-heading" className="dock-kit-section-title">Overlay layout</h3>
+          <span className={`streaming-tile-count${draft.tiles.length >= 64 ? " at-limit" : ""}`}>{draft.tiles.length}/64</span>
         </div>
-        {draft.tiles.length === 0 ? <p className="streaming-empty">Select metrics above to build the overlay.</p> : (
+        {draft.tiles.length === 0 ? (
+          <DockState
+            kind="empty"
+            icon={LayoutGrid}
+            title="No overlay tiles yet"
+            detail="Turn on metrics in the Overview tab to build the overlay."
+            action={{ label: "Go to Overview", onClick: () => selectTab("overview", true) }}
+          />
+        ) : (
           <ol className="streaming-layout-list" aria-label="Streaming overlay tile order">
             {draft.tiles.map((tile, index) => {
               const metric = metricsByKey.get(tile.metricKey);
               const account = tile.accountId ? accountsById.get(tile.accountId) : null;
+              const label = metric?.label ?? tile.metricKey;
               return (
                 <li
                   key={`${tileIdentity(tile)}:${index}`}
@@ -787,21 +989,21 @@ export function StreamingDock() {
                   }}
                   onDragEnd={() => setDragIndex(null)}
                 >
-                  <GripVertical aria-label={`Drag ${metric?.label ?? tile.metricKey}`} />
-                  <div><strong>{metric?.label ?? tile.metricKey}</strong><span>{account?.badge ?? "Space"}</span></div>
+                  <GripVertical aria-label={`Drag ${label}`} />
+                  <div><strong>{label}</strong><span>{account?.badge ?? "Space"}</span></div>
                   <div className="streaming-layout-row-controls">
                     {metric?.analyticsPeriod ? (
                       <label className="streaming-period-select">
                         <span>Period</span>
-                        <select value={tile.analyticsPeriod ?? 28} onChange={(event) => updateTilePeriod(index, Number(event.target.value) as StreamingAnalyticsPeriod)}>
+                        <select className="dock-kit-select" value={tile.analyticsPeriod ?? 28} onChange={(event) => updateTilePeriod(index, Number(event.target.value) as StreamingAnalyticsPeriod)}>
                           {PERIODS.map((period) => <option value={period} key={period}>{period} days</option>)}
                         </select>
                       </label>
                     ) : null}
                     <div className="streaming-order-actions">
-                      <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} earlier`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index - 1))} disabled={index === 0}><ChevronLeft aria-hidden="true" /></button>
-                      <button type="button" aria-label={`Move ${metric?.label ?? tile.metricKey} later`} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index + 1))} disabled={index === draft.tiles.length - 1}><ChevronRight aria-hidden="true" /></button>
-                      <button type="button" aria-label={`Remove ${metric?.label ?? tile.metricKey}`} onClick={() => setDraftTiles((tiles) => tiles.filter((_, tileIndex) => tileIndex !== index))}><Trash2 aria-hidden="true" /></button>
+                      <DockIconButton label={`Move ${label} earlier`} icon={ChevronLeft} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index - 1))} disabled={index === 0} />
+                      <DockIconButton label={`Move ${label} later`} icon={ChevronRight} onClick={() => setDraftTiles((tiles) => moveItem(tiles, index, index + 1))} disabled={index === draft.tiles.length - 1} />
+                      <DockIconButton label={`Remove ${label}`} icon={Trash2} tone="danger" onClick={() => setDraftTiles((tiles) => tiles.filter((_, tileIndex) => tileIndex !== index))} />
                     </div>
                   </div>
                 </li>
@@ -814,54 +1016,41 @@ export function StreamingDock() {
           <SpaceToggle
             checked={draft.customTextEnabled}
             label="Custom footer text"
-            onChange={(checked) => {
-              setDraft((current) => {
-                if (!current) return current;
-                const nextDraft = { ...current, customTextEnabled: checked };
-                scheduleAutoSave(nextDraft);
-                return nextDraft;
-              });
-            }}
+            onChange={(checked) => updateCustomText({ customTextEnabled: checked })}
           />
           <textarea
+            className="dock-kit-field"
             aria-label="Streaming overlay custom text"
             rows={2}
             maxLength={160}
             value={draft.customText}
-            onChange={(event) => {
-              const text = twoLineText(event.target.value);
-              setDraft((current) => {
-                if (!current) return current;
-                const nextDraft = { ...current, customText: text };
-                scheduleAutoSave(nextDraft);
-                return nextDraft;
-              });
-            }}
+            onChange={(event) => updateCustomText({ customText: twoLineText(event.target.value) })}
             placeholder="Optional two-line message"
           />
-          <small>{draft.customText.length}/160 · maximum two lines</small>
+          <small className={`dock-kit-counter${draft.customText.length >= 160 ? " is-over" : ""}`}>{draft.customText.length}/160 · maximum two lines</small>
         </div>
 
         <SpaceToggle
           className="streaming-preview-toggle"
-          checked={previewActive}
+          checked={previewRequested}
           label="Draft preview"
-          onChange={setPreviewActive}
+          onChange={setPreviewRequested}
         />
-        {previewActive ? (
+        {previewRequested ? (
           <div className="streaming-draft-preview" aria-label="Streaming overlay draft preview">
-            {preview.tiles.length > 0 ? <StreamingMetricGrid snapshot={preview} className="streaming-preview-grid" /> : <p className="streaming-empty">No metrics selected.</p>}
+            {preview.tiles.length > 0 ? <StreamingMetricGrid snapshot={preview} className="streaming-preview-grid" /> : <p className="streaming-hint">No metrics selected.</p>}
             {preview.customTextEnabled && preview.customText ? <p className="streaming-overlay-custom-text">{preview.customText}</p> : null}
             {snapshotError ? <p className="streaming-safe-error" role="status">{snapshotError}</p> : null}
           </div>
         ) : null}
 
-        <button type="button" className="streaming-save-button" onClick={() => void saveOverlay()} disabled={pendingAction !== null || draft.tiles.length > 64}>
-          {pendingAction === "save" ? <Loader2 className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />} Save overlay
-        </button>
+        <DockButton tone="primary" icon={Save} busy={saving} className="streaming-save-button" onClick={() => void saveOverlay()} disabled={pendingAction !== null || draft.tiles.length > 64}>
+          Save overlay
+        </DockButton>
       </section>
       ) : null}
-      </>)}
+      </div>
+      {confirmDialog}
     </div>
   );
 }

@@ -25,9 +25,11 @@ import {
   Plus,
   ExternalLink,
   ArrowUpCircle
-} from "lucide-react";
-import type { PluginWithState, PluginCategory } from "@space/contracts";
+} from "../ui-theme/app-icons.js";
+import { isRepositoryProviderId, type PluginWithState, type PluginCategory } from "@space/contracts";
 import "./plugins-settings.css";
+import { SOURCE_CONTROL_CONNECTION_EVENT } from "../source-control/client.js";
+import { RepositoryProvidersSection } from "../source-control/RepositoryProvidersSection.js";
 
 const CATEGORIES: Array<{ id: string; label: string }> = [
   { id: "all", label: "All" },
@@ -178,7 +180,8 @@ export function PluginsSettingsCard() {
   }, []);
 
   const filteredPlugins = useMemo(() => {
-    return plugins.filter((p) => {
+    // Repository providers have their own group with personal enable toggles and credentials.
+    return plugins.filter((p) => !isRepositoryProviderId(p.id)).filter((p) => {
       const matchesSearch =
         p.displayName.toLowerCase().includes(search.toLowerCase()) ||
         p.description.toLowerCase().includes(search.toLowerCase());
@@ -190,7 +193,7 @@ export function PluginsSettingsCard() {
 
   const handleOpenConnect = (plugin: PluginWithState) => {
     setSelectedPlugin(plugin);
-    setCredentials({});
+    setCredentials(plugin.id === "gitea" ? { serverUrl: plugin.authFields.find(f => f.key === "serverUrl")?.placeholder || "" } : {});
     setAccountLabel("");
     setActionError(null);
     setTestResult(null);
@@ -218,6 +221,9 @@ export function PluginsSettingsCard() {
         throw new Error(data.error?.message || data.message || "Connection failed");
       }
       await fetchPlugins();
+      if ((selectedPlugin.id === "github" || selectedPlugin.id === "gitea") && data.status === "CONNECTED") {
+        window.dispatchEvent(new CustomEvent(SOURCE_CONTROL_CONNECTION_EVENT, { detail: { openDock: true } }));
+      }
       handleCloseModal();
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : "Error connecting plugin");
@@ -237,6 +243,7 @@ export function PluginsSettingsCard() {
         throw new Error(data.error?.message || data.message || "Failed to disconnect");
       }
       await fetchPlugins();
+      if (selectedPlugin.id === "github" || selectedPlugin.id === "gitea") window.dispatchEvent(new CustomEvent(SOURCE_CONTROL_CONNECTION_EVENT));
       handleCloseModal();
     } catch (err: unknown) {
       setActionError(err instanceof Error ? err.message : "Error disconnecting");
@@ -258,6 +265,10 @@ export function PluginsSettingsCard() {
       } else {
         const errorMsg = data.error?.message || data.message || "Test failed";
         setActionError(errorMsg);
+      }
+      if (selectedPlugin.id === "github" || selectedPlugin.id === "gitea") {
+        await fetchPlugins();
+        window.dispatchEvent(new CustomEvent(SOURCE_CONTROL_CONNECTION_EVENT));
       }
     } catch {
       setActionError("Handshake probe timed out.");
@@ -426,11 +437,13 @@ export function PluginsSettingsCard() {
         ))}
       </div>
 
+      {activeCategory === "all" || activeCategory === "developer" ? <RepositoryProvidersSection filter={search} /> : null}
+
       <div className="plugins-grid">
         {filteredPlugins.map((plugin) => {
           const isConnected = plugin.connection.status === "CONNECTED";
           return (
-            <div key={plugin.id} className="plugin-card">
+            <div key={plugin.id} className="plugin-card" data-plugin-id={plugin.id}>
               <div className="plugin-card-header">
                 <div className="plugin-info-left">
                   <div className="plugin-icon-wrap">

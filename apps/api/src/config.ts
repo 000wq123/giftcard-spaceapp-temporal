@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
+import { apiPackageVersion } from "./package-version.js";
 import { join } from "node:path";
 import {
   cliChatTurnDefaultRuntimeIds,
+  DOT_WORKSPACE_ROOT,
   mcpServerConfigListSchema,
   voiceTranscriptionModelSchema,
   voiceModelVoiceSchema,
@@ -17,8 +19,13 @@ import {
   type CliRuntimeKey
 } from "./cli-runtime-descriptors.js";
 import { parseLiveModelPolicy, type LiveModelPolicy } from "./live-model-policy.js";
+import { validateT3ApiEnv } from "./t3-env.js";
 
 export interface SpaceApiConfig {
+  t3CodeEnabled: boolean;
+  t3CodeSocketPath: string;
+  t3CodeProxyTimeoutMs: number;
+  t3CodeHealthTimeoutMs: number;
   host: string;
   port: number;
   version: string;
@@ -27,6 +34,7 @@ export interface SpaceApiConfig {
   databasePoolMax: number;
   databasePoolIdleTimeoutMs: number;
   databasePoolConnectionTimeoutMs: number;
+  enableDbSweep: boolean;
   temporalAddress: string;
   temporalNamespace: string;
   temporalTaskQueue: string;
@@ -38,6 +46,10 @@ export interface SpaceApiConfig {
   codexLbBaseUrl: string | null;
   codexLbKeyFile: string | null;
   codexLbKeyName: string | null;
+  /** Space Gateway base URL (the native account load balancer service). */
+  gatewayUrl: string;
+  /** Where Codex account quotas and reset credits come from: "gateway" (Space Gateway) or the legacy public-host bridge. */
+  codexUsageSource: "gateway" | "vm214";
   codexAppServerEnabled: boolean;
   codexAppServerCommand: string;
   codexAppServerTransport: string;
@@ -45,6 +57,8 @@ export interface SpaceApiConfig {
   codexAppServerWebsocketUrl: string | null;
   codexAppServerSchemaDir: string | null;
   codexAppServerHome: string | null;
+  /** Space Dots Stage 7: the operator's versioned model price list. */
+  modelPriceCatalogPath?: string | null;
   codexAppServerKeyFile: string | null;
   codexAppServerKeyEnv: string;
   codexAppServerAllowStdioSpawn: boolean;
@@ -123,6 +137,7 @@ export interface SpaceApiConfig {
   browserEvidenceTargetOrigin: string;
   browserEvidenceTimeoutMs: number;
   appDiagnosticsRoot: string;
+  maintenanceAutopilotStateFile: string;
   browserSessionsEnabled: boolean;
   browserSessionsChromePath: string;
   browserSessionsXvfbPath: string;
@@ -135,6 +150,10 @@ export interface SpaceApiConfig {
   browserSessionsPulseSink: string;
   browserSessionsYouTubeAdBlockEnabled: boolean;
   browserToolBridgeEnabled: boolean;
+  /** Space Dots Stage 3 native tool gateway; SPACE_DOT_TOOL_GATEWAY=disabled is the kill switch. */
+  dotToolGatewayEnabled: boolean;
+  /** Root of every Dot's private workspace (Stage 4). */
+  dotWorkspaceRoot: string;
   browserHostTransport: "in-process" | "unix";
   browserHostSocketPath: string;
   swarmExecutionEnabled: boolean;
@@ -145,6 +164,12 @@ export interface SpaceApiConfig {
   streamingYoutubeDailyQuotaBudget: number;
   demoProjectsEnabled: boolean;
   demoProjectsRoot: string;
+  /** Default parent for named projects created from the UI. */
+  projectsRoot: string;
+  /** SPACE_FILES_HOST_MODE=disabled turns off file-manager Admin (host) Mode for every role. */
+  filesHostModeEnabled: boolean;
+  /** Live installation checkout; projects are never created inside it except under projectsRoot. */
+  installRoot: string;
   demoProjectsVarRoot: string;
   demoProjectsPortStart: number;
   demoProjectsPortEnd: number;
@@ -157,6 +182,8 @@ export interface SpaceApiConfig {
   harnessOrigin: string;
   harnessHealthTimeoutMs: number;
   harnessProxyTimeoutMs: number;
+  /** Managed plan executions: native turns one stage may start before the execution fails (PLAN_STAGE_ATTEMPT_LIMIT). */
+  planStageMaxAttempts: number;
 }
 
 function parseCsvList(raw: string | undefined): string[] {
@@ -198,34 +225,51 @@ function parseVoiceTranscriptionVoice(raw: string | undefined): VoiceModelVoice 
   return parsed.success ? parsed.data : "alloy";
 }
 
+/** Space Gateway listens on loopback by default; an override must be a plain http(s) origin. */
+function parseGatewayUrl(raw: string | undefined): string {
+  const value = raw?.trim() || "http://127.0.0.1:4920";
+  const url = new URL(value);
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) {
+    throw new Error("SPACE_GATEWAY_URL must be an http(s) origin.");
+  }
+  return url.origin;
+}
+
 export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
-  const runtimeStore = env.SPACE_RUNTIME_STORE === "postgres" ? "postgres" : "memory";
+  // Variables in the T3 Env schema are read only from its normalized result.
+  const valid = validateT3ApiEnv(env);
+  const runtimeStore = valid.SPACE_RUNTIME_STORE;
   const mcpConfig = parseMcpServerConfigs(env.SPACE_MCP_SERVERS_JSON);
   const artifactRoot = env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts";
   const geminiMemoryPaths = resolveCanonicalGeminiMemoryPaths(env);
   return {
-    host: env.SPACE_API_HOST ?? "127.0.0.1",
-    port: Number.parseInt(env.SPACE_API_PORT ?? "4910", 10),
-    version: env.npm_package_version ?? "0.1.0",
+    t3CodeEnabled: valid.SPACE_T3CODE_ENABLED !== "false",
+    t3CodeSocketPath: valid.SPACE_T3CODE_SOCKET,
+    t3CodeProxyTimeoutMs: valid.SPACE_T3CODE_PROXY_TIMEOUT_MS,
+    t3CodeHealthTimeoutMs: valid.SPACE_T3CODE_HEALTH_TIMEOUT_MS,
+    host: valid.SPACE_API_HOST,
+    port: valid.SPACE_API_PORT,
+    version: apiPackageVersion,
     runtimeStore,
-    databaseUrl: env.SPACE_DATABASE_URL ?? null,
-    databasePoolMax: Math.min(parsePositiveInt(env.SPACE_DATABASE_POOL_MAX, 10), 100),
-    databasePoolIdleTimeoutMs: Math.min(parsePositiveInt(env.SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS, 30000), 300000),
-    databasePoolConnectionTimeoutMs: Math.min(
-      parsePositiveInt(env.SPACE_DATABASE_POOL_CONNECTION_TIMEOUT_MS, 5000),
-      30000
-    ),
-    temporalAddress: env.SPACE_TEMPORAL_ADDRESS ?? "127.0.0.1:7233",
-    temporalNamespace: env.SPACE_TEMPORAL_NAMESPACE ?? "default",
-    temporalTaskQueue: env.SPACE_TEMPORAL_TASK_QUEUE ?? "space-agent-turns",
+    databaseUrl: valid.SPACE_DATABASE_URL ?? null,
+    databasePoolMax: Math.min(valid.SPACE_DATABASE_POOL_MAX ?? 10, 100),
+    databasePoolIdleTimeoutMs: Math.min(valid.SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS ?? 30000, 300000),
+    databasePoolConnectionTimeoutMs: Math.min(valid.SPACE_DATABASE_POOL_CONNECTION_TIMEOUT_MS ?? 5000, 30000),
+    enableDbSweep: valid.SPACE_ENABLE_DB_SWEEP !== "false" && valid.SPACE_ENABLE_DB_SWEEP !== "0",
+    temporalAddress: valid.SPACE_TEMPORAL_ADDRESS ?? "127.0.0.1:7233",
+    temporalNamespace: valid.SPACE_TEMPORAL_NAMESPACE ?? "default",
+    temporalTaskQueue: valid.SPACE_TEMPORAL_TASK_QUEUE ?? "space-agent-turns",
+    // Only the public small profile turns workflows off; private installations always require the worker.
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
-    enableDummyTurns: env.SPACE_ENABLE_DUMMY_TURNS === "true",
-    enableCodexTurns: env.SPACE_ENABLE_CODEX_TURNS === "true",
-    agentPaneEnabled: env.SPACE_AGENT_PANE_ENABLED === "true",
+    enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
+    enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
+    agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",
     codexLbConfigured: Boolean(env.SPACE_CODEX_LB_BASE_URL && env.SPACE_CODEX_LB_KEY_FILE),
     codexLbBaseUrl: env.SPACE_CODEX_LB_BASE_URL || null,
     codexLbKeyFile: env.SPACE_CODEX_LB_KEY_FILE || null,
     codexLbKeyName: env.SPACE_CODEX_LB_KEY_NAME || null,
+    gatewayUrl: parseGatewayUrl(env.SPACE_GATEWAY_URL),
+    codexUsageSource: env.SPACE_CODEX_USAGE_SOURCE === "gateway" ? "gateway" : "vm214",
     codexAppServerEnabled: env.SPACE_CODEX_APP_SERVER_ENABLED === "true",
     codexAppServerCommand: env.SPACE_CODEX_APP_SERVER_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
     codexAppServerTransport: env.SPACE_CODEX_APP_SERVER_TRANSPORT || "stdio",
@@ -233,6 +277,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     codexAppServerWebsocketUrl: env.SPACE_CODEX_APP_SERVER_WEBSOCKET_URL || null,
     codexAppServerSchemaDir: env.SPACE_CODEX_APP_SERVER_SCHEMA_DIR || null,
     codexAppServerHome: env.SPACE_CODEX_APP_SERVER_HOME || "/var/lib/spaceapp-user/.codex",
+    modelPriceCatalogPath: env.SPACE_MODEL_PRICE_CATALOG || null,
     codexAppServerKeyFile: env.SPACE_CODEX_APP_SERVER_KEY_FILE || null,
     codexAppServerKeyEnv: env.SPACE_CODEX_APP_SERVER_KEY_ENV || "OPENAI_API_KEY",
     codexAppServerAllowStdioSpawn: env.SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN === "true",
@@ -240,21 +285,21 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     codexAppServerAllowTurnSmoke: env.SPACE_CODEX_APP_SERVER_ALLOW_TURN_SMOKE === "true",
     codexRouteCommand: env.SPACE_CODEX_ROUTE_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
     codexRouteSwitchEnabled: env.SPACE_CODEX_ROUTE_SWITCH_ENABLED === "true",
-    cliEnabled: env.SPACE_CLI_ENABLED === "true",
-    cliCommandPath: env.SPACE_CLI_COMMAND_PATH || null,
-    cliWorkspaceRoot: env.SPACE_CLI_WORKSPACE_ROOT || join(artifactRoot, "cli-workspaces"),
-    cliTokenTtlMs: Math.min(parsePositiveInt(env.SPACE_CLI_TOKEN_TTL_MS, 60000), 5 * 60 * 1000),
-    cliHostSocketPath: env.SPACE_CLI_HOST_SOCKET || "/run/space-codex-pane-host/pane-host.sock",
-    cliRootEnabled: env.SPACE_CLI_ROOT_ENABLED === "true",
-    cliAdminHostSocketPath: env.SPACE_CLI_ADMIN_HOST_SOCKET || "/run/space-admin-pane-host/pane-host.sock",
+    cliEnabled: valid.SPACE_CLI_ENABLED === "true",
+    cliCommandPath: valid.SPACE_CLI_COMMAND_PATH ?? null,
+    cliWorkspaceRoot: valid.SPACE_CLI_WORKSPACE_ROOT ?? join(artifactRoot, "cli-workspaces"),
+    cliTokenTtlMs: Math.min(valid.SPACE_CLI_TOKEN_TTL_MS ?? 60000, 5 * 60 * 1000),
+    cliHostSocketPath: valid.SPACE_CLI_HOST_SOCKET ?? "/run/space-codex-pane-host/pane-host.sock",
+    cliRootEnabled: valid.SPACE_CLI_ROOT_ENABLED === "true",
+    cliAdminHostSocketPath: valid.SPACE_CLI_ADMIN_HOST_SOCKET ?? "/run/space-admin-pane-host/pane-host.sock",
     cliCodexDefaultModel: env.SPACE_CLI_CODEX_DEFAULT_MODEL || null,
     cliCodexDefaultReasoningEffort: env.SPACE_CLI_CODEX_DEFAULT_REASONING_EFFORT || null,
     cliRuntimeCommands: configuredCliRuntimeCommands(env),
-    cliVpnEnabled: env.SPACE_CLI_VPN_ENABLED === "true",
+    cliVpnEnabled: valid.SPACE_CLI_VPN_ENABLED === "true",
     cliVpnLauncherPath: env.SPACE_CLI_VPN_LAUNCHER || "/opt/spaceapp/bin/space-cli-vpn-launcher",
     cliCredentialSmoke: configuredCliCredentialSmoke(env),
     cliLoginBootstrap: configuredCliLoginBootstrap(env),
-    cliMaintenanceRepairEnabled: env.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
+    cliMaintenanceRepairEnabled: valid.SPACE_CLI_MAINTENANCE_REPAIR_ENABLED === "true",
     cliKimiLoginBootstrapEnabled: env.SPACE_CLI_KIMI_LOGIN_BOOTSTRAP === "true",
     cliGrokLoginBootstrapEnabled: env.SPACE_CLI_GROK_LOGIN_BOOTSTRAP === "true",
     cliClaudeLoginBootstrapEnabled: env.SPACE_CLI_CLAUDE_LOGIN_BOOTSTRAP === "true",
@@ -313,6 +358,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserEvidenceTargetOrigin: env.SPACE_BROWSER_EVIDENCE_TARGET_ORIGIN || "http://127.0.0.1:4911",
     browserEvidenceTimeoutMs: Number.parseInt(env.SPACE_BROWSER_EVIDENCE_TIMEOUT_MS ?? "20000", 10),
     appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || "/opt/spaceapp/var/app-diagnostics",
+    maintenanceAutopilotStateFile: env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json",
     browserSessionsEnabled: env.SPACE_BROWSER_SESSIONS_ENABLED === "true",
     browserSessionsChromePath: env.SPACE_BROWSER_SESSIONS_CHROME_PATH || env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
     browserSessionsXvfbPath: env.SPACE_BROWSER_SESSIONS_XVFB_PATH || "/usr/bin/Xvfb",
@@ -325,6 +371,8 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserSessionsPulseSink: env.SPACE_BROWSER_SESSIONS_PULSE_SINK || "space_audio",
     browserSessionsYouTubeAdBlockEnabled: env.SPACE_BROWSER_SESSIONS_YOUTUBE_AD_BLOCK_ENABLED !== "false",
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
+    dotToolGatewayEnabled: env.SPACE_DOT_TOOL_GATEWAY !== "disabled",
+    dotWorkspaceRoot: env.SPACE_DOT_WORKSPACE_ROOT?.startsWith("/") ? env.SPACE_DOT_WORKSPACE_ROOT : DOT_WORKSPACE_ROOT,
     browserHostTransport: env.SPACE_BROWSER_HOST_TRANSPORT === "unix" ? "unix" : "in-process",
     browserHostSocketPath: env.SPACE_BROWSER_HOST_SOCKET || "/run/space-browser-host/browser-host.sock",
     swarmExecutionEnabled: env.SPACE_SWARM_EXECUTION_ENABLED === "true",
@@ -333,13 +381,16 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     telegramSecretRoot: env.SPACE_TELEGRAM_SECRET_ROOT || "/opt/spaceapp/secrets/telegram",
     streamingSecretRoot: env.SPACE_STREAMING_SECRET_ROOT || "/opt/spaceapp/var/streaming-secrets",
     streamingYoutubeDailyQuotaBudget: Math.min(parsePositiveInt(env.SPACE_STREAMING_YOUTUBE_DAILY_QUOTA_BUDGET, 8000), 10000),
-    demoProjectsEnabled: env.SPACE_DEMO_PROJECTS_ENABLED !== "false",
-    demoProjectsRoot: env.SPACE_DEMO_PROJECTS_ROOT || "/opt/spaceapp/demos",
-    demoProjectsVarRoot: env.SPACE_DEMO_PROJECTS_VAR_ROOT || "/opt/spaceapp/var/demo-projects",
-    demoProjectsPortStart: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_PORT_START, 4930), 65000),
-    demoProjectsPortEnd: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_PORT_END, 4999), 65500),
-    demoProjectsHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_DEMO_PROJECTS_HEALTH_TIMEOUT_MS, 15000), 60000),
-    demoProjectsPublicOrigin: env.SPACE_DEMO_PROJECTS_PUBLIC_ORIGIN?.trim() || null,
+    demoProjectsEnabled: valid.SPACE_DEMO_PROJECTS_ENABLED !== "false",
+    demoProjectsRoot: valid.SPACE_DEMO_PROJECTS_ROOT ?? "/opt/spaceapp/demos",
+    projectsRoot: valid.SPACE_PROJECTS_ROOT ?? "/opt/spaceapp/projects",
+    filesHostModeEnabled: valid.SPACE_FILES_HOST_MODE !== "disabled",
+    installRoot: valid.SPACE_INSTALL_ROOT ?? "/opt/spaceapp",
+    demoProjectsVarRoot: valid.SPACE_DEMO_PROJECTS_VAR_ROOT ?? "/opt/spaceapp/var/demo-projects",
+    demoProjectsPortStart: Math.min(valid.SPACE_DEMO_PROJECTS_PORT_START ?? 4930, 65000),
+    demoProjectsPortEnd: Math.min(valid.SPACE_DEMO_PROJECTS_PORT_END ?? 4999, 65500),
+    demoProjectsHealthTimeoutMs: Math.min(valid.SPACE_DEMO_PROJECTS_HEALTH_TIMEOUT_MS ?? 15000, 60000),
+    demoProjectsPublicOrigin: valid.SPACE_DEMO_PROJECTS_PUBLIC_ORIGIN ?? null,
     agentToolsWriterCommand:
       env.SPACE_PUBLIC_DISTRIBUTION === "true" ||
       env.SPACE_AGENT_TOOLS_WRITER === "disabled" ||
@@ -351,6 +402,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     harnessEnabled: env.SPACE_HARNESS_ENABLED === "true",
     harnessOrigin: env.SPACE_HARNESS_ORIGIN || "http://10.254.240.21:3080",
     harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),
-    harnessProxyTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_PROXY_TIMEOUT_MS, 30000), 120000)
+    harnessProxyTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_PROXY_TIMEOUT_MS, 30000), 120000),
+    planStageMaxAttempts: valid.SPACE_PLAN_STAGE_MAX_ATTEMPTS ?? 20
   };
 }

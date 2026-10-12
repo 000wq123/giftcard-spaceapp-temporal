@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronUp, GripVertical, X } from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical, X } from "../ui-theme/app-icons.js";
 import { useRailMenuDodge } from "../rail-popover.js";
 import type { DesktopWidgetId } from "./types.js";
-import { DOCK_WIDTH, DOCK_MARGIN_RIGHT, getRailTopBoundary } from "./widget-storage.js";
+import { DOCK_WIDTH, DOCK_MARGIN_RIGHT, getRailTopBoundary, getFloatingTopBoundary } from "./widget-storage.js";
 
 interface DesktopWidgetContainerProps {
   id: DesktopWidgetId;
@@ -64,6 +64,7 @@ export function DesktopWidgetContainer({
     initX: number;
     initY: number;
     initCenterX: number;
+    minFloatingTop: number;
     wasHeaderDocked: boolean;
     wasRailDocked: boolean;
   } | null>(null);
@@ -112,9 +113,8 @@ export function DesktopWidgetContainer({
   );
 
   const isDocked = Boolean(
-    minimized &&
-      !isHeaderDocked &&
-      (isDragging ? (dragRef.current?.wasRailDocked ? isDockedVisual : false) : dockedToRail)
+    !isHeaderDocked &&
+      (isDragging ? (isDockedVisual || dragRef.current?.wasRailDocked) : dockedToRail)
   );
 
   const dodgeShiftX = useRailMenuDodge(containerRef, { x, y, isDragging });
@@ -128,12 +128,13 @@ export function DesktopWidgetContainer({
       const height = el?.offsetHeight || 160;
       const viewportW = window.innerWidth;
       const viewportH = window.innerHeight;
+      const minFloatingTop = getFloatingTopBoundary();
 
-      const maxX = Math.max(12, viewportW - width - 12);
-      const maxY = Math.max(48, viewportH - height - 12);
+      const maxX = Math.max(0, viewportW - width - 8);
+      const maxY = Math.max(minFloatingTop, viewportH - height - 8);
 
-      const targetX = Math.min(Math.max(12, x), maxX);
-      const targetY = Math.min(Math.max(48, y), maxY);
+      const targetX = Math.min(Math.max(0, x), maxX);
+      const targetY = Math.min(Math.max(minFloatingTop, y), maxY);
 
       if (targetX !== x || targetY !== y) {
         onPositionChange(targetX, targetY, false);
@@ -173,13 +174,14 @@ export function DesktopWidgetContainer({
 
       const currentlyHeaderDocked = Boolean(
         headerAvailable &&
-          minimized &&
-          (dockPosition === "header" || dockedToRail)
+          (dockPosition === "header" || (dockedToRail && isMultiColumn))
       );
-      const currentlyRailDocked = Boolean(dockedToRail && minimized && !currentlyHeaderDocked);
+      const currentlyRailDocked = Boolean(dockedToRail && !currentlyHeaderDocked);
 
       let currentVisualX: number;
       let currentVisualY: number;
+
+      const minFloatingTop = getFloatingTopBoundary();
 
       if (currentlyHeaderDocked) {
         const rect = containerRef.current?.getBoundingClientRect();
@@ -190,7 +192,7 @@ export function DesktopWidgetContainer({
         currentVisualY = y;
       } else {
         currentVisualX = x - dodgeShiftX;
-        currentVisualY = y;
+        currentVisualY = Math.max(minFloatingTop, y);
       }
 
       setIsDragging(true);
@@ -215,6 +217,7 @@ export function DesktopWidgetContainer({
         initX: currentVisualX,
         initY: currentVisualY,
         initCenterX: initialCenterX,
+        minFloatingTop,
         wasHeaderDocked: currentlyHeaderDocked,
         wasRailDocked: currentlyRailDocked
       };
@@ -229,17 +232,18 @@ export function DesktopWidgetContainer({
         }
 
         const minTop = getRailTopBoundary();
+        const minFloatingTop = dragRef.current?.minFloatingTop ?? getFloatingTopBoundary();
 
         let currentZone: "header" | "rail" | "float" = "float";
 
-        if (minimized) {
-          if (headerAvailable && e.clientY <= 65 && e.clientX >= 10 && e.clientX <= viewportW - 10) {
-            currentZone = "header";
-          } else if (e.clientX >= viewportW - 85 && e.clientY >= minTop - 20) {
-            currentZone = "rail";
-          } else {
-            currentZone = "float";
-          }
+        const widgetWidth = targetEl?.offsetWidth ?? 280;
+        const currentWidgetRight = dragRef.current.initX + deltaX + widgetWidth;
+        const isNearRail = e.clientX >= viewportW - 100 || currentWidgetRight >= viewportW - 20;
+
+        if (headerAvailable && e.clientY <= 65 && e.clientX >= 10 && e.clientX <= viewportW - 10) {
+          currentZone = "header";
+        } else if (isNearRail && e.clientY >= minTop - 20) {
+          currentZone = "rail";
         } else {
           currentZone = "float";
         }
@@ -247,7 +251,7 @@ export function DesktopWidgetContainer({
         let nextX: number;
         let nextY: number;
 
-        if (dragRef.current.wasHeaderDocked) {
+        if (dragRef.current.wasHeaderDocked && currentZone === "header") {
           nextX = dragRef.current.initX + deltaX;
           nextY = dragRef.current.initY + deltaY;
         } else if (currentZone === "rail") {
@@ -257,8 +261,8 @@ export function DesktopWidgetContainer({
           nextX = Math.min(Math.max(12, e.clientX - 40), viewportW - 100);
           nextY = Math.min(Math.max(8, e.clientY - 15), 50);
         } else {
-          nextX = Math.min(Math.max(12, dragRef.current.initX + deltaX), viewportW - 140);
-          nextY = Math.min(Math.max(48, dragRef.current.initY + deltaY), viewportH - 60);
+          nextX = Math.min(Math.max(0, dragRef.current.initX + deltaX), viewportW - 80);
+          nextY = Math.min(Math.max(minFloatingTop, dragRef.current.initY + deltaY), viewportH - 40);
         }
 
         latest = { x: nextX, y: nextY };
@@ -267,7 +271,7 @@ export function DesktopWidgetContainer({
         if (frame === null) {
           frame = window.requestAnimationFrame(() => {
             frame = null;
-            setIsDockedVisual(currentZone !== "float");
+            setIsDockedVisual(currentZone === "rail");
             setDragPosition(latest);
           });
         }
@@ -302,7 +306,7 @@ export function DesktopWidgetContainer({
           return;
         }
 
-        const finalDocked = Boolean(minimized && dragZone !== "float");
+        const finalDocked = Boolean(dragZone !== "float");
         const finalDockPos: "rail" | "header" | undefined = finalDocked
           ? (dragZone === "header" ? "header" : "rail")
           : undefined;
@@ -370,8 +374,9 @@ export function DesktopWidgetContainer({
             finalY = Math.min(Math.max(minTop, latest.y), viewportH - 70);
           }
         } else {
-          finalX = Math.min(Math.max(12, latest.x), viewportW - 140);
-          finalY = Math.min(Math.max(48, latest.y), viewportH - 60);
+          const minFloatingTop = dragRef.current?.minFloatingTop ?? getFloatingTopBoundary();
+          finalX = Math.min(Math.max(0, latest.x), viewportW - 80);
+          finalY = Math.min(Math.max(minFloatingTop, latest.y), viewportH - 40);
         }
 
         if (
@@ -395,7 +400,8 @@ export function DesktopWidgetContainer({
   const handleDoubleClick = useCallback(() => {
     if (isDocked || isHeaderDocked) {
       const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
-      onPositionChange(Math.max(12, viewportW - 260), y, false);
+      const minFloatingTop = getFloatingTopBoundary();
+      onPositionChange(Math.max(12, viewportW - 260), Math.max(minFloatingTop, y), false);
     }
   }, [isDocked, isHeaderDocked, onPositionChange, y]);
 
@@ -451,9 +457,10 @@ export function DesktopWidgetContainer({
   const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
   const dockX = Math.max(12, viewportW - DOCK_WIDTH - DOCK_MARGIN_RIGHT);
+  const minFloatingTop = getFloatingTopBoundary();
 
-  const visualX = dragPosition?.x ?? (isDocked ? dockX : Math.max(12, Math.min(x - dodgeShiftX, viewportW - 80)));
-  const visualY = dragPosition?.y ?? Math.max(isDocked ? getRailTopBoundary() : 48, Math.min(y, viewportH - 40));
+  const visualX = dragPosition?.x ?? (isDocked ? dockX : Math.max(0, Math.min(x - dodgeShiftX, viewportW - 80)));
+  const visualY = dragPosition?.y ?? Math.max(isDocked ? getRailTopBoundary() : minFloatingTop, Math.min(y, viewportH - 40));
 
   return (
     <aside

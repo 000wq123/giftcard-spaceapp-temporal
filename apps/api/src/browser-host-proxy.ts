@@ -10,6 +10,7 @@ import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type
 import { BrowserControlHeldError, type BrowserControlHeldDetails } from "./browser-errors.js";
 import { createBrowserSessionManager, type BrowserSessionManager } from "./browser-sessions.js";
 import type { SpaceApiConfig } from "./config.js";
+import { normalizeGoogleBrowserCheckResult } from "./google-browser-session-check.js";
 
 export interface BrowserSessionManagerWithHostHealth extends BrowserSessionManager {
   browserHostHealth?(): Promise<BrowserHostHealth>;
@@ -136,6 +137,10 @@ export function createBrowserHostProxy(options: {
     stopCapture(pane, jobId, traceId, context) { return hostCall(() => client.stopCapture(pane, jobId, traceId, context)); },
     cancelCapture(pane, jobId, traceId, context) { return hostCall(() => client.cancelCapture(pane, jobId, traceId, context)); },
     diagnostics(pane, includeNetwork, limit) { return hostCall(() => client.diagnostics(pane, includeNetwork, limit)); },
+    adoptPaneGoogleProfile(source, context) { return hostCall(() => client.adoptPaneGoogleProfile(source, context)); },
+    async checkGoogleAccount(identity, launch, context) {
+      return normalizeGoogleBrowserCheckResult(await hostCall(() => client.checkGoogleAccount(identity, launch, context)));
+    },
     startFrameStream(sessionId, mode, onFrame, hints) {
       return hostCall(() => client.startFrameStream(sessionId, mode, onFrame, hints));
     },

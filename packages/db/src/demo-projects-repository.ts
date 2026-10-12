@@ -536,7 +536,7 @@ export class PostgresDemoProjectsRepository implements DemoProjectsRepository {
     connectionString: string,
     poolOptions: { max?: number; idleTimeoutMillis?: number; connectionTimeoutMillis?: number } = {}
   ): PostgresDemoProjectsRepository {
-    return new PostgresDemoProjectsRepository(createSpacePgPool(connectionString, poolOptions, 4), true);
+    return new PostgresDemoProjectsRepository(createSpacePgPool(connectionString, poolOptions, 2), true);
   }
 
   async getPreference(ownerUserId: string, projectId: string): Promise<DemoPreferenceRecord | null> {

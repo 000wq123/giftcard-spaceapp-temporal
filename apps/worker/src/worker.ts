@@ -3,8 +3,11 @@ import { hostname } from "node:os";
 import { PostgresSpaceStore, PostgresStreamingBotRepository, PostgresStreamingRepository } from "@space/db";
 import { StreamingCredentialStore } from "@space/streaming";
 import { TelegramDeliveryWorker, TelegramSecretStore } from "@space/runtime";
-import { NativeConnection, Worker } from "@temporalio/worker";
+import { NativeConnection, Runtime, Worker } from "@temporalio/worker";
 import * as activities from "./activities.js";
+import { createActivityObservabilityInterceptors } from "./activity-observability.js";
+import { resolveTemporalCoreMetricsBind, resolveWorkerMetricsListen, startWorkerMetricsServer } from "./worker-metrics.js";
+import { workerLog } from "./worker-log.js";
 import { sweepCodexCliCompletions } from "./codex-cli-completion.js";
 import { DEFAULT_TASK_QUEUE, DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { runTelegramNotificationCycle, TelegramNotificationLoop } from "./telegram-notification-runtime.js";
@@ -20,14 +23,35 @@ function boundedInterval(value: string | undefined): number {
   return Number.isFinite(parsed) ? Math.max(1_000, Math.min(parsed, 60_000)) : 2_000;
 }
 
+// Optional Temporal SDK Prometheus exporter (workflow-task latency, poll and
+// slot metrics). Loopback only and off unless SPACE_WORKER_TEMPORAL_METRICS_BIND
+// is set; it must be installed before the first native connection.
+const temporalCoreMetricsBind = resolveTemporalCoreMetricsBind();
+if (temporalCoreMetricsBind) {
+  Runtime.install({ telemetryOptions: { metrics: { prometheus: { bindAddress: temporalCoreMetricsBind } } } });
+}
+
 const connection = await NativeConnection.connect({ address });
 const worker = await Worker.create({
   connection,
   namespace,
   taskQueue,
   workflowsPath,
-  activities
+  activities,
+  // Structured, correlated activity records and worker metrics. Activity-side
+  // only: the workflow sandbox and its replay behaviour are unchanged.
+  interceptors: { activity: [createActivityObservabilityInterceptors()] }
 });
+
+// Optional loopback-only Prometheus endpoint for worker metrics.
+const metricsListen = resolveWorkerMetricsListen();
+if (metricsListen) {
+  const metricsServer = await startWorkerMetricsServer(metricsListen);
+  workerLog(metricsServer ? "info" : "warn", "worker.metrics_endpoint", {
+    status: metricsServer ? "LISTENING" : "UNAVAILABLE",
+    port: metricsListen.port
+  });
+}
 
 let telegramNotificationLoop: TelegramNotificationLoop | null = null;
 let streamingBotLoop: StreamingBotLoop | null = null;

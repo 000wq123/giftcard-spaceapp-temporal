@@ -2,7 +2,7 @@ import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
 import { resolveBrowserAddress } from "./browser-address.js";
-import type { YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
+import { accountMenuEntries, accountMenuLabel, effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
 import {
   Bookmark,
   BookmarkPlus,
@@ -40,6 +40,7 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -262,6 +263,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const handoffInputRef = useRef<HTMLInputElement | null>(null);
   const persistedRecordingVideoRef = useRef<HTMLVideoElement | null>(null);
   const controlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
+  const latestControlLeaseRef = useRef<BrowserControlLeasePayload | null>(null);
   const controlAcquirePromiseRef = useRef<Promise<BrowserControlLeasePayload | null> | null>(null);
   const legacyControlRef = useRef(false);
   const legacyPointerDownRef = useRef<{ x: number; y: number; button: string } | null>(null);
@@ -568,13 +570,13 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     return () => { disposed = true; };
   }, [pane.id, pane.mode, observerOnly]);
 
-  async function selectGoogleAccount(profileId: string | null) {
+  async function selectGoogleAccount(profileId: string | null, reconnect = false) {
     if (pending || observerOnly) return;
     setGoogleAccountMenuOpen(false);
     setPending(true);
     setError(null);
     try {
-      const selected = await api.selectBrowserAccount(pane.id, profileId);
+      const selected = reconnect && profileId ? await api.selectBrowserAccount(pane.id, profileId, { signIn: true }) : await api.selectBrowserAccount(pane.id, profileId);
       controlLeaseRef.current = null;
       legacyControlRef.current = false;
       setControlLease(null);
@@ -587,10 +589,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       setPages([]);
       setActivePageId(null);
       urlDraftRef.current = null;
-      setUrl(selected.targetUrl);
-      setGoogleAccounts((current) => current ? { ...current, selectedProfileId: selected.selectedProfileId } : current);
-      setGoogleSignInTarget(profileId ? selected.targetUrl : null);
-      applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl: selected.targetUrl, ownerAgentId: `agent:${agentNumber}` }));
+      const targetUrl = reconnect ? accountSignInTarget(selected.targetUrl, `https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent("https://www.google.com/")}`) : selected.targetUrl;
+      setUrl(targetUrl);
+      setGoogleAccounts((current) => current ? { ...current, selectedProfileId: selected.selectedProfileId, effectiveProfileId: selected.selectedProfileId } : current);
+      setGoogleSignInTarget(profileId ? targetUrl : null);
+      applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Google account could not be opened.");
     } finally { setPending(false); }
@@ -841,6 +844,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   useEffect(() => {
     controlLeaseRef.current = controlLease?.status === "ACTIVE" ? controlLease : null;
+    latestControlLeaseRef.current = controlLease;
   }, [controlLease]);
 
   useEffect(() => {
@@ -861,12 +865,16 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   useEffect(() => {
     if (!controlLease) return;
     const interval = window.setInterval(() => {
-      if (Date.parse(controlLease.expiresAt) <= Date.now()) {
+      // Renewals keep the lease id and only extend expiresAt, so this effect does not
+      // restart; read the latest lease instead of the one captured when it started.
+      const lease = latestControlLeaseRef.current;
+      if (!lease) return;
+      if (Date.parse(lease.expiresAt) <= Date.now()) {
         setControlLease(null);
         setHandoff(false);
         return;
       }
-      api.heartbeatBrowserControl(pane.id, { leaseId: controlLease.leaseId, ttlSeconds: 60 })
+      api.heartbeatBrowserControl(pane.id, { leaseId: lease.leaseId, ttlSeconds: 60 })
         .then((next) => {
           if (next.lease.status === "ACTIVE") {
             setControlLease(next.lease);
@@ -1850,19 +1858,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       {googleAccounts?.profiles.length ? <div ref={googleAccountPickerRef} className="browser-account-picker"
         onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGoogleAccountMenuOpen(false); }}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
-        <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${googleAccounts.selectedProfileId ? " selected" : ""}`}
+        <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${effectiveAccountId(googleAccounts) !== privatePaneProfileId ? " selected" : ""}`}
           aria-label={`Google account for ${pane.title}`} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
-          title={`Google account: ${googleAccounts.profiles.find((profile) => profile.profileId === googleAccounts.selectedProfileId)?.displayName ?? "Saved pane account"}`}
+          title={`Google account: ${accountMenuEntries(googleAccounts).find((profile) => profile.profileId === effectiveAccountId(googleAccounts))?.displayName ?? "Private pane profile"}`}
           disabled={pending || observerOnly} onClick={() => { browserToolbar.closeMenus(); setGoogleAccountMenuOpen((value) => !value); }}><Users aria-hidden="true" /></button>
         {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={`Google accounts for ${pane.title}`}>
           <strong>Google account</strong>
-          {[{ profileId: null, displayName: "Saved pane account" }, ...googleAccounts.profiles].map((profile) => <button key={profile.profileId ?? "pane-account"}
-            type="button" role="menuitemradio" data-profile-id={profile.profileId ?? ""} aria-checked={googleAccounts.selectedProfileId === profile.profileId}
-            onClick={() => void selectGoogleAccount(profile.profileId)}>
-            <span>{profile.displayName}</span>{googleAccounts.selectedProfileId === profile.profileId ? <Check aria-hidden="true" /> : null}
-          </button>)}
-          {googleAccounts.selectedProfileId ? <button type="button" role="menuitem" onClick={() => void selectGoogleAccount(googleAccounts.selectedProfileId)}>Sign in to selected account</button> : null}
-          <small>Sign in once. Chrome remembers this account in this pane.</small>
+          {accountMenuEntries(googleAccounts).map((profile, index, entries) => <Fragment key={profile.profileId}>
+            {profile.group === "legacy" && entries[index - 1]?.group !== "legacy" ? <small className="browser-account-group">Gemini accounts · shared by all panes</small> : null}
+            <button type="button" role="menuitemradio" data-profile-id={profile.profileId} aria-checked={effectiveAccountId(googleAccounts) === profile.profileId}
+              onClick={() => void selectGoogleAccount(profile.profileId)}>
+              <span>{accountMenuLabel(profile)}</span>{effectiveAccountId(googleAccounts) === profile.profileId ? <Check aria-hidden="true" /> : null}
+            </button>
+          </Fragment>)}
+          <button type="button" role="menuitem" onClick={() => void selectGoogleAccount(effectiveAccountId(googleAccounts), true)}>Sign in to selected account</button>
+          <small>Sign in once per Google account. Every Browser and YouTube pane using that account stays signed in.</small>
         </div> : null}
       </div> : null}
         <form onSubmit={navigate} className="browser-url-form">

@@ -311,6 +311,8 @@ export interface CodexCliCompletionSweepOptions {
   codexHome: string;
   now?: () => Date;
   maxCheckAttempts?: number;
+  /** Give up on a marker once its turn has been pending this long (default 24h). */
+  maxPendingMs?: number;
   resolveRolloutPath?: typeof resolveCodexCliRolloutPath;
   readRollout?: (rolloutPath: string) => Promise<string>;
   log?: (record: CodexCliCompletionSweepLog) => void;
@@ -332,13 +334,17 @@ async function readBoundedRollout(rolloutPath: string): Promise<string> {
   return readFile(rolloutPath, "utf8");
 }
 
+const HOUR_MS = 60 * 60_000;
+
 export async function sweepCodexCliCompletions(
   options: CodexCliCompletionSweepOptions,
   limit = 10
 ): Promise<CodexCliCompletionSweepSummary> {
   const now = options.now ?? (() => new Date());
   const startedAt = now();
-  const maxCheckAttempts = Math.max(1, Math.min(options.maxCheckAttempts ?? 240, 720));
+  const maxCheckAttempts = Math.max(1, Math.min(options.maxCheckAttempts ?? 720, 720));
+  // Agent tasks can run for hours, so the limit is the turn's age; the check count is only a backstop.
+  const maxPendingMs = Math.max(60_000, Math.min(options.maxPendingMs ?? 24 * HOUR_MS, 72 * HOUR_MS));
   const resolveRolloutPath = options.resolveRolloutPath ?? resolveCodexCliRolloutPath;
   const readRollout = options.readRollout ?? readBoundedRollout;
   const markers = await options.store.claimCodexCliTurnMarkers({
@@ -377,12 +383,18 @@ export async function sweepCodexCliCompletions(
       terminalStatus?: "IGNORED" | "FAILED";
       terminalCode?: string;
     }) => {
-      if (marker.checkAttemptCount >= maxCheckAttempts) {
+      const deferredAt = now();
+      const pendingMs = deferredAt.getTime() - Date.parse(marker.submittedAt);
+      if (marker.checkAttemptCount >= maxCheckAttempts || pendingMs >= maxPendingMs) {
         await finish(input.terminalStatus ?? "FAILED", input.terminalCode ?? input.safeErrorCode);
         return;
       }
-      const delayMs = Math.min(30_000, 2_000 * 2 ** Math.min(marker.checkAttemptCount - 1, 4));
-      const deferredAt = now();
+      // Check quickly during the first hour, then back off so long tasks do not reread rollouts every 30s.
+      const delayMs = pendingMs >= 6 * HOUR_MS
+        ? 5 * 60_000
+        : pendingMs >= HOUR_MS
+          ? 2 * 60_000
+          : Math.min(30_000, 2_000 * 2 ** Math.min(marker.checkAttemptCount - 1, 4));
       await options.store.deferCodexCliTurnMarker({
         markerId: marker.markerId,
         workerId: options.workerId,
@@ -396,86 +408,95 @@ export async function sweepCodexCliCompletions(
       log("DEFERRED", input.safeErrorCode);
     };
 
-    const session = await options.store.getPaneCliSession(marker.sessionId);
-    if (!session || session.roomId !== marker.roomId || session.paneId !== marker.paneId) {
-      await finish("IGNORED", "CODEX_CLI_SESSION_GONE");
-      continue;
-    }
-    if (session.runtimeId !== "cli:codex") {
-      await finish("IGNORED", "CODEX_CLI_RUNTIME_EXCLUDED");
-      continue;
-    }
-    const codexThreadId = marker.codexThreadId ?? session.codexThreadId;
-    if (!codexThreadId) {
-      await defer({
-        safeErrorCode: "CODEX_CLI_THREAD_PENDING",
-        terminalCode: "CODEX_CLI_THREAD_UNAVAILABLE"
-      });
-      continue;
-    }
-
-    const resolution = await resolveRolloutPath({
-      codexHome: options.codexHome,
-      paneId: marker.paneId,
-      sessionId: marker.sessionId,
-      threadId: codexThreadId
-    });
-    if (resolution.status === "EXCLUDED") {
-      await finish("IGNORED", resolution.safeErrorCode);
-      continue;
-    }
-    if (resolution.status === "UNSAFE") {
-      await finish("FAILED", resolution.safeErrorCode);
-      continue;
-    }
-    if (resolution.status === "PENDING") {
-      await defer({ safeErrorCode: resolution.safeErrorCode, codexThreadId });
-      continue;
-    }
-
-    let content: string;
     try {
-      content = await readRollout(resolution.rolloutPath);
-    } catch {
-      await defer({
-        safeErrorCode: "CODEX_CLI_ROLLOUT_READ_PENDING",
-        codexThreadId,
-        rolloutPath: resolution.rolloutPath,
-        terminalCode: "CODEX_CLI_ROLLOUT_UNREADABLE"
-      });
-      continue;
-    }
-    const completion = inspectCodexCliCompletion(content, {
-      submittedAtMs: Date.parse(marker.submittedAt)
-    });
-    if (completion.status === "ABORTED") {
-      await finish("IGNORED", "CODEX_CLI_TURN_ABORTED");
-      continue;
-    }
-    if (completion.status === "PENDING") {
-      const missingFinal = completion.safeErrorCode === "CODEX_CLI_FINAL_RESPONSE_PENDING";
-      await defer({
-        safeErrorCode: completion.safeErrorCode ?? "CODEX_CLI_COMPLETION_PENDING",
-        codexThreadId,
-        rolloutPath: resolution.rolloutPath,
-        terminalStatus: missingFinal ? "IGNORED" : "FAILED",
-        terminalCode: missingFinal ? "CODEX_CLI_FINAL_RESPONSE_MISSING" : "CODEX_CLI_COMPLETION_TIMEOUT"
-      });
-      continue;
-    }
+      const session = await options.store.getPaneCliSession(marker.sessionId);
+      if (!session || session.roomId !== marker.roomId || session.paneId !== marker.paneId) {
+        await finish("IGNORED", "CODEX_CLI_SESSION_GONE");
+        continue;
+      }
+      if (session.runtimeId !== "cli:codex") {
+        await finish("IGNORED", "CODEX_CLI_RUNTIME_EXCLUDED");
+        continue;
+      }
+      const codexThreadId = marker.codexThreadId ?? session.codexThreadId;
+      if (!codexThreadId) {
+        await defer({
+          safeErrorCode: "CODEX_CLI_THREAD_PENDING",
+          terminalCode: "CODEX_CLI_THREAD_UNAVAILABLE"
+        });
+        continue;
+      }
 
-    await options.store.completeCodexCliTurnMarker({
-      markerId: marker.markerId,
-      workerId: options.workerId,
-      codexThreadId,
-      codexTurnId: completion.turnId,
-      rolloutPath: resolution.rolloutPath,
-      finalResponse: completion.finalResponse,
-      completedAt: completion.completedAt,
-      traceId: `telegram-terminal:${marker.markerId}`
-    });
-    summary.completed += 1;
-    log("COMPLETED", null);
+      const resolution = await resolveRolloutPath({
+        codexHome: options.codexHome,
+        paneId: marker.paneId,
+        sessionId: marker.sessionId,
+        threadId: codexThreadId
+      });
+      if (resolution.status === "EXCLUDED") {
+        await finish("IGNORED", resolution.safeErrorCode);
+        continue;
+      }
+      if (resolution.status === "UNSAFE") {
+        await finish("FAILED", resolution.safeErrorCode);
+        continue;
+      }
+      if (resolution.status === "PENDING") {
+        await defer({ safeErrorCode: resolution.safeErrorCode, codexThreadId });
+        continue;
+      }
+
+      let content: string;
+      try {
+        content = await readRollout(resolution.rolloutPath);
+      } catch {
+        await defer({
+          safeErrorCode: "CODEX_CLI_ROLLOUT_READ_PENDING",
+          codexThreadId,
+          rolloutPath: resolution.rolloutPath,
+          terminalCode: "CODEX_CLI_ROLLOUT_UNREADABLE"
+        });
+        continue;
+      }
+      const completion = inspectCodexCliCompletion(content, {
+        submittedAtMs: Date.parse(marker.submittedAt)
+      });
+      if (completion.status === "ABORTED") {
+        await finish("IGNORED", "CODEX_CLI_TURN_ABORTED");
+        continue;
+      }
+      if (completion.status === "PENDING") {
+        const missingFinal = completion.safeErrorCode === "CODEX_CLI_FINAL_RESPONSE_PENDING";
+        await defer({
+          safeErrorCode: completion.safeErrorCode ?? "CODEX_CLI_COMPLETION_PENDING",
+          codexThreadId,
+          rolloutPath: resolution.rolloutPath,
+          terminalStatus: missingFinal ? "IGNORED" : "FAILED",
+          terminalCode: missingFinal ? "CODEX_CLI_FINAL_RESPONSE_MISSING" : "CODEX_CLI_COMPLETION_TIMEOUT"
+        });
+        continue;
+      }
+
+      await options.store.completeCodexCliTurnMarker({
+        markerId: marker.markerId,
+        workerId: options.workerId,
+        codexThreadId,
+        codexTurnId: completion.turnId,
+        rolloutPath: resolution.rolloutPath,
+        finalResponse: completion.finalResponse,
+        completedAt: completion.completedAt,
+        traceId: `telegram-terminal:${marker.markerId}`
+      });
+      summary.completed += 1;
+      log("COMPLETED", null);
+    } catch {
+      // One failing marker must not abort the batch or block delivery; back off until the attempt cap.
+      try {
+        await defer({ safeErrorCode: "CODEX_CLI_SWEEP_ERROR" });
+      } catch {
+        log("FAILED", "CODEX_CLI_SWEEP_ERROR");
+      }
+    }
   }
 
   return summary;

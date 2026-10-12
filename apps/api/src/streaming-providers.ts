@@ -249,7 +249,7 @@ class YouTubeAdapter implements StreamingProviderAdapter {
       response_type: "code",
       scope: streamingProviderScopes.YOUTUBE.join(" "),
       access_type: "offline",
-      prompt: "consent",
+      prompt: "select_account consent",
       include_granted_scopes: "true",
       state: input.state,
       code_challenge: input.codeChallenge,

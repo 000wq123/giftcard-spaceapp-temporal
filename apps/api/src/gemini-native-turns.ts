@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { findGeminiProcessTree, readPaneStateRecord } from "./gemini-session-verification.js";
 import { geminiNativeConversationIdPattern, normalizeGeminiPaneId } from "./gemini-native-session.js";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
+import { createNativeReadCache } from "./native-read-cache.js";
 
 // Antigravity 1.2.11 gemini_coder.Step protobuf. Unknown formats fail closed.
 // Only user input, public response and timing/model metadata are decoded.
@@ -77,6 +78,13 @@ export function geminiNativeTurnsFromRows(rows: StepRow[]): GeminiNativeTurn[] {
       if (turns.has(id)) throw Error("Duplicate native execution identity");
       const input = nested(payload, 19), title = text(input, 2) ?? text(input, 1);
       if (!title || !createdAt) continue;
+      if (activeTurn && activeTurn.timing.durationMs === null && activeTurn.timing.startedAt) {
+        const lastObserved = activeTurn.timing.observedAt ?? createdAt;
+        if (Date.parse(lastObserved) >= Date.parse(activeTurn.timing.startedAt)) {
+          activeTurn.timing.durationMs = Date.parse(lastObserved) - Date.parse(activeTurn.timing.startedAt);
+          activeTurn.timing.completedAt = lastObserved;
+        }
+      }
       const newTurn: GeminiNativeTurn = { taskId: id, title: title.slice(0, 2000), inputText: title, status: "RUNNING", finalResponse: null, aborted: false,
         timing: { startedAt: createdAt, completedAt: null, durationMs: null, source: "NATIVE", observedAt: createdAt }, modelsUsed: [] };
       turns.set(id, newTurn);
@@ -108,8 +116,24 @@ export function geminiNativeTurnsFromRows(rows: StepRow[]): GeminiNativeTurn[] {
     // Numeric placeholder model enums are not resolved from pane settings.
     if (model && turn.modelsUsed.at(-1)?.modelId !== model) turn.modelsUsed.push({ providerId: null, modelId: model,
       reasoningEffort: null, turnId: id, startedAt: timestamp(metadata, 32) ?? createdAt, completedAt, source: "NATIVE" });
-    if (row.step_type !== 132 && [6, 12].includes(row.status)) { turn.status = "INTERRUPTED"; turn.aborted = true; continue; }
-    if (row.step_type !== 132 && [4, 7].includes(row.status)) { turn.status = "UNKNOWN"; turn.aborted = true; continue; }
+    if (row.step_type !== 132 && [6, 12].includes(row.status)) {
+      turn.status = "INTERRUPTED";
+      turn.aborted = true;
+      if (lastAt && turn.timing.startedAt && Date.parse(lastAt) >= Date.parse(turn.timing.startedAt)) {
+        turn.timing.completedAt = lastAt;
+        turn.timing.durationMs = Date.parse(lastAt) - Date.parse(turn.timing.startedAt);
+      }
+      continue;
+    }
+    if (row.step_type !== 132 && [4, 7].includes(row.status)) {
+      turn.status = "UNKNOWN";
+      turn.aborted = true;
+      if (lastAt && turn.timing.startedAt && Date.parse(lastAt) >= Date.parse(turn.timing.startedAt)) {
+        turn.timing.completedAt = lastAt;
+        turn.timing.durationMs = Date.parse(lastAt) - Date.parse(turn.timing.startedAt);
+      }
+      continue;
+    }
     if (row.step_type === 17) { turn.status = "UNKNOWN"; continue; } // DONE error messages may precede retries.
     const response = nested(payload, 20), answer = text(response, 1);
     // STOP_PATTERN=2 is the verified native final reply. Tool calls, errors,
@@ -169,21 +193,42 @@ export function validGeminiTurnReadIdentity(input: { paneId: string; sessionId: 
     Number.isSafeInteger(input.rootPid) && input.rootPid! > 1 && input.rootPid! < 2 ** 31;
 }
 
-/** Fixed launcher read adapter; private native databases keep their permissions. */
-export async function loadGeminiNativeTurns(input: { paneId: string; sessionId: string; rootPid: number | null }) {
+type GeminiNativeTurns = NonNullable<Awaited<ReturnType<typeof readGeminiNativeTurns>>>;
+
+// Shared short-lived reads, as for Claude (see native-read-cache.ts).
+const geminiNativeTurnsCache = createNativeReadCache<GeminiNativeTurns>({
+  busyTtlMs: 3_000,
+  idleTtlMs: 6_000,
+  isBusy: (native) => native.turns.some((turn) => turn.status === "RUNNING")
+});
+
+/** Fixed launcher read adapter; private native databases keep their permissions.
+ * Pass `fresh` where a just-finished state matters (prompt delivery, Room Agent inspections). */
+export async function loadGeminiNativeTurns(
+  input: { paneId: string; sessionId: string; rootPid: number | null },
+  { fresh = false }: { fresh?: boolean } = {}
+): Promise<GeminiNativeTurns | null> {
   if (!validGeminiTurnReadIdentity(input)) return null;
-  try {
-    const { stdout } = await promisify(execFile)("/opt/spaceapp/bin/gemini-vscode-parity",
-      ["native-turns", input.paneId, input.sessionId, String(input.rootPid)],
-      { timeout: 2000, maxBuffer: 8_388_608, env: { PATH: "/usr/bin:/bin" } });
-    return JSON.parse(stdout) as Awaited<ReturnType<typeof readGeminiNativeTurns>>;
-  } catch { return null; }
+  return geminiNativeTurnsCache.read(`${input.paneId}|${input.sessionId}|${input.rootPid}`, async () => {
+    try {
+      const { stdout } = await promisify(execFile)("/opt/spaceapp/bin/gemini-vscode-parity",
+        ["native-turns", input.paneId, input.sessionId, String(input.rootPid)],
+        { timeout: 2000, maxBuffer: 8_388_608, env: { PATH: "/usr/bin:/bin" } });
+      return JSON.parse(stdout) as GeminiNativeTurns | null;
+    } catch { return null; }
+  }, { fresh });
 }
 
 export function geminiTurnActivity(turns: GeminiNativeTurn[], marker: string, recovery: { markerAtMs: number; turnId?: string | null; inputMarker?: string }) {
-  const matching = recovery.turnId ? turns.filter(turn => turn.taskId === recovery.turnId) : turns.filter(turn =>
-    turn.inputText.includes(recovery.inputMarker ?? marker) && Date.parse(turn.timing.startedAt!) >= recovery.markerAtMs - 1000);
-  if (matching.length !== 1) return { marker, status: matching.length || recovery.turnId ? "UNAVAILABLE" as const : "PENDING" as const, turnId: null };
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker);
+  const filterMarker = recovery.inputMarker ?? (!isUuid ? marker : null);
+  const matching = recovery.turnId
+    ? turns.filter(turn => turn.taskId === recovery.turnId)
+    : turns.filter(turn =>
+        (!filterMarker || turn.inputText.includes(filterMarker)) &&
+        Date.parse(turn.timing.startedAt!) >= recovery.markerAtMs - 1000
+      );
+  if (matching.length < 1) return { marker, status: recovery.turnId ? "UNAVAILABLE" as const : "PENDING" as const, turnId: null };
   const turn = matching[0]!;
   return { marker, turnId: turn.taskId, status: turn.aborted ? "ABORTED" as const : turn.status === "COMPLETED" ? "COMPLETED" as const : "RUNNING" as const,
     lastActivityAtMs: Date.parse(turn.timing.observedAt) };

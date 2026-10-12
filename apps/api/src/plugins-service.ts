@@ -10,10 +10,19 @@ import {
 } from "@space/contracts";
 
 const PLUGINS_DIR = "/opt/spaceapp/var/plugins";
-const CONNECTIONS_FILE = join(PLUGINS_DIR, "connections.json");
-const AGENT_CONFIGS_FILE = join(PLUGINS_DIR, "agent-configs.json");
 
 export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
+  {
+    id: "gitea", displayName: "Gitea", description: "Connect your Gitea account and manage project source control.",
+    overview: "Personal Gitea connection for repository discovery, diffs, staging, commits and synchronization.",
+    category: "developer", icon: "GitBranch", authType: "api_key",
+    authFields: [
+      { key: "serverUrl", label: "Server URL", type: "url", required: false, placeholder: "https://git.example.invalid", description: "The Gitea server for your account." },
+      { key: "token", label: "Personal Access Token", type: "password", required: true, placeholder: "", description: "Token with repository access. Permissions are checked for each selected repository." }
+    ],
+    preview: false, defaultEnabled: true, websiteUrl: "https://about.gitea.com", docsUrl: "https://docs.gitea.com", githubUrl: null,
+    installedVersion: "1.0.0", latestVersion: "1.0.0", hasUpdate: false, mcpCommand: null, mcpArgs: []
+  },
   {
     id: "github",
     displayName: "GitHub",
@@ -456,19 +465,22 @@ export interface StoredPluginConnection {
 }
 
 export class PluginsService {
+  constructor(private readonly storageDirectory = PLUGINS_DIR, private readonly syncSkills = true) {}
+  private get connectionsFile() { return join(this.storageDirectory, "connections.json"); }
+  private get agentConfigsFile() { return join(this.storageDirectory, "agent-configs.json"); }
   private async ensureDir(): Promise<void> {
-    if (!existsSync(PLUGINS_DIR)) {
-      await mkdir(PLUGINS_DIR, { recursive: true });
+    if (!existsSync(this.storageDirectory)) {
+      await mkdir(this.storageDirectory, { recursive: true });
     }
   }
 
   private async loadConnections(): Promise<Map<string, StoredPluginConnection>> {
     await this.ensureDir();
-    if (!existsSync(CONNECTIONS_FILE)) {
+    if (!existsSync(this.connectionsFile)) {
       return new Map();
     }
     try {
-      const raw = await readFile(CONNECTIONS_FILE, "utf-8");
+      const raw = await readFile(this.connectionsFile, "utf-8");
       const list = JSON.parse(raw) as StoredPluginConnection[];
       return new Map(list.map((c) => [c.pluginId, c]));
     } catch {
@@ -479,16 +491,16 @@ export class PluginsService {
   private async saveConnections(connections: Map<string, StoredPluginConnection>): Promise<void> {
     await this.ensureDir();
     const list = Array.from(connections.values());
-    await writeFile(CONNECTIONS_FILE, JSON.stringify(list, null, 2), "utf-8");
+    await writeFile(this.connectionsFile, JSON.stringify(list, null, 2), "utf-8");
   }
 
   private async loadAgentConfigs(): Promise<Map<string, AgentPluginConfig>> {
     await this.ensureDir();
-    if (!existsSync(AGENT_CONFIGS_FILE)) {
+    if (!existsSync(this.agentConfigsFile)) {
       return new Map();
     }
     try {
-      const raw = await readFile(AGENT_CONFIGS_FILE, "utf-8");
+      const raw = await readFile(this.agentConfigsFile, "utf-8");
       const list = JSON.parse(raw) as AgentPluginConfig[];
       return new Map(list.map((c) => [c.paneId, c]));
     } catch {
@@ -499,7 +511,7 @@ export class PluginsService {
   private async saveAgentConfigs(configs: Map<string, AgentPluginConfig>): Promise<void> {
     await this.ensureDir();
     const list = Array.from(configs.values());
-    await writeFile(AGENT_CONFIGS_FILE, JSON.stringify(list, null, 2), "utf-8");
+    await writeFile(this.agentConfigsFile, JSON.stringify(list, null, 2), "utf-8");
   }
 
   private static readonly DEFAULT_TOOL_COUNTS: Record<string, number> = {
@@ -524,6 +536,7 @@ export class PluginsService {
   };
 
   async syncSkillSymlinks(): Promise<void> {
+    if (!this.syncSkills) return;
     const connections = await this.loadConnections();
     for (const [pluginId, meta] of Object.entries(BUILTIN_SKILLS_MAP)) {
       const conn = connections.get(pluginId);
@@ -581,7 +594,7 @@ export class PluginsService {
   async getPlugins(): Promise<PluginWithState[]> {
     const connections = await this.loadConnections();
     return DEFAULT_PLUGIN_CATALOG.map((item) => {
-      const conn = connections.get(item.id);
+      const conn = item.id === "github" || item.id === "gitea" ? undefined : connections.get(item.id);
       const installedVersion = conn?.installedVersion ?? item.installedVersion ?? "1.0.0";
       const latestVersion = conn?.latestVersion ?? item.latestVersion ?? "1.0.0";
       const hasUpdate = conn?.hasUpdate ?? (installedVersion !== latestVersion);

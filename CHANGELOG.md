@@ -5,6 +5,21 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-12
+
+- The first OpenCode task no longer stops at a "/tmp" permission prompt: the first
+  run authorizes only OpenCode's private scratch directory, and the bootstrap
+  instructions send temporary files there. Other paths outside the workspace
+  still ask.
+- The application is updated to the current SpaceApp source (sanitized export of
+  6377b5b491), including guided setup on every screen size and session
+  revocations that survive restarts. The gateway's Antigravity sign-in uses an
+  owner-supplied OAuth client, as the API already did.
+- Contributors: `npm run check` works on a fresh clone, `npm test` runs the
+  public test suite, the offline smoke and dependency-boundary check are
+  included, and README and CONTRIBUTING link only to files in this repository.
+
+
 ## [1.1.2] - 2026-10-12
 
 - The setup wizard and Help no longer promise the retired DeepSeek V4 Flash model, and the documentation matches the launcher: the Big Pickle starter model with its first-launch check, profile sizes, `@latest` commands, the 12-character owner password, telemetry, and what stays on your machine when a remote model provider is used.

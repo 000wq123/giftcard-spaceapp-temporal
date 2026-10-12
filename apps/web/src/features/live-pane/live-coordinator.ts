@@ -169,10 +169,10 @@ export function createLiveCoordinator(deps: {
       }
       connectionOptions = { ...deps.config(), ...configured, userId: state.ownerId, liveSessionId, muted: state.muted, managedNotifications: true, roomId: state.roomId!, roomContext: state.context ?? undefined,
         transcripts: state.transcripts, suppressGreeting: hasConnected || state.transcripts.length > 0,
-        getCommandRoom: () => state.contextState === "ready" && inputRoom === state.roomId ? state.roomId ?? undefined : undefined,
+        getCommandRoom: () => state.contextState !== "unavailable" && inputRoom === state.roomId ? state.roomId ?? undefined : undefined,
         captureCommandRoom: () => {
           const epoch = commandEpoch, room = inputRoom;
-          return () => epoch === commandEpoch && state.enabled && state.contextState === "ready" && room === state.roomId
+          return () => epoch === commandEpoch && state.enabled && state.contextState !== "unavailable" && room === state.roomId
             ? room ?? undefined : undefined;
         }
       };
@@ -251,6 +251,12 @@ export function createLiveCoordinator(deps: {
       if (parts.some(p => p.type !== "text")) throw new Error("Attachments are unavailable for this voice provider.");
       for (const part of parts) if (part.type === "text") state.handle.sendTextMessage(part.text);
     },
+    /** Stage 6 Real View: a silent frame, only on providers that stream video. */
+    sendVideoFrame(frame: { dataUrl: string }) {
+      if (!state.handle?.sendVideoFrame) throw new Error("Real View is unavailable for this voice provider.");
+      state.handle.sendVideoFrame(frame);
+    },
+    canSendVideoFrames() { return Boolean(state.handle?.sendVideoFrame); },
     async clearRoom(roomId: string) {
       let syncError: string | null = null;
       try {

@@ -1,3 +1,8 @@
+import { confirmFreshNativeHistory } from "./fresh-thread-history.js";
+import { CodexSettingsRejectedError, codexRetryableFailure, type CodexRetryableFailure } from "./managed-turn-errors.js";
+export * from "./managed-turn-errors.js";
+import { startObservedCodexTurn, type CodexManagedStartedTurn } from "./managed-turn.js";
+export * from "./managed-turn.js";
 import { spawn } from "node:child_process";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { WebSocket } from "ws";
@@ -23,6 +28,25 @@ export interface CodexAppServerTurnSessionState {
   notificationCount: number;
   completedNotificationSeen: boolean;
   agentMessageText: string;
+  /** Thread token totals before this turn's first reported request, and the latest totals (thread/tokenUsage/updated). */
+  tokenUsage?: { baseline: CodexTokenTotals; latest: CodexTokenTotals } | null;
+}
+export interface CodexTokenTotals { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number; totalTokens: number }
+function tokenTotals(value: unknown): CodexTokenTotals | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const read = (key: string) => typeof record[key] === "number" && Number.isFinite(record[key]) && (record[key] as number) >= 0 ? Math.floor(record[key] as number) : null;
+  const totals = { inputTokens: read("inputTokens"), cachedInputTokens: read("cachedInputTokens") ?? 0, outputTokens: read("outputTokens"),
+    reasoningOutputTokens: read("reasoningOutputTokens") ?? 0, totalTokens: read("totalTokens") };
+  return totals.inputTokens === null || totals.outputTokens === null || totals.totalTokens === null ? null : totals as CodexTokenTotals;
+}
+/** Tokens this turn used: the thread totals' growth since the turn's first reported request. */
+export function codexTurnTokenUsage(state: Pick<CodexAppServerTurnSessionState, "tokenUsage">): CodexTokenTotals | null {
+  if (!state.tokenUsage) return null;
+  const { baseline, latest } = state.tokenUsage;
+  const delta = (key: keyof CodexTokenTotals) => Math.max(0, latest[key] - baseline[key]);
+  return { inputTokens: delta("inputTokens"), cachedInputTokens: delta("cachedInputTokens"), outputTokens: delta("outputTokens"),
+    reasoningOutputTokens: delta("reasoningOutputTokens"), totalTokens: delta("totalTokens") };
 }
 
 export type CodexAppServerServerRequestHandler = (
@@ -81,6 +105,7 @@ export type CodexAppServerAllowedRpcMethod =
   | "thread/resume"
   | "thread/settings/update"
   | "thread/read"
+  | "thread/turns/list"
   | "turn/start"
   | "thread/goal/get"
   | "thread/goal/set"
@@ -95,6 +120,7 @@ const allowedCodexAppServerRpcMethods = new Set<CodexAppServerAllowedRpcMethod>(
   "thread/resume",
   "thread/settings/update",
   "thread/read",
+  "thread/turns/list",
   "turn/start",
   "thread/goal/get",
   "thread/goal/set",
@@ -237,6 +263,24 @@ export interface RunCodexAppServerStdioTurnSessionOptions {
   recoveryPollIntervalMs?: number;
   goalProgressGraceMs?: number;
   onCheckpoint?: (checkpoint: { threadId: string; turnId: string | null }) => void | Promise<void>;
+  /** Thread-scoped Codex config overrides (dotted keys), sent on start and resume. */
+  threadConfig?: Record<string, unknown> | null;
+  /** Developer instructions for this thread, sent on start and resume. */
+  developerInstructions?: string | null;
+  /** Client-executed tools; Codex persists them with a new thread only. */
+  dynamicTools?: CodexAppServerDynamicToolSpec[] | null;
+  /** Called after a new thread starts, with whether dynamic tools were registered. */
+  onThreadStarted?: (thread: { threadId: string; dynamicTools: boolean }) => void | Promise<void>;
+  /** Proactive work: a read-only sandbox that never asks, whatever the session's permission mode. */
+  readOnly?: boolean;
+}
+
+export interface CodexAppServerDynamicToolSpec {
+  type: "function";
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  deferLoading?: boolean;
 }
 
 export type CodexAppServerGoalAction =
@@ -301,6 +345,7 @@ export type CodexAppServerSocketRpcMethod =
   | "model/list"
   | "thread/list"
   | "thread/read"
+  | "thread/turns/list"
   | "thread/settings/update"
   | "thread/name/set"
   | "turn/interrupt"
@@ -312,6 +357,7 @@ const allowedCodexAppServerSocketRpcMethods = new Set<CodexAppServerSocketRpcMet
   "model/list",
   "thread/list",
   "thread/read",
+  "thread/turns/list",
   "thread/settings/update",
   "thread/name/set",
   "turn/interrupt",
@@ -328,6 +374,8 @@ export function assertCodexAppServerSocketRpcMethodAllowed(
 
 export interface CodexAppServerSocketControlServiceOptions {
   socketPath: string;
+  /** Trusted Codex home, used only to verify a fresh native metadata-only rollout. */
+  rolloutRoot?: string;
   clientInfo?: CodexAppServerClientInfo;
   timeoutMs?: number;
 }
@@ -371,6 +419,9 @@ export interface CodexAppServerSocketStartTurnInput {
   model?: string;
   reasoningEffort?: CodexReasoningEffort;
   clientUserMessageId: string;
+  outputSchema?: Record<string, unknown>;
+  /** Local fence, evaluated after the connection handshake immediately before send. */
+  beforeSend?: () => Promise<void>;
 }
 
 export interface CodexAppServerSocketStartedTurn {
@@ -378,14 +429,44 @@ export interface CodexAppServerSocketStartedTurn {
   status: Exclude<CodexAppServerTurnSmokeResult["turnStatus"], null>;
 }
 
+/** Internal native evidence; never include raw commands/output in public proof reports. */
+export interface CodexNativeCommandExecution {
+  id: string | null;
+  command: string | null;
+  status: "inProgress" | "completed" | "failed" | "declined" | null;
+  exitCode: number | null;
+  aggregatedOutput: string | null;
+}
+export interface CodexNativeTurn {
+  id: string;
+  status: "inProgress" | "completed" | "interrupted" | "failed";
+  clientUserMessageIds: string[];
+  userMessageCount?: number;
+  resultText: string | null;
+  itemsComplete: boolean;
+  commandExecutions?: CodexNativeCommandExecution[];
+  retryableFailure?: CodexRetryableFailure;
+}
+export interface CodexNativeThread {
+  id: string;
+  cwd: string;
+  modelId: string;
+  reasoningEffort: string;
+  status: "idle" | "active" | "notLoaded" | "systemError";
+  activeFlags: string[];
+  turns: CodexNativeTurn[];
+}
 export interface CodexAppServerSocketControlService {
+  readCurrentThreadId?(): Promise<string | null | undefined>;
+  startManagedTurn?(input: CodexAppServerSocketStartTurnInput): Promise<CodexManagedStartedTurn>;
+  readThread?(threadId: string): Promise<CodexNativeThread>;
   readThreadSettings?(threadId: string): Promise<{ modelId: string; reasoningEffort: string; cwd: string; isTurnActive: boolean }>;
   readRateLimits?(): Promise<{source:"NATIVE_ACCOUNT";checkedAt:string;windows:Array<{usedPercent:number;resetsAt:number|null}>;blocked:boolean}>;
   getThreadName?(threadId: string): Promise<string | null>;
   renameThread?(input: {threadId: string; name: string}): Promise<string>;
   listModels(): Promise<CodexAppServerSocketModelOption[]>;
-  updateThreadSettings(input: { threadId: string; model: string; reasoningEffort: CodexReasoningEffort }): Promise<void>;
-  interruptTurn(input: { threadId: string; turnId: string }): Promise<void>;
+  updateThreadSettings(input: { threadId: string; requireCurrentThread?: boolean; model: string; reasoningEffort: CodexReasoningEffort; beforeSend?: () => Promise<void> }): Promise<void>;
+  interruptTurn(input: { threadId: string; turnId: string; beforeSend?: () => Promise<void> }): Promise<void>;
   startTurn(input: CodexAppServerSocketStartTurnInput): Promise<CodexAppServerSocketStartedTurn>;
 }
 
@@ -605,6 +686,22 @@ export function reduceCodexAppServerTurnSessionState(
       const status = stringField(goal, "status") as CodexThreadGoalStatus | null;
       if (status && threadGoalStatuses.has(status)) {
         next = { ...next, goalStatus: status };
+      }
+    }
+    if (message.method === "thread/tokenUsage/updated") {
+      const params = asRecord(message.params);
+      const turnId = stringField(params, "turnId");
+      const usage = asRecord(params?.tokenUsage);
+      const total = tokenTotals(usage?.total);
+      const last = tokenTotals(usage?.last);
+      // Only reports for this turn count; reports before the turn is known or for another turn are ignored,
+      // and thread totals never move backwards.
+      if (total && turnId && next.turnId && turnId === next.turnId && (!next.tokenUsage || total.totalTokens >= next.tokenUsage.latest.totalTokens)) {
+        const baseline = next.tokenUsage?.baseline ?? (last ? {
+          inputTokens: Math.max(0, total.inputTokens - last.inputTokens), cachedInputTokens: Math.max(0, total.cachedInputTokens - last.cachedInputTokens),
+          outputTokens: Math.max(0, total.outputTokens - last.outputTokens), reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - last.reasoningOutputTokens),
+          totalTokens: Math.max(0, total.totalTokens - last.totalTokens) } : total);
+        next = { ...next, tokenUsage: { baseline, latest: total } };
       }
     }
     if (message.method === "item/agentMessage/delta") {
@@ -1077,7 +1174,15 @@ function threadRuntimeParams(options: RunCodexAppServerStdioTurnSessionOptions):
   return params;
 }
 
-function permissionRuntimeParams(permissionMode: CodexPermissionMode | null): Record<string, unknown> {
+function threadContextParams(options: RunCodexAppServerStdioTurnSessionOptions): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (options.threadConfig && Object.keys(options.threadConfig).length) params.config = options.threadConfig;
+  if (options.developerInstructions?.trim()) params.developerInstructions = options.developerInstructions;
+  return params;
+}
+
+function permissionRuntimeParams(permissionMode: CodexPermissionMode | null, readOnly = false): Record<string, unknown> {
+  if (readOnly) return { sandbox: "read-only", approvalPolicy: "never", approvalsReviewer: "user" };
   const params = permissionParamsForMode(permissionMode);
   return params ? { ...params } : {};
 }
@@ -1281,7 +1386,8 @@ export async function runCodexAppServerStdioTurnSession(
         const resumeParams = {
           threadId,
           ...threadRuntimeParams(options),
-          ...permissionRuntimeParams(permissionMode)
+          ...threadContextParams(options),
+          ...permissionRuntimeParams(permissionMode, options.readOnly)
         };
         let resumed: unknown;
         try {
@@ -1304,11 +1410,14 @@ export async function runCodexAppServerStdioTurnSession(
           ephemeral: options.ephemeral ?? true,
           serviceName: options.serviceName ?? "space-capability",
           ...threadRuntimeParams(options),
-          ...permissionRuntimeParams(permissionMode)
+          ...threadContextParams(options),
+          ...(options.dynamicTools?.length ? { dynamicTools: options.dynamicTools } : {}),
+          ...permissionRuntimeParams(permissionMode, options.readOnly)
         }));
         threadId = stringField(asRecord(result?.thread), "id");
         const model = stringField(result, "model");
         runtimeModelAtStart = model && model.length <= 200 ? model : null;
+        if (threadId) await options.onThreadStarted?.({ threadId, dynamicTools: Boolean(options.dynamicTools?.length) });
       }
       if (!threadId) {
         throw new Error("Codex App Server thread response did not include a thread id.");
@@ -1871,6 +1980,7 @@ export async function runCodexAppServerStdioGoalSession(
 }
 
 interface CodexAppServerSocketProtocolClient {
+  currentThreadId?: string | null;
   request(method: CodexAppServerSocketRpcMethod, params?: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -1888,7 +1998,25 @@ function socketInitializedParams(options: CodexAppServerSocketControlServiceOpti
   };
 }
 
-function socketRemoteRpcError(method: CodexAppServerSocketRpcMethod): Error {
+class CodexFirstTurnHistoryUnavailableError extends Error {}
+
+class CodexUnmaterializedHistoryError extends Error {
+  constructor(readonly threadId: string) { super("Native thread history is not materialized yet."); }
+}
+
+function socketRemoteRpcError(method: CodexAppServerSocketRpcMethod, error?: unknown): Error {
+  const remote = asRecord(error);
+  if (method === "thread/turns/list" && remote?.code === -32601 && remote.message === "list_turns is not supported yet") {
+    return new CodexFirstTurnHistoryUnavailableError("Native turn history is not available yet.");
+  }
+  if ((method === "thread/read" || method === "thread/turns/list") && remote?.code === -32600 && typeof remote.message === "string") {
+    const suffix = method === "thread/read" ? "includeTurns" : "thread/turns/list";
+    const ending = ` is not materialized yet; ${suffix} is unavailable before first user message`;
+    if (remote.message.endsWith(ending)) {
+      const id = remote.message.slice(0, -ending.length).replace(/^thread /, "");
+      if (id && id.length <= 200 && !/\s/.test(id)) return new CodexUnmaterializedHistoryError(id);
+    }
+  }
   return new Error(`Codex App Server ${method} returned an error.`);
 }
 
@@ -1969,7 +2097,9 @@ function runCodexAppServerSocketProtocol<T>(
       }
       const request = pending;
       pending = null;
-      if (message.error) request.reject(socketRemoteRpcError(request.method));
+      if (message.error) request.reject(request.method === "thread/settings/update"
+        ? new CodexSettingsRejectedError(codexRetryableFailure(message.error))
+        : socketRemoteRpcError(request.method, message.error));
       else request.resolve(message.result);
     }
 
@@ -1977,7 +2107,11 @@ function runCodexAppServerSocketProtocol<T>(
       connected = true;
       void (async () => {
         try {
-          await client.request("initialize", socketInitializedParams(options));
+          const initialized = asRecord(await client.request("initialize", socketInitializedParams(options)));
+          if (initialized && Object.hasOwn(initialized, "spaceCurrentThreadId")) {
+            client.currentThreadId = initialized.spaceCurrentThreadId === null ? null
+              : requiredSocketIdentifier(stringField(initialized, "spaceCurrentThreadId") ?? "", "current thread id");
+          }
           send({ method: "initialized", params: {} });
           finish(null, await operation(client));
         } catch (error) {
@@ -2091,6 +2225,88 @@ export function createCodexAppServerSocketControlService(
   options: CodexAppServerSocketControlServiceOptions
 ): CodexAppServerSocketControlService {
   return {
+    startManagedTurn: input => startObservedCodexTurn(options,input),
+    readThread: (id) => runCodexAppServerSocketProtocol(options, async (client) => {
+      const threadId = requiredSocketIdentifier(id, "thread id");
+      const result = asRecord(await client.request("thread/read", { threadId, includeTurns: false }));
+      const thread = asRecord(result?.thread);
+      const status = asRecord(thread?.status);
+      const modelId = stringField(thread, "model");
+      const reasoningEffort = stringField(thread, "reasoningEffort");
+      const cwd = stringField(thread, "cwd");
+      if (thread?.id !== threadId || !modelId || !reasoningEffort || !cwd ||
+          !["idle", "active", "notLoaded", "systemError"].includes(String(status?.type)) || !Array.isArray(thread.turns)) {
+        throw new Error("Codex did not confirm native execution identity and history.");
+      }
+      if (thread.ephemeral === true || (thread.historyMode !== undefined && !["legacy", "paginated"].includes(String(thread.historyMode)))) {
+        throw new Error("Unsupported native thread history contract.");
+      }
+      let rawTurns: unknown[] = [];
+      try {
+        if (thread.historyMode === "paginated") {
+          let cursor: string | undefined;
+          const cursors = new Set<string>();
+          for (let pageNumber = 0; ; pageNumber++) {
+            if (pageNumber >= 100) throw new Error("Native history exceeds the bounded read limit.");
+            const page = asRecord(await client.request("thread/turns/list", {
+              threadId, limit: 100, sortDirection: "asc", itemsView: "full", ...(cursor ? { cursor } : {})
+            }));
+            if (!Array.isArray(page?.data) || page.data.length > 100 ||
+                !(page.nextCursor === null || (typeof page.nextCursor === "string" && page.nextCursor.length > 0)) ||
+                page.data.some(raw => asRecord(raw)?.itemsView !== "full")) {
+              throw new Error("Codex did not return complete paginated history.");
+            }
+            rawTurns.push(...page.data);
+            if (page.nextCursor === null) break;
+            if (cursors.has(page.nextCursor as string)) throw new Error("Native history cursor repeated.");
+            cursor = page.nextCursor as string;
+            cursors.add(cursor);
+          }
+        } else {
+          const hydrated = asRecord(asRecord(await client.request("thread/read", { threadId, includeTurns: true }))?.thread);
+          if (hydrated?.id !== threadId || hydrated.cwd !== cwd || !Array.isArray(hydrated.turns)) {
+            throw new Error("Codex did not confirm native execution identity and history.");
+          }
+          rawTurns = hydrated.turns;
+        }
+      } catch (error) {
+        // A precise native first-message rejection proves emptiness; missing or failed reads do not.
+        const unmaterialized = error instanceof CodexUnmaterializedHistoryError && error.threadId === threadId;
+        const firstTurn = error instanceof CodexFirstTurnHistoryUnavailableError && thread.historyMode === "paginated" &&
+          thread.preview === "" && await confirmFreshNativeHistory(options.rolloutRoot, thread.path, threadId, cwd);
+        if ((!unmaterialized && !firstTurn) || status?.type !== "idle" || thread.ephemeral !== false || rawTurns.length !== 0) throw error;
+        if (firstTurn) {
+          const current = asRecord(asRecord(await client.request("thread/read", {threadId, includeTurns:false}))?.thread);
+          if (current?.id !== threadId || current.cwd !== cwd || current.path !== thread.path ||
+              current.model !== modelId || current.reasoningEffort !== reasoningEffort ||
+              asRecord(current.status)?.type !== "idle" || current.ephemeral !== false || current.preview !== "") throw error;
+        }
+      }
+      const turns: CodexNativeTurn[] = rawTurns.map(raw => {
+        const turn = asRecord(raw);
+        const turnId = stringField(turn, "id");
+        const turnStatus = turnStatusField(turn);
+        if (!turnId || !turnStatus || !Array.isArray(turn?.items)) throw new Error("Invalid native turn history.");
+        const items = turn.items.map(asRecord);
+        const finals = items.filter(item => item?.type === "agentMessage" && (item.phase === "final_answer" || item.phase == null));
+        return { id: turnId, status: turnStatus, userMessageCount: items.filter(item => item?.type === "userMessage").length,
+          clientUserMessageIds: items.flatMap(item => item?.type === "userMessage" && typeof item.clientId === "string" ? [item.clientId] : []),
+          resultText: finals.length === 1 ? stringField(finals[0] ?? null, "text") ?? null : null,
+          itemsComplete: turn.itemsView === "full",
+          commandExecutions: items.filter(item => item?.type === "commandExecution").map(item => ({
+            id: stringField(item, "id"),
+            command: typeof item?.command === "string" ? item.command : null,
+            status: ["inProgress", "completed", "failed", "declined"].includes(String(item?.status)) ? item!.status as CodexNativeCommandExecution["status"] : null,
+            exitCode: typeof item?.exitCode === "number" && Number.isInteger(item.exitCode) ? item.exitCode : null,
+            aggregatedOutput: typeof item?.aggregatedOutput === "string" ? item.aggregatedOutput : null
+          })),
+          ...(turnStatus === "failed" && codexRetryableFailure(turn.error) ? {retryableFailure:codexRetryableFailure(turn.error)} : {}) };
+      });
+      if (new Set(turns.map(turn => turn.id)).size !== turns.length) throw new Error("Duplicate native turn identity.");
+      return { id: threadId, cwd, modelId, reasoningEffort, status: status!.type as CodexNativeThread["status"],
+        activeFlags: Array.isArray(status?.activeFlags) ? status.activeFlags.filter((flag): flag is string => typeof flag === "string") : [], turns };
+    }),
+    readCurrentThreadId: () => runCodexAppServerSocketProtocol(options, async (client) => client.currentThreadId),
     readThreadSettings: (id) => runCodexAppServerSocketProtocol(options, async (client) => {
       const threadId = requiredSocketIdentifier(id, "thread id");
       const result = asRecord(await client.request("thread/read", { threadId, includeTurns: false }));
@@ -2158,13 +2374,16 @@ export function createCodexAppServerSocketControlService(
     updateThreadSettings: (input) => runCodexAppServerSocketProtocol(options, async (client) => {
       const reasoningEffort = providerReasoningEffort(input.reasoningEffort);
       if (!reasoningEffort) throw new Error("Codex App Server reasoning effort is invalid.");
+      await input.beforeSend?.();
       await client.request("thread/settings/update", {
         threadId: requiredSocketIdentifier(input.threadId, "thread id"),
         model: requiredSocketIdentifier(input.model, "model"),
-        effort: reasoningEffort
+        effort: reasoningEffort,
+        ...(input.requireCurrentThread ? { spaceExpectedPrimaryThreadId: input.threadId } : {})
       });
     }),
     interruptTurn: (input) => runCodexAppServerSocketProtocol(options, async (client) => {
+      await input.beforeSend?.();
       await client.request("turn/interrupt", {
         threadId: requiredSocketIdentifier(input.threadId, "thread id"),
         turnId: requiredSocketIdentifier(input.turnId, "turn id")
@@ -2186,6 +2405,8 @@ export function createCodexAppServerSocketControlService(
       };
       if (input.model !== undefined) params.model = requiredSocketIdentifier(input.model, "model");
       if (reasoningEffort !== undefined) params.effort = reasoningEffort;
+      if (input.outputSchema !== undefined) params.outputSchema = input.outputSchema;
+      await input.beforeSend?.();
       return parseStartedSocketTurn(await client.request("turn/start", params));
     })
   };

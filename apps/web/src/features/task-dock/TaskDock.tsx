@@ -1,17 +1,12 @@
 import {
   GripVertical,
   ListTodo,
-  Loader2,
-  Maximize2,
-  Minimize2,
   Play,
   Plus,
-  Trash2,
-  X
+  Trash2
 } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
-import { motion } from "motion/react";
 import { AnimatedNumber } from "../ui-controls/AnimatedNumber.js";
 import type { TaskItem, TaskStatus } from "@space/contracts";
 import { taskObjectiveMaxCharacters, taskTitleMaxCharacters } from "@space/contracts";
@@ -26,6 +21,22 @@ import {
   formatAppDateTime,
   DATE_TIME_SETTINGS_UPDATED_EVENT
 } from "../date-time-settings/date-time-settings.js";
+import { useIsDockActive } from "../docks/dock-active-context.js";
+import {
+  DockButton,
+  DockChips,
+  DockFullscreenButton,
+  DockIconButton,
+  DockNotice,
+  DockSearch,
+  DockState,
+  DockToolbar,
+  useDockConfirm,
+  useDockFullscreen
+} from "../dock-kit/DockKit.js";
+
+let cachedTaskItems: TaskItem[] | null = null;
+let cachedTaskTotal = 0;
 
 interface TaskDockProps {
   canInsert: boolean;
@@ -35,6 +46,13 @@ interface TaskDockProps {
 
 type StatusFilter = "ALL" | TaskStatus;
 
+const statusLabels: Record<TaskStatus, string> = {
+  OPEN: "Open",
+  RUNNING: "Running",
+  DONE: "Done",
+  ARCHIVED: "Archived"
+};
+
 const statusFilters: Array<{ id: StatusFilter; label: string }> = [
   { id: "ALL", label: "All" },
   { id: "OPEN", label: "Open" },
@@ -42,6 +60,13 @@ const statusFilters: Array<{ id: StatusFilter; label: string }> = [
   { id: "DONE", label: "Done" },
   { id: "ARCHIVED", label: "Archived" }
 ];
+
+const statusTone: Record<TaskStatus, string> = {
+  OPEN: "is-accent",
+  RUNNING: "is-warning",
+  DONE: "is-success",
+  ARCHIVED: ""
+};
 
 function timeLabel(value: string): string {
   const date = new Date(value);
@@ -53,13 +78,16 @@ const acceptedStatuses: TaskStatus[] = ["OPEN", "RUNNING", "DONE", "ARCHIVED"];
 
 export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps) {
   const runtime = getSpaceRuntime();
-  const [items, setItems] = useState<TaskItem[]>([]);
-  const [totalItems, setTotalItems] = useState(0);
+  const isDockActive = useIsDockActive();
+  const { confirm, confirmDialog } = useDockConfirm();
+  const [items, setItems] = useState<TaskItem[]>(() => cachedTaskItems ?? []);
+  const [totalItems, setTotalItems] = useState(() => cachedTaskTotal);
+  const [hasLoaded, setHasLoaded] = useState(() => cachedTaskItems !== null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [isAdding, setIsAdding] = useState(false);
   const [manualTitle, setManualTitle] = useState("");
   const [manualObjective, setManualObjective] = useState("");
@@ -68,10 +96,13 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [taskListRef] = useAutoAnimate();
+  const titleCharacters = Array.from(manualTitle).length;
+  const objectiveCharacters = Array.from(manualObjective).length;
+  const titleTooLong = titleCharacters > taskTitleMaxCharacters;
+  const objectiveTooLong = objectiveCharacters > taskObjectiveMaxCharacters;
+  const isFiltered = Boolean(search.trim()) || statusFilter !== "ALL";
 
   const loadItems = useCallback(async () => {
-    setLoading(true);
-    setError(null);
     try {
       const payload = await api.taskItems({
         ...(search.trim() ? { q: search.trim() } : {}),
@@ -81,27 +112,43 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
       });
       setItems(payload.data);
       setTotalItems(payload.pagination.totalItems);
+      setLoadError(null);
+      if (!search.trim() && statusFilter === "ALL") {
+        cachedTaskItems = payload.data;
+        cachedTaskTotal = payload.pagination.totalItems;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tasks could not be loaded.");
+      setLoadError(err instanceof Error ? err.message : "Tasks could not be loaded.");
     } finally {
-      setLoading(false);
+      setHasLoaded(true);
     }
   }, [search, statusFilter]);
 
+  const initialLoadRef = useRef(true);
   useEffect(() => {
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false;
+      void loadItems();
+      return;
+    }
     const timer = window.setTimeout(() => void loadItems(), 150);
     return () => window.clearTimeout(timer);
   }, [loadItems]);
 
   useEffect(() => {
     const refresh = () => void loadItems();
-    const poll = window.setInterval(refresh, 5_000);
     window.addEventListener(SPACE_TASK_UPDATED_EVENT, refresh);
     return () => {
-      window.clearInterval(poll);
       window.removeEventListener(SPACE_TASK_UPDATED_EVENT, refresh);
     };
   }, [loadItems]);
+
+  useEffect(() => {
+    if (!isDockActive) return;
+    const refresh = () => void loadItems();
+    const poll = window.setInterval(refresh, 5_000);
+    return () => window.clearInterval(poll);
+  }, [isDockActive, loadItems]);
 
   const [, setDateTimeTick] = useState(0);
   useEffect(() => {
@@ -110,34 +157,25 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
     return () => window.removeEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
   }, []);
 
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setIsFullscreen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isFullscreen]);
-
-  const summary = useMemo(
-    () => <><AnimatedNumber value={totalItems} /> task{totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max</>,
-    [totalItems]
-  );
-
   async function copyItem(item: TaskItem) {
     try {
-      if (runtime.platform.clipboard?.writeText) {
-        await runtime.platform.clipboard.writeText(item.objective);
-        setCopiedId(item.id);
-        window.setTimeout(() => setCopiedId((current) => (current === item.id ? null : current)), 1_500);
-      }
+      if (!runtime.platform.clipboard?.writeText) throw new DOMException("Clipboard access is unavailable.", "NotSupportedError");
+      await runtime.platform.clipboard.writeText(item.objective);
+      setCopiedId(item.id);
+      window.setTimeout(() => setCopiedId((current) => (current === item.id ? null : current)), 1_500);
     } catch {
       setError("Clipboard access was unavailable. Select the objective and copy it manually.");
     }
   }
 
+  function closeEditor() {
+    setManualTitle("");
+    setManualObjective("");
+    setIsAdding(false);
+  }
+
   async function saveTask() {
-    if (!manualTitle.trim() || !manualObjective.trim()) return;
+    if (!manualTitle.trim() || !manualObjective.trim() || titleTooLong || objectiveTooLong) return;
     try {
       setSaving(true);
       await api.createTaskItem({
@@ -145,9 +183,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
         objective: manualObjective.trim(),
         status: "OPEN"
       });
-      setManualTitle("");
-      setManualObjective("");
-      setIsAdding(false);
+      closeEditor();
       notifyTasksUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "The task could not be saved.");
@@ -157,6 +193,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   }
 
   async function setTaskStatus(item: TaskItem, status: TaskStatus) {
+    if (status === item.status) return;
     try {
       setUpdatingId(item.id);
       await api.updateTaskItem(item.id, { status });
@@ -169,6 +206,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   }
 
   async function deleteItem(item: TaskItem) {
+    if (!await confirm({ title: "Delete this task?", message: `"${item.title}" will be removed.`, confirmLabel: "Delete" })) return;
     try {
       await api.deleteTaskItem(item.id);
       notifyTasksUpdated();
@@ -178,7 +216,7 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
   }
 
   async function clearAll() {
-    if (!window.confirm("Clear all task history for your account?")) return;
+    if (!await confirm({ title: "Clear all tasks?", message: "Every task in your list will be removed. This cannot be undone.", confirmLabel: "Clear all" })) return;
     try {
       await api.clearTaskItems();
       notifyTasksUpdated();
@@ -189,117 +227,105 @@ export function TaskDock({ canInsert, activePaneLabel, onInsert }: TaskDockProps
 
   return (
     <section
-      className={`task-dock-shell${isFullscreen ? " is-fullscreen" : ""}`}
+      className={`task-dock-shell dock-kit-shell${isFullscreen ? " is-fullscreen" : ""}`}
       aria-label="Task list"
     >
-      <div className="task-dock">
-        <header className="task-dock-head">
-          <h2><ListTodo aria-hidden="true" /> Tasks</h2>
-          <div className="task-dock-actions">
-            <button
-              className={`icon-action dock-fullscreen-toggle${isFullscreen ? " is-active" : ""}`}
-              onClick={() => setIsFullscreen((value) => !value)}
-              aria-label={isFullscreen ? "Close tasks fullscreen" : "Open tasks fullscreen"}
-              title={isFullscreen ? "Close tasks fullscreen" : "Open tasks fullscreen"}
-              aria-pressed={isFullscreen}
-            >
-              {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-            </button>
-            <button className="icon-action" onClick={() => setIsAdding(true)} aria-label="Add task" aria-expanded={isAdding}>
-              <Plus aria-hidden="true" />
-            </button>
-            <button className="icon-action" onClick={() => void clearAll()}
-              aria-label="Clear all task items"><Trash2 aria-hidden="true" /></button>
-          </div>
-        </header>
+      <div className="task-dock dock-kit-dock">
+        <DockToolbar
+          title={isFullscreen ? "Tasks" : undefined}
+          summary={<><strong><AnimatedNumber value={totalItems} /></strong> task{totalItems === 1 ? "" : "s"} · private to you</>}
+        >
+          <DockIconButton label="Add task" icon={Plus} tone="primary" aria-expanded={isAdding} onClick={() => setIsAdding(true)} />
+          <DockIconButton label="Clear all tasks" icon={Trash2} tone="danger" disabled={!totalItems} onClick={() => void clearAll()} />
+          <DockFullscreenButton name="tasks" active={isFullscreen} onToggle={() => setIsFullscreen((value) => !value)} />
+        </DockToolbar>
 
-        <p className="task-summary">{summary}</p>
-        <div className="task-controls">
-          <input type="search" name="task-search" aria-label="Search tasks" placeholder="Search tasks…" value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)} />
-          <div className="task-filters" aria-label="Task statuses" style={{ position: "relative" }}>
-            {statusFilters.map((filter) => (
-              <button key={filter.id} className={statusFilter === filter.id ? "active" : ""}
-                aria-pressed={statusFilter === filter.id} onClick={() => setStatusFilter(filter.id)}
-                style={{ position: "relative" }}>
-                {statusFilter === filter.id && (
-                  <motion.span
-                    layoutId="task-filter-indicator"
-                    className="task-filter-indicator"
-                    style={{ position: "absolute", inset: 0, borderRadius: "inherit", zIndex: 0 }}
-                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                  />
-                )}
-                <span style={{ position: "relative", zIndex: 1 }}>{filter.label}</span>
-              </button>
-            ))}
-          </div>
+        <div className="dock-kit-controls">
+          <DockSearch name="task-search" label="Search tasks" value={search} onChange={setSearch} />
+          <DockChips label="Task statuses" options={statusFilters} value={statusFilter} onChange={setStatusFilter} />
         </div>
 
         {isAdding ? (
-          <div className="task-note-editor">
-            <input type="text" autoFocus aria-label="Task title" placeholder="Task title" value={manualTitle}
+          <div className="dock-kit-editor">
+            <input className="dock-kit-field" type="text" autoFocus aria-label="Task title" placeholder="Task title" value={manualTitle}
               maxLength={taskTitleMaxCharacters + 1}
               onChange={(event) => setManualTitle(event.currentTarget.value)} />
-            <textarea aria-label="Task objective" placeholder="Task objective — this is sent to the CLI on drop"
+            <textarea className="dock-kit-field" aria-label="Task objective"
+              placeholder="What should the agent do? Drag the task onto a CLI or press Start to send it."
               value={manualObjective} maxLength={taskObjectiveMaxCharacters + 1}
               onChange={(event) => setManualObjective(event.currentTarget.value)} />
-            <div>
-              <span>{Array.from(manualObjective).length.toLocaleString()} / {taskObjectiveMaxCharacters.toLocaleString()}</span>
-              <button onClick={() => { setManualTitle(""); setManualObjective(""); setIsAdding(false); }} aria-label="Cancel task"><X aria-hidden="true" /> Cancel</button>
-              <button onClick={() => void saveTask()} disabled={!manualTitle.trim() || !manualObjective.trim() || saving}
-                aria-label="Save task">{saving ? <Loader2 aria-hidden="true" /> : "Save"}</button>
+            <div className="dock-kit-editor-footer">
+              <span className={`dock-kit-counter${titleTooLong || objectiveTooLong ? " is-over" : ""}`}>
+                {titleTooLong ? `Title is over ${taskTitleMaxCharacters} characters` : `${objectiveCharacters.toLocaleString()} / ${taskObjectiveMaxCharacters.toLocaleString()}`}
+              </span>
+              <DockButton tone="ghost" onClick={closeEditor} aria-label="Cancel task">Cancel</DockButton>
+              <DockButton tone="primary" busy={saving} onClick={() => void saveTask()}
+                disabled={!manualTitle.trim() || !manualObjective.trim() || titleTooLong || objectiveTooLong || saving}
+                aria-label="Save task">Save</DockButton>
             </div>
           </div>
         ) : null}
 
-        {error ? <div className="banner bad">{error}</div> : null}
-        <div ref={taskListRef} className="task-list" role="list" aria-label="Task items">
+        {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+        {loadError && items.length ? <DockNotice onDismiss={() => setLoadError(null)}>{loadError}</DockNotice> : null}
+
+        {!items.length ? (
+          !hasLoaded ? (
+            <DockState kind="loading" title="Loading tasks…" />
+          ) : loadError ? (
+            <DockState kind="error" title="Tasks could not be loaded" detail={loadError} action={{ label: "Try again", onClick: () => void loadItems() }} />
+          ) : isFiltered ? (
+            <DockState kind="empty" icon={ListTodo} title="No tasks match this view." detail="Change the search or the status filter." />
+          ) : (
+            <DockState kind="empty" icon={ListTodo} title="No tasks yet" detail="Add a task, then drag it onto a CLI or press Start to send it."
+              action={{ label: "Add your first task", icon: Plus, onClick: () => setIsAdding(true) }} />
+          )
+        ) : null}
+
+        <div ref={taskListRef} className="task-list dock-kit-list" role="list" aria-label="Task items" hidden={!items.length}>
           {items.map((item) => {
             const expanded = expandedIds.has(item.id);
             const isLong = item.characterCount > 360;
             return (
-            <article className={`task-card is-${item.status.toLocaleLowerCase()}`} role="listitem" key={item.id}>
-              <div className="task-card-meta">
-                <strong>{item.status}</strong>
-                <span>{item.source === "AGENT" ? "Agent" : "Manual"} · {item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
-                {item.occurrenceCount > 1 ? <small>Used {item.occurrenceCount} times</small> : null}
+            <article className={`task-card dock-kit-card is-${item.status.toLocaleLowerCase()} ${statusTone[item.status]}${item.status === "ARCHIVED" ? " is-muted" : ""}`} role="listitem" key={item.id}>
+              <div className="dock-kit-meta">
+                <span className={`dock-kit-badge ${statusTone[item.status]}`}>{statusLabels[item.status]}</span>
+                <span className="dock-kit-meta-text">{item.source === "AGENT" ? "Agent" : "Manual"} · {item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
+                {item.occurrenceCount > 1 ? <span className="dock-kit-badge">Used {item.occurrenceCount}×</span> : null}
               </div>
-              <div className="task-card-title">{item.title}</div>
+              <div className="dock-kit-card-title">{item.title}</div>
               <button className={`task-card-objective${expanded ? " expanded" : ""}`} onClick={() => void copyItem(item)}
-                aria-label="Copy task objective">{item.objective}</button>
+                aria-label="Copy task objective" title="Click to copy">{item.objective}</button>
               {copiedId === item.id ? (
                 <span className="task-copied" role="status">{runtime.kind === "demo" ? DEMO_LOCAL_REPLY : "Copied"}</span>
               ) : null}
-              {isLong ? <button className="task-expand" onClick={() => setExpandedIds((current) => {
+              {isLong ? <DockButton tone="ghost" className="task-expand" onClick={() => setExpandedIds((current) => {
                 const next = new Set(current);
                 if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
                 return next;
-              })}>{expanded ? "Collapse" : "Expand"}</button> : null}
-              <div className="task-card-statuses" aria-label="Task status actions">
-                {acceptedStatuses.map((status) => (
-                  <button key={status} className={item.status === status ? "active" : ""}
-                    disabled={updatingId === item.id}
-                    aria-pressed={item.status === status}
-                    onClick={() => void setTaskStatus(item, status)}>{status}</button>
-                ))}
-              </div>
-              <div className="task-card-actions">
-                <button draggable onDragStart={(event) => {
+              })}>{expanded ? "Collapse" : "Expand"}</DockButton> : null}
+              <div className="dock-kit-card-actions">
+                <select className="dock-kit-select task-status-select" aria-label="Task status" value={item.status}
+                  disabled={updatingId === item.id}
+                  onChange={(event) => void setTaskStatus(item, event.currentTarget.value as TaskStatus)}>
+                  {acceptedStatuses.map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}
+                </select>
+                <DockIconButton label="Drag task to a CLI" icon={GripVertical} className="task-drag-handle" draggable onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "copy";
                   event.dataTransfer.setData("text/plain", item.objective);
                   event.dataTransfer.setData(SPACE_TASK_ITEM_MIME, item.id);
-                }} aria-label="Drag task to a CLI"><GripVertical aria-hidden="true" /> Drag</button>
-                <button disabled={!canInsert} onClick={() => onInsert(item)}
-                  aria-label={`Start in ${activePaneLabel ?? "active pane"}`}><Play aria-hidden="true" /> Start</button>
-                <button onClick={() => void deleteItem(item)} aria-label="Delete task"><Trash2 aria-hidden="true" /></button>
+                }} />
+                <DockButton icon={Play} tone="primary" disabled={!canInsert} onClick={() => onInsert(item)}
+                  aria-label={`Start in ${activePaneLabel ?? "active pane"}`}
+                  title={canInsert ? `Start in ${activePaneLabel ?? "active pane"}` : "Select a CLI or chat pane to start this task"}>Start</DockButton>
+                <DockIconButton label="Delete task" icon={Trash2} tone="danger" onClick={() => void deleteItem(item)} />
               </div>
             </article>
             );
           })}
-          {!loading && !items.length ? <div className="empty-state" role="status">No tasks match this view.</div> : null}
         </div>
       </div>
+      {confirmDialog}
     </section>
   );
 }

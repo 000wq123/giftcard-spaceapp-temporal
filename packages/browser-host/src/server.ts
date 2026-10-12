@@ -31,7 +31,7 @@ function parseRequest(value: unknown): BrowserHostRequest {
   const methods: BrowserHostMethod[] = [
     "health", "startOrRestore", "getActive", "navigate", "setViewport", "setStreamMode", "action", "captureFrame", "stopPane",
     "stopRoom", "listPages", "createPage", "activatePage", "closePage", "acquireControl", "heartbeatControl", "releaseControl",
-    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "startFrameStream",
+    "dispatchInput", "input", "createCapture", "getCapture", "stopCapture", "cancelCapture", "diagnostics", "checkGoogleAccount", "adoptPaneGoogleProfile", "startFrameStream",
     "stopFrameStream", "startAudioStream", "stopAudioStream"
   ];
   if (!methods.includes(value.method as BrowserHostMethod)) {
@@ -165,7 +165,10 @@ function handleConnection(socket: Socket, handler: BrowserHostRequestHandler, re
       const input = isRecord(params.input) ? params.input : {};
       const pane = isRecord(params.pane) ? params.pane : isRecord(input.pane) ? input.pane : {};
       const paneId = typeof pane.id === "string" ? pane.id : typeof params.paneId === "string" ? params.paneId : null;
-      const scope = paneId ? `pane:${paneId}` : typeof params.sessionId === "string" ? `session:${params.sessionId}` : null;
+      const identity = isRecord(params.identity) ? params.identity : {};
+      const scope = paneId ? `pane:${paneId}`
+        : typeof params.sessionId === "string" ? `session:${params.sessionId}`
+          : request.method === "checkGoogleAccount" && typeof identity.accountId === "string" ? `google-account:${identity.accountId}` : null;
       // Preserve ordering within a pane while unrelated browsers start in
       // parallel. Unscoped mutations remain barriers; health never waits on
       // a slow page load. handleRequest still validates every message.

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdtemp, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -23,6 +23,29 @@ function isolatedEnvironment(root: string, config: unknown): NodeJS.ProcessEnv {
     OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: "700",
   };
 }
+// `opencode --version` costs about a second of CPU and the answer only changes
+// with the binary, so it is probed again only when the resolved file changes.
+const openCodeVersionByBinary = new Map<string, { identity: string; version: string }>();
+
+async function probeOpenCodeVersion(resolved: string, scratchRoot: () => Promise<string>): Promise<string> {
+  const info = await stat(resolved);
+  const identity = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+  const cached = openCodeVersionByBinary.get(resolved);
+  if (cached?.identity === identity) return cached.version;
+  const root = await scratchRoot();
+  const version = (await runNativeMetadataCommand(
+    resolved,
+    ["--version"],
+    "",
+    undefined,
+    5000,
+    4096,
+    { cwd: root, env: isolatedEnvironment(root, {}) },
+  )).trim();
+  openCodeVersionByBinary.set(resolved, { identity, version });
+  return version;
+}
+
 export async function resolveNativeOpenCodeRuntime(
   command?: string,
   commandDir?: string | null,
@@ -42,29 +65,22 @@ export async function resolveNativeOpenCodeRuntime(
             ),
           ),
       ];
-  const root = await mkdtemp(join(tmpdir(), "space-title-runtime-"));
+  let root: Promise<string> | null = null;
+  const scratchRoot = () => (root ??= mkdtemp(join(tmpdir(), "space-title-runtime-")));
   try {
     for (const path of [...new Set(paths)]) {
       try {
         await access(path, constants.X_OK);
         const resolved = await realpath(path);
-        const version = await runNativeMetadataCommand(
-          resolved,
-          ["--version"],
-          "",
-          undefined,
-          5000,
-          4096,
-          { cwd: root, env: isolatedEnvironment(root, {}) },
-        );
+        const version = await probeOpenCodeVersion(resolved, scratchRoot);
         // These permission/step/output-limit controls were verified against this
         // native version. An unknown runtime must not silently weaken the limits.
-        if (["1.18.29", "1.18.30", "1.18.31"].includes(version.trim())) return resolved;
+        if (["1.18.29", "1.18.30", "1.18.31"].includes(version)) return resolved;
       } catch {}
     }
     return null;
   } finally {
-    await rm(root, { recursive: true, force: true });
+    if (root) await rm(await root, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 export function parseNativeOpenCodeModels(

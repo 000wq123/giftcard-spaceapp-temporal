@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type KeyboardEvent, type UIEvent } from "react";
-import { Save, X, FileCode, Check, Eye, Code2 } from "lucide-react";
+import { Save, X, FileCode, Check, Eye, Code2 } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 
 export interface FileEditorModalProps {

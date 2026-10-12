@@ -33,6 +33,41 @@ class ScopedStorage implements Storage {
 }
 
 export function installMockStorage(): void {
+  // Embedded demo controls may scroll their own surface, never the host page.
+  // Do not rely on scrollIntoView's newer container option: browsers that
+  // ignore it would scroll the parent page as well as the transcript.
+  if (window.parent !== window) {
+    Element.prototype.scrollIntoView = function(options?: boolean | ScrollIntoViewOptions) {
+      const settings: ScrollIntoViewOptions = typeof options === "object" ? options : { block: options === false ? "end" : "start" };
+      const align = (start: number, end: number, extent: number, position: ScrollLogicalPosition) => {
+        if (position === "start") return start;
+        if (position === "end") return end - extent;
+        if (position === "center") return (start + end - extent) / 2;
+        if (start < 0 && end > extent) return 0;
+        if (start < 0) return end - start > extent ? end - extent : start;
+        if (end > extent) return end - start > extent ? start : end - extent;
+        return 0;
+      };
+      for (let container = this.parentElement; container; container = container.parentElement) {
+        // The document viewport is deliberately excluded from embedded demos.
+        if (container === document.body || container === document.documentElement) break;
+        const style = getComputedStyle(container);
+        const vertical = /^(auto|scroll|hidden)$/.test(style.overflowY) && container.scrollHeight > container.clientHeight;
+        const horizontal = /^(auto|scroll|hidden)$/.test(style.overflowX) && container.scrollWidth > container.clientWidth;
+        if (!vertical && !horizontal) continue;
+        const target = this.getBoundingClientRect();
+        const bounds = container.getBoundingClientRect();
+        const top = target.top - bounds.top - container.clientTop;
+        const left = target.left - bounds.left - container.clientLeft;
+        container.scrollBy({
+          top: vertical ? align(top, top + target.height, container.clientHeight, settings.block ?? "start") : 0,
+          left: horizontal ? align(left, left + target.width, container.clientWidth, settings.inline ?? "nearest") : 0,
+          behavior: settings.behavior ?? "auto",
+        });
+        return;
+      }
+    };
+  }
   // Only application state is transient; the browser's static asset cache stays warm.
   const local = new ScopedStorage(null, PREFIX);
   const session = new ScopedStorage(null, PREFIX + "session.");
@@ -49,6 +84,7 @@ export function installMockStorage(): void {
     "space.roomToolbar.hidden.v1": "true",
     "space.dateTime.settings": JSON.stringify({ timeZone: "UTC", timeFormat: "24h", dateFormat: "DD/MM/YYYY" })
   };
+  if (new URLSearchParams(location.search).get("showcase") === "1") { defaults["space.room.theme"] = "motion"; defaults["space.uiTheme.v1"] = "motion"; }
   for (const [key, value] of Object.entries(defaults)) if (local.getItem(key) === null) local.setItem(key, value);
   session.setItem("space.selectedRoomId", "room:demo-launch");
   session.setItem("space.selectedRoomId.user:demo-user", "room:demo-launch");
@@ -58,7 +94,7 @@ export function installMockStorage(): void {
   const nativeFetch = window.fetch.bind(window);
   window.fetch = ((input, init) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url, location.href);
-    const localAsset = url.origin === location.origin && url.pathname.startsWith("/demoappnew/") && !url.pathname.includes("/api/");
+    const localAsset = url.origin === location.origin && (url.pathname.startsWith(import.meta.env.BASE_URL) || url.pathname.startsWith("/spaceappmock/") || url.pathname.startsWith("/demoappnew/")) && !url.pathname.includes("/api/");
     const inlineAsset = url.protocol === "data:" || url.protocol === "blob:";
     if ((!localAsset && !inlineAsset) || (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase() !== "GET") return Promise.reject(new TypeError("This demo uses local simulated services."));
     return nativeFetch(url, { ...init, credentials: "omit" });

@@ -5,6 +5,7 @@ import {
   type TaskTitleCandidateStatus,
 } from "@space/contracts";
 import { api } from "../../api.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 export function TaskTitleSettings() {
   const [settings, setSettings] = useState<Settings | null>(null),
     [candidates, setCandidates] = useState<TaskTitleCandidateStatus[]>([]),
@@ -52,15 +53,13 @@ export function TaskTitleSettings() {
       {error ? <p role="alert">{error}</p> : null}
       {settings ? (
         <>
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.enabled}
-              disabled={pending}
-              onChange={(e) => void save({ enabled: e.target.checked })}
-            />{" "}
-            Automatic summaries
-          </label>
+          <SpaceToggle
+            className="task-title-toggle"
+            label="Automatic summaries"
+            checked={settings.enabled}
+            disabled={pending}
+            onChange={(checked) => void save({ enabled: checked })}
+          />
           <label>
             Preferred model
             <select

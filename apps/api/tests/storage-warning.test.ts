@@ -41,6 +41,11 @@ async function loginCookie(app: Awaited<ReturnType<typeof createApp>>): Promise<
   return `${cookie!.name}=${cookie!.value}`;
 }
 
+// Each test starts and closes the whole API. On loaded hosts (2026-10-11)
+// createApp took up to 15 s and app.close() 11-38 s, so the default 5 s limit
+// says nothing about correctness.
+const APP_TEST_TIMEOUT_MS = 60_000;
+
 describe("public profile storage warning", () => {
   it("does not show the browser-heavy storage banner when browser sessions are disabled", async () => {
     const app = await createApp({
@@ -71,7 +76,7 @@ describe("public profile storage warning", () => {
     } finally {
       await app.close();
     }
-  });
+  }, APP_TEST_TIMEOUT_MS);
 
   it("keeps the browser-heavy storage banner when browser sessions are enabled", async () => {
     const app = await createApp({
@@ -102,5 +107,5 @@ describe("public profile storage warning", () => {
     } finally {
       await app.close();
     }
-  });
+  }, APP_TEST_TIMEOUT_MS);
 });

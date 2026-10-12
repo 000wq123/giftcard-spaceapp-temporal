@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { LOWER_RAIL_IDS, UPPER_RAIL_IDS } from "./use-rail-order.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 
 export const LOWER_RAIL_HIDDEN_KEY = "space:room-rail-hidden:v1";
 export const UPPER_RAIL_HIDDEN_KEY = "space:upper-rail-hidden:v1";
@@ -81,6 +82,11 @@ function writeHiddenRailIds(storageKey: string, hiddenIds: string[]) {
     const storage = getSpaceRuntime().platform.localStorage;
     if (hiddenIds.length) storage.setItem(storageKey, JSON.stringify(hiddenIds));
     else storage.removeItem(storageKey);
+    if (storageKey === UPPER_RAIL_HIDDEN_KEY) {
+      saveUserSettingDebounced("upperRailHidden", hiddenIds);
+    } else if (storageKey === LOWER_RAIL_HIDDEN_KEY) {
+      saveUserSettingDebounced("lowerRailHidden", hiddenIds);
+    }
   } catch {
     // Session-only preference when storage is blocked.
   }

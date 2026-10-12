@@ -1,4 +1,5 @@
 import { getSpaceRuntime } from './runtime/SpaceRuntime.js';
+import { saveUserSettingDebounced } from './features/user-settings/user-settings-manager.js';
 
 // Keep the existing preference when upgrading from Vibe-only volume.
 export const SPACE_VOLUME_STORAGE_KEY = 'space.vibeMusic.volume';
@@ -16,7 +17,10 @@ export function getSpaceVolume(): number {
 export function setSpaceVolume(value: number): void {
   if (!Number.isFinite(value)) return;
   const volume = Math.max(0, Math.min(1, value));
-  try { getSpaceRuntime().platform.localStorage.setItem(SPACE_VOLUME_STORAGE_KEY, String(volume)); } catch { /* Best effort persistence. */ }
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(SPACE_VOLUME_STORAGE_KEY, String(volume));
+    saveUserSettingDebounced("vibeMusicVolume", volume);
+  } catch { /* Best effort persistence. */ }
   window.dispatchEvent(new CustomEvent(VOLUME_EVENT, { detail: volume }));
 }
 

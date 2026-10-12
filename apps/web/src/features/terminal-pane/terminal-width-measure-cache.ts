@@ -1,3 +1,5 @@
+import type { Terminal } from "@xterm/xterm";
+
 interface XtermWidthCache {
   _font?: unknown;
   _fontSize?: unknown;
@@ -6,6 +8,7 @@ interface XtermWidthCache {
   _container?: {
     ownerDocument?: unknown;
   };
+  _measureElements?: unknown;
   _measure?: (content: string, variant: number) => number;
 }
 
@@ -30,7 +33,9 @@ interface DocumentInvalidationState {
 
 interface TerminalMeasurementState {
   cache: XtermWidthCache;
+  terminal: Pick<Terminal, "buffer" | "cols" | "rows">;
   measurements: Map<string, number>;
+  rejectedAsciiVariants: Set<number>;
   originalMeasure: (content: string, variant: number) => number;
   ownerDocument: Document;
   renderer: object;
@@ -43,6 +48,12 @@ const documentInvalidationStates = new WeakMap<Document, DocumentInvalidationSta
 const terminalMeasurementStates = new WeakMap<object, TerminalMeasurementState>();
 const MAX_MEMOIZED_GLYPH_LENGTH = 128;
 const MAX_TERMINAL_MEASUREMENTS = 4096;
+// Matches the installed xterm DOM WidthCache; each batch is also calibrated
+// against its native measurement before any sibling result is reused.
+const XTERM_GLYPH_REPEAT = 32;
+const ASCII_FIRST = 32;
+const ASCII_LAST = 126;
+const MAX_GLYPH_SCAN_CELLS = 65_536;
 
 function isFontWeight(value: unknown): value is string | number {
   return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
@@ -101,6 +112,101 @@ function storeMeasurement(measurements: Map<string, number>, key: string, width:
   measurements.set(key, width);
 }
 
+// Read only the current viewport, using xterm's public buffer API. This does
+// not advance the parser, alter scrollback, write content, or retain a transcript.
+function visibleAsciiCandidates(
+  state: TerminalMeasurementState,
+  content: string,
+  variant: number
+): string[] {
+  const { terminal } = state;
+  const { rows, cols } = terminal;
+  const buffer = terminal.buffer?.active;
+  if (
+    !buffer || !Number.isSafeInteger(rows) || !Number.isSafeInteger(cols) ||
+    rows <= 0 || cols <= 0 || rows * cols > MAX_GLYPH_SCAN_CELLS ||
+    !Number.isSafeInteger(buffer.viewportY) || buffer.viewportY < 0
+  ) return [];
+
+  const candidates = new Set([content]);
+  const reusableCell = buffer.getNullCell();
+  for (let row = buffer.viewportY; row < buffer.viewportY + rows; row += 1) {
+    const line = buffer.getLine(row);
+    if (!line) continue;
+    for (let column = 0; column < cols; column += 1) {
+      const cell = line.getCell(column, reusableCell);
+      if (!cell) continue;
+      const cellVariant = (cell.isBold() ? 1 : 0) | (cell.isItalic() ? 2 : 0);
+      if (cellVariant !== variant) continue;
+      const glyph = cell.getChars();
+      if (
+        glyph.length === 1 && glyph.charCodeAt(0) >= ASCII_FIRST &&
+        glyph.charCodeAt(0) <= ASCII_LAST &&
+        !state.measurements.has(JSON.stringify([variant, glyph]))
+      ) candidates.add(glyph);
+    }
+  }
+  return [...candidates];
+}
+
+// Keep all writes before reads, in this terminal's existing font context.
+// No measurement is shared across terminals or renderer generations.
+function primeVisibleAscii(
+  state: TerminalMeasurementState,
+  receiver: XtermWidthCache,
+  content: string,
+  variant: number,
+  nativeWidth: number
+): void {
+  if (
+    receiver !== state.cache || content.length !== 1 ||
+    content.charCodeAt(0) < ASCII_FIRST || content.charCodeAt(0) > ASCII_LAST ||
+    variant < 0 || variant > 3 || state.rejectedAsciiVariants.has(variant)
+  ) return;
+
+  const elements = receiver._measureElements;
+  if (!Array.isArray(elements)) return;
+  const template = elements[variant] as HTMLElement | undefined;
+  const container = template?.parentElement;
+  if (
+    template?.tagName !== "SPAN" || !container?.isConnected ||
+    container !== receiver._container ||
+    template.ownerDocument !== state.ownerDocument ||
+    state.ownerDocument.fonts?.status === "loading"
+  ) return;
+
+  const probes: HTMLElement[] = [];
+  try {
+    const glyphs = visibleAsciiCandidates(state, content, variant);
+    if (glyphs.length < 2) return;
+    const fragment = state.ownerDocument.createDocumentFragment();
+    for (const glyph of glyphs) {
+      const probe = template.cloneNode(false) as HTMLElement;
+      probe.removeAttribute("id");
+      probe.textContent = glyph.repeat(XTERM_GLYPH_REPEAT);
+      probes.push(probe);
+      fragment.appendChild(probe);
+    }
+    container.appendChild(fragment);
+    const widths = probes.map(probe => probe.offsetWidth / XTERM_GLYPH_REPEAT);
+    if (
+      widths[0] !== nativeWidth ||
+      widths.some(width => !Number.isFinite(width) || width <= 0)
+    ) {
+      state.rejectedAsciiVariants.add(variant);
+      return;
+    }
+    for (let index = 0; index < glyphs.length; index += 1) {
+      storeMeasurement(state.measurements, JSON.stringify([variant, glyphs[index]]), widths[index]!);
+    }
+  } catch {
+    // A failed calibration or unavailable buffer keeps native measurements.
+    state.rejectedAsciiVariants.add(variant);
+  } finally {
+    for (const probe of probes) probe.remove();
+  }
+}
+
 function measureWithTerminalMemo(
   state: TerminalMeasurementState,
   receiver: XtermWidthCache,
@@ -110,6 +216,7 @@ function measureWithTerminalMemo(
   const signature = terminalMeasurementSignature(state);
   if (signature !== state.signature) {
     state.measurements.clear();
+    state.rejectedAsciiVariants.clear();
     state.signature = signature;
   }
   if (
@@ -127,6 +234,7 @@ function measureWithTerminalMemo(
   const measuredWidth = state.originalMeasure.call(receiver, content, variant);
   if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
     storeMeasurement(state.measurements, key, measuredWidth);
+    primeVisibleAscii(state, receiver, content, variant, measuredWidth);
   }
   return measuredWidth;
 }
@@ -136,6 +244,7 @@ export function invalidateTerminalWidthMeasurements(terminal: unknown): void {
   const state = terminalMeasurementStates.get(terminal);
   if (!state) return;
   state.measurements.clear();
+  state.rejectedAsciiVariants.clear();
   state.signature = null;
 }
 
@@ -158,7 +267,9 @@ export function memoizeTerminalWidthMeasurements(terminal: unknown, ownerDocumen
   const originalMeasure = widthCache._measure;
   const state = {} as TerminalMeasurementState;
   state.cache = widthCache;
+  state.terminal = terminal as Pick<Terminal, "buffer" | "cols" | "rows">;
   state.measurements = new Map();
+  state.rejectedAsciiVariants = new Set();
   state.originalMeasure = originalMeasure;
   state.ownerDocument = cacheOwnerDocument(widthCache, ownerDocument);
   state.renderer = rendererIdentity;

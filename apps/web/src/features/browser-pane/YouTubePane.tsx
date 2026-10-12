@@ -1,7 +1,7 @@
 import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
 import { Check, ChevronLeft, ChevronRight, Home, Maximize2, Music2, Pause, PictureInPicture2, Play, Plus, Users, Youtube } from "../ui-theme/app-icons.js";
-import type { YouTubeAccounts } from "./youtube-accounts.js";
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { accountMenuEntries, accountMenuLabel, effectiveAccountId, googleSignInTarget, type YouTubeAccounts } from "./youtube-accounts.js";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Pane, UserLink } from '@space/contracts';
 import { api } from '../../api.js';
@@ -179,24 +179,24 @@ export function YouTubePane(props: YouTubePaneProps) {
     };
   }, [observerOnly]);
 
-  async function selectAccount(profileId: string | null) {
+  async function selectAccount(profileId: string | null, reconnect = false) {
     if (pending || accountSwitching) return;
     const previousMode = mode;
     setAccountMenuOpen(false); setAccountSwitching(true); setPending(true); setError(null); setMode('loading');
     try {
-      const result = await api.selectYouTubeAccount(pane.id, profileId);
+      const result = reconnect && profileId ? await api.selectYouTubeAccount(pane.id, profileId, { signIn: true }) : await api.selectYouTubeAccount(pane.id, profileId);
       if (!mounted.current) return;
-      setAccounts(current => current ? { ...current, selectedProfileId: result.selectedProfileId } : current);
-      setTargetUrl(result.targetUrl);
+      setAccounts(current => current ? { ...current, selectedProfileId: result.selectedProfileId, effectiveProfileId: result.selectedProfileId } : current);
+      setTargetUrl(reconnect ? googleSignInTarget(result.targetUrl, `https://accounts.google.com/ServiceLogin?service=youtube&continue=${encodeURIComponent("https://www.youtube.com/")}`) : result.targetUrl);
       setAccountRevision(value => value + 1);
       setMode('browse');
     } catch (cause) {
       if (mounted.current) { setError(cause instanceof Error ? cause.message : 'The Google account could not be selected.'); setMode(previousMode); }
     } finally { if (mounted.current) { setPending(false); setAccountSwitching(false); } }
   }
-  const selectedAccountName = accounts?.selectedProfileId
-    ? accounts.profiles.find(profile => profile.profileId === accounts.selectedProfileId)?.displayName ?? 'Unavailable account'
-    : 'Saved pane account';
+  const selectedAccountName = accounts
+    ? accountMenuEntries(accounts).find(profile => profile.profileId === effectiveAccountId(accounts))?.displayName ?? 'Unavailable account'
+    : 'Private pane profile';
 
   function save(value: YouTubePlayback) {
     if (observerOnly || !validYouTubePlayback(value)) return;
@@ -474,12 +474,15 @@ export function YouTubePane(props: YouTubePaneProps) {
           disabled={pending || mode === 'loading'} onClick={() => setAccountMenuOpen(value => !value)}><Users aria-hidden="true" /></button>
         {accountMenuOpen ? createPortal(<div ref={accountMenu} className="youtube-account-menu" role="menu" aria-label="YouTube Google accounts" style={accountPosition}>
           <strong>Google account</strong>
-          {[{ profileId: null, displayName: 'Saved pane account' }, ...accounts.profiles].map(profile => <button key={profile.profileId ?? 'pane-account'}
-            type="button" role="menuitemradio" aria-checked={accounts.selectedProfileId === profile.profileId}
-            onClick={() => void selectAccount(profile.profileId)}>
-            <span>{profile.displayName}</span>{accounts.selectedProfileId === profile.profileId ? <Check aria-hidden="true" /> : null}
-          </button>)}
-          <small>Sign in once for each Google account. Your saved sign-in is reused when opening it in another YouTube pane.</small>
+          {accountMenuEntries(accounts).map((profile, index, entries) => <Fragment key={profile.profileId}>
+            {profile.group === 'legacy' && entries[index - 1]?.group !== 'legacy' ? <small className="browser-account-group">Gemini accounts · shared by all panes</small> : null}
+            <button type="button" role="menuitemradio" aria-checked={effectiveAccountId(accounts) === profile.profileId}
+              onClick={() => void selectAccount(profile.profileId)}>
+              <span>{accountMenuLabel(profile)}</span>{effectiveAccountId(accounts) === profile.profileId ? <Check aria-hidden="true" /> : null}
+            </button>
+          </Fragment>)}
+          <button type="button" role="menuitem" onClick={() => void selectAccount(effectiveAccountId(accounts), true)}>Sign in to selected account</button>
+          <small>Sign in once per Google account. Every Browser and YouTube pane using that account stays signed in.</small>
         </div>, document.body) : null}
       </div> : null}
       <button type="button" className="youtube-tool-btn" title="YouTube Home" aria-label="YouTube Home" disabled={pending || mode === 'loading'} onClick={() => void goHome()}>

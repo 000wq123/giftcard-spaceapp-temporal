@@ -20,7 +20,7 @@ import {
   Copy,
   Check,
   Edit2
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 

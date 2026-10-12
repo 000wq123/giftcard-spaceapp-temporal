@@ -5,7 +5,7 @@ import {
   type PaneCliTaskHistoryRecord,
   type SpaceStore
 } from "@space/runtime";
-import type { PaneCliSession, PaneCliTranscriptChunk } from "@space/contracts";
+import { CLI_PANE_TYPES, type PaneCliSession, type PaneCliTranscriptChunk } from "@space/contracts";
 
 export interface UnifiedCliTask {
   id: string;
@@ -78,7 +78,7 @@ function cleanTaskText(value: string, maxLength: number): string {
 }
 
 function providerLabel(runtimeId: string, providerId: string): string {
-  return runtimeProviderLabels[runtimeId] ?? providerId;
+  return runtimeProviderLabels[runtimeId] ?? CLI_PANE_TYPES.find((type) => type.id === runtimeId)?.shortLabel ?? providerId;
 }
 
 function normalizeTask(record: PaneCliTaskHistoryRecord): UnifiedCliTask {
@@ -154,7 +154,7 @@ export class UnifiedCliTaskRegistry {
       .filter((task) => Boolean(task.firstUserMessage.trim() || task.nativeTaskRef));
     return {
       tasks,
-      total: tasks.length,
+      total: result.total,
       page,
       pageSize
     };

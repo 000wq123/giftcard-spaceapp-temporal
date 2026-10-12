@@ -34,13 +34,30 @@ export function cliBuildModeState(runtimeId: string, screen: string): 'plan' | '
     if (/open sidebar\s*·\s*autopilot\s*·/i.test(footer)) return 'other';
   }
   if (runtimeId === 'cli:claude') {
+    // Every permission mode outside Plan is Build. Space launches Claude in bypass permissions, so
+    // cycling on to default mode would make it ask before every tool.
     if (/plan mode on.*shift\+tab to cycle/i.test(footer)) return 'plan';
-    if (/\? for shortcuts/.test(footer)) return 'build';
-    if (/shift\+tab to cycle/i.test(footer)) return 'other';
+    if (/\? for shortcuts|shift\+tab to cycle/i.test(footer)) return 'build';
   }
   if (runtimeId === 'cli:kimi') {
     const rail = lines.findLast(line => /(?:Ask When Needed|Never Ask|Auto).*thinking:/i.test(line));
     if (rail) return /\bplan\b/i.test(rail) ? 'plan' : 'build';
+  }
+  if (runtimeId === 'cli:omp') {
+    // Status rail: "π > ⟳ <model> > 🗺 Plan ⏸ > 📁 /etc ▶─…"; the Plan segment is absent in Build.
+    const rail = lines.findLast(line => /^π\s*>/.test(line));
+    if (rail) return /🗺\s*Plan\b/.test(rail) ? 'plan' : 'build';
+  }
+  if (runtimeId === 'cli:qoder') {
+    // Mode rail: "YOLO Shift+Tab to Auto Mode | plan on".
+    const rail = lines.findLast(line => /Shift\+Tab to /i.test(line));
+    if (rail) return /\|\s*plan on\b/i.test(rail) ? 'plan' : 'build';
+  }
+  if (runtimeId === 'cli:droid') {
+    // Spec mode titles the composer box "╭── Spec ──"; the autonomy rail is always visible.
+    const recent = lines.slice(-8);
+    if (recent.some(line => /^╭─+\s*Spec\s*─/.test(line))) return 'plan';
+    if (recent.some(line => /^Auto \((?:Off|Low|Medium|High)\)\s*·/.test(line))) return 'build';
   }
   if (runtimeId === 'cli:grok') {
     // These TUIs emit mode changes immediately above the empty composer.
@@ -75,7 +92,9 @@ export async function returnCliToBuildMode(runtimeId: string, target: {
     if (state === 'build') return;
     if (!state) throw Error('The current CLI mode is not visible. Close native dialogs and try Build mode again.');
     const previousRail = target.screen().split(/\r?\n/).filter(line => /shift\+tab|open sidebar/i.test(line)).join('\n');
-    if (runtimeId === 'cli:kimi' || runtimeId === 'cli:grok') await target.submit(runtimeId === 'cli:kimi' ? '/plan off' : '/plan');
+    if (runtimeId === 'cli:kimi' || runtimeId === 'cli:grok' || runtimeId === 'cli:omp' || runtimeId === 'cli:qoder') {
+      await target.submit(runtimeId === 'cli:kimi' ? '/plan off' : '/plan');
+    }
     else if (!target.write(runtimeId === 'cli:opencode' ? '\t' : '\x1b[Z')) throw Error('Build mode key could not be sent.');
     let changed = false;
     for (let poll = 0; poll < 30; poll++) {

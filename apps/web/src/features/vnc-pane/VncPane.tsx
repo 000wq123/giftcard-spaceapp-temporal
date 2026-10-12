@@ -2,6 +2,7 @@ import { Globe2, Keyboard, Loader2, Lock, Maximize2, Monitor, Unplug } from "../
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Pane, VncPreset } from "@space/contracts";
 import { api } from "../../api.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import RFB from "@novnc/novnc";
 
 interface VncPaneProps {
@@ -215,10 +216,12 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
             <span>Password</span>
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="off" />
           </label>
-          <label className="vnc-connect-remember">
-            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
-            <span>Remember this target</span>
-          </label>
+          <SpaceToggle
+            className="vnc-connect-remember-toggle"
+            label="Remember this target"
+            checked={remember}
+            onChange={setRemember}
+          />
           <div className="vnc-connect-actions">
             <button type="submit" disabled={state === "connecting"}>
               {state === "connecting" ? <Loader2 className="spin" aria-hidden="true" /> : <Lock aria-hidden="true" />}

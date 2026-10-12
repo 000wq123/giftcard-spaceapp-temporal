@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  buildEffectiveToolPlan, modelCapabilityProfileSchema, type ModelCapabilityProfileV1,
+  buildEffectiveToolPlan, claudeCodeRuntimeCapabilities, modelCapabilityProfileSchema, type ModelCapabilityProfileV1,
   type ToolRoutingStateV1, type ToolRoutingOverride
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
@@ -57,6 +57,7 @@ export async function effectiveRouting(store: SpaceStore, runtimeId: string, mod
   if (runtimeId === "cli:codex") profile.capabilities.shell = {
     state: "AVAILABLE", source: "RUNTIME", evidence: "Space Codex CLI unified exec", checkedAt: new Date().toISOString()
   };
+  if (runtimeId === "cli:claude") Object.assign(profile.capabilities, claudeCodeRuntimeCapabilities(new Date().toISOString()));
   return { ...buildEffectiveToolPlan(state, profile), profile };
 }
 

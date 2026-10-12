@@ -1,7 +1,11 @@
-import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema } from "@space/contracts";
+import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
-import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema } from "@space/contracts";
+import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath } from "@space/contracts";
 import type {
+  MaintenanceAutopilotStatus,
+  DotProfile,
+  DotCollectionItem,
+  CreateAgentPaneSessionInput,
   AgentRuntime,
   AgentRuntimeRegistry,
   AgentPaneSession,
@@ -201,6 +205,9 @@ export class DemoStore {
   private cliRuntimeEnabled = new Map<CliToggleRuntimeId, boolean>(
     cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true])
   );
+  private dotSessionRecords = new Map<string, DotCollectionItem>();
+  private activeDotSession = new Map<string, string>();
+  private demoSubmissions = new Map<string, { fingerprint: string; session: AgentPaneSession }>();
   private agentMessages = new Map<string, AgentPaneSession["messages"]>();
   private agentSelectedToolIds = new Map<string, string[]>();
   private resetRedemptions = new Map<string, CodexResetCreditRedemptionResponse>();
@@ -218,7 +225,10 @@ export class DemoStore {
 
   constructor(initialFixture?: DemoFixture) {
     this.publicMock = initialFixture !== undefined;
-    if (initialFixture) this.fixture = structuredClone(initialFixture);
+    if (initialFixture) {
+      this.fixture = structuredClone(initialFixture);
+      this.mockServices = new MockServices(() => this.fixture);
+    }
     this.initialFixture = structuredClone(this.fixture);
     this.api = new Proxy({} as SpaceApiClient, {
       get: (_target, property) => {
@@ -246,7 +256,7 @@ export class DemoStore {
   snapshot(): string {
     return JSON.stringify({ version: 1, sequence: this.sequence, rooms: this.fixture.rooms, panes: this.fixture.panes,
       links: this.fixture.links, clipboardItems: this.fixture.clipboardItems, taskItems: this.fixture.taskItems,
-      settings: this.fixture.auth.settings, artifacts: this.fixture.artifacts, messages: [...this.agentMessages], services: this.mockServices.snapshot() });
+      settings: this.fixture.auth.settings, artifacts: this.fixture.artifacts, messages: [...this.agentMessages], dotSessions: [...this.dotSessionRecords], activeDotSessions: [...this.activeDotSession], demoSubmissions: [...this.demoSubmissions], services: this.mockServices.snapshot() });
   }
 
   restoreSnapshot(value: string | null): void {
@@ -268,6 +278,17 @@ export class DemoStore {
       this.fixture.auth.settings = settings;
       this.fixture.artifacts = artifacts;
       if (Array.isArray(state.messages) && state.messages.every((row: any) => Array.isArray(row) && typeof row[0] === "string" && Array.isArray(row[1]))) this.agentMessages = new Map(state.messages);
+      if (Array.isArray(state.dotSessions)) {
+        const owned = new Set(this.demoDots().map(dot => dot.dotId));
+        const records = state.dotSessions.filter((row: unknown) => Array.isArray(row) && typeof row[0] === "string" && row[1]
+          && typeof row[1] === "object" && owned.has((row[1] as DotCollectionItem).dotId)
+          && panes.some((pane: Pane) => pane.id === (row[1] as DotCollectionItem).paneId && pane.roomId === (row[1] as DotCollectionItem).roomId));
+        this.dotSessionRecords = new Map(records);
+        if (Array.isArray(state.activeDotSessions)) this.activeDotSession = new Map(state.activeDotSessions.filter((row: unknown) => Array.isArray(row)
+          && typeof row[0] === "string" && this.dotSessionRecords.get(row[1])?.paneId === row[0]));
+      }
+      if (Array.isArray(state.demoSubmissions)) this.demoSubmissions = new Map(state.demoSubmissions.filter((row: unknown) => Array.isArray(row)
+        && typeof row[0] === "string" && typeof row[1]?.fingerprint === "string" && this.dotSessionRecords.has(row[1]?.session?.binding?.sessionId)));
       this.mockServices.restore(state.services);
       if (Number.isSafeInteger(state.sequence) && state.sequence >= 0) this.sequence = state.sequence;
     } catch { /* Invalid cached workspaces start with the current fixture. */ }
@@ -279,6 +300,7 @@ export class DemoStore {
     this.mockServices = new MockServices(() => this.fixture);
     this.sequence = 0;
     this.cliRuntimeEnabled = new Map(cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true]));
+    this.dotSessionRecords.clear(); this.activeDotSession.clear(); this.demoSubmissions.clear();
     this.agentMessages.clear();
     this.agentSelectedToolIds.clear();
     this.resetRedemptions.clear();
@@ -333,10 +355,58 @@ export class DemoStore {
     };
   }
 
+  private demoDots(): DotProfile[] {
+    return ["Orbit", "Nova", "Byte", "Comet", "Luna", "Cosmo"].map((name, index) => ({
+      dotId: `dot:${String(index + 1).repeat(32)}`, ownerUserId: this.fixture.auth.user?.id ?? "user:demo", slot: index + 1, name,
+      appearance: { character: (["astronaut", "star", "robot", "comet", "moon", "planet"] as const)[index]!, accent: "slate" },
+      preferences: {}, permissions: { mode: "INHERIT_USER" }, workLimits: { maxConcurrentTasks: 1, dailyBudgetUsd: null },
+      createdAt: DEMO_FIXED_AT, updatedAt: DEMO_FIXED_AT
+    }));
+  }
+  private createDotSession(paneId: string, input: CreateAgentPaneSessionInput): AgentPaneSession {
+    const current = this.agentSession(paneId);
+    const pane = this.fixture.panes.find(candidate => candidate.id === paneId);
+    const roomId = pane?.roomId ?? this.fixture.rooms[0]!.id;
+    const dotId = input.dotId ?? current.dotId ?? this.demoDots()[0]!.dotId;
+    if (!this.demoDots().some(dot => dot.dotId === dotId)) throw new SpaceApiError("Dot not found.", { status: 404 });
+    if (["RUNNING", "QUEUED", "INTERRUPTING"].includes(current.runStatus) || current.pendingRequest) throw new SpaceApiError("Finish or stop the current action before switching Dots.", { status: 409 });
+    if (input.sessionId) {
+      const restored = this.dotSessionRecords.get(input.sessionId);
+      if (!restored || restored.dotId !== dotId || restored.roomId !== roomId) throw new SpaceApiError("Conversation is not available for this Dot and room.", { status: 404 });
+      if (restored.paneId !== paneId && restored.paneId && this.activeDotSession.get(restored.paneId) === input.sessionId) {
+        this.activeDotSession.delete(restored.paneId);
+      }
+      this.dotSessionRecords.set(input.sessionId, { ...restored, paneId }); this.activeDotSession.set(paneId, input.sessionId);
+    } else if (input.sessionId === null || current.dotId !== dotId) {
+      if (input.threadId && ![...this.dotSessionRecords.values()].some(record => record.dotId === dotId && record.roomId === roomId && record.threadId === input.threadId)) {
+        throw new SpaceApiError("Conversation is not available for this Dot and room.", { status: 404 });
+      }
+      const sessionId = this.nextId("agent_session");
+      this.dotSessionRecords.set(sessionId, { sessionId, paneId, roomId, dotId, title: input.title ?? pane?.title ?? "Demo chat",
+        threadId: input.threadId ?? null, status: "READY", isActive: true, updatedAt: DEMO_FIXED_AT });
+      this.agentMessages.set(sessionId, []); this.activeDotSession.set(paneId, sessionId);
+    }
+    return this.agentSession(paneId);
+  }
+
   private agentSession(paneId: string): AgentPaneSession {
     const pane = this.fixture.panes.find((candidate) => candidate.id === paneId);
     const roomId = pane?.roomId ?? this.fixture.rooms[0]!.id;
-    const messages = this.agentMessages.get(paneId) ?? (this.publicMock && paneId === "pane:demo-research-chat" ? [{
+    let activeId = this.activeDotSession.get(paneId) ?? `agent_session:${paneId}`;
+    const previous = this.dotSessionRecords.get(activeId);
+    if (previous && (previous.paneId !== paneId || previous.roomId !== roomId)) {
+      // A moved session (including the deterministic initial ID) belongs to its
+      // destination. Repair this pane with a distinct, empty conversation.
+      activeId = this.nextId("agent_session");
+      this.dotSessionRecords.set(activeId, { sessionId: activeId, paneId, roomId,
+        dotId: previous.dotId, threadId: null, title: pane?.title ?? "Demo chat", status: "READY", isActive: true, updatedAt: DEMO_FIXED_AT });
+      this.agentMessages.set(activeId, []);
+    }
+    if (!this.dotSessionRecords.has(activeId)) this.dotSessionRecords.set(activeId, { sessionId: activeId, paneId, roomId,
+      dotId: this.demoDots()[0]!.dotId, threadId: `thread:${paneId}`, title: pane?.title ?? "Demo chat", status: "READY", isActive: true, updatedAt: DEMO_FIXED_AT });
+    this.activeDotSession.set(paneId, activeId);
+    const record = this.dotSessionRecords.get(activeId)!;
+    const messages = this.agentMessages.get(activeId) ?? this.agentMessages.get(paneId) ?? (this.publicMock && paneId === "pane:demo-research-chat" ? [{
       id: `agent_message:${paneId}:brief`, role: "user" as const,
       content: "Review the public launch workspace.", status: "COMPLETED" as const, createdAt: DEMO_FIXED_AT
     }, {
@@ -349,13 +419,14 @@ export class DemoStore {
       status: "COMPLETED" as const,
       createdAt: DEMO_FIXED_AT
     }]);
-    this.agentMessages.set(paneId, messages);
+    this.agentMessages.set(activeId, messages);
     const selectedToolIds = this.agentSelectedToolIds.get(paneId) ?? ["space-readonly:space_status"];
     return {
+      dotId: record.dotId, runtimeState: "AVAILABLE",
       binding: {
         paneId,
         source: "SPACE",
-        sessionId: `agent_session:${paneId}`,
+        sessionId: activeId,
         coderChatId: null,
         status: "READY",
         title: pane?.title ?? "Demo chat",
@@ -366,7 +437,7 @@ export class DemoStore {
         selectedToolIds,
         lastSyncedAt: DEMO_FIXED_AT
       },
-      threadId: `thread:${paneId}`,
+      threadId: record.threadId ?? null,
       messages: [...messages],
       runStatus: "IDLE",
       statusReason: "Demo chat is ready and fully local.",
@@ -547,6 +618,9 @@ export class DemoStore {
   }
 
   private codexThread(threadId: string) {
+    const dotSession = [...this.dotSessionRecords.values()].find(record => record.threadId === threadId);
+    const isolatedMessages = dotSession && dotSession.sessionId !== `agent_session:${dotSession.paneId}`
+      ? this.agentMessages.get(dotSession.sessionId!) ?? [] : null;
     const thread = {
       id: threadId,
       rolloutPath: null,
@@ -565,7 +639,8 @@ export class DemoStore {
     };
     return {
       thread,
-      items: [
+      items: isolatedMessages ? isolatedMessages.map(message => ({ id: message.id, kind: "message" as const, role: message.role,
+        content: message.content, toolName: null, rawType: "message", createdAt: message.createdAt })) : [
         {
           id: `codex_thread_item:${threadId}:user`,
           kind: "message" as const,
@@ -756,6 +831,10 @@ export class DemoStore {
   private invoke(method: string, args: unknown[]): unknown {
     const roomId = typeof args[0] === "string" ? args[0] : null;
     switch (method) {
+      case "exportConfiguration":
+      case "inspectConfiguration":
+      case "importConfiguration":
+        throw new SpaceApiError("Configuration migration is unavailable in this demo. No installation was accessed or changed.", { status: 400, code: "DEMO_UNSUPPORTED" });
       case "modelCapabilities": return { profiles: [], state: structuredClone(this.toolRoutingState) };
       case "effectiveToolRouting": return buildEffectiveToolPlan(this.toolRoutingState, {
         version: 1, runtimeId: String(args[0]), modelId: String(args[1]), capabilities: {}
@@ -851,6 +930,9 @@ export class DemoStore {
         apiStartedAt: DEMO_FIXED_AT,
         dependencies: { store: "demo-local", runtimeStore: "demo-local", eventBus: "demo-local", temporal: "simulated", worker: "SIMULATED", cliHost: "SIMULATED", cliAdminHost: "SIMULATED", browserHost: "SIMULATED", browserHostBuildCommit: null, browserHostCaptureMetrics: null, codexTurns: "simulated", codexLb: "disconnected" }
       });
+      case "deployQueue": return Promise.resolve({
+        available: false, daemonRunning: false, heartbeatAt: null, paused: null, current: null, active: [], recent: []
+      });
       case "appVersion": return Promise.resolve({
         appRelease: "v0.1.0",
         currentCommit: "demo",
@@ -873,6 +955,7 @@ export class DemoStore {
           return {
             roomId: room.id,
             runningCliCount: runningPanes.length,
+            paneCount: this.fixture.panes.filter((pane) => pane.roomId === room.id && !pane.isClosed).length,
             runtimeIds: [...new Set(runningPanes.map((pane) => pane.terminalRuntimeId ?? "cli:codex"))]
           };
         }),
@@ -996,6 +1079,18 @@ export class DemoStore {
       }));
       case "toolbarUsageAccounts": return Promise.resolve(structuredClone({ ...this.fixture.codexUsageAccounts, checkedAt: new Date().toISOString(), data: this.fixture.codexUsageAccounts.data.map(account => ({ ...account, sampledAt: new Date().toISOString() })) }));
       case "toolbarAntigravityUsageAccounts": return Promise.resolve(structuredClone({ ...this.fixture.antigravityUsageAccounts, checkedAt: new Date().toISOString(), data: this.fixture.antigravityUsageAccounts.data.map(account => ({ ...account, sampledAt: new Date().toISOString() })) }));
+      case "toolbarClaudeUsageAccounts": return Promise.resolve({
+        data: [
+          { id: "main", label: "Main account", email: "demo@spaceapp.dev", plan: "Team · Max 5x", status: "CONNECTED" as const, fiveHourRemainingPercent: 62, fiveHourResetAt: "2026-08-02T18:00:00.000Z", weeklyRemainingPercent: 91, weeklyResetAt: "2026-08-08T18:00:00.000Z", weeklyScope: "Opus", sampledAt: new Date().toISOString() },
+          { id: "lab", label: "lab", email: "demo-lab@spaceapp.dev", plan: "Team · Max 5x", status: "CONNECTED" as const, fiveHourRemainingPercent: 100, fiveHourResetAt: "2026-08-02T19:00:00.000Z", weeklyRemainingPercent: 99, weeklyResetAt: "2026-08-08T19:00:00.000Z", weeklyScope: "Opus", sampledAt: new Date().toISOString() },
+          { id: "api", label: "api", email: null, plan: null, status: "NOT_CONNECTED" as const, fiveHourRemainingPercent: null, fiveHourResetAt: null, weeklyRemainingPercent: null, weeklyResetAt: null, weeklyScope: null, sampledAt: new Date().toISOString() }
+        ],
+        pagination: { page: 1, pageSize: 100, totalItems: 3, totalPages: 1 },
+        source: "demo-fixture",
+        isStale: false,
+        error: null,
+        checkedAt: new Date().toISOString()
+      });
       case "toolbarApiProviderAccounts": return Promise.resolve({
         data: [
           { id: "deepseek", providerId: "deepseek", label: "DeepSeek", status: "CONNECTED" as const, balance: "$0.19", currency: "USD", detail: "Topped up: $0.19", sampledAt: new Date().toISOString() },
@@ -1060,6 +1155,19 @@ export class DemoStore {
       case "switchToolbarProvider": return Promise.resolve(structuredClone(this.fixture.providerSwitch));
       case "codexLbSpeedDefaults":
       case "updateCodexLbSpeedDefault": return Promise.resolve(structuredClone(this.fixture.codexLbSpeedDefaults));
+      case "gatewayStatus": return Promise.resolve(this.demoGatewayStatus());
+      case "gatewaySettings": return Promise.resolve(structuredClone(this.demoGatewaySettings));
+      case "updateGatewaySettings":
+        this.demoGatewaySettings = { ...this.demoGatewaySettings, ...(args[0] as object), updatedAt: DEMO_FIXED_AT };
+        return Promise.resolve(structuredClone(this.demoGatewaySettings));
+      case "gatewayAccounts":
+      case "gatewayApiKeys":
+      case "gatewayAntigravityProfiles": return Promise.resolve({ data: [] });
+      case "gatewayRequestLogs": return Promise.resolve({ data: [], nextCursor: null });
+      case "gatewayReport": {
+        const empty = { key: "total", requests: 0, errors: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, reasoningReported: 0, costUsd: 0, compressionTokensSaved: 0 };
+        return Promise.resolve({ from: String(args[0]), to: String(args[1]), days: [], models: [], accounts: [], totals: empty });
+      }
       case "previewCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgePreview));
       case "executeCodexHistoryPurge": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.historyPurgeResult));
       case "restartCoreServices": return Promise.resolve(structuredClone(this.fixture.adminDiagnostics.serviceRestart));
@@ -1164,6 +1272,31 @@ export class DemoStore {
       });
       case "listCliMaintenanceRuns":
       case "listReleaseRuns": return Promise.resolve({ data: [] });
+      case "maintenanceAutopilotStatus": return Promise.resolve(this.demoMaintenanceAutopilotStatus());
+      case "startMaintenanceAutopilot": {
+        const step = (id: "cleanup" | "memory" | "check" | "update") => ({ id, status: "DONE" as const, summary: DEMO_LOCAL_REPLY, startedAt: DEMO_FIXED_AT, finishedAt: DEMO_FIXED_AT });
+        this.demoMaintenanceLastRun = {
+          id: this.nextId("maintenance"),
+          trigger: "MANUAL",
+          status: "SUCCEEDED",
+          summary: "Maintenance finished. Space is clean and up to date.",
+          steps: [step("cleanup"), step("memory"), step("check"), step("update")],
+          startedAt: DEMO_FIXED_AT,
+          finishedAt: DEMO_FIXED_AT
+        };
+        return Promise.resolve(this.demoMaintenanceAutopilotStatus());
+      }
+      case "updateMaintenanceAutopilotSchedule": {
+        const input = (args[0] ?? {}) as Partial<MaintenanceAutopilotStatus["schedule"]>;
+        this.demoMaintenanceSchedule = {
+          ...this.demoMaintenanceSchedule,
+          enabled: Boolean(input.enabled),
+          hour: input.hour ?? this.demoMaintenanceSchedule.hour,
+          timeZone: input.timeZone ?? this.demoMaintenanceSchedule.timeZone,
+          nextRunAt: input.enabled ? "2026-07-15T04:00:00.000Z" : null
+        };
+        return Promise.resolve(this.demoMaintenanceAutopilotStatus());
+      }
       case "getCliMaintenanceReplay": {
         const runId = String(args[0] ?? this.nextId("admin_run"));
         return Promise.resolve({
@@ -1303,6 +1436,59 @@ export class DemoStore {
         const graph = this.memoryGraph((args[0] ?? {}) as DemoMemoryGraphQuery);
         return Promise.resolve({ data: { ...graph, totalMatchingNodes: graph.nodes.length, totalMatchingEdges: graph.edges.length, truncated: false } });
       }
+      case "memoryCalendar": {
+        const query = (args[0] ?? {}) as { year?: number; month?: string; date?: string };
+        const activeMonth = query.month && query.month !== "all" ? query.month : "2026-10";
+        const activeYear = query.year ?? 2026;
+        const heatMap: Record<string, { count: number; bytes: number }> = {
+          "2026-10-01": { count: 8, bytes: 4200 },
+          "2026-10-02": { count: 12, bytes: 6400 },
+          "2026-10-03": { count: 5, bytes: 2800 },
+          "2026-10-04": { count: 15, bytes: 8900 },
+          "2026-09-28": { count: 4, bytes: 2100 },
+          "2026-09-29": { count: 7, bytes: 3600 },
+          "2026-09-30": { count: 14, bytes: 7200 }
+        };
+        const records = [
+          {
+            id: "memory:demo-public-launch",
+            title: "Public launch workspace",
+            createdAt: "2026-10-04T10:00:00.000Z",
+            sourcePath: "/demo/memory/public-launch.md",
+            excerpt: "Sanitized public launch notes and configuration",
+            tags: ["launch", "demo"],
+            topics: ["ui parity"],
+            charCount: 1500
+          },
+          {
+            id: "memory:demo-seo",
+            title: "SEO and Telemetry setup",
+            createdAt: "2026-10-02T14:30:00.000Z",
+            sourcePath: "/demo/memory/public-launch.md",
+            excerpt: "Rich snippets and verified search engine indexation",
+            tags: ["seo", "telemetry"],
+            topics: ["parity"],
+            charCount: 980
+          }
+        ];
+        return Promise.resolve({
+          data: {
+            year: activeYear,
+            month: activeMonth,
+            selectedDate: query.date ?? null,
+            availableMonths: ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"],
+            availableYears: [2026],
+            stats: {
+              totalMemories: 65,
+              activeDays: 7,
+              yearMemories: 65,
+              maxDailyCount: 15
+            },
+            heatMap,
+            records: query.date ? records.filter(r => r.createdAt.startsWith(query.date!)) : records
+          }
+        });
+      }
       case "memoryGraphIssues": {
         const query = (args[0] ?? {}) as { type?: string; severity?: string; status?: string; recordId?: string; page?: number; pageSize?: number };
         const issues = this.fixture.memoryWorkspace.issues.filter((issue) =>
@@ -1379,8 +1565,56 @@ export class DemoStore {
       }
       case "codexThread": return Promise.resolve(this.codexThread(roomId ?? "thread:demo-public-launch"));
       case "swarm": return Promise.resolve(structuredClone(this.fixture.swarm[roomId ?? this.fixture.rooms[0]!.id]));
+      case "dots": return Promise.resolve({ dots: this.demoDots() });
+      case "dotCollection": {
+        const dotId = String(args[0]);
+        if (!this.demoDots().some(dot => dot.dotId === dotId)) throw new SpaceApiError("Dot not found.", { status: 404 });
+        const items = args[1] === "sessions" ? [...this.dotSessionRecords.values()].filter(record => record.dotId === dotId)
+          .map(record => ({ ...record, isActive: this.activeDotSession.get(record.paneId!) === record.sessionId })) : [];
+        return Promise.resolve({ dotId, items: structuredClone(items), limit: 50, offset: 0 });
+      }
+      case "dotTools": {
+        const dotId = String(args[0]);
+        if (!this.demoDots().some(dot => dot.dotId === dotId)) throw new SpaceApiError("Dot not found.", { status: 404 });
+        const catalog = buildDotToolCatalog({ role: "USER", browserSessionsEnabled: true, browserPaneIds: [], installedMcpServers: [],
+          mcpTools: [{ toolId: "space-readonly:space_status", serverName: "Space readonly", name: "space_status", available: true, approvalRequired: false, statusReason: null }] });
+        return Promise.resolve({ dotId, tools: catalog.map(({ inputSchema: _schema, ...tool }) => tool), total: catalog.length,
+          available: catalog.filter(tool => tool.availability === "AVAILABLE").length });
+      }
+      case "dotToolInvocations": return Promise.resolve({ dotId: String(args[0]), items: [], limit: 20, offset: 0 });
+      case "dotApprovals": return Promise.resolve({ dotId: String(args[0]), items: [] });
+      case "dotGoals": return Promise.resolve({ dotId: String(args[0]), items: [] });
+      case "dotSchedules": return Promise.resolve({ dotId: String(args[0]), items: [] });
+      case "dotComputer": {
+        const dot = this.demoDots().find(candidate => candidate.dotId === String(args[0]));
+        if (!dot) throw new SpaceApiError("Dot not found.", { status: 404 });
+        return Promise.resolve({ dotId: dot.dotId, workspace: { path: dotWorkspacePath(dot.dotId), exists: false, entries: [], totalEntries: 0, sortedAll: true },
+          runs: [], goals: [], browsers: [], limits: { maxConcurrentTasks: dot.workLimits.maxConcurrentTasks, activeTasks: 0 } });
+      }
+      case "stopDotComputer": return Promise.resolve({ dotId: String(args[0]), interruptedRuns: 0, pausedGoals: 0 });
+      case "dotMemories": return Promise.resolve({ dotId: String(args[0]), items: [] });
+      case "connectors": return Promise.resolve({ providers: [{ provider: "GOOGLE", configured: false, reason: "Not available in the demo." },
+        { provider: "MICROSOFT", configured: false, reason: "Not available in the demo." }], accounts: [] });
+      case "disconnectConnector": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "channels": return Promise.resolve({ providers: [{ provider: "SLACK", configured: false, reason: "Not available in the demo." },
+        { provider: "TEAMS", configured: false, reason: "Not available in the demo." }], identities: [], threads: [] });
+      case "createChannelLinkCode": case "unlinkChannelIdentity": case "askDotFromLive": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "dotLiveStatus": return Promise.resolve({ status: "IDLE", message: "Dots do not run in the demo." });
+      case "dotWorkspace": return Promise.resolve({ dotId: String(args[0]), folder: String(args[1] ?? ""), exists: false, entries: [], totalEntries: 0, sortedAll: true });
+      case "dotDeliverables": return Promise.resolve({ dotId: String(args[0]), items: [] });
+      case "dotEvalRuns": return Promise.resolve({ runs: [] });
+      case "startDotEval": case "stopDotEval": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "dotEvalReport": throw new SpaceApiError("Evaluation not found.", { status: 404 });
+      case "publishDotDeliverable": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "createDotMemory": case "updateDotMemory": case "deleteDotMemory":
+        throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "updateDot": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "createDotSchedule": case "controlDotSchedule": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "createDotGoal": case "controlDotGoal": case "steerDotGoal":
+        throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "decideDotApproval": throw new SpaceApiError(DEMO_LOCAL_REPLY, { status: 409, code: "DEMO_LOCAL_ONLY" });
+      case "createAgentSession": return Promise.resolve(this.createDotSession(roomId ?? "pane:demo-chat", args[1] as CreateAgentPaneSessionInput ?? {}));
       case "agentSession":
-      case "createAgentSession":
       case "interruptAgent":
       case "updateAgentGoal":
       case "clearAgentGoal": return Promise.resolve(this.agentSession(roomId ?? "pane:demo-chat"));
@@ -1396,13 +1630,27 @@ export class DemoStore {
       case "sendAgentMessage": {
         const paneId = roomId ?? "pane:demo-chat";
         const content = String(args[1] ?? "");
-        const messages = this.agentSession(paneId).messages;
+        const savedKey = args[5] ? `${paneId}:${String(args[5])}` : null;
+        const fingerprint = JSON.stringify(args.slice(1));
+        const receipt = savedKey ? this.demoSubmissions.get(savedKey) : null;
+        if (receipt) {
+          if (receipt.fingerprint !== fingerprint) throw new SpaceApiError("Submission key was reused.", { status: 409 });
+          return Promise.resolve(structuredClone(receipt.session));
+        }
+        const current = this.agentSession(paneId);
+        const context = args[7] as { sessionId?: string; dotId?: string } | undefined;
+        if (context && ((context.dotId && context.dotId !== current.dotId) || (context.sessionId && context.sessionId !== current.binding.sessionId))) {
+          throw new SpaceApiError("The selected Dot session changed.", { status: 409 });
+        }
+        const messages = current.messages;
         messages.push(
           { id: this.nextId("agent_message"), role: "user", content, status: "COMPLETED", createdAt: DEMO_FIXED_AT },
           { id: this.nextId("agent_message"), role: "assistant", content: DEMO_LOCAL_REPLY, status: "COMPLETED", createdAt: DEMO_FIXED_AT }
         );
-        this.agentMessages.set(paneId, messages);
-        return Promise.resolve(this.agentSession(paneId));
+        this.agentMessages.set(current.binding.sessionId!, messages);
+        const response = this.agentSession(paneId);
+        if (savedKey) this.demoSubmissions.set(savedKey, { fingerprint, session: structuredClone(response) });
+        return Promise.resolve(response);
       }
       case "roomAgent":
       case "acknowledgeRoomAgentCommand":
@@ -1417,6 +1665,25 @@ export class DemoStore {
       case "invalidateCliRuntimeSettings":
       case "resetCliRuntimeSettingsCache":
       case "warmCliRuntimeSettings": return undefined;
+      case "cliProviderSettings": return {
+        providers: [
+          { id: "opencode", name: "OpenCode Zen", description: "Free curated coding models", enabled: true, isCustom: false },
+          { id: "opencode-go", name: "OpenCode Go", description: "OpenCode Go subscription models", enabled: false, isCustom: false },
+          { id: "openrouter", name: "OpenRouter", description: "Unified router across multiple AI model providers", enabled: true, isCustom: false }
+        ],
+        disabledProviders: ["opencode-go"],
+        checkedAt: DEMO_FIXED_AT
+      };
+      case "updateCliProviderSetting":
+      case "updateAllCliProviders": return {
+        providers: [
+          { id: "opencode", name: "OpenCode Zen", description: "Free curated coding models", enabled: true, isCustom: false },
+          { id: "opencode-go", name: "OpenCode Go", description: "OpenCode Go subscription models", enabled: true, isCustom: false },
+          { id: "openrouter", name: "OpenRouter", description: "Unified router across multiple AI model providers", enabled: true, isCustom: false }
+        ],
+        disabledProviders: [],
+        checkedAt: DEMO_FIXED_AT
+      };
       case "cliRuntimeSettingsSnapshot":
       case "cliRuntimeSettings": return {
         settings: cliToggleRuntimeIds.map((runtimeId) => ({
@@ -1579,10 +1846,17 @@ export class DemoStore {
       case "interruptCliSession": return Promise.resolve(this.cliSession(roomId ?? "pane:demo-codex"));
       case "abortCliTurn": return Promise.resolve({ ok: true, isTurnActive: false });
       case "reportCliClientEvent": return Promise.resolve({ accepted: true });
-      case "setCliTerminalControlLease": return undefined;
+      case "setCliTerminalControlLease":
+      case "clearActiveCliSessionFlight": return undefined;
+      case "panePlanExecution": return Promise.resolve(null);
+      case "planExecution": throw new SpaceApiError("Managed plan history is unavailable in demo mode.", { status: 404 });
+      case "startPlanExecution":
+      case "controlPlanExecution":
+      case "overridePlanExecutionStage": throw new SpaceApiError("Managed plan execution requires a live Codex session. Demo mode cannot run stages.", { status: 409, code: "DEMO_LOCAL_ONLY" });
       case "cliModelSettingsStatus": return Promise.resolve({ status: "AVAILABLE", settings: { sessionId: `cli_session:${roomId}`, threadId: null, current: { modelId: "gpt-5.6-sol", reasoningEffort: "high" }, models: [{ id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", isDefault: true, defaultReasoningEffort: "high", supportedReasoningEfforts: ["medium", "high", "xhigh"] }], controlMode: "DIRECT", isTurnActive: false } });
       case "updateCliModelSettings": return Promise.resolve({ current: { modelId: String((args[1] as { modelId?: string })?.modelId ?? "gpt-5.6-sol"), reasoningEffort: String((args[1] as { reasoningEffort?: string })?.reasoningEffort ?? "high") }, message: DEMO_LOCAL_REPLY });
       case "cliTurnActivity": return Promise.resolve({ marker: String(args[1]), status: "COMPLETED", turnId: null });
+      case "paneWorkingTime": return Promise.resolve({ paneId: String(args[0]), cumulativeWorkingMs: 0, isWorking: false, state: "IDLE" });
       case "cliTerminalWebSocketUrl": {
         const ticket = args[0] as { paneId: string; sessionId: string };
         const runtimeId = this.cliSession(ticket.paneId).session.runtimeId;
@@ -1730,7 +2004,8 @@ export class DemoStore {
           id: this.nextId("clipboard"),
           text: input.text,
           source: input.source,
-          title: null,
+          title: input.source === "PLAN" ? (input.title ?? null) : null,
+          minimumModel: input.source === "PLAN" ? (input.minimumModel ?? null) : null,
           isCompleted: false,
           executionStatus: "PLANNED",
           progressPercentage: 0,
@@ -1813,7 +2088,10 @@ export class DemoStore {
       case "deleteTaskItem": if (this.publicMock) this.fixture.taskItems = this.fixture.taskItems.filter(item => item.id !== roomId); return Promise.resolve({ id: roomId!, deleted: true as const });
       case "clearTaskItems": { const deletedCount = this.publicMock ? this.fixture.taskItems.length : 0; if (this.publicMock) this.fixture.taskItems = []; return Promise.resolve({ deletedCount }); }
       case "createRoom": {
-        const name = String(args[0] ?? "Demo room").trim() || "Demo room";
+        if (this.fixture.rooms.length >= MAX_ROOMS) {
+          throw new SpaceApiError(`Maximum room limit (${MAX_ROOMS}) reached.`, { status: 409, code: "ROOM_LIMIT_REACHED" });
+        }
+        const name = String(args[0] ?? "").trim() || pickNextAvailableRoomName(this.fixture.rooms.map((r) => r.name));
         const initialPaneCount = Math.min(16, Math.max(0, Number(args[1] ?? 4)));
         const id = this.nextId("room");
         const room = { ...this.fixture.rooms[0]!, id, name, order: this.fixture.rooms.length, paneLayoutColumns: null, paneLayoutHeight: 1 as const, traceId: this.nextId("trace") };
@@ -1918,6 +2196,12 @@ export class DemoStore {
       case "agentFilePreviewUrl": return "data:text/plain,Agent%20Files%20preview";
       case "agentFileDownloadUrl": return "data:text/plain,Agent%20Files%20download";
       case "eventStreamUrl": return "demo://events";
+      // The public demo has no managed T3 Code service; report that honestly.
+      case "t3CodeStatus": return Promise.resolve({
+        version: 1, enabled: false, state: "disabled", runtime: null, environmentId: null, workspaceAllowed: true, checkedAt: DEMO_FIXED_AT,
+        capabilities: { paneBindings: false, selectionMessages: false, draftIsolation: false, orchestration: false, serviceControl: false }
+      });
+      case "t3CodeBinding": return Promise.resolve({ version: 1, paneId: String(args[0]), metadata: null });
       case "listCliAccountProfiles": return Promise.resolve({
         profiles: [{
           runtimeId: String(args[0] ?? "cli:gemini"),
@@ -1928,6 +2212,18 @@ export class DemoStore {
           updatedBy: null
         }]
       });
+      case "cliAccountIdentities": return Promise.resolve({
+        accounts: (["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"] as const).map((runtimeId) => ({
+          runtimeId,
+          profileId: "main",
+          displayName: "Main account",
+          email: null,
+          authStatus: "NOT_CONNECTED" as const
+        })),
+        checkedAt: DEMO_FIXED_AT
+      });
+      // The demo keeps no CLI history; answer with the real response shape so the Sessions dock shows its empty state.
+      case "agentSessions": return Promise.resolve({ data: [], totalItems: 0, visibleItems: 0, checkedAt: DEMO_FIXED_AT });
       default: return Promise.resolve(this.fallback(method));
     }
   }
@@ -2157,6 +2453,28 @@ export class DemoStore {
         needsSetup: connections.length - functional
       },
       connections
+    };
+  }
+
+  private demoMaintenanceSchedule: MaintenanceAutopilotStatus["schedule"] = { enabled: false, hour: 4, timeZone: "UTC", nextRunAt: null };
+  private demoMaintenanceLastRun: MaintenanceAutopilotStatus["lastRun"] = null;
+  private demoMaintenanceAutopilotStatus(): MaintenanceAutopilotStatus {
+    return structuredClone({ schedule: this.demoMaintenanceSchedule, currentRun: null, lastRun: this.demoMaintenanceLastRun, checkedAt: DEMO_FIXED_AT });
+  }
+  private demoGatewaySettings = {
+    routingStrategy: "CAPACITY_WEIGHTED" as const, stickyThreadsEnabled: true, preferEarlierReset: false, planPriority: ["plus", "prolite", "pro"],
+    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const,
+    compressionTimeBudgetMs: 250, requestLogRetentionDays: 30, updatedAt: DEMO_FIXED_AT
+  };
+
+  private demoGatewayStatus() {
+    return {
+      service: { state: "RUNNING" as const, version: "demo", startedAt: DEMO_FIXED_AT, inFlightRequests: 0, listen: "127.0.0.1:4920", error: null },
+      accounts: { total: 0, active: 0, byProvider: [] },
+      apiKeys: { total: 0, active: 0 },
+      last24h: { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, compressionTokensSaved: 0 },
+      settings: structuredClone(this.demoGatewaySettings),
+      checkedAt: DEMO_FIXED_AT
     };
   }
 

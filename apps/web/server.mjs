@@ -10,7 +10,7 @@ const host = process.env.SPACE_WEB_HOST ?? "0.0.0.0";
 const port = Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10);
 const distDir = path.resolve(process.env.SPACE_WEB_DIST ?? path.join(__dirname, "dist"));
 const apiOrigin = new URL(process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910");
-const proxyPrefixes = ["/api", "/healthz", "/readyz", "/version"];
+const proxyPrefixes = ["/api", "/plugins", "/healthz", "/livez", "/readyz", "/version"];
 const proxyPaths = new Set(["/plugins/events", "/logout"]);
 const retryableProxyMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 const configuredRecoveryWindowMs = Number.parseInt(process.env.SPACE_API_RECOVERY_WINDOW_MS ?? "10000", 10);
@@ -34,17 +34,43 @@ function safeDiscordInvite(value) {
 }
 
 const contentTypes = new Map([
+  [".avif", "image/avif"],
   [".css", "text/css; charset=utf-8"],
+  [".gif", "image/gif"],
   [".html", "text/html; charset=utf-8"],
   [".ico", "image/x-icon"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
   [".js", "text/javascript; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".map", "application/json; charset=utf-8"],
+  [".md", "text/markdown; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".mp3", "audio/mpeg"],
+  [".mp4", "video/mp4"],
   [".png", "image/png"],
   [".svg", "image/svg+xml"],
+  [".ttf", "font/ttf"],
   [".txt", "text/plain; charset=utf-8"],
-  [".webp", "image/webp"]
+  [".wav", "audio/wav"],
+  [".webm", "video/webm"],
+  [".webp", "image/webp"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"]
 ]);
+
+// Hashed /assets/* never change under the same URL. HTML documents and the
+// runtime config must never be stored (stale WebView documents pin old bundles).
+// Other non-hashed scripts/data are version-coupled to the documents, so they
+// are stored but revalidated on every use. Everything else in the static root
+// (brand images, favicon, entry-loading.css, media, fonts) is cached for a day
+// and revalidated in the background with a weak validator.
+const immutableAssetCacheControl = "public, max-age=31536000, immutable";
+const documentCacheControl = "no-cache, no-store, must-revalidate";
+const revalidatedStaticCacheControl = "no-cache";
+const staticFileCacheControl = "public, max-age=86400, stale-while-revalidate=604800";
+const uncachedStaticFileNames = new Set(["homepage-config.js"]);
+const revalidatedStaticExtensions = new Set([".js", ".json", ".map", ".mjs"]);
 
 const hopByHopHeaders = new Set([
   "connection",
@@ -379,13 +405,46 @@ function publicHomepageSecurityHeaders(request, filePath) {
   };
 }
 
+function staticCacheControl(filePath) {
+  if (filePath.includes(`${path.sep}assets${path.sep}`)) return immutableAssetCacheControl;
+  const extension = path.extname(filePath);
+  if (extension === ".html" || uncachedStaticFileNames.has(path.basename(filePath))) return documentCacheControl;
+  if (revalidatedStaticExtensions.has(extension)) return revalidatedStaticCacheControl;
+  return staticFileCacheControl;
+}
+
+function weakStaticEtag(stats, encoding) {
+  const encodingSuffix = encoding ? `-${encoding}` : "";
+  return `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}${encodingSuffix}"`;
+}
+
+function matchesIfNoneMatch(headerValue, etag) {
+  if (typeof headerValue !== "string" || !headerValue.trim()) return false;
+  const opaqueTag = etag.replace(/^W\//, "");
+  return headerValue.split(",").some((candidate) => {
+    const trimmed = candidate.trim();
+    return trimmed === "*" || trimmed.replace(/^W\//, "") === opaqueTag;
+  });
+}
+
 function serveFile(request, response, filePath) {
   const variant = selectStaticVariant(request, filePath);
   const stats = statSync(variant.path);
   const contentType = contentTypes.get(path.extname(filePath)) ?? "application/octet-stream";
-  const cacheControl = filePath.includes(`${path.sep}assets${path.sep}`)
-    ? "public, max-age=31536000, immutable"
-    : "no-cache, no-store, must-revalidate";
+  const cacheControl = staticCacheControl(filePath);
+  const etag = cacheControl === immutableAssetCacheControl || cacheControl === documentCacheControl
+    ? null
+    : weakStaticEtag(stats, variant.encoding);
+  if (etag && matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
+    response.writeHead(304, {
+      "cache-control": cacheControl,
+      etag,
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff"
+    });
+    response.end();
+    return;
+  }
   const headers = {
     "cache-control": cacheControl,
     "content-length": stats.size,
@@ -394,6 +453,7 @@ function serveFile(request, response, filePath) {
     "x-content-type-options": "nosniff",
     ...publicHomepageSecurityHeaders(request, filePath)
   };
+  if (etag) headers.etag = etag;
   if (variant.encoding) headers["content-encoding"] = variant.encoding;
   response.writeHead(200, headers);
   if (request.method === "HEAD") {

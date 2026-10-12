@@ -1,13 +1,18 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { PaneCliModelSettings } from "@space/contracts";
 import { parseCliModelsTsv } from "./chat-providers.js";
+import { execFileInProcessGroup } from "./process-group-exec.js";
+import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 import { SpaceConflictError, SpaceFeatureDisabledError } from "@space/runtime";
 
-const execute = promisify(execFile);
 type Model = PaneCliModelSettings["models"][number];
 type Screen = { text: string; revision: number };
-type NativeControl = { runtimeId: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>; assertCurrent: () => Promise<void>; wait?: (ms: number) => Promise<void> };
+// readUndimmed: the same screen with faint cells blanked. Claude Code draws its
+// prompt suggestion as faint text in an empty composer; only that read can tell
+// it apart from a draft the user typed.
+type NativeControl = { runtimeId: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>; assertCurrent: () => Promise<void>; wait?: (ms: number) => Promise<void>; readUndimmed?: () => Promise<string> };
+/** Pane picks are namespaced so a persisted pick is never confused with the runtime's generic default id. */
+export const CLAUDE_PANE_MODEL_PREFIX = "claude:";
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const cursorFamilyName = (name: string) => name.replace(/(?:\s+(?:\d+(?:\.\d+)?[MK]|Extra High|None|Low|Medium|High|Thinking|Fast|Max))+$/i, "").trim();
 const geminiFamilyName = (name: string) => name.replace(/\s*\((?:Extra High|None|Low|Medium|High|Thinking|Fast|Max)\)\s*$/i, "").trim();
@@ -24,6 +29,27 @@ function nativeApprovalOrTurn(screen: string): boolean {
   return /esc(?:ape)?\s+to\s+interrupt|ctrl\+c to interrupt|allow (?:once|always)|approve this|do you want to proceed/i.test(screen);
 }
 
+function nativePromptDraft(text: string, runtimeId: string): string | undefined {
+  const promptLines = text.split('\n');
+  const promptAt = runtimeId === 'cli:omp'
+    ? promptLines.findLastIndex(line => /^\s*╰─\s*/u.test(line))
+    : promptLines.findLastIndex(line => /^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*/u.test(line));
+  let prompt = promptLines[promptAt]?.replace(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→|╰─)\s*/u, '').replace(/\s*[│┃]\s*$/, '').trim();
+  if (runtimeId === 'cli:cursor' && prompt && !prompt.startsWith('/')) {
+    for (const next of promptLines.slice(promptAt + 1, promptAt + 4)) {
+      if (!/^\s+\S/.test(next) || /Run Everything|Ask Every Time|^[\s│┃╭╰─]*$/u.test(next)) break;
+      prompt += ` ${next.trim()}`;
+    }
+  }
+  if (runtimeId === 'cli:omp' && prompt && promptAt >= 0) {
+    for (const next of promptLines.slice(promptAt + 1)) {
+      if (/^\s*[❯›>π╭╰]/.test(next) || !next.trim()) break;
+      prompt += ` ${next.trim()}`;
+    }
+  }
+  return prompt;
+}
+
 /** Model controls may replace a native settings menu, never a user prompt or approval. */
 export async function prepareNativeCliSettings(input: NativeControl): Promise<Screen> {
   const wait = input.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -37,22 +63,9 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
     if (nativeApprovalOrTurn(screen.text)) throw new SpaceConflictError('Finish the current CLI turn or dialog before changing model settings.');
   }
   if (nativeSettingsMenu(screen.text)) throw new SpaceConflictError('Close the native model menu before changing settings.');
-  const promptLines = screen.text.split('\n');
-  const promptAt = input.runtimeId === 'cli:omp'
-    ? promptLines.findLastIndex(line => /^\s*╰─\s*/u.test(line))
-    : promptLines.findLastIndex(line => /^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*/u.test(line));
-  let prompt = promptLines[promptAt]?.replace(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→|╰─)\s*/u, '').replace(/\s*[│┃]\s*$/, '').trim();
-  if (input.runtimeId === 'cli:cursor' && prompt && !prompt.startsWith('/')) {
-    for (const next of promptLines.slice(promptAt + 1, promptAt + 4)) {
-      if (!/^\s+\S/.test(next) || /Run Everything|Ask Every Time|^[\s│┃╭╰─]*$/u.test(next)) break;
-      prompt += ` ${next.trim()}`;
-    }
-  }
-  if (input.runtimeId === 'cli:omp' && prompt && promptAt >= 0) {
-    for (const next of promptLines.slice(promptAt + 1)) {
-      if (/^\s*[❯›>π╭╰]/.test(next) || !next.trim()) break;
-      prompt += ` ${next.trim()}`;
-    }
+  let prompt = nativePromptDraft(screen.text, input.runtimeId);
+  if (prompt && input.runtimeId === 'cli:claude' && input.readUndimmed) {
+    prompt = nativePromptDraft(await input.readUndimmed(), input.runtimeId);
   }
   // Escape can restore a previous settings command. A normal draft is never
   // cleared, even when a previous picker attempt failed.
@@ -119,7 +132,8 @@ export function nativeCliReasoningLevels(commandPath: string, model: Model): str
   if (commandPath.endsWith('/kimi-vscode-parity') && /^kimi-code\/k3(?:-256k)?$/.test(model.id)) return ['low', 'high', 'max'];
   if (commandPath.endsWith('/grok-vscode-parity')) return ['low', 'medium', 'high', 'xhigh'];
   if (commandPath.endsWith('/hermes-vscode-parity')) return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-  if (commandPath.endsWith('/claude-vscode-parity')) return ['auto', 'low', 'medium', 'high', 'xhigh'];
+  // Claude Code's /model menu offers these levels for every family (PTY-verified on 2.1.296).
+  if (commandPath.endsWith('/claude-vscode-parity')) return [...CLAUDE_EFFORT_LEVELS];
   if (commandPath.endsWith('/omp-vscode-parity')) return model.supportedReasoningEfforts.filter(e => e !== 'none');
   return [];
 }
@@ -129,6 +143,7 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
   const families = new Map<string, Model>();
   const isCursor = commandPath.endsWith("/cursor-vscode-parity");
   const isGemini = commandPath.endsWith("/gemini-vscode-parity");
+  const isClaude = commandPath.endsWith("/claude-vscode-parity");
   for (const model of advertised) {
     const efforts = nativeCliReasoningLevels(commandPath, model);
     const displayName = isCursor
@@ -140,7 +155,9 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
       ? `cursor-family:${displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`
       : isGemini
         ? model.id.replace(/-(low|medium|high|thinking)$/, "")
-        : model.id;
+        : isClaude && !model.id.startsWith(CLAUDE_PANE_MODEL_PREFIX)
+          ? `${CLAUDE_PANE_MODEL_PREFIX}${model.id}`
+          : model.id;
 
     if (isGemini) {
       const variantEffort = model.id.match(/-(low|medium|high)$/)?.[1]
@@ -190,6 +207,8 @@ export function nativeCliCatalogModels(commandPath: string, raw: string): Model[
     model.reasoningOptions?.sort((a,b) => order.indexOf(a.reasoningEffort) - order.indexOf(b.reasoningEffort));
     if (commandPath.endsWith('/cursor-vscode-parity') && model.supportedReasoningEfforts.includes('medium')) model.defaultReasoningEffort = 'medium';
     if (commandPath.endsWith('/gemini-vscode-parity') && model.supportedReasoningEfforts.includes('high')) model.defaultReasoningEffort = 'high';
+    // Space starts Claude Code with effortLevel xhigh (claude-space-settings.json).
+    if (commandPath.endsWith('/claude-vscode-parity') && model.supportedReasoningEfforts.includes('xhigh')) model.defaultReasoningEffort = 'xhigh';
     return model;
   });
 }
@@ -218,6 +237,21 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
     const setMsg = screen.match(/Model set to [^(\n]+\((High|Medium|Low)\)/i);
     if (setMsg) return setMsg[1]!.toLowerCase();
     if (model?.reasoningOptions?.length) return model.defaultReasoningEffort;
+  }
+  if (runtimeId === 'cli:claude') {
+    // Claude Code 2.1 keeps the live effort in its footer ("◉ xhigh · /effort", "○ low · /effort"),
+    // a session-only /model pick ("Set model to Opus 5.5 for this session only with high effort"),
+    // an /effort acknowledgement and its banner ("Opus 5.5 with xhigh effort"). The newest wins.
+    for (const raw of screen.split(/\r?\n/).reverse()) {
+      const footer = raw.match(/(?:^|\s)\S\s+(auto|low|medium|high|xhigh|max)\s+·\s+\/effort\s*$/i)?.[1];
+      if (footer) return footer.toLowerCase();
+      const line = raw.trim().replace(/^[│┃·●⎿✓]\s*/, '');
+      if (/^[❯›>]/u.test(line) || /not applied|overrides|still controls|blocked|couldn't/i.test(line)) continue;
+      const value = line.match(/^(?:Set effort level to|Current effort level:|Effort level set to)\s*(auto|low|medium|high|xhigh|max)\b/i)?.[1]
+        ?? line.match(/\bwith\s+(low|medium|high|xhigh|max)\s+effort\b/i)?.[1];
+      if (value) return value.toLowerCase();
+    }
+    return null;
   }
   if (runtimeId === 'cli:cursor') {
     const footer = cursorFooter(screen);
@@ -255,7 +289,6 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
       : runtimeId === 'cli:kimi' ? line.match(/(?:\bthinking:\s*|^Thinking set to\s+)(low|high|max)\b/i)?.[1]
       : runtimeId === 'cli:grok' ? line.match(/Grok [\d.]+\s*\((low|medium|high|xhigh)\)/i)?.[1]
       : runtimeId === 'cli:hermes' ? line.match(/^reasoning:\s*(none|minimal|low|medium|high|xhigh|max|ultra)\b/i)?.[1]
-      : runtimeId === 'cli:claude' && !/not applied|overrides|still controls|saved as your default for new/i.test(line) ? line.match(/^(?:Set effort level to|Current effort level:|Effort level set to)\s*(auto|low|medium|high|xhigh)\b/i)?.[1]
       : runtimeId === 'cli:cursor' && /\s{2,}(?:Run Everything|Ask Every Time)\s*$/.test(line) ? line.match(/\b(Extra High|None|Low|Medium|High|Max)(?:\s+Fast)?\s{2,}/i)?.[1]?.replace(/extra high/i,'xhigh')
       : null;
     if (value) return value.toLowerCase();
@@ -362,43 +395,80 @@ async function switchCursorReasoning(input: Parameters<typeof switchNativeCliRea
   throw new SpaceConflictError('Cursor has not confirmed the reasoning change.');
 }
 
+/**
+ * A catalog load runs the wrapper's full `models` pipeline (seconds of CPU,
+ * plus the wrapper's background history merge), while catalogs change only
+ * with CLI releases or account switches. Catalogs are therefore served for 15
+ * minutes and then refreshed in the background while the last catalog stays
+ * available; `force` bypasses the cache for explicit refreshes.
+ */
+export const NATIVE_CLI_MODEL_CATALOG_FRESH_MS = 15 * 60_000;
+const nativeCliModelCatalogFailureTtlMs = 15_000;
+const nativeCliModelCatalogTimeoutMs = 35_000;
+
+export type NativeCliModelCatalogRunner = (
+  commandPath: string,
+  args: readonly string[],
+  options: { timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv }
+) => Promise<{ stdout: string }>;
+
 /** Only model metadata leaves the existing credential-owning CLI wrappers. */
-export function createNativeCliModelCatalog() {
-  const cache = new Map<string, { expires: number; value: Promise<Model[]> }>();
-  return async (commandPath: string, accountProfileId: string | null = null): Promise<Model[]> => {
+export function createNativeCliModelCatalog(options: { run?: NativeCliModelCatalogRunner; now?: () => number } = {}) {
+  // Timeouts terminate the wrapper's whole process group, not only the shell.
+  const run = options.run ?? execFileInProcessGroup;
+  const cache = createStaleWhileRevalidateCache<Model[]>({
+    freshMs: NATIVE_CLI_MODEL_CATALOG_FRESH_MS,
+    errorTtlMs: nativeCliModelCatalogFailureTtlMs,
+    maxEntries: 64,
+    now: options.now
+  });
+  const load = async (commandPath: string, accountProfileId: string | null): Promise<Model[]> => {
+    try {
+      const { stdout } = await run(commandPath, ["models"], {
+        timeout: nativeCliModelCatalogTimeoutMs, maxBuffer: nativeCliCatalogBufferBytes,
+        env: { PATH: process.env.PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TERM: "dumb",
+          ...(accountProfileId && accountProfileId !== "main"
+            ? { SPACE_GEMINI_ACCOUNT_PROFILE: accountProfileId, SPACE_CURSOR_ACCOUNT_PROFILE: accountProfileId, SPACE_CLAUDE_ACCOUNT_PROFILE: accountProfileId, SPACE_COPILOT_ACCOUNT_PROFILE: accountProfileId }
+            : {}) }
+      });
+      // Native adapters define their own effort levels; Chat metadata alone
+      // does not establish support for an interactive CLI command.
+      const models = nativeCliCatalogModels(commandPath, stdout);
+      if (!models.length) throw new Error("empty catalog");
+      return models;
+    } catch {
+      throw new SpaceFeatureDisabledError("CLI_MODEL_CATALOG_UNAVAILABLE", "The CLI model catalog is unavailable. Try again shortly.");
+    }
+  };
+  return async (
+    commandPath: string,
+    accountProfileId: string | null = null,
+    loadOptions: { force?: boolean } = {}
+  ): Promise<Model[]> => {
     const key = `${commandPath}:${accountProfileId ?? ""}`;
-    const previous = cache.get(key);
-    if (previous && previous.expires > Date.now()) return previous.value;
-    const value = (async () => {
-      try {
-        const { stdout } = await execute(commandPath, ["models"], {
-          timeout: 35_000, maxBuffer: nativeCliCatalogBufferBytes, encoding: "utf8",
-          env: { PATH: process.env.PATH, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TERM: "dumb",
-            ...(accountProfileId && accountProfileId !== "main"
-              ? { SPACE_GEMINI_ACCOUNT_PROFILE: accountProfileId, SPACE_CURSOR_ACCOUNT_PROFILE: accountProfileId }
-              : {}) }
-        });
-        // Native adapters define their own effort levels; Chat metadata alone
-        // does not establish support for an interactive CLI command.
-        const models = nativeCliCatalogModels(commandPath, stdout);
-        if (!models.length) throw new Error("empty catalog");
-        return models;
-      } catch {
-        const disabledErr = new SpaceFeatureDisabledError("CLI_MODEL_CATALOG_UNAVAILABLE", "The CLI model catalog is unavailable. Try again shortly.");
-        const rejected = Promise.reject(disabledErr);
-        rejected.catch(() => {});
-        cache.set(key, { expires: Date.now() + 15_000, value: rejected });
-        throw disabledErr;
-      }
-    })();
-    cache.set(key, { expires: Date.now() + 60_000, value });
-    return value;
+    return cache.get(key, () => load(commandPath, accountProfileId), loadOptions);
   };
 }
 
 /** A command echo or highlighted menu entry is never confirmation. */
 export function nativeCliConfirmedModel(screen: string, models: readonly Model[], runtimeId = ""): string | null {
   screen = nativeControlScreen(screen, runtimeId);
+  if (runtimeId === "cli:claude") {
+    // Claude Code 2.1 names the model family: "⎿ Set model to Sonnet 5.5 for this session only with
+    // high effort", "… and saved as your default for new sessions", "Kept model as Fable 5.1", and its
+    // banner "Opus 5.5 with xhigh effort". The newest family line decides; the catalog holds families.
+    for (const raw of screen.split(/\r?\n/).reverse()) {
+      const line = raw.trim().replace(/^[│┃·●⎿└]\s*/, "");
+      if (/^[❯›>]/u.test(line) || /blocked|couldn't/i.test(line)) continue;
+      const family = line.match(/\b(?:Set model to|Kept model as|Current model:)\s+(Opus|Sonnet|Haiku|Fable)\b/i)?.[1] ??
+        line.match(/\b(Opus|Sonnet|Haiku|Fable)\s+[\d.]+(?:\s*\([^)]*\))?\s+with\s+\S+\s+effort\b/i)?.[1];
+      if (!family) continue;
+      const name = family.toLowerCase();
+      return models.find((entry) => entry.displayName.toLowerCase() === name ||
+        entry.id.toLowerCase() === name || entry.id.toLowerCase() === `${CLAUDE_PANE_MODEL_PREFIX}${name}`)?.id ?? null;
+    }
+    return null;
+  }
   const footer = runtimeId === "cli:cursor" ? cursorFooter(screen) : null;
   const rawLines = (footer ? `${screen}\nModel: ${footer}` : screen).split(/\r?\n/);
   const lines = rawLines.map((line, index) => {
@@ -469,6 +539,98 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
   return null;
 }
 
+/**
+ * Claude Code's /model menu: numbered family rows ("❯ 3. Fable ✔   Fable 5.1 · …"), the effort line
+ * ("◉ xHigh effort ←/→ to adjust") and its key hints. Null while no menu is drawn.
+ */
+export function claudeModelMenu(screen: string): {
+  rows: { number: number; label: string; highlighted: boolean }[];
+  effort: string | null; effortSupported: boolean; sessionOnly: boolean; searching: boolean;
+} | null {
+  const start = screen.lastIndexOf("Select model");
+  if (start < 0) return null;
+  const menu = screen.slice(start);
+  const rows: { number: number; label: string; highlighted: boolean }[] = [];
+  let effort: string | null = null;
+  for (const line of menu.split(/\r?\n/)) {
+    const row = line.match(/^\s*(❯)?\s*(\d+)\.\s+(.+?)(?:\s{2,}|$)/u);
+    if (row) {
+      rows.push({ number: Number(row[2]), label: row[3]!.replace(/\s*✔\s*$/u, "").trim(), highlighted: Boolean(row[1]) });
+      continue;
+    }
+    effort ??= line.match(/^\s*\S\s+(Low|Medium|High|xHigh|Max)\s+effort\b/i)?.[1]?.toLowerCase() ?? null;
+  }
+  return { rows, effort, effortSupported: !/Effort not supported/i.test(menu),
+    sessionOnly: /\bs to use this session only\b/i.test(menu), searching: /Type to (?:search|filter)/i.test(menu) };
+}
+
+/**
+ * `/model <name>` in Claude Code saves the pick as the default of every session sharing its config,
+ * and sessions without their own pick follow that default. A pane therefore selects its model in
+ * the native menu with "s" (this session only), adjusting the effort in the same menu.
+ */
+async function applyClaudeSessionModel(input: {
+  model: Model; effort?: string; read: () => Promise<Screen>; write: (data: string) => Promise<unknown>;
+  assertCurrent: () => Promise<void>; wait?: (ms: number) => Promise<void>; runtimeId: string; readUndimmed?: () => Promise<string>;
+}): Promise<void> {
+  const wait = input.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const levels: readonly string[] = CLAUDE_EFFORT_LEVELS;
+  const effort = input.effort && levels.includes(input.effort) ? input.effort : undefined;
+  const applied = (text: string, withEffort: boolean) =>
+    nativeCliConfirmedModel(text, [input.model], "cli:claude") === input.model.id &&
+    (!withEffort || !effort || nativeCliConfirmedReasoning(text, "cli:claude") === effort);
+  const before = await prepareNativeCliSettings(input);
+  if (applied(before.text, true)) return;
+  if (/esc(?:ape)?\s+to\s+(?:interrupt|cancel)|ctrl\+c to interrupt|allow (?:once|always)|approve this|enter to (?:confirm|select)/i.test(before.text)) {
+    throw new SpaceConflictError("Finish the current CLI turn or dialog before changing models.");
+  }
+  await input.write("/model");
+  await wait(250);
+  await input.assertCurrent();
+  await input.write("\r");
+  const family = input.model.displayName.toLowerCase();
+  let actedOn = -1;
+  let steps = 0;
+  let chosen: { withEffort: boolean } | null = null;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await wait(250);
+    await input.assertCurrent();
+    const after = await input.read();
+    if (after.revision === before.revision || after.revision === actedOn) continue;
+    if (chosen) {
+      if (applied(after.text, chosen.withEffort)) return;
+      continue;
+    }
+    if (/unknown command|unrecognized command/i.test(after.text)) throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
+    const menu = claudeModelMenu(after.text);
+    if (!menu?.rows.length) continue;
+    const target = menu.rows.find((row) => row.label.toLowerCase() === family);
+    if (!target) throw new SpaceConflictError("This model is not available in this Claude account's model menu. Choose another model.");
+    const highlighted = menu.rows.find((row) => row.highlighted);
+    let key: string;
+    if (!menu.sessionOnly) {
+      // A menu that opens in search mode returns to its list with Down.
+      if (!menu.searching) throw new SpaceConflictError("This Claude Code version cannot change the model for one pane only.");
+      key = "\u001b[B";
+    } else if (!highlighted || (effort && menu.effortSupported && !menu.effort)) {
+      continue;
+    } else if (highlighted.number !== target.number) {
+      key = target.number > highlighted.number ? "\u001b[B" : "\u001b[A";
+    } else if (effort && menu.effortSupported && menu.effort !== effort) {
+      if (!levels.includes(menu.effort!)) throw new SpaceConflictError("The Claude model menu shows an unknown effort level.");
+      key = levels.indexOf(effort) > levels.indexOf(menu.effort!) ? "\u001b[C" : "\u001b[D";
+    } else {
+      key = "s";
+      chosen = { withEffort: menu.effortSupported };
+    }
+    if (++steps > 24) throw new SpaceConflictError("The Claude model menu did not follow the selection. Check its terminal.");
+    actedOn = after.revision;
+    await input.assertCurrent();
+    await input.write(key);
+  }
+  throw new SpaceConflictError("Claude Code has not confirmed the model change. Check its terminal for the model menu.");
+}
+
 async function applyNativeCliModel(input: {
   model: Model;
   runtimeId: string;
@@ -477,8 +639,10 @@ async function applyNativeCliModel(input: {
   write: (data: string) => Promise<unknown>;
   assertCurrent: () => Promise<void>;
   wait?: (ms: number) => Promise<void>;
+  readUndimmed?: () => Promise<string>;
 }): Promise<void> {
   if (!identifier.test(input.model.id)) throw new SpaceConflictError("The selected CLI model identifier is invalid.");
+  if (input.runtimeId === "cli:claude") return applyClaudeSessionModel(input);
   const wait = input.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const before = await prepareNativeCliSettings(input);
   if (nativeCliConfirmedModel(before.text, [input.model], input.runtimeId) === input.model.id) {

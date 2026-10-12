@@ -84,8 +84,8 @@
 }
 
 .plugin-pill.active {
-  background: #3b82f6;
-  border-color: #3b82f6;
+  background: #2563eb;
+  border-color: #2563eb;
   color: #ffffff;
   font-weight: 500;
 }
@@ -920,4 +920,3 @@
   color: #0f172a;
   box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
 }
-

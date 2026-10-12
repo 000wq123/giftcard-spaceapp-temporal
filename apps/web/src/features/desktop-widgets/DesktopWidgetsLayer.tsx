@@ -1,13 +1,74 @@
-import React, { memo, useCallback, useEffect } from "react";
-import { ClockWidget } from "./ClockWidget.js";
-import { CountdownTimerWidget } from "./CountdownTimerWidget.js";
-import { PushupReminderWidget } from "./PushupReminderWidget.js";
-import { SpaceAppPromoWidget } from "./SpaceAppPromoWidget.js";
-import { AiQuotaWidget } from "./AiQuotaWidget.js";
-import { StreamingMetricsWidget } from "./StreamingMetricsWidget.js";
-import type { DesktopWidgetId } from "./types.js";
+import React, { memo, useCallback, useEffect, useState, type ComponentType } from "react";
+import type { DesktopWidgetId, DesktopWidgetState } from "./types.js";
 import { useDesktopWidgets } from "./widget-storage.js";
+import { useWidgetsVisibility } from "./use-widgets-visibility.js";
 import "./desktop-widgets.css";
+
+interface DesktopWidgetComponentProps {
+  state: DesktopWidgetState;
+  isMultiColumn?: boolean;
+  isHeaderDockActive?: boolean;
+  onPositionChange: (x: number, y: number, dockedToRail?: boolean, dockPosition?: "rail" | "header") => void;
+  onToggleMinimize: () => void;
+  onClose: () => void;
+  onFocus: () => void;
+}
+
+type DesktopWidgetComponent = ComponentType<DesktopWidgetComponentProps>;
+
+// Every widget is off by default, so widget code is only fetched once a
+// widget is actually enabled. Loaded components are cached at module level so
+// later renders (and re-enabling a widget) are synchronous.
+const desktopWidgetLoaders: Record<DesktopWidgetId, () => Promise<DesktopWidgetComponent>> = {
+  clock: () => import("./ClockWidget.js").then((module) => module.ClockWidget),
+  "countdown-timer": () => import("./CountdownTimerWidget.js").then((module) => module.CountdownTimerWidget),
+  "pushup-reminder": () => import("./PushupReminderWidget.js").then((module) => module.PushupReminderWidget),
+  "spaceapp-promo": () => import("./SpaceAppPromoWidget.js").then((module) => module.SpaceAppPromoWidget),
+  "ai-quota": () => import("./AiQuotaWidget.js").then((module) => module.AiQuotaWidget),
+  "streaming-metrics": () => import("./StreamingMetricsWidget.js").then((module) => module.StreamingMetricsWidget)
+};
+const loadedDesktopWidgets = new Map<DesktopWidgetId, DesktopWidgetComponent>();
+const pendingDesktopWidgets = new Map<DesktopWidgetId, Promise<DesktopWidgetComponent>>();
+
+function loadDesktopWidget(id: DesktopWidgetId): Promise<DesktopWidgetComponent> {
+  const loaded = loadedDesktopWidgets.get(id);
+  if (loaded) return Promise.resolve(loaded);
+  let pending = pendingDesktopWidgets.get(id);
+  if (!pending) {
+    pending = desktopWidgetLoaders[id]().then(
+      (component) => {
+        loadedDesktopWidgets.set(id, component);
+        pendingDesktopWidgets.delete(id);
+        return component;
+      },
+      (error: unknown) => {
+        pendingDesktopWidgets.delete(id);
+        throw error;
+      }
+    );
+    pendingDesktopWidgets.set(id, pending);
+  }
+  return pending;
+}
+
+/** Resolve widget modules ahead of rendering (used by tests and warm-up paths). */
+export function preloadDesktopWidgets(ids: readonly DesktopWidgetId[] = Object.keys(desktopWidgetLoaders) as DesktopWidgetId[]) {
+  return Promise.all(ids.map((id) => loadDesktopWidget(id))).then(() => undefined);
+}
+
+function DeferredDesktopWidget({ widgetId, ...props }: DesktopWidgetComponentProps & { widgetId: DesktopWidgetId }) {
+  const [Widget, setWidget] = useState<DesktopWidgetComponent | null>(() => loadedDesktopWidgets.get(widgetId) ?? null);
+  useEffect(() => {
+    if (Widget) return;
+    let cancelled = false;
+    loadDesktopWidget(widgetId).then(
+      (component) => { if (!cancelled) setWidget(() => component); },
+      (error: unknown) => { console.warn(`[desktop-widgets] ${widgetId} could not load`, error); }
+    );
+    return () => { cancelled = true; };
+  }, [Widget, widgetId]);
+  return Widget ? <Widget {...props} /> : null;
+}
 
 interface DesktopWidgetsLayerProps {
   widgetsController?: ReturnType<typeof useDesktopWidgets>;
@@ -65,8 +126,11 @@ const DesktopWidgetsLayerContent = memo(function DesktopWidgetsLayerContent({
 }) {
   const { widgets, isWidgetEnabled, setPosition, toggleMinimize, bringToFront, closeWidget } =
     controller;
+  const { isWidgetHidden } = useWidgetsVisibility();
 
-  const anyEnabled = Object.values(widgets).some((w) => w.enabled);
+  const anyEnabled = (Object.keys(widgets) as DesktopWidgetId[]).some(
+    (id) => widgets[id]?.enabled && !isWidgetHidden(id)
+  );
 
   useEffect(() => {
     if (isHeaderDockActive === false) {
@@ -76,9 +140,8 @@ const DesktopWidgetsLayerContent = memo(function DesktopWidgetsLayerContent({
     }
   }, [isHeaderDockActive, controller]);
 
-
   const enabledIds = (Object.keys(widgets) as DesktopWidgetId[])
-    .filter((id) => isWidgetEnabled(id))
+    .filter((id) => isWidgetEnabled(id) && !isWidgetHidden(id))
     .sort((a, b) => {
       if (isHeaderDockActive || isMultiColumn) {
         return (widgets[a]?.x ?? 0) - (widgets[b]?.x ?? 0);
@@ -117,88 +180,21 @@ const DesktopWidgetsLayerContent = memo(function DesktopWidgetsLayerContent({
   if (!anyEnabled) return null;
 
   const renderWidget = (id: DesktopWidgetId) => {
-    switch (id) {
-      case "clock":
-        return (
-          <ClockWidget
-            key="clock"
-            state={widgets.clock}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("clock", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("clock")}
-            onClose={() => handleClose("clock")}
-            onFocus={() => handleFocus("clock")}
-          />
-        );
-      case "countdown-timer":
-        return (
-          <CountdownTimerWidget
-            key="countdown-timer"
-            state={widgets["countdown-timer"]}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("countdown-timer", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("countdown-timer")}
-            onClose={() => handleClose("countdown-timer")}
-            onFocus={() => handleFocus("countdown-timer")}
-          />
-        );
-      case "pushup-reminder":
-        return (
-          <PushupReminderWidget
-            key="pushup-reminder"
-            state={widgets["pushup-reminder"]}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("pushup-reminder", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("pushup-reminder")}
-            onClose={() => handleClose("pushup-reminder")}
-            onFocus={() => handleFocus("pushup-reminder")}
-          />
-        );
-      case "spaceapp-promo":
-        return (
-          <SpaceAppPromoWidget
-            key="spaceapp-promo"
-            state={widgets["spaceapp-promo"]}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("spaceapp-promo", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("spaceapp-promo")}
-            onClose={() => handleClose("spaceapp-promo")}
-            onFocus={() => handleFocus("spaceapp-promo")}
-          />
-        );
-      case "ai-quota":
-        return (
-          <AiQuotaWidget
-            key="ai-quota"
-            state={widgets["ai-quota"]}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("ai-quota", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("ai-quota")}
-            onClose={() => handleClose("ai-quota")}
-            onFocus={() => handleFocus("ai-quota")}
-          />
-        );
-      case "streaming-metrics":
-        return (
-          <StreamingMetricsWidget
-            key="streaming-metrics"
-            state={widgets["streaming-metrics"]}
-            isMultiColumn={isMultiColumn}
-            isHeaderDockActive={isHeaderDockActive}
-            onPositionChange={(x, y, docked, dockPos) => handlePositionChange("streaming-metrics", x, y, docked, dockPos)}
-            onToggleMinimize={() => handleToggleMinimize("streaming-metrics")}
-            onClose={() => handleClose("streaming-metrics")}
-            onFocus={() => handleFocus("streaming-metrics")}
-          />
-        );
-      default:
-        return null;
-    }
+    const state = widgets[id];
+    if (!state) return null;
+    return (
+      <DeferredDesktopWidget
+        key={id}
+        widgetId={id}
+        state={state}
+        isMultiColumn={isMultiColumn}
+        isHeaderDockActive={isHeaderDockActive}
+        onPositionChange={(x, y, docked, dockPos) => handlePositionChange(id, x, y, docked, dockPos)}
+        onToggleMinimize={() => handleToggleMinimize(id)}
+        onClose={() => handleClose(id)}
+        onFocus={() => handleFocus(id)}
+      />
+    );
   };
 
   return (

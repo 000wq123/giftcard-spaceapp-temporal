@@ -14,6 +14,7 @@ import {
 } from "@temporalio/workflow";
 import {
   buildCodexAppServerTurnWorkflowId,
+  DOT_GOAL_SIGNAL,
   ROOM_AGENT_ENQUEUE_SIGNAL,
   ROOM_AGENT_STOP_SIGNAL,
   roomAgentSupervisorInputSchema,
@@ -36,6 +37,7 @@ import {
   stopRoomAgentMissions
 } from "./room-supervisor-state.js";
 import { isCliChatTurnProviderId, isNativeChatTurn, NATIVE_CHAT_TURN_ACTIVITY_TIMEOUT } from "./turn-runtime-policy.js";
+import { runDotGoalLoop } from "./dot-goal-loop.js";
 
 const { recordDummyTurnStarted, recordDummyTurnCompleted } = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute",
@@ -82,6 +84,32 @@ const { markRoomAgentMissionStarted, markRoomAgentMissionFinished, markRoomAgent
     maximumAttempts: 5
   }
 });
+
+const dotGoalActivities = proxyActivities<typeof activities>({
+  startToCloseTimeout: "2 minutes",
+  retry: { maximumAttempts: 20, initialInterval: "5 seconds", backoffCoefficient: 2, maximumInterval: "2 minutes" }
+});
+export const dotGoalWakeSignal = defineSignal<[]>(DOT_GOAL_SIGNAL);
+
+/**
+ * Space Dots Goal: start one Chat step at a time and wait for it, until the
+ * API reports the Goal finished. State lives in PostgreSQL; this workflow only
+ * sequences steps, so it survives worker restarts and closed browsers.
+ */
+export async function dotGoalWorkflow(input: { goalId: string }): Promise<{ goalStatus: string }> {
+  let woken = false;
+  setHandler(dotGoalWakeSignal, () => { woken = true; });
+  const result = await runDotGoalLoop(input.goalId, {
+    step: (goalId) => dotGoalActivities.dotGoalStep(goalId),
+    observe: (goalId, runId) => dotGoalActivities.dotGoalObserve(goalId, runId),
+    // A wake-up that arrives during an activity is kept and ends the next wait at once.
+    wait: async (timeout) => { await condition(() => woken, timeout); woken = false; },
+    shouldContinueAsNew: () => workflowInfo().continueAsNewSuggested || workflowInfo().historyLength > 10_000
+  }, 300);
+  // A long Goal continues as a new run to bound workflow history.
+  if (result.goalStatus === null) await continueAsNew<typeof dotGoalWorkflow>({ goalId: input.goalId });
+  return { goalStatus: result.goalStatus ?? "UNKNOWN" };
+}
 
 export const enqueueRoomAgentMissionSignal = defineSignal<[RoomAgentSupervisorQueueItem]>(ROOM_AGENT_ENQUEUE_SIGNAL);
 export const stopRoomAgentMissionSignal = defineSignal<[
@@ -230,6 +258,9 @@ const supervisorActivities = proxyActivities<typeof activities>({
   startToCloseTimeout: "1 minute", retry: { maximumAttempts: 5 }
 });
 
+/** Upper bound of each list in roomAgentSupervisorInputSchema. */
+const ROOM_AGENT_SUPERVISOR_CARRY_LIMIT = 100;
+
 async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervisorInput): Promise<never> {
   const input = roomAgentSupervisorInputSchema.parse(rawInput);
   let pending = [...input.pending];
@@ -339,7 +370,13 @@ async function continuingRoomAgentSupervisorWorkflow(rawInput: RoomAgentSupervis
       polls++;
     } else await condition(() => pending.length > 0 || interrupted.length > 0);
 
-    if (processedCount >= 50 || polls >= 250) return continueAsNew<typeof roomAgentSupervisorWorkflow>({
+    // The next run parses its input with roomAgentSupervisorInputSchema, which
+    // bounds each carried list. Keep draining until the state fits instead of
+    // starting a run that would fail validation. Closed histories never replay,
+    // so deferring here cannot change an already issued continueAsNew.
+    const carriedStateFits = pending.length <= ROOM_AGENT_SUPERVISOR_CARRY_LIMIT &&
+      interrupted.length <= ROOM_AGENT_SUPERVISOR_CARRY_LIMIT && monitoring.size <= ROOM_AGENT_SUPERVISOR_CARRY_LIMIT;
+    if ((processedCount >= 50 || polls >= 250) && carriedStateFits) return continueAsNew<typeof roomAgentSupervisorWorkflow>({
       roomId: input.roomId, pending, interrupted, monitoringMissionIds: [...monitoring], processedCount: 0
     });
   }

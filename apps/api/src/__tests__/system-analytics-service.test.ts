@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Pane, PaneCliSession, Room } from "@space/contracts";
 import { InMemorySystemAnalyticsRepository } from "@space/db";
 import type { SpaceStore } from "@space/runtime";
@@ -10,6 +13,11 @@ import {
 } from "../system-analytics-service.js";
 
 const sampledAt = "2027-01-15T08:00:00.000Z";
+// Model ingestion reads native CLI history; keep it on an owned empty root
+// instead of the operator's real Codex, Gemini and Hermes homes.
+const ownedHistoryRoot = mkdtempSync(join(tmpdir(), "space-analytics-unit-"));
+const ownedHistory = { codexHome: ownedHistoryRoot, stateRoot: ownedHistoryRoot, hermesHome: ownedHistoryRoot };
+afterAll(() => rmSync(ownedHistoryRoot, { recursive: true, force: true }));
 
 function fixture() {
   const room: Room = {
@@ -31,6 +39,7 @@ function fixture() {
     roomId: room.id,
     title: "Claude Planning Pane",
     titleSource: "manual",
+    paneName: "Andy",
     mode: "TERMINAL",
     status: "RUNNING",
     providerId: "anthropic",
@@ -96,11 +105,39 @@ function createStore(input: ReturnType<typeof fixture>): SpaceStore {
     listRooms: () => [input.room],
     listPanes: () => [input.pane],
     listActivePaneCliSessions: (runtimeId: string) => runtimeId === input.session.runtimeId ? [input.session] : [],
+    listActivePaneCliSessionsForRuntimes: (runtimeIds: string[]) =>
+      runtimeIds.includes(input.session.runtimeId) ? [input.session] : [],
     listPaneCliSessions: () => [input.session]
   } as unknown as SpaceStore;
 }
 
 describe("SystemAnalyticsService", () => {
+  it("stops a model backfill at dispose without recording the partial scan", async () => {
+    const input = fixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const store = { ...createStore(input), listRooms: async () => { await gate; return [input.room]; } } as unknown as SpaceStore;
+    const repository = new InMemorySystemAnalyticsRepository();
+    const upsert = vi.spyOn(repository, "upsertModelEvents");
+    const service = new SystemAnalyticsService({
+      ...ownedHistory,
+      repository,
+      store,
+      liveSessions: async () => [],
+      now: () => new Date(sampledAt),
+      coreCount: 1,
+      readProcessTable: async () => [],
+      readMeminfo: async () => "MemTotal: 1024 kB\nMemAvailable: 1024 kB\n",
+      readProcStat: async () => "cpu 0 0 0 100 0 0 0 0 0 0\n"
+    });
+    const backfill = service.backfill();
+    const disposed = service.dispose();
+    release();
+    await Promise.all([disposed, backfill]);
+    expect(upsert).not.toHaveBeenCalled();
+    expect((await repository.getBackfill()).status).not.toBe("COMPLETE");
+  });
+
   it("groups the full descendant tree under the actual room and pane name", async () => {
     const input = fixture();
     const processes: SystemAnalyticsProcessRow[] = [
@@ -111,6 +148,7 @@ describe("SystemAnalyticsService", () => {
       { pid: 400, parentPid: 1, rssBytes: 70, virtualBytes: 700, swapBytes: 0, uptimeSeconds: 900, threadCount: 1, cpuOneCorePercent: 1, state: "S", name: "postgres", commandLine: "postgres --config secret" }
     ];
     const service = new SystemAnalyticsService({
+      ...ownedHistory,
       repository: new InMemorySystemAnalyticsRepository(),
       store: createStore(input),
       liveSessions: async () => [input.live],
@@ -166,6 +204,7 @@ describe("SystemAnalyticsService", () => {
     input.live.modelId = "gpt-5.6-sol";
     input.live.codexThreadId = null;
     const service = new SystemAnalyticsService({
+      ...ownedHistory,
       repository: new InMemorySystemAnalyticsRepository(),
       store: createStore(input),
       liveSessions: async () => [input.live],
@@ -209,6 +248,7 @@ describe("SystemAnalyticsService", () => {
       updatedAt: "2026-12-01T00:00:00.000Z"
     }]);
     const service = new SystemAnalyticsService({
+      ...ownedHistory,
       repository,
       store: createStore(input),
       liveSessions: async () => [input.live],
@@ -230,9 +270,11 @@ describe("SystemAnalyticsService", () => {
       listRooms: () => [input.room],
       listPanes: () => [input.pane],
       listActivePaneCliSessions: () => [],
+      listActivePaneCliSessionsForRuntimes: () => [],
       listPaneCliSessions: () => []
     } as unknown as SpaceStore;
     const service = new SystemAnalyticsService({
+      ...ownedHistory,
       repository: new InMemorySystemAnalyticsRepository(),
       store,
       liveSessions: async () => [input.live],
@@ -301,6 +343,7 @@ describe("SystemAnalyticsService", () => {
       }
     ]);
     const service = new SystemAnalyticsService({
+      ...ownedHistory,
       repository,
       store: createStore(input),
       liveSessions: async () => [input.live],

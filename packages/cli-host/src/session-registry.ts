@@ -403,10 +403,7 @@ export class CliHostSessionRegistry {
     };
     pty.onData((data) => this.recordOutput(managed, data));
     pty.onExit((event) => {
-      if (managed.pendingHiddenTailTimer !== null) {
-        clearTimeout(managed.pendingHiddenTailTimer);
-        managed.pendingHiddenTailTimer = null;
-      }
+      this.flushHeldOutput(managed);
       managed.exitCode = event.exitCode;
       managed.signal = event.signal ?? null;
       managed.status = event.exitCode === 0 || event.signal ? "EXITED" : "ERROR";
@@ -421,7 +418,6 @@ export class CliHostSessionRegistry {
         managed.outputBufferBytes = managed.outputBuffer.reduce((sum, item) => sum + (item.data?.length ?? 0), 0);
       }
       managed.pendingHiddenEchoes = [];
-      managed.pendingHiddenTail = "";
       managed.acceptedInputs.clear();
       const statusEvent: CliHostEvent = {
         type: "status",
@@ -442,27 +438,26 @@ export class CliHostSessionRegistry {
     }
     const raw = managed.pendingHiddenTail ? `${managed.pendingHiddenTail}${data}` : data;
     managed.pendingHiddenTail = "";
-    let visibleData = consumeHiddenEcho(managed.pendingHiddenEchoes, raw);
-    if (visibleData.includes("/cli-uploads/")) {
-      const cutoff = isUploadPathCutoff(visibleData);
-      if (cutoff >= 0) {
-        managed.pendingHiddenTail = visibleData.slice(cutoff);
-        visibleData = visibleData.slice(0, cutoff);
-        managed.pendingHiddenTailTimer = setTimeout(() => {
-          managed.pendingHiddenTailTimer = null;
-          const tail = managed.pendingHiddenTail;
-          managed.pendingHiddenTail = "";
-          if (tail) {
-            const strippedTail = tail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-            if (strippedTail && !strippedTail.includes("/cli-uploads/") && isUploadPathCutoff(strippedTail) < 0) {
-              for (let offset = 0; offset < strippedTail.length; offset += 8_000) {
-                this.recordOutputChunk(managed, strippedTail.slice(offset, offset + 8_000));
-              }
-            }
-          }
-        }, 1500);
-      }
+    const { visible, held } = splitUploadPathOutput(raw);
+    if (held) {
+      managed.pendingHiddenTail = held;
+      managed.pendingHiddenTailTimer = setTimeout(() => this.flushHeldOutput(managed), CLI_UPLOAD_PATH_HOLD_MS);
     }
+    this.recordVisibleOutput(managed, visible);
+  }
+
+  private flushHeldOutput(managed: ManagedSession): void {
+    if (managed.pendingHiddenTailTimer !== null) {
+      clearTimeout(managed.pendingHiddenTailTimer);
+      managed.pendingHiddenTailTimer = null;
+    }
+    const tail = managed.pendingHiddenTail;
+    managed.pendingHiddenTail = "";
+    if (tail) this.recordVisibleOutput(managed, maskUploadPaths(tail));
+  }
+
+  private recordVisibleOutput(managed: ManagedSession, data: string): void {
+    const visibleData = consumeHiddenEcho(managed.pendingHiddenEchoes, data);
     if (!visibleData) return;
     for (let offset = 0; offset < visibleData.length; offset += 8_000) {
       this.recordOutputChunk(managed, visibleData.slice(offset, offset + 8_000));
@@ -543,28 +538,82 @@ export class CliHostSessionRegistry {
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
   /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
-export function isUploadPathCutoff(text: string): number {
-  const marker = "/cli-uploads/";
-  const index = text.lastIndexOf(marker);
-  if (index === -1) {
-    const fullPrefix = "/opt/spaceapp/var/artifacts/cli-uploads/";
-    for (let len = Math.min(text.length, fullPrefix.length); len >= 8; len -= 1) {
-      if (text.endsWith(fullPrefix.slice(0, len))) return text.length - len;
-    }
-    return -1;
+const CLI_UPLOAD_MARKER = "/cli-uploads/";
+const CLI_UPLOAD_ARTIFACT_ROOT = "/opt/spaceapp/var/artifacts";
+const CLI_UPLOAD_FULL_PREFIX = `${CLI_UPLOAD_ARTIFACT_ROOT}${CLI_UPLOAD_MARKER}`;
+const CLI_UPLOAD_PATH_MAX_HOLD_CHARS = 1_024;
+// Same alternatives as the path body of CLI_UPLOAD_WRAPPED_PATH_PATTERN, plus
+// an unfinished trailing CSI or padding: the chunk may stop anywhere inside.
+const CLI_UPLOAD_PATH_CONTINUATION_PATTERN =
+  /^(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))*(?:\x1b(?:\[[0-9;?]*[ -/]*)?|[ \t]+)?$/;
+const CLI_UPLOAD_PATH_SEPARATOR_PATTERN = /(\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t\r\n])/;
+const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/srv\/space\/var\/artifacts\/cli-uploads\/)|(?<!\/srv\/space\/var\/artifacts)(?=\/cli-uploads\/)/;
+export const CLI_UPLOAD_PATH_HOLD_MS = 150;
+
+function uploadPathLabel(pathText: string): string {
+  if (!pathText.includes(CLI_UPLOAD_MARKER)) return " ".repeat(pathText.length);
+  const fileName = pathText.replace(/['"]/g, "").split("/").pop() ?? "";
+  const originalName = fileName.replace(/^upload_[A-Za-z0-9_-]{12}-/, "") || fileName;
+  // "/cli-uploads/" alone is wider than the label decoration, so the label fits.
+  return `[upload: ${originalName}]`.slice(0, pathText.length).padEnd(pathText.length, " ");
+}
+
+function maskUploadPathMatch(match: string): string {
+  const parts = match.split(CLI_UPLOAD_PATH_SEPARATOR_PATTERN);
+  let pathText = "";
+  for (let index = 0; index < parts.length; index += 2) pathText += parts[index];
+  // Consecutive wrapped paths form one regex match; label each path on its own.
+  const label = pathText.split(CLI_UPLOAD_PATH_START_PATTERN).map(uploadPathLabel).join("");
+  let offset = 0;
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;
+    const masked = label.slice(offset, offset + part.length);
+    offset += part.length;
+    return masked;
+  }).join("");
+}
+
+/**
+ * Hide upload paths in terminal output by overwriting their characters in
+ * place, never by removing bytes. TUIs such as Claude Code redraw with
+ * relative cursor moves, so a removed newline, escape sequence or cell
+ * desynchronises their screen model and later frames land on the wrong rows
+ * (an almost blank pane). Every control sequence, newline and whitespace byte
+ * is kept and each path cell becomes exactly one ASCII cell.
+ */
+export function maskUploadPaths(text: string): string {
+  if (!text.includes(CLI_UPLOAD_MARKER)) return text;
+  return text.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, maskUploadPathMatch);
+}
+
+/**
+ * Index where `text` ends inside a possibly unfinished upload path, so only
+ * that path is held until the next chunk; -1 when nothing needs holding.
+ */
+export function uploadPathHoldStart(text: string): number {
+  for (let length = Math.min(text.length, CLI_UPLOAD_FULL_PREFIX.length - 1); length >= 8; length -= 1) {
+    if (text.endsWith(CLI_UPLOAD_FULL_PREFIX.slice(0, length))) return text.length - length;
   }
-  const after = text.slice(index);
-  if (/\.[a-zA-Z0-9]{1,10}(?:[\s'"]|$)/.test(after)) return -1;
-  let start = index;
-  const fullPrefix = "/opt/spaceapp/var/artifacts";
-  if (start >= fullPrefix.length && text.slice(start - fullPrefix.length, start) === fullPrefix) {
-    start -= fullPrefix.length;
+  for (let length = Math.min(text.length, CLI_UPLOAD_MARKER.length - 1); length >= 5; length -= 1) {
+    if (text.endsWith(CLI_UPLOAD_MARKER.slice(0, length))) return text.length - length;
   }
-  let lineStart = Math.max(text.lastIndexOf("\n", start), text.lastIndexOf("\r", start));
-  if (lineStart > 0 && text[lineStart] === "\n" && text[lineStart - 1] === "\r") {
-    lineStart -= 1;
+  const markerIndex = text.lastIndexOf(CLI_UPLOAD_MARKER);
+  if (markerIndex < 0) return -1;
+  const remainder = text.slice(markerIndex + CLI_UPLOAD_MARKER.length);
+  if (remainder.length > CLI_UPLOAD_PATH_MAX_HOLD_CHARS) return -1;
+  if (!CLI_UPLOAD_PATH_CONTINUATION_PATTERN.test(remainder)) return -1;
+  let start = markerIndex;
+  if (start >= CLI_UPLOAD_ARTIFACT_ROOT.length && text.slice(start - CLI_UPLOAD_ARTIFACT_ROOT.length, start) === CLI_UPLOAD_ARTIFACT_ROOT) {
+    start -= CLI_UPLOAD_ARTIFACT_ROOT.length;
   }
-  return lineStart >= 0 ? lineStart : start;
+  if (start > 0 && (text[start - 1] === "'" || text[start - 1] === '"')) start -= 1;
+  return start;
+}
+
+export function splitUploadPathOutput(text: string): { visible: string; held: string } {
+  const holdStart = uploadPathHoldStart(text);
+  if (holdStart < 0) return { visible: maskUploadPaths(text), held: "" };
+  return { visible: maskUploadPaths(text.slice(0, holdStart)), held: text.slice(holdStart) };
 }
 
 export function hiddenEchoCandidates(data: string): string[] {
@@ -583,9 +632,6 @@ export function consumeHiddenEcho(
   const active = pendingHiddenEchoes.filter((item) => item.remaining && item.expiresAtMs > Date.now());
   pendingHiddenEchoes.splice(0, pendingHiddenEchoes.length, ...active);
   let output = data;
-  if (output.includes("/cli-uploads/") || active.some((item) => item.value.includes("/cli-uploads/"))) {
-    output = output.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-  }
   for (const pending of active) {
     if (!output) break;
     if (pending.value.includes("/cli-uploads/")) continue;

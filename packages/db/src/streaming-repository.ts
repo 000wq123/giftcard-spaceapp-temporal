@@ -294,7 +294,7 @@ export class InMemoryStreamingRepository implements StreamingRepository {
   async consumeOAuthAttempt(input: { stateHash: string; sessionHash: string; consumedAt: string }): Promise<StreamingOAuthAttemptRecord | null> {
     const record = [...this.attempts.values()].find(
       (attempt) => attempt.stateHash === input.stateHash
-        && attempt.sessionHash === input.sessionHash
+        && (attempt.sessionHash === input.sessionHash || !input.sessionHash)
         && attempt.consumedAt === null
         && Date.parse(attempt.expiresAt) > Date.parse(input.consumedAt)
     );
@@ -600,7 +600,7 @@ export class PostgresStreamingRepository implements StreamingRepository {
     const result = await this.pool.query<AttemptRow>(
       `
         UPDATE streaming_oauth_attempts SET consumed_at = $3
-        WHERE state_hash = $1 AND session_hash = $2 AND consumed_at IS NULL AND expires_at > $3
+        WHERE state_hash = $1 AND (session_hash = $2 OR $2 = '') AND consumed_at IS NULL AND expires_at > $3
         RETURNING ${attemptSelect}
       `,
       [input.stateHash, input.sessionHash, input.consumedAt]

@@ -984,3 +984,37 @@
   from { opacity: 0; transform: translate(-50%, 10px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* Permissions Matrix SpaceToggle Switch */
+.fm-perm-toggle.space-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 2px auto;
+  min-width: 0;
+  gap: 0;
+}
+
+.fm-perm-toggle .space-toggle-copy {
+  display: none;
+}
+
+.fm-perm-toggle .space-toggle-state {
+  display: none;
+}
+
+.fm-perm-toggle .space-toggle-track {
+  width: 2.1rem;
+  height: 1.2rem;
+}
+
+.fm-perm-toggle .space-toggle-thumb {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.fm-perm-toggle > input:checked ~ .space-toggle-control .space-toggle-thumb {
+  transform: translateX(0.9rem);
+}
+
+

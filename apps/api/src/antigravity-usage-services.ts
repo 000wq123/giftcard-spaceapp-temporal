@@ -259,7 +259,8 @@ export function createAntigravityUsageAccountProvider(
           if (paidTierName && paidTierId && paidTierId !== "free-tier") {
             tierLabel = paidTierName;
           } else if (typeof lcaData?.currentTier?.name === "string") {
-            tierLabel = lcaData.currentTier.name;
+            // The free tier is named after the product ("Antigravity"); show what it is instead.
+            tierLabel = lcaData.currentTier.id === "free-tier" ? "Free" : lcaData.currentTier.name;
           }
         }
       } catch {

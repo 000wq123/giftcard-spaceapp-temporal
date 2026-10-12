@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { Pane, LiveAudioProviderId } from "@space/contracts";
 import {
   getAllLiveAudioProviders,
@@ -19,20 +19,58 @@ import {
 import { useLiveCoordinator, useLiveSessionState } from "./LiveSessionProvider.js";
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { api, type LivePersonalMemoryItem } from "../../api.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import "./live-pane.css";
-import {
-  updateLiveSessionStats,
-  getLiveSessionStats,
-  subscribeLiveSessionStats,
-  type LiveSessionStats
-} from "./live-stats.js";
+import { updateLiveSessionStats } from "./live-stats.js";
 import { captureLiveVisual } from "./live-visual-capture.js";
+import { createRealView, grabVideoFrame, type RealView, type RealViewSource, type RealViewState } from "./live-real-view.js";
+import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
+
+function extractTargetNames(toolCall?: LiveTranscriptItem["toolCall"]): string[] {
+  if (!toolCall) return [];
+  if (Array.isArray(toolCall.targetNames) && toolCall.targetNames.length > 0) {
+    return toolCall.targetNames;
+  }
+  if (!toolCall.query) return [];
+  try {
+    const parsed = typeof toolCall.query === "object" ? toolCall.query : JSON.parse(toolCall.query);
+    if (!parsed || typeof parsed !== "object") return [];
+    const names: string[] = [];
+    if (typeof parsed.paneName === "string" && parsed.paneName.trim()) {
+      names.push(parsed.paneName.trim());
+    }
+    if (Array.isArray(parsed.paneNames)) {
+      for (const n of parsed.paneNames) {
+        if (typeof n === "string" && n.trim() && !names.includes(n.trim())) {
+          names.push(n.trim());
+        }
+      }
+    }
+    if (names.length === 0) {
+      if (typeof parsed.paneId === "string" && parsed.paneId.trim()) {
+        names.push(parsed.paneId.trim());
+      }
+      if (Array.isArray(parsed.paneIds)) {
+        for (const id of parsed.paneIds) {
+          if (typeof id === "string" && id.trim() && !names.includes(id.trim())) {
+            names.push(id.trim());
+          }
+        }
+      }
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
 
 interface LivePaneProps {
   pane: Pane;
   workspaceTextSize?: number;
   mobile?: boolean;
+  /** Reports when the pane listens for menu actions (Attach, Camera, Share screen, Real View). */
+  onActionsReady?: (ready: boolean) => void;
 }
 
 const VOICE_OPTIONS = [
@@ -126,7 +164,51 @@ function saveStoredPersonalMemories(items: LivePersonalMemoryItem[]) {
   try { localStorage.setItem("space_live_personal_memory", JSON.stringify(items)); } catch {}
 }
 
-export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LivePaneProps) {
+// The microphone level arrives on every animation frame while a session is live. It is
+// kept outside LivePane state so each update re-renders only the meter, and only when
+// the displayed percentage changes.
+function createMicLevelStore() {
+  let percent = 0;
+  const listeners = new Set<() => void>();
+  return {
+    set(level: number) {
+      const next = Math.min(100, Math.round(level * 100));
+      if (Object.is(next, percent)) return;
+      percent = next;
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getSnapshot: () => percent
+  };
+}
+
+type MicLevelStore = ReturnType<typeof createMicLevelStore>;
+
+function LiveMicLevelMeter({ store }: { store: MicLevelStore }) {
+  const percent = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  return (
+    <div className="live-mic-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+      <div className="live-mic-level-fill" style={{ width: `${percent}%` }} />
+    </div>
+  );
+}
+
+// Owns the one-second clock tick so it does not re-render the whole pane.
+function LiveClockTime({ timeZone }: { timeZone: string }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>{new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(now)}</>;
+}
+
+export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActionsReady }: LivePaneProps) {
   const initialConfig = useRef<LivePaneStoredConfig | null>(null);
   if (!initialConfig.current) {
     initialConfig.current = loadLivePaneConfig(pane.id);
@@ -218,10 +300,6 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
   }, [availableVoices, voice, voiceModel, availableModels]);
 
   const [status, setStatus] = useState<"idle" | "connecting" | "active" | "listening" | "thinking" | "speaking" | "error">("idle");
-  const [stats, setStats] = useState<LiveSessionStats>(() => getLiveSessionStats());
-  useEffect(() => {
-    return subscribeLiveSessionStats(setStats);
-  }, []);
   const storageKey = streamingMode
     ? `space_streaming_live_pane_transcripts_${pane.id}`
     : pane.roomId ? `space_live_room_transcripts_${pane.roomId}` : `space_live_pane_transcripts_${pane.id}`;
@@ -378,14 +456,24 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState(cfg.selectedDeviceId ?? "");
   const [muted, setMuted] = useState(false);
-  const [userAudioLevel, setUserAudioLevel] = useState(0);
+  const [micLevel] = useState(createMicLevelStore);
   const [micSilent, setMicSilent] = useState(false);
   const [pendingInputs, setPendingInputs] = useState<LiveInputPart[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [clockNow, setClockNow] = useState(() => new Date());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const visualCaptureRef = useRef<AbortController | null>(null);
   useEffect(() => () => { visualCaptureRef.current?.abort(); }, [pane.id, pane.roomId]);
+  // Stage 6 Real View: a continuous, user-started view of the screen or camera.
+  const realViewRef = useRef<RealView | null>(null);
+  const [realViewOpen, setRealViewOpen] = useState(false);
+  const [realView, setRealView] = useState<RealViewState | null>(null);
+  const [realViewClock, setRealViewClock] = useState(() => Date.now());
+  useEffect(() => () => { realViewRef.current?.stop(); realViewRef.current = null; }, [pane.id, pane.roomId]);
+  useEffect(() => {
+    if (realView?.status !== "live") return;
+    const timer = setInterval(() => setRealViewClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [realView?.status]);
 
   // This ref owns only the separate public streaming session.
   const sessionRef = useRef<LiveSessionHandle | null>(null);
@@ -419,11 +507,6 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setClockNow(new Date()), 1000);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -465,11 +548,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
       return {};
     });
     if (pane.id && (pane.modelId !== voiceModel || pane.providerId !== provider || pane.reasoningEffort !== reasoningEffort)) {
-      void api.updatePane(pane.id, {
+      void api.updatePane?.(pane.id, {
         modelId: voiceModel,
         providerId: provider,
         reasoningEffort
-      }).catch(() => {});
+      })?.catch?.(() => {});
     }
   }, [
     pane.id,
@@ -688,7 +771,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
       sessionRef.current = null;
       streamingOperatorIntentRef.current = null;
       setStatus("idle");
-      setUserAudioLevel(0);
+      micLevel.set(0);
       setMicSilent(false);
       window.dispatchEvent(new CustomEvent("space-live-pane-status", {
         detail: { paneId: pane.id, rail: true, status: "idle" }
@@ -750,7 +833,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
             setStatus(newStatus);
             if (newStatus === "idle" || newStatus === "error") {
               ended = true;
-              setUserAudioLevel(0);
+              micLevel.set(0);
               setMicSilent(false);
               if (typeof window !== "undefined" && (window as any).__SPACE_ACTIVE_LIVE_SESSION__?.handle === sessionRef.current) {
                 (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
@@ -874,7 +957,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
           onAudioLevel: (level, src) => {
             if (!isCurrent()) return;
             if (src === "user") {
-              setUserAudioLevel(level);
+              micLevel.set(level);
               if (level > 0.05) setMicSilent(false);
             }
           },
@@ -1021,7 +1104,33 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
     }
   }
 
+  // Frames are silent context: they never start a reply, so only providers with a live video stream take them.
+  const realViewSupported = shared ? coordinator.canSendVideoFrames() : Boolean(sessionRef.current?.sendVideoFrame);
+  async function deliverRealViewFrame(frame: { dataUrl: string }) {
+    if (shared && coordinator.getSnapshot().handle) { coordinator.sendVideoFrame(frame); return; }
+    if (sessionRef.current?.sendVideoFrame) { sessionRef.current.sendVideoFrame(frame); return; }
+    throw new Error("The Live conversation is not running.");
+  }
+  function startRealView(source: RealViewSource) {
+    realViewRef.current?.stop();
+    const platform = getSpaceRuntime().platform;
+    const view = createRealView({
+      getMedia: (kind) => kind === "camera" ? platform.getUserMedia({ video: true, audio: false }) : platform.getDisplayMedia({ video: true, audio: false }),
+      send: deliverRealViewFrame,
+      onState: (next) => { if (realViewRef.current === view) setRealView(next); },
+      grab: grabVideoFrame,
+      intervalMs: 2_000
+    });
+    realViewRef.current = view;
+    void view.start(source);
+  }
+  function stopRealView() { realViewRef.current?.stop(); }
+
   const isLive = status === "active" || status === "listening" || status === "thinking" || status === "speaking" || status === "connecting";
+  useEffect(() => {
+    // Ending the Live conversation ends Real View: no frames are captured without a conversation to receive them.
+    if (!isLive && realViewRef.current && realView?.status === "live") realViewRef.current.stop("The Live conversation ended.");
+  }, [isLive, realView?.status]);
 
   useEffect(() => {
     if (!shared) window.dispatchEvent(new CustomEvent("space-live-pane-status", { detail: { paneId: pane.id, status } }));
@@ -1056,7 +1165,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
         (window as any).__SPACE_ACTIVE_LIVE_SESSION__ = null;
       }
       setStatus("idle");
-      setUserAudioLevel(0);
+      micLevel.set(0);
       setMicSilent(false);
     };
     const onRailStatus = (event: Event) => {
@@ -1067,7 +1176,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
         if (detail.status === "idle" || detail.status === "error") {
           if (!sessionRef.current) {
             setStatus(detail.status as any);
-            setUserAudioLevel(0);
+            micLevel.set(0);
             setMicSilent(false);
           }
         } else if (["active", "listening", "thinking", "speaking", "connecting"].includes(detail.status)) {
@@ -1083,6 +1192,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
       if (detail.action === "attach") fileInputRef.current?.click();
       if (detail.action === "camera") void captureVisual("camera");
       if (detail.action === "screen") void captureVisual("screen");
+      if (detail.action === "real-view") setRealViewOpen((open) => !open);
     };
     window.addEventListener("space-live-pane-start", onStart);
     window.addEventListener("space-live-pane-toggle", onToggle);
@@ -1097,6 +1207,12 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
       window.removeEventListener("space-live-pane-action", onAction);
     };
   }, [pane.id, pane.roomId, isLive, status, shared, streamingMode, coordinator]);
+
+  // Declared after the listener effect, so the menu enables its actions only once they are heard.
+  useEffect(() => {
+    onActionsReady?.(true);
+    return () => onActionsReady?.(false);
+  }, [onActionsReady]);
 
   useEffect(() => {
     return () => {
@@ -1144,14 +1260,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
         </div>
         <div className="live-pane-sidebar-content">
           <div className="live-sidebar-section">
-            <div className="live-toggle-row">
-              <span className="live-toggle-label">Streaming mode</span>
-              <label className="live-switch">
-                <input type="checkbox" aria-label="Streaming mode" checked={streamingMode}
-                  onChange={(event) => changeStreamingMode(event.target.checked)} disabled={isLive} />
-                <span className="live-slider" />
-              </label>
-            </div>
+            <SpaceToggle
+              className="live-pane-toggle"
+              label="Streaming mode"
+              checked={streamingMode}
+              onChange={(checked) => changeStreamingMode(checked)}
+              disabled={isLive}
+            />
             {streamingMode && <p className="live-form-hint">Uses public stream metrics, chat activity and approved Streaming memory. Personal memory and private tools are unavailable.</p>}
           </div>
           {!streamingMode && (
@@ -1240,30 +1355,18 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                 ))}
               </select>
             </div>
-            <div className="live-toggle-row">
-              <span className="live-toggle-label">Voice-only mode</span>
-              <label className="live-switch">
-                <input
-                  type="checkbox"
-                  aria-label="Voice-only mode"
-                  checked={voiceOnly}
-                  onChange={(e) => setVoiceOnly(e.target.checked)}
-                />
-                <span className="live-slider" />
-              </label>
-            </div>
-            <div className="live-toggle-row">
-              <span className="live-toggle-label">Show tool calls in chat</span>
-              <label className="live-switch">
-                <input
-                  type="checkbox"
-                  aria-label="Show tool calls in chat"
-                  checked={showToolCalls}
-                  onChange={(e) => setShowToolCalls(e.target.checked)}
-                />
-                <span className="live-slider" />
-              </label>
-            </div>
+            <SpaceToggle
+              className="live-pane-toggle"
+              label="Voice-only mode"
+              checked={voiceOnly}
+              onChange={setVoiceOnly}
+            />
+            <SpaceToggle
+              className="live-pane-toggle"
+              label="Show tool calls in chat"
+              checked={showToolCalls}
+              onChange={setShowToolCalls}
+            />
             <div className="live-toggle-row" style={{ marginTop: 6 }}>
               <span className="live-toggle-label">Live statistics</span>
               <button
@@ -1376,8 +1479,8 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                     onChange={(e) => setLanguage(e.target.value as "auto" | "el" | "en")}
                     disabled={isLive}
                   >
-                    <option value="auto">Auto (Bilingual Ελληνικά / English)</option>
-                    <option value="el">Ελληνικά (Greek)</option>
+                    <option value="auto">Auto (bilingual Greek / English)</option>
+                    <option value="el">Greek</option>
                     <option value="en">English</option>
                   </select>
                 </div>
@@ -1430,46 +1533,27 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
 
             {!memoryControlCollapsed && (
               <>
-                <div className="live-toggle-row">
-                  <span className="live-toggle-label">Space Control MCP Tools</span>
-                  <label className="live-switch">
-                    <input
-                      type="checkbox"
-                      aria-label="Space Control MCP Tools"
-                      checked={enableMcpTools}
-                      onChange={(e) => setEnableMcpTools(e.target.checked)}
-                      disabled={isLive}
-                    />
-                    <span className="live-slider" />
-                  </label>
-                </div>
-
-                <div className="live-toggle-row">
-                  <span className="live-toggle-label">Extended Profile Memory</span>
-                  <label className="live-switch">
-                    <input
-                      type="checkbox"
-                      aria-label="Extended Profile Memory"
-                      checked={enableProfileMemory}
-                      onChange={(e) => setEnableProfileMemory(e.target.checked)}
-                      disabled={isLive}
-                    />
-                    <span className="live-slider" />
-                  </label>
-                </div>
-                <div className="live-toggle-row">
-                  <span className="live-toggle-label">Gemini Memory Access</span>
-                  <label className="live-switch">
-                    <input
-                      type="checkbox"
-                      aria-label="Gemini Memory Access"
-                      checked={geminiMemoryEnabled}
-                      onChange={(e) => setGeminiMemoryEnabled(e.target.checked)}
-                      disabled={isLive}
-                    />
-                    <span className="live-slider" />
-                  </label>
-                </div>
+                <SpaceToggle
+                  className="live-pane-toggle"
+                  label="Space Control MCP Tools"
+                  checked={enableMcpTools}
+                  onChange={setEnableMcpTools}
+                  disabled={isLive}
+                />
+                <SpaceToggle
+                  className="live-pane-toggle"
+                  label="Extended Profile Memory"
+                  checked={enableProfileMemory}
+                  onChange={setEnableProfileMemory}
+                  disabled={isLive}
+                />
+                <SpaceToggle
+                  className="live-pane-toggle"
+                  label="Gemini Memory Access"
+                  checked={geminiMemoryEnabled}
+                  onChange={setGeminiMemoryEnabled}
+                  disabled={isLive}
+                />
 
                 <div className="live-form-group">
                   <label className="live-form-label">Functions</label>
@@ -1622,19 +1706,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                       </select>
                     </div>
 
-                    <div className="live-toggle-row">
-                      <span className="live-toggle-label">Web search</span>
-                      <label className="live-switch">
-                        <input
-                          type="checkbox"
-                          aria-label="Web search"
-                          checked={webSearch}
-                          onChange={(e) => setWebSearch(e.target.checked)}
-                          disabled={isLive}
-                        />
-                        <span className="live-slider" />
-                      </label>
-                    </div>
+                    <SpaceToggle
+                      className="live-pane-toggle"
+                      label="Web search"
+                      checked={webSearch}
+                      onChange={setWebSearch}
+                      disabled={isLive}
+                    />
 
                     <div className="live-form-group">
                       <label className="live-form-label" htmlFor="live-delegated-prompt">
@@ -1762,6 +1840,28 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                   <strong>Error:</strong> {error}
                 </div>
               )}
+              {realViewOpen && (
+                <div className="live-real-view" role="group" aria-label="Real View">
+                  <strong>Real View</strong>
+                  <span className="sr-only" role="status">{realView?.status === "live" ? `Sharing your ${realView.source} with Live.`
+                    : realView?.status === "stopped" || realView?.status === "error" ? realView.reason ?? "Real View stopped." : ""}</span>
+                  <span className="live-real-view-status" aria-live="off">
+                    {!isLive ? "Start the Live conversation to share a view."
+                      : !realViewSupported && realView?.status !== "live" ? "Real View needs a Gemini Live voice model. Use Camera or Share screen for a single image."
+                      : realView?.status === "live" ? `Sharing ${realView.source} · ${realView.lastFrameAt
+                        ? `last frame ${Math.max(0, Math.round((realViewClock - realView.lastFrameAt) / 1000))} s ago` : "waiting for the first frame"} · ${realView.framesSent} sent, ${realView.framesSkipped} skipped`
+                      : realView?.status === "starting" ? `Choose what to share in the browser…`
+                      : realView?.reason ? realView.reason : "Not sharing."}
+                  </span>
+                  {(["screen", "camera"] as const).map((source) => (
+                    <button key={source} type="button" className="live-btn-secondary" disabled={!isLive || !realViewSupported}
+                      aria-pressed={realView?.status === "live" && realView.source === source} onClick={() => startRealView(source)}>
+                      {source === "screen" ? "Screen" : "Camera"}
+                    </button>
+                  ))}
+                  <button type="button" className="live-btn-secondary" disabled={realView?.status !== "live" && realView?.status !== "starting"} onClick={stopRealView}>Stop</button>
+                </div>
+              )}
 
               {isLive && micSilent && (
                 <div className="live-mic-warning" role="alert">
@@ -1775,6 +1875,20 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                   <span className="live-active-tool-text">
                     <strong>Tool executing:</strong> {activeRunningTool.name}
                   </span>
+                  {(() => {
+                    const targets = extractTargetNames(activeRunningTool);
+                    if (targets.length === 0) return null;
+                    return (
+                      <span className="live-tool-target-chips">
+                        {targets.map((target) => (
+                          <span key={target} className="live-pane-target-chip">
+                            <span className="live-pane-target-chip-dot" aria-hidden="true" />
+                            {target}
+                          </span>
+                        ))}
+                      </span>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1821,7 +1935,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                           : "Talk to GPT-Live"}
                       </div>
                       <div className="live-session-card-subtitle">
-                        {new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(clockNow)} · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
+                        <LiveClockTime timeZone={timeZone} /> · {TIME_ZONE_OPTIONS.find((option) => option.value === timeZone)?.label || timeZone}
                       </div>
                     </div>
                   </div>
@@ -1943,9 +2057,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
 
                   {isLive && (
                     <div className="live-session-card-footer">
-                      <div className="live-mic-level" role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(1, userAudioLevel) * 100)}>
-                        <div className="live-mic-level-fill" style={{ width: `${Math.min(100, Math.round(userAudioLevel * 100))}%` }} />
-                      </div>
+                      <LiveMicLevelMeter store={micLevel} />
                     </div>
                   )}
                 </section>
@@ -1958,9 +2070,23 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false }: LiveP
                           {item.toolCall || item.id.startsWith("tool_") ? (
                             <details className="live-tool-call-badge">
                               <summary>Tool details</summary>
-                              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 600, flexWrap: "wrap" }}>
                                 <span>⚡</span>
                                 <span>{item.toolCall?.name ?? "Control tool"}</span>
+                                {(() => {
+                                  const targets = extractTargetNames(item.toolCall);
+                                  if (targets.length === 0) return null;
+                                  return (
+                                    <span className="live-tool-target-chips">
+                                      {targets.map((target) => (
+                                        <span key={target} className="live-pane-target-chip">
+                                          <span className="live-pane-target-chip-dot" aria-hidden="true" />
+                                          {target}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  );
+                                })()}
                                 {item.toolCall?.status === "running" && <span style={{ color: "#e3b341", fontSize: "11px" }}>● Running</span>}
                                 {item.toolCall?.status === "done" && <span style={{ color: "#3fb950", fontSize: "11px" }}>✓ Done</span>}
                                 {item.toolCall?.status === "error" && <span style={{ color: "#f85149", fontSize: "11px" }}>✗ Error</span>}

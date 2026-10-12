@@ -34,12 +34,23 @@ function safeThreadIds(threadIds: string[]): string[] {
   return [...new Set(threadIds.filter((threadId) => /^[A-Za-z0-9:_.-]{1,200}$/.test(threadId)))].sort();
 }
 
+async function safeChmod(targetPath: string, mode: number): Promise<void> {
+  try {
+    await chmod(targetPath, mode);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== "EPERM" && code !== "EACCES") {
+      throw error;
+    }
+  }
+}
+
 export async function writeSpaceCodexOwnershipManifest(
   input: WriteSpaceCodexOwnershipManifestInput
 ): Promise<SpaceCodexOwnershipManifestWriteResult> {
   const directory = dirname(input.manifestPath);
   await mkdir(directory, { recursive: true, mode: 0o755 });
-  await chmod(directory, 0o755);
+  await safeChmod(directory, 0o755);
   const threadIds = safeThreadIds(input.threadIds);
   const manifest: SpaceCodexOwnershipManifest = {
     schemaVersion: 1,
@@ -58,7 +69,7 @@ export async function writeSpaceCodexOwnershipManifest(
       existing.threadIds.length === threadIds.length &&
       existing.threadIds.every((threadId, index) => threadId === threadIds[index])
     ) {
-      await chmod(input.manifestPath, 0o644);
+      await safeChmod(input.manifestPath, 0o644);
       return {
         active: manifest.active,
         threadCount: threadIds.length,
@@ -72,7 +83,7 @@ export async function writeSpaceCodexOwnershipManifest(
   const temporaryPath = `${input.manifestPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o644, flag: "wx" });
-    await chmod(temporaryPath, 0o644);
+    await safeChmod(temporaryPath, 0o644);
     await rename(temporaryPath, input.manifestPath);
   } finally {
     await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -81,6 +92,13 @@ export async function writeSpaceCodexOwnershipManifest(
 }
 
 type DeliverySummary = Awaited<ReturnType<TelegramDeliveryWorker["runOnce"]>>;
+export type TelegramNotificationStage = "manifest" | "sweep" | "delivery";
+
+export class TelegramNotificationCycleError extends Error {
+  constructor(readonly failedStages: TelegramNotificationStage[]) {
+    super("Telegram notification cycle stages failed.");
+  }
+}
 
 export async function runTelegramNotificationCycle(input: {
   store: Pick<SpaceStore, "listManagedCodexThreadIds">;
@@ -96,28 +114,42 @@ export async function runTelegramNotificationCycle(input: {
   delivery: DeliverySummary;
 }> {
   const now = input.now ?? (() => new Date());
-  const [integration, threadIds] = await Promise.all([
-    input.persistence.getIntegration(),
-    input.store.listManagedCodexThreadIds()
-  ]);
   const writeManifest = input.writeManifest ?? writeSpaceCodexOwnershipManifest;
-  const manifest = await writeManifest({
-    manifestPath: input.manifestPath,
-    active:
-      integration.connectionStatus === "CONNECTED" &&
-      integration.isEnabled &&
-      integration.legacySuppressionActive,
-    threadIds,
-    updatedAt: now().toISOString()
+  // Stages run independently so a manifest or sweep failure never strands already queued deliveries.
+  const failedStages: TelegramNotificationStage[] = [];
+  const runStage = async <T>(stage: TelegramNotificationStage, task: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await task();
+    } catch {
+      failedStages.push(stage);
+      return null;
+    }
+  };
+  const manifest = await runStage("manifest", async () => {
+    const [integration, threadIds] = await Promise.all([
+      input.persistence.getIntegration(),
+      input.store.listManagedCodexThreadIds()
+    ]);
+    return writeManifest({
+      manifestPath: input.manifestPath,
+      active:
+        integration.connectionStatus === "CONNECTED" &&
+        integration.isEnabled &&
+        integration.legacySuppressionActive,
+      threadIds,
+      updatedAt: now().toISOString()
+    });
   });
-  const sweep = await input.sweep();
-  const delivery = await input.deliveryWorker.runOnce();
+  const sweep = await runStage("sweep", input.sweep);
+  const delivery = await runStage("delivery", () => input.deliveryWorker.runOnce());
+  if (!manifest || !sweep || !delivery) throw new TelegramNotificationCycleError(failedStages);
   return { manifest, sweep, delivery };
 }
 
 export interface TelegramNotificationLoopLog {
   status: "COMPLETED" | "FAILED";
   safeErrorCode: "TELEGRAM_NOTIFICATION_CYCLE_FAILED" | null;
+  failedStages?: TelegramNotificationStage[];
 }
 
 export class TelegramNotificationLoop {
@@ -136,8 +168,12 @@ export class TelegramNotificationLoop {
     try {
       await this.options.runCycle();
       this.options.log?.({ status: "COMPLETED", safeErrorCode: null });
-    } catch {
-      this.options.log?.({ status: "FAILED", safeErrorCode: "TELEGRAM_NOTIFICATION_CYCLE_FAILED" });
+    } catch (error) {
+      this.options.log?.({
+        status: "FAILED",
+        safeErrorCode: "TELEGRAM_NOTIFICATION_CYCLE_FAILED",
+        ...(error instanceof TelegramNotificationCycleError ? { failedStages: error.failedStages } : {})
+      });
     } finally {
       this.running = false;
     }

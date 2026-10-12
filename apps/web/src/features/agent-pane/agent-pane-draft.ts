@@ -2,7 +2,7 @@ import type { Artifact } from "@space/contracts";
 import { taskAcceptanceSchema, type TaskAcceptance } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
-interface AgentPaneDraftState {
+export interface AgentPaneDraftState {
   acceptance?: TaskAcceptance;
   prompt: string;
   attachments: Artifact[];

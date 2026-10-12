@@ -12,7 +12,7 @@ import {
   Code2,
   Eye,
   FileText
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { api } from "../../api.js";
 

@@ -1,24 +1,23 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AppDiagnosticsStatus } from "@space/contracts";
 import { Activity, Camera, CircleStop, RefreshCw, ShieldCheck } from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import {
-  APP_DIAGNOSTICS_STATE_EVENT,
   applyAppDiagnosticsStatus,
-  getAppDiagnosticsClientState,
   refreshAppDiagnosticsStatus,
   type AppDiagnosticsClientState
 } from "../../app-diagnostics/app-diagnostics-bootstrap.js";
 import {
-  APP_DIAGNOSTICS_RECORDER_STATE_EVENT,
-  getAppDiagnosticsRecorderState,
   startAppDiagnosticsVideoRecording,
   stopAppDiagnosticsVideoRecording,
   type AppDiagnosticsRecorderState
 } from "../../app-diagnostics/app-diagnostics-video-recorder.js";
+import { useDiagnosticsState, useRecorderState } from "./AppDiagnosticsIndicators.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import "./app-diagnostics-settings.css";
+
+export { AppDiagnosticsGlobalIndicators, useDiagnosticsState } from "./AppDiagnosticsIndicators.js";
 
 const recordingErrorMessages: Record<string, string> = {
   CAPTURE_HANDLE_MISMATCH: "The browser could not verify this Space tab. Try recording again and select this tab in the browser's sharing dialog.",
@@ -38,34 +37,6 @@ interface AppDiagnosticsSettingsCardProps {
   onStatus?: (status: AppDiagnosticsStatus) => void | Promise<void>;
   onStartRecording?: () => void | Promise<void>;
   onStopRecording?: () => void | Promise<void>;
-}
-
-export function useDiagnosticsState(override?: AppDiagnosticsClientState): AppDiagnosticsClientState {
-  const [state, setState] = useState(() => override ?? getAppDiagnosticsClientState());
-  useEffect(() => {
-    if (override) {
-      setState(override);
-      return;
-    }
-    const update = () => setState(getAppDiagnosticsClientState());
-    window.addEventListener(APP_DIAGNOSTICS_STATE_EVENT, update);
-    return () => window.removeEventListener(APP_DIAGNOSTICS_STATE_EVENT, update);
-  }, [override]);
-  return override ?? state;
-}
-
-function useRecorderState(override?: AppDiagnosticsRecorderState): AppDiagnosticsRecorderState {
-  const [state, setState] = useState(() => override ?? getAppDiagnosticsRecorderState());
-  useEffect(() => {
-    if (override) {
-      setState(override);
-      return;
-    }
-    const update = () => setState(getAppDiagnosticsRecorderState());
-    window.addEventListener(APP_DIAGNOSTICS_RECORDER_STATE_EVENT, update);
-    return () => window.removeEventListener(APP_DIAGNOSTICS_RECORDER_STATE_EVENT, update);
-  }, [override]);
-  return override ?? state;
 }
 
 function formatBytes(value: number): string {
@@ -226,25 +197,5 @@ export function AppDiagnosticsSettingsCard({
         </p>
       ) : null}
     </section>
-  );
-}
-
-export function AppDiagnosticsGlobalIndicators({
-  state: stateOverride,
-  recorderState: recorderStateOverride
-}: {
-  state?: AppDiagnosticsClientState;
-  recorderState?: AppDiagnosticsRecorderState;
-}) {
-  const state = useDiagnosticsState(stateOverride);
-  const recorder = useRecorderState(recorderStateOverride);
-  const isEnabled = state.status?.isEnabled ?? false;
-  const isRecording = recorder.status === "RECORDING" || state.status?.recorder.status === "ACTIVE";
-  if (!isEnabled && !isRecording) return null;
-  return (
-    <div className="app-diagnostics-indicators" role="status" aria-live="polite">
-      {isEnabled ? <span className="app-diagnostics-debug-badge">DEBUG ON</span> : null}
-      {isRecording ? <span className="app-diagnostics-rec-badge"><i aria-hidden="true" />REC</span> : null}
-    </div>
   );
 }

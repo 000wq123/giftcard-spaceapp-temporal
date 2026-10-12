@@ -1,7 +1,9 @@
-import type { PaneCliSession } from "@space/contracts";
+import { CLI_PANE_TYPES, type PaneCliSession } from "@space/contracts";
 import type { SpaceStore } from "@space/runtime";
 
-const observableCliRuntimeIds = ["cli:opencode", "cli:codex"] as const;
+// Every CLI pane counts: isCliTurnActive reads native turn state where a CLI has one
+// (Codex, OpenCode, Gemini, Claude) and the TUI's own running indicator otherwise.
+const observableCliRuntimeIds = CLI_PANE_TYPES.map((type) => type.id);
 
 export type ActiveAgentCountProvider = () => Promise<number>;
 
@@ -14,17 +16,11 @@ export function createActiveAgentCountProvider(
   options: ActiveAgentCountProviderOptions
 ): ActiveAgentCountProvider {
   return async () => {
-    const [chatAgentCount, cliSessionLists] = await Promise.all([
+    const [chatAgentCount, activeCliSessions] = await Promise.all([
       options.store.countActiveSpaceAgentSessions(),
-      Promise.all(
-        observableCliRuntimeIds.map((runtimeId) =>
-          options.store.listActivePaneCliSessions(runtimeId)
-        )
-      )
+      options.store.listActivePaneCliSessionsForRuntimes(observableCliRuntimeIds)
     ]);
-    const cliSessions = cliSessionLists
-      .flat()
-      .filter((session) => session.purpose === "NORMAL");
+    const cliSessions = activeCliSessions.filter((session) => session.purpose === "NORMAL");
     const activeCliTurns = await Promise.all(
       cliSessions.map((session) => options.isCliTurnActive(session).catch(() => false))
     );

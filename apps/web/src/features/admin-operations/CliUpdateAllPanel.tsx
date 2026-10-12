@@ -17,6 +17,7 @@ import {
   Zap
 } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { errorMessage } from "./admin-operation-utils.js";
 
 export interface CliUpdateAllClient {
@@ -274,20 +275,17 @@ export function CliUpdateAllPanel({
       ) : null}
 
       {/* Reinstall Custom Procedures Toggle */}
-      <label className="admin-operation-check">
-        <input
-          id="cli-update-all-reinstall"
-          type="checkbox"
-          checked={reinstall}
-          disabled={running}
-          onChange={(event) => setReinstall(event.target.checked)}
-          aria-label="Reinstall custom procedures after update"
-        />
-        <span>
-          <strong>Verify and re-apply custom procedures after update</strong>
-          <small>Verify each detected patch and safely restore tracked config/MCP overlays after the update.</small>
-        </span>
-      </label>
+      <SpaceToggle
+        id="cli-update-all-reinstall"
+        className="admin-operation-check"
+        name="cli-update-all-reinstall"
+        ariaLabel="Reinstall custom procedures after update"
+        label={<strong>Verify and re-apply custom procedures after update</strong>}
+        detail="Verify each detected patch and safely restore tracked config/MCP overlays after the update."
+        checked={reinstall}
+        disabled={running}
+        onChange={setReinstall}
+      />
 
       {error ? <p className="admin-operation-alert error" role="alert">{error}</p> : null}
 
@@ -369,20 +367,17 @@ export function CliUpdateAllPanel({
 
         {/* Global Select All Row */}
         <div className="unified-cli-select-all-row">
-          <label className="admin-operation-check indented select-all-label">
-            <input
-              id="cli-update-all-select-all"
-              type="checkbox"
-              checked={!!allSelected}
-              disabled={running}
-              onChange={toggleSelectAll}
-              aria-label="Select all managed CLI types"
-            />
-            <span>
-              <strong>{allSelected ? "Deselect all" : "Select all CLI types"}</strong>
-              <small>({managedTypes.length} managed CLIs)</small>
-            </span>
-          </label>
+          <SpaceToggle
+            id="cli-update-all-select-all"
+            className="admin-operation-check indented select-all-label"
+            name="cli-update-all-select-all"
+            ariaLabel="Select all managed CLI types"
+            label={<strong>{allSelected ? "Deselect all" : "Select all CLI types"}</strong>}
+            detail={`(${managedTypes.length} managed CLIs)`}
+            checked={!!allSelected}
+            disabled={running}
+            onChange={toggleSelectAll}
+          />
           <span className="selected-counter">
             {selected.size} of {managedTypes.length} selected
           </span>
@@ -408,20 +403,21 @@ export function CliUpdateAllPanel({
                 >
                   {/* Card Top: Checkbox, Name, Badges */}
                   <div className="unified-cli-card-header">
-                    <label className="unified-cli-checkbox-wrapper">
-                      <input
-                        id={`cli-update-all-${entry.key}`}
-                        type="checkbox"
-                        checked={isSelected}
-                        disabled={running || !entry.managed}
-                        onChange={() => toggleKey(entry.key)}
-                        aria-label={entry.displayName}
-                      />
-                      <span className="unified-cli-title">
-                        <strong>{entry.displayName}</strong>
-                        <span className="cli-type-key">{entry.key}</span>
-                      </span>
-                    </label>
+                    <SpaceToggle
+                      id={`cli-update-all-${entry.key}`}
+                      className="unified-cli-toggle-wrapper"
+                      name={`cli-update-all-${entry.key}`}
+                      ariaLabel={entry.displayName}
+                      label={
+                        <span className="unified-cli-title">
+                          <strong>{entry.displayName}</strong>
+                          <span className="cli-type-key">{entry.key}</span>
+                        </span>
+                      }
+                      checked={isSelected}
+                      disabled={running || !entry.managed}
+                      onChange={() => toggleKey(entry.key)}
+                    />
 
                     <div className="unified-cli-badge-group">
                       <span className={`status-badge ${entry.enabled ? "enabled" : "disabled"}`}>

@@ -39,11 +39,12 @@ export function MinimizedPaneBarToggle({
     <button
       type="button"
       id={MINIMIZED_PANE_BAR_TOGGLE_ID}
-      className="room-toolbar-visibility-button minimized-pane-bar-toggle"
+      className={`room-toolbar-visibility-button minimized-pane-bar-toggle${expanded ? " is-active" : ""}`}
       data-rail-id={MINIMIZED_PANE_BAR_TOGGLE_RAIL_ID}
       aria-label={label}
       aria-controls={MINIMIZED_PANE_BAR_ID}
       aria-expanded={expanded}
+      aria-pressed={expanded}
       title={label}
       data-minimized-count={count}
       data-running-count={runningCount}

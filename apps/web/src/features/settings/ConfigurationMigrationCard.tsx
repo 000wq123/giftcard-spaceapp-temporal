@@ -10,17 +10,25 @@ import {
   Bookmark,
   ClipboardList,
   Sliders,
-  Server
-} from "lucide-react";
-import { api, type ConfigurationInspectResult } from "../../live-api.js";
+  Server,
+  Key,
+  Lock
+} from "../ui-theme/app-icons.js";
+import { api, type ConfigurationInspectResult } from "../../api.js";
+import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import type { SpaceConfigBundle, ImportConfigResult, ImportConfigMode } from "@space/contracts";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import "./configuration-migration.css";
 
-export function ConfigurationMigrationCard() {
+export function ConfigurationMigrationCard({ canManageInstallation = false }: { canManageInstallation?: boolean }) {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [includeApiKeys, setIncludeApiKeys] = useState(false);
+  const [includeCredentials, setIncludeCredentials] = useState(false);
 
   const [importMode, setImportMode] = useState<ImportConfigMode>("replace");
+  const [importApiKeys, setImportApiKeys] = useState(true);
+  const [importCredentials, setImportCredentials] = useState(true);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const [inspection, setInspection] = useState<ConfigurationInspectResult | null>(null);
@@ -36,7 +44,10 @@ export function ConfigurationMigrationCard() {
     setIsExporting(true);
     setExportError(null);
     try {
-      const bundle = await api.exportConfiguration();
+      const bundle = await api.exportConfiguration({
+        includeApiKeys: canManageInstallation && includeApiKeys,
+        includeCredentials: canManageInstallation && includeCredentials
+      });
       const blob = new Blob([JSON.stringify(bundle, null, 2)], {
         type: "application/json;charset=utf-8"
       });
@@ -91,13 +102,15 @@ export function ConfigurationMigrationCard() {
   };
 
   const handleImport = async () => {
-    if (!rawBundle) return;
+    if (!canManageInstallation || !rawBundle) return;
     setIsImporting(true);
     setImportError(null);
     try {
       const res = await api.importConfiguration({
         bundle: rawBundle,
-        mode: importMode
+        mode: importMode,
+        importApiKeys,
+        importCredentials
       });
       setImportResult(res);
     } catch (err: unknown) {
@@ -108,7 +121,7 @@ export function ConfigurationMigrationCard() {
   };
 
   const handleReload = () => {
-    window.location.reload();
+    getSpaceRuntime().platform.reloadPage();
   };
 
   return (
@@ -124,6 +137,42 @@ export function ConfigurationMigrationCard() {
         <p className="config-migration-desc">
           Download a complete portable bundle of your rooms, panes, preferences, user bookmarks, plans, and CLI defaults as a single JSON file.
         </p>
+
+        {canManageInstallation ? <div className="config-migration-options-group">
+          <SpaceToggle
+            className="config-migration-toggle-row"
+            name="export-include-api-keys"
+            ariaLabel="Include Provider API Keys"
+            label={
+              <span className="config-migration-toggle-title">
+                <Key size={14} color="#f59e0b" />
+                <span>Include Provider API Keys</span>
+                <span className="config-migration-badge sensitive">Sensitive</span>
+              </span>
+            }
+            detail="Exports configured provider API keys (DeepSeek, OpenAI, Anthropic, Qwen, Grok, Kimi, etc.) into the bundle."
+            checked={includeApiKeys}
+            disabled={isExporting}
+            onChange={setIncludeApiKeys}
+          />
+
+          <SpaceToggle
+            className="config-migration-toggle-row"
+            name="export-include-credentials"
+            ariaLabel="Include Login Credentials & Sessions"
+            label={
+              <span className="config-migration-toggle-title">
+                <Lock size={14} color="#f59e0b" />
+                <span>Include Login Credentials & Sessions</span>
+                <span className="config-migration-badge sensitive">Sensitive</span>
+              </span>
+            }
+            detail="Exports active OAuth session tokens and device login credentials (Codex, Claude, Cursor, Copilot, etc.)."
+            checked={includeCredentials}
+            disabled={isExporting}
+            onChange={setIncludeCredentials}
+          />
+        </div> : <p className="config-migration-desc">Import and secret exports require ADMIN or OPERATOR access.</p>}
 
         {exportError ? (
           <div className="config-migration-alert bad" role="alert">
@@ -146,7 +195,7 @@ export function ConfigurationMigrationCard() {
       </div>
 
       {/* Import Section */}
-      <div className="config-migration-section">
+      {canManageInstallation ? <div className="config-migration-section">
         <div className="config-migration-section-header">
           <div className="config-migration-section-title">
             <Upload size={18} aria-hidden="true" />
@@ -271,7 +320,61 @@ export function ConfigurationMigrationCard() {
                 <span className="stat-count">{inspection.summary.providersCount}</span>
                 <span className="stat-label">Providers</span>
               </div>
+              {(inspection.summary.apiKeysCount ?? 0) > 0 ? (
+                <div className="config-migration-stat-badge">
+                  <Key size={16} color="#f59e0b" />
+                  <span className="stat-count">{inspection.summary.apiKeysCount}</span>
+                  <span className="stat-label">API Keys</span>
+                </div>
+              ) : null}
+              {(inspection.summary.credentialsCount ?? 0) > 0 ? (
+                <div className="config-migration-stat-badge">
+                  <Lock size={16} color="#f59e0b" />
+                  <span className="stat-count">{inspection.summary.credentialsCount}</span>
+                  <span className="stat-label">Credentials</span>
+                </div>
+              ) : null}
             </div>
+
+            {(inspection.summary.apiKeysCount ?? 0) > 0 || (inspection.summary.credentialsCount ?? 0) > 0 ? (
+              <div className="config-migration-options-group">
+                {(inspection.summary.apiKeysCount ?? 0) > 0 ? (
+                  <SpaceToggle
+                    className="config-migration-toggle-row"
+                    name="import-api-keys"
+                    ariaLabel={`Import Provider API Keys (${inspection.summary.apiKeysCount} found)`}
+                    label={
+                      <span className="config-migration-toggle-title">
+                        <Key size={14} color="#f59e0b" />
+                        <span>Import Provider API Keys ({inspection.summary.apiKeysCount} found)</span>
+                      </span>
+                    }
+                    detail="Writes .key files into secrets directory for immediate provider readiness."
+                    checked={importApiKeys}
+                    disabled={isImporting}
+                    onChange={setImportApiKeys}
+                  />
+                ) : null}
+
+                {(inspection.summary.credentialsCount ?? 0) > 0 ? (
+                  <SpaceToggle
+                    className="config-migration-toggle-row"
+                    name="import-credentials"
+                    ariaLabel={`Import Login Credentials (${inspection.summary.credentialsCount} found)`}
+                    label={
+                      <span className="config-migration-toggle-title">
+                        <Lock size={14} color="#f59e0b" />
+                        <span>Import Login Credentials ({inspection.summary.credentialsCount} found)</span>
+                      </span>
+                    }
+                    detail="Restores active CLI session logins and OAuth tokens."
+                    checked={importCredentials}
+                    disabled={isImporting}
+                    onChange={setImportCredentials}
+                  />
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="config-migration-actions">
               <button
@@ -311,6 +414,20 @@ export function ConfigurationMigrationCard() {
                 <span className="stat-count">{importResult.stats.clipboardImported}</span>
                 <span className="stat-label">Plans Imported</span>
               </div>
+              {importResult.stats.apiKeysImported ? (
+                <div className="config-migration-stat-badge">
+                  <Key size={16} color="#f59e0b" />
+                  <span className="stat-count">{importResult.stats.apiKeysImported}</span>
+                  <span className="stat-label">API Keys</span>
+                </div>
+              ) : null}
+              {importResult.stats.credentialsImported ? (
+                <div className="config-migration-stat-badge">
+                  <Lock size={16} color="#f59e0b" />
+                  <span className="stat-count">{importResult.stats.credentialsImported}</span>
+                  <span className="stat-label">Credentials</span>
+                </div>
+              ) : null}
             </div>
 
             <div className="config-migration-actions">
@@ -325,7 +442,7 @@ export function ConfigurationMigrationCard() {
             </div>
           </div>
         ) : null}
-      </div>
+      </div> : null}
     </div>
   );
 }

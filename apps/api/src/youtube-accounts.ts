@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import { cliAccountProfileIdSchema } from '@space/contracts';
 import { z } from 'zod';
 
-const selectionSchema = z.object({ profileId: cliAccountProfileIdSchema.nullable(), updatedAt: z.number() }).strict();
+/** Explicit per-pane profile that is not shared with other panes (a colon never occurs in CLI profile ids). */
+export const privatePaneProfileId = 'private:pane';
+const browserAccountIdSchema = z.union([cliAccountProfileIdSchema, z.string().regex(/^google_account:[A-Za-z0-9_-]{1,80}$/), z.literal(privatePaneProfileId)]);
+const selectionSchema = z.object({ profileId: browserAccountIdSchema.nullable(), updatedAt: z.number() }).strict();
 const stateSchema = z.object({ panes: z.record(z.string(), selectionSchema) }).strict();
-export const selectYouTubeAccountSchema = z.object({ profileId: cliAccountProfileIdSchema.nullable() }).strict();
+// signIn opens Google's sign-in in the selected profile (with the account's email hint when known).
+export const selectYouTubeAccountSchema = z.object({ profileId: browserAccountIdSchema.nullable(), signIn: z.boolean().optional() }).strict();
 
 export function youtubeAccountProfileKey(userId: string, profileId: string | null): string | undefined {
   return profileId === null ? undefined : createHash('sha256').update(JSON.stringify([userId, cliAccountProfileIdSchema.parse(profileId)])).digest('hex');
@@ -44,22 +48,28 @@ export class YouTubeAccountStore {
     await this.tails.get(userId)?.catch(() => undefined);
     return Object.keys((await this.read(userId)).panes);
   }
-  async save(userId: string, paneId: string, profileId: string | null) {
+  async initializeSelection(userId: string, paneId: string, profileId: string | null): Promise<string | null> {
+    return this.save(userId, paneId, profileId, true);
+  }
+  async save(userId: string, paneId: string, profileId: string | null, onlyIfMissing = false): Promise<string | null> {
     const selection = selectionSchema.parse({ profileId, updatedAt: Date.now() });
     const next = (this.tails.get(userId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       const state = await this.read(userId);
+      if (onlyIfMissing && Object.hasOwn(state.panes, paneId)) return state.panes[paneId]!.profileId;
       selection.updatedAt = Math.max(selection.updatedAt, ...Object.values(state.panes).map(value => value.updatedAt + 1));
       state.panes[paneId] = selection;
-      state.panes = Object.fromEntries(Object.entries(state.panes).sort((a, b) => b[1].updatedAt - a[1].updatedAt).slice(0, 64));
+      // Pane selections must survive room churn and reopening. Evicting the oldest
+      // entry silently changes a still-valid pane's browser identity.
       await mkdir(this.root, { recursive: true, mode: 0o700 });
       const temporary = this.path(userId) + '.' + randomUUID();
       try {
         await writeFile(temporary, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
         await rename(temporary, this.path(userId));
       } finally { await unlink(temporary).catch(() => undefined); }
+      return selection.profileId;
     });
     this.tails.set(userId, next);
-    try { await next; } finally { if (this.tails.get(userId) === next) this.tails.delete(userId); }
+    try { return await next; } finally { if (this.tails.get(userId) === next) this.tails.delete(userId); }
   }
   async removeProofState(userId: string) {
     if (!userId.includes(':proof:room:')) throw new Error('Only disposable proof account selections can be removed here.');

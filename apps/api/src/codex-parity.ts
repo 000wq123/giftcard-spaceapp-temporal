@@ -24,6 +24,7 @@ import {
   CODEX_IMAGE_ATTACHMENT_SEED_PROMPT
 } from "@space/codex-app-server";
 import { redactMemoryText } from "@space/runtime";
+import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 
 const execFileAsync = promisify(execFile);
 const defaultCodexHome = "/var/lib/spaceapp-user/.codex";
@@ -38,6 +39,12 @@ const environmentInspectorMaxBuffer = 1024 * 1024;
 const lbUsageFetchTimeoutMs = 5000;
 const defaultEnvironmentCacheTtlMs = 30_000;
 const maxEnvironmentCacheTtlMs = 60_000;
+// `inspect-env` and `route-status` run the sudo parity wrapper (seconds of
+// CPU each) while their answers change only with Codex config or LB route
+// switches, so they are refreshed in the background at most this often.
+// The cheaper LB usage HTTP read keeps the short environment cache above.
+const defaultWrapperProbeCacheTtlMs = 5 * 60_000;
+const wrapperProbeFailureRetryMs = 30_000;
 const trustedChatBootstrapContextPattern = /# AGENTS\.md instructions for\s|<environment_context(?:>|\s)/iu;
 const canonicalBootstrapDocPattern = /\/(?:etc\/docs\/gemini(?:_core)?\.md|etc\/AGENTS\.md|srv\/space\/AGENTS\.md)\b/iu;
 const bootstrapDocReferencePattern = /\b(?:gemini(?:_core)?\.md|AGENTS\.md)\b/iu;
@@ -57,6 +64,8 @@ export interface CodexParityService {
   renameThread(threadId: string, title: string): Promise<CodexHistoryItem>;
   archiveThread(threadId: string): Promise<CodexHistoryItem>;
   getEnvironment(): Promise<CodexEnvironment>;
+  /** Drops cached wrapper probes after a Codex-LB route switch. */
+  invalidateRouteStatus?(): void;
 }
 
 export interface CreateCodexParityServiceOptions {
@@ -68,6 +77,8 @@ export interface CreateCodexParityServiceOptions {
   codexLbKeyFile?: string | null;
   codexRouteCommand?: string | null;
   environmentCacheTtlMs?: number;
+  /** Freshness of the `inspect-env`/`route-status` wrapper probes; 0 disables it. */
+  wrapperProbeCacheTtlMs?: number;
 }
 
 export class CodexParityNotFoundError extends Error {
@@ -426,9 +437,19 @@ const clipboardContextTail = [
   "Use these tools only when the operator explicitly asks to list, read, or save Space clipboard history or a designed plan. Never add clipboard history to an ordinary prompt.",
   "To request a clipboard action, include one fenced block named space-clipboard-actions with JSON only:",
   '```space-clipboard-actions\n{"version":1,"actions":[{"toolId":"clipboard:list","action":{"type":"list","pageSize":10}}]}\n```',
-  "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text and an optional title.",
+  "Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with text, mandatory minimumModel, recommended minimumReasoning (none/minimal/low/medium/high/xhigh/max/ultra), and an optional title. Choose the least reasoning effort sufficient for the plan.",
   "V1 allows at most 3 actions per turn. clipboard:save creates an AGENT_NOTE and accepts at most 10,000 characters. clipboard:save-plan stores a PLAN (the full designed plan) and accepts up to 100,000 characters. CLI agents do not have clipboard API access."
 ];
+// Persisted transcripts retain the exact prompt wrapper emitted at the time.
+// Accept only the known full versions, never a partial or fuzzy match.
+const clipboardContextTails = new Set([
+  clipboardContextTail.join("\n"),
+  ...["text and an optional title", "text, mandatory minimumModel, and an optional title"].map((fields) => [
+    ...clipboardContextTail.slice(0, 3),
+    `Action bodies: clipboard:list uses type=list with optional q/source/pageSize; clipboard:get uses type=get with clipboardItemId; clipboard:save uses type=save with text; clipboard:save-plan uses type=save-plan with ${fields}.`,
+    ...clipboardContextTail.slice(4)
+  ].join("\n"))
+]);
 const sharedChatContextOpening = "Space shared chat tools selected:";
 const sharedChatContextTail = [
   "The Space shared chat is the one room where the operator and every agent pane talk together. Use chat:read first to follow the conversation, then chat:send to reply or report progress. Use chat:react only to react to an existing message.",
@@ -500,7 +521,7 @@ function isTrustedClipboardContext(value: string): boolean {
   if (lines[0] !== clipboardContextOpening || !/^tools=clipboard:(?:list|get|save|save-plan)(?:, clipboard:(?:list|get|save|save-plan))*$/.test(lines[1] ?? "")) {
     return false;
   }
-  return lines.slice(2).join("\n") === clipboardContextTail.join("\n");
+  return clipboardContextTails.has(lines.slice(2).join("\n"));
 }
 
 function isTrustedSharedChatContext(value: string): boolean {
@@ -1116,6 +1137,7 @@ async function readCodexLbUsage(input: {
   codexLbBaseUrl: string | null;
   codexLbKeyFile: string | null;
   codexRouteCommand: string | null;
+  readRouteStatus?: (command: string) => Promise<CodexLbRouteStatus>;
 }): Promise<NonNullable<CodexEnvironment["lbUsage"]> | null> {
   if (!input.codexLbKeyFile && !input.codexLbBaseUrl && !input.codexRouteCommand) {
     return null;
@@ -1125,7 +1147,7 @@ async function readCodexLbUsage(input: {
   let routeStatus: CodexLbRouteStatus | null = null;
   if (input.codexRouteCommand) {
     try {
-      routeStatus = await inspectCodexLbRouteStatus(input.codexRouteCommand);
+      routeStatus = await (input.readRouteStatus ?? inspectCodexLbRouteStatus)(input.codexRouteCommand);
     } catch {
       routeStatus = null;
     }
@@ -1240,12 +1262,29 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
   const environmentCacheTtlMs = boundedEnvironmentCacheTtl(options.environmentCacheTtlMs);
   let environmentCache: { value: CodexEnvironment; expiresAt: number } | null = null;
   let environmentInFlight: Promise<CodexEnvironment> | null = null;
+  const wrapperProbeCacheTtlMs = Math.max(Math.trunc(options.wrapperProbeCacheTtlMs ?? defaultWrapperProbeCacheTtlMs) || 0, 0);
+  const inspectedEnvironmentCache = createStaleWhileRevalidateCache<CodexEnvironment>({
+    freshMs: wrapperProbeCacheTtlMs,
+    maxEntries: 4
+  });
+  const routeStatusCache = createStaleWhileRevalidateCache<CodexLbRouteStatus>({
+    freshMs: wrapperProbeCacheTtlMs,
+    errorTtlMs: wrapperProbeFailureRetryMs,
+    maxEntries: 4
+  });
+  const inspectEnvironment = (command: string): Promise<CodexEnvironment> => wrapperProbeCacheTtlMs > 0
+    ? inspectedEnvironmentCache.get(command, () => inspectEnvironmentWithWrapper(command))
+    : inspectEnvironmentWithWrapper(command);
+  const readRouteStatus = (command: string): Promise<CodexLbRouteStatus> => wrapperProbeCacheTtlMs > 0
+    ? routeStatusCache.get(command, () => inspectCodexLbRouteStatus(command))
+    : inspectCodexLbRouteStatus(command);
 
   async function withLbUsage(environment: CodexEnvironment): Promise<CodexEnvironment> {
     const lbUsage = await readCodexLbUsage({
       codexLbBaseUrl,
       codexLbKeyFile,
-      codexRouteCommand
+      codexRouteCommand,
+      readRouteStatus
     });
     return codexEnvironmentSchema.parse({
       ...environment,
@@ -1259,7 +1298,7 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
       environment = await readCodexEnvironmentMetadata(codexHome, stateDbPath);
     } catch (error) {
       if (environmentInspectorCommand && isConfigReadFallbackError(error)) {
-        environment = await inspectEnvironmentWithWrapper(environmentInspectorCommand);
+        environment = await inspectEnvironment(environmentInspectorCommand);
       } else {
         throw error;
       }
@@ -1443,6 +1482,10 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
       return historyThread(threadId);
     },
 
-    getEnvironment
+    getEnvironment,
+    invalidateRouteStatus() {
+      routeStatusCache.invalidate();
+      environmentCache = null;
+    }
   };
 }

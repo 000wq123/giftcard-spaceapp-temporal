@@ -1,5 +1,5 @@
-import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
-import { canvasBlob } from "./snip-image.js";
+import { getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { canvasBlob, canvasFrame, frameFromBlob, type SnipFrame } from "./snip-image.js";
 
 export function checkAbort(signal: AbortSignal) { if (signal.aborted) throw new DOMException("Capture cancelled", "AbortError"); }
 function abortable<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs = 10000): Promise<T> {
@@ -15,12 +15,30 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal, timeoutMs = 1000
 async function painted(signal: AbortSignal) {
   await abortable(new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))), signal, 3000);
 }
-async function freshFrame(video: HTMLVideoElement, signal: AbortSignal) {
+/**
+ * Records frames delivered after the overlay hides. On a static screen the only new frame is the
+ * one hiding the overlay produces, and it can arrive before freshFrame's own listener is attached.
+ */
+function watchFrames(video: HTMLVideoElement) {
+  let last = 0, id = 0, registering = false, active = typeof video.requestVideoFrameCallback === "function";
+  const register = () => {
+    if (!active || registering) return;
+    registering = true;
+    try { id = video.requestVideoFrameCallback(tick); } finally { registering = false; }
+  };
+  const tick = (now: number, metadata?: { captureTime?: number }) => { last = metadata?.captureTime ?? now ?? performance.now(); register(); };
+  register();
+  return { lastFrameAt: () => last, stop: () => { if (active) { active = false; video.cancelVideoFrameCallback?.(id); } } };
+}
+async function freshFrame(video: HTMLVideoElement, signal: AbortSignal, frameSince?: () => boolean) {
   // Wait for a newly delivered frame, not simply readyState from before hiding the HUD.
   if (typeof video.requestVideoFrameCallback === "function") {
     let id = 0;
     try {
-      await abortable(new Promise<void>(resolve => { id = video.requestVideoFrameCallback(() => resolve()); }), signal, 4000);
+      await abortable(new Promise<void>(resolve => { id = video.requestVideoFrameCallback(() => resolve()); }), signal, frameSince ? 1200 : 4000);
+    } catch (error) {
+      // No further frame on a static screen: accept the one delivered after the overlay hid.
+      if ((error as Error)?.name === "AbortError" || !frameSince?.() || video.readyState < 2) throw error;
     } finally { video.cancelVideoFrameCallback(id); }
   } else {
     let ready: () => void = () => {};
@@ -66,10 +84,34 @@ export function releaseSnipSession(session: SnipCaptureSession) {
   if (session.video) { session.video.pause(); session.video.srcObject = null; }
   session.stream = null; session.video = null;
 }
-export async function captureSnip(overlay: HTMLElement, signal: AbortSignal, options?: {
+export interface SnipCaptureOptions {
   session?: SnipCaptureSession;
   onSource?: (viewportAligned: boolean) => void;
-}): Promise<Blob> {
+}
+/** Every capture method is disabled in the public demo. */
+export function assertCaptureAllowed() {
+  if (getSpaceRuntimeKind() === "demo") throw new Error("Screen capture is disabled in demo mode.");
+}
+/** True when the desktop or Android shell captures the page itself (no browser source picker). */
+export function hasNativeCapture(): boolean {
+  const w = window as any;
+  return typeof w.spaceDesktop?.capturePage === "function" || typeof w.SpaceNative?.requestPageCapture === "function";
+}
+export async function captureSnip(overlay: HTMLElement, signal: AbortSignal, options?: SnipCaptureOptions): Promise<Blob> {
+  const shot = await grab(overlay, signal, options);
+  return shot.blob ?? canvasBlob(shot.canvas!);
+}
+/** Captures straight to a drawable frame, skipping the full-screen PNG encode/decode round trip. */
+export async function captureSnipFrame(overlay: HTMLElement, signal: AbortSignal, options?: SnipCaptureOptions): Promise<SnipFrame> {
+  const shot = await grab(overlay, signal, options);
+  if (shot.canvas) return canvasFrame(shot.canvas);
+  const frame = await frameFromBlob(shot.blob!);
+  checkAbort(signal);
+  return frame;
+}
+async function grab(overlay: HTMLElement, signal: AbortSignal, options?: SnipCaptureOptions): Promise<{ blob?: Blob; canvas?: HTMLCanvasElement }> {
+  const runtime = getSpaceRuntime();
+  if (runtime.kind === "demo") throw new Error("Screen capture is disabled in demo mode.");
   const w = window as any;
   let stream: MediaStream | null = null;
   let video: HTMLVideoElement | null = null;
@@ -77,9 +119,8 @@ export async function captureSnip(overlay: HTMLElement, signal: AbortSignal, opt
   let succeeded = false;
   try {
     // Acquire permission while the cancel controls remain available.
-    const native = typeof w.spaceDesktop?.capturePage === "function" || typeof w.SpaceNative?.requestPageCapture === "function";
+    const native = hasNativeCapture();
     if (!native) {
-      const runtime = getSpaceRuntime();
       if (!runtime.platform.displayMediaSupported) throw new Error("Screen capture is unavailable here. Use the SpaceApp desktop or Android app.");
       const session = options?.session;
       if (session?.stream?.getVideoTracks().some(track => track.readyState === "live")) {
@@ -114,24 +155,29 @@ export async function captureSnip(overlay: HTMLElement, signal: AbortSignal, opt
     // Keep the transparent overlay hit-testable so clicks cannot reach panes during capture.
     if (native) options?.onSource?.(true);
     overlay.style.opacity = "0";
-    await painted(signal);
-    let blob: Blob;
+    const hiddenAt = performance.now();
+    // Started in the same task as hiding, so no frame can slip in between.
+    const frames = !native && video ? watchFrames(video) : null;
+    try { await painted(signal); } catch (error) { frames?.stop(); throw error; }
+    let shot: { blob?: Blob; canvas?: HTMLCanvasElement };
     if (typeof w.spaceDesktop?.capturePage === "function") {
       const result = await abortable<any>(w.spaceDesktop.capturePage(), signal);
       if (!result?.success || !result.dataUrl) throw new Error(result?.reason || "Desktop capture failed. Please retry.");
-      blob = dataUrlBlob(result.dataUrl);
+      shot = { blob: dataUrlBlob(result.dataUrl) };
     } else if (typeof w.SpaceNative?.requestPageCapture === "function") {
-      blob = dataUrlBlob(await mobileImage(signal));
+      shot = { blob: dataUrlBlob(await mobileImage(signal)) };
     } else {
-      await freshFrame(video!, signal);
+      try { await freshFrame(video!, signal, frames ? () => frames.lastFrameAt() > hiddenAt : undefined); }
+      finally { frames?.stop(); }
       const canvas = document.createElement("canvas"); canvas.width = video!.videoWidth; canvas.height = video!.videoHeight;
-      const ctx = canvas.getContext("2d"); if (!ctx) throw new Error("Screen capture is unavailable.");
+      // CPU-backed: the snapshot is read back once here, so later crops and PNG encodes avoid GPU readbacks.
+      const ctx = canvas.getContext("2d", { willReadFrequently: true }); if (!ctx) throw new Error("Screen capture is unavailable.");
       ctx.drawImage(video!, 0, 0);
-      blob = await canvasBlob(canvas);
+      shot = { canvas };
     }
     checkAbort(signal);
     succeeded = true;
-    return blob;
+    return shot;
   } finally {
     overlay.style.opacity = previous;
     if (!options?.session || !succeeded || signal.aborted) {

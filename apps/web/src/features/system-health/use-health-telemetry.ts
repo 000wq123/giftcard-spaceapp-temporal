@@ -4,6 +4,7 @@ import type {
   CodexEnvironment,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
+  ClaudeUsageAccountList,
   ApiProviderAccountList,
   SystemAnalyticsModelsResponse,
   SystemHealthMetric,
@@ -12,6 +13,7 @@ import type {
 } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
+import { measureHealthRtt } from "./measure-health-rtt.js";
 import {
   advanceHealthTone,
   computeCodexCooldown,
@@ -36,6 +38,8 @@ export function useHealthTelemetry(
   const [accounts, setAccounts] = useState<CodexUsageAccountList | null>(null);
   const [antigravityAccounts, setAntigravityAccounts] =
     useState<AntigravityUsageAccountList | null>(null);
+  const [claudeAccounts, setClaudeAccounts] =
+    useState<ClaudeUsageAccountList | null>(null);
   const [apiProviderAccounts, setApiProviderAccounts] =
     useState<ApiProviderAccountList | null>(null);
   const [sessions, setSessions] = useState<CliSessionStats | null>(null);
@@ -140,13 +144,9 @@ export function useHealthTelemetry(
       load(
         "rtt",
         detailedRef.current ? 2000 : 9000,
-        async () => {
-          if (getSpaceRuntimeKind() === "demo") return 42;
-          const start = performance.now();
-          await api.healthPing();
-          return Math.round(performance.now() - start);
-        },
+        () => measureHealthRtt(),
         (value) => {
+          if (value === null) return;
           const at = new Date().toISOString();
           setRtt({ value, at, failed: false });
           record([
@@ -178,6 +178,12 @@ export function useHealthTelemetry(
           59_000,
           () => api.toolbarAntigravityUsageAccounts(),
           setAntigravityAccounts,
+        );
+        load(
+          "claudeAccounts",
+          59_000,
+          () => api.toolbarClaudeUsageAccounts(),
+          setClaudeAccounts,
         );
         load(
           "apiProviderAccounts",
@@ -260,6 +266,7 @@ export function useHealthTelemetry(
     models,
     accounts,
     antigravityAccounts,
+    claudeAccounts,
     apiProviderAccounts,
     sessions,
     rtt,

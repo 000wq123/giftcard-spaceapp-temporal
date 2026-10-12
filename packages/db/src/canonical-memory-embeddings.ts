@@ -6,6 +6,10 @@ export class CanonicalMemoryEmbeddings {
   constructor(private readonly pool: Pick<PgPoolLike, "query">, private readonly closePool?: () => Promise<void>) {}
   static fromConnectionString(connectionString: string) {
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 5000, statement_timeout: 10000 });
+    // A PostgreSQL restart terminates pooled clients. Without listeners that
+    // becomes an unhandled 'error' event, which ends the API process.
+    pool.on("error", (error: Error) => console.error("[db] Canonical memory pool connection error:", error?.message ?? error));
+    pool.on("connect", (client) => client.on("error", () => { /* reported by the pending query or the pool */ }));
     return new CanonicalMemoryEmbeddings(pool, () => pool.end());
   }
   async list(provider: string, model: string): Promise<CanonicalEmbeddingRow[]> {

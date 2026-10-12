@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { maintenancePlanSchema, type AdminOperationRun, type MaintenancePlanRequest, type MaintenanceApplyRequest } from "@space/contracts";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 export interface RecommendedMaintenanceClient {
   createMaintenancePlan(input: MaintenancePlanRequest): Promise<AdminOperationRun>;
@@ -76,10 +77,18 @@ export function RecommendedMaintenance({ client, onBusyChange }: { client: Recom
     {error && <p role="alert">{error}</p>}
     {run && <p role="status">{run.status} · {run.summary}</p>}
     {plan.success && run?.operationType === "CLI_MAINTENANCE_PLAN" && run.status === "SUCCEEDED" && !active && <div>
-      {plan.data.actions.length ? plan.data.actions.map(action => <label className="maintenance-choice" key={action.id}>
-        <input type="checkbox" checked={selected.includes(action.id)} disabled={busy} onChange={e => setSelected(ids => e.target.checked ? [...ids, action.id] : ids.filter(id => id !== action.id))} />
-        <span><strong>{action.label} · {action.kind === "REPAIR" ? "Repair & update" : "Update"}</strong><small>{action.installedVersion ?? "Not installed"} → {action.targetVersion ?? "—"}</small><small>{action.reasons.join(" · ")}</small></span>
-      </label>) : <p>No automatic changes are recommended. Review any unavailable checks or login requirements below.</p>}
+      {plan.data.actions.length ? plan.data.actions.map(action => (
+        <SpaceToggle
+          key={action.id}
+          className="maintenance-choice-toggle"
+          name={`maintenance-action-${action.id}`}
+          label={<strong>{action.label} · {action.kind === "REPAIR" ? "Repair & update" : "Update"}</strong>}
+          detail={<>{action.installedVersion ?? "Not installed"} → {action.targetVersion ?? "—"} · {action.reasons.join(" · ")}</>}
+          checked={selected.includes(action.id)}
+          disabled={busy}
+          onChange={(checked) => setSelected(ids => checked ? [...ids, action.id] : ids.filter(id => id !== action.id))}
+        />
+      )) : <p>No automatic changes are recommended. Review any unavailable checks or login requirements below.</p>}
       <button type="button" disabled={busy || !selected.length} onClick={() => void apply()}>Confirm & run {selected.length} actions</button>
     </div>}
     {run && <details><summary>Check details & results</summary><ul>{Array.isArray(run.result.runtimes) && (run.result.runtimes as Array<{runtimeId: string; displayName: string; summary: string; status: string}>).map(r => <li key={r.runtimeId}><strong>{r.displayName}</strong> · {r.status} · {r.summary}</li>)}</ul></details>}

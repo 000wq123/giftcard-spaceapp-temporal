@@ -8,6 +8,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
 import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import type { RoomTheme } from "../room-theme/RoomThemeMenu.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 import "./osk-keyboard.css";
 
 export const OSK_PANEL_ID = "space-osk-keyboard";
@@ -196,6 +197,7 @@ function readStoredPosition(): PanelPosition | null {
 function persistPosition(position: { left: number; top: number }) {
   try {
     getSpaceRuntime().platform.localStorage.setItem(OSK_POSITION_STORAGE_KEY, JSON.stringify({ left: position.left, top: position.top }));
+    saveUserSettingDebounced("osk", { position: { left: position.left, top: position.top } });
   } catch {
     // Position persistence is best effort only.
   }
@@ -217,6 +219,7 @@ function readStoredScale(): number {
 function persistScale(scale: number) {
   try {
     getSpaceRuntime().platform.localStorage.setItem(OSK_SCALE_STORAGE_KEY, String(scale));
+    saveUserSettingDebounced("osk", { scale });
   } catch {
     // Scale persistence is best effort only.
   }
@@ -235,6 +238,7 @@ function readStoredLang(): OskLanguage {
 function persistLang(lang: OskLanguage) {
   try {
     getSpaceRuntime().platform.localStorage.setItem(OSK_LANG_STORAGE_KEY, lang);
+    saveUserSettingDebounced("osk", { lang });
   } catch {
     // Language persistence is best effort only.
   }
@@ -253,6 +257,7 @@ function readStoredAutocomplete(): boolean {
 function persistAutocomplete(enabled: boolean) {
   try {
     getSpaceRuntime().platform.localStorage.setItem(OSK_AUTOCOMPLETE_STORAGE_KEY, String(enabled));
+    saveUserSettingDebounced("osk", { autocomplete: enabled });
   } catch {
     // Autocomplete persistence is best effort only.
   }
@@ -829,7 +834,7 @@ export function OnScreenKeyboard({
             data-shortcut={cmd.id}
             data-enter={cmd.enter ? "true" : undefined}
             onClick={() => handleShortcutClick(cmd)}
-            title={cmd.action ? `Change ${cmd.label.toLowerCase()} for the active pane` : cmd.enter ? `Run "${cmd.text}"` : `Insert ${cmd.label}`}
+            title={cmd.action === "scroll_top" || cmd.action === "scroll_bottom" ? cmd.label : cmd.action ? `Change ${cmd.label.toLowerCase()} for the active pane` : cmd.enter ? `Run "${cmd.text}"` : `Insert ${cmd.label}`}
           >
             {cmd.label}
           </button>

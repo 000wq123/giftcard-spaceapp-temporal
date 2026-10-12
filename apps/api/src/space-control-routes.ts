@@ -4,13 +4,8 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { controlToolSchemas,controlToolDescriptions,controlExecuteSchema,controlInspectSchema } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 import type { createSpaceControl,ControlActor } from "./space-control.js";
-export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnType<typeof createSpaceControl>, options?:{cliRoom(request:FastifyRequest):string|null;resolveActor?(id:string,verifiedEmail?:string):Promise<ControlActor>}){
- const actor=async(request:FastifyRequest):Promise<ControlActor>=>{
-  if(!request.user||(request.user.role!=="ADMIN"&&request.user.role!=="USER")||request.user.automationScope)throw new SpaceConflictError("An authenticated user is required for Space control.");
-  return options?.resolveActor?options.resolveActor(request.user.id,request.user.email):{id:request.user.id,role:request.user.role};
- };
- const toolList=Object.entries(controlToolSchemas).map(([name,schema])=>({name,description:controlToolDescriptions[name as keyof typeof controlToolDescriptions],inputSchema:z.toJSONSchema(schema)}));
-function sanitizeControlExecute(raw:unknown):unknown{
+/** Normalizes loose agent shapes into strict Control actions (shared with the Dot gateway). */
+export function sanitizeControlExecute(raw:unknown):unknown{
  if(!raw||typeof raw!=="object")return raw;
  const copy={...(raw as Record<string,unknown>)};
  if(Array.isArray(copy.actions)){
@@ -74,6 +69,12 @@ function sanitizeControlExecute(raw:unknown):unknown{
        if(cleanKey === "autohand code" || cleanKey === "autohand cli") cleanKey = "autohand";
        if(cleanKey === "open code" || cleanKey === "opencode cli") cleanKey = "opencode";
        if(cleanKey === "codex cli") cleanKey = "codex";
+       if(cleanKey === "cursor cli") cleanKey = "cursor";
+       if(cleanKey === "github copilot" || cleanKey === "copilot cli") cleanKey = "copilot";
+       if(cleanKey === "oh my pi" || cleanKey === "oh-my-pi" || cleanKey === "omp cli") cleanKey = "omp";
+       if(cleanKey === "qoder cli") cleanKey = "qoder";
+       if(cleanKey === "muse code" || cleanKey === "muse cli") cleanKey = "muse";
+       if(cleanKey === "factory" || cleanKey === "factory droid" || cleanKey === "droid cli") cleanKey = "droid";
        const num=typeof v==="number"?v:1;
        cleanCounts[cleanKey]=(cleanCounts[cleanKey]||0)+num;
       }
@@ -93,6 +94,12 @@ function sanitizeControlExecute(raw:unknown):unknown{
  }
  return copy;
 }
+export function registerSpaceControlRoutes(app:FastifyInstance,control:ReturnType<typeof createSpaceControl>, options?:{cliRoom(request:FastifyRequest):string|null;resolveActor?(id:string,verifiedEmail?:string):Promise<ControlActor>}){
+ const actor=async(request:FastifyRequest):Promise<ControlActor>=>{
+  if(!request.user||(request.user.role!=="ADMIN"&&request.user.role!=="USER")||request.user.automationScope)throw new SpaceConflictError("An authenticated user is required for Space control.");
+  return options?.resolveActor?options.resolveActor(request.user.id,request.user.email):{id:request.user.id,role:request.user.role};
+ };
+ const toolList=Object.entries(controlToolSchemas).map(([name,schema])=>({name,description:controlToolDescriptions[name as keyof typeof controlToolDescriptions],inputSchema:z.toJSONSchema(schema)}));
  async function call(user:ControlActor,name:string,raw:unknown){
   switch(name){
    case "space_capabilities":return control.capabilities(controlToolSchemas.space_capabilities.parse(raw).roomId);

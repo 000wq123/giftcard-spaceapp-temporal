@@ -5,6 +5,7 @@ import {
   nativeOpenCodeModelCatalog,
   resolveNativeOpenCodeRuntime,
 } from "./task-title-opencode.js";
+import { readActiveFreeOpenCodeModel } from "./room-mini-router.js";
 
 /**
  * Asteroids AI director — optional LLM event layer over the local director.
@@ -29,14 +30,16 @@ const EVENTS = ["ambush", "storm", "elite-pack", "calm", "boss-rage", "none"] as
 type DirectorEvent = (typeof EVENTS)[number];
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
-const DEFAULT_MODEL = "deepseek-v4-flash-free";
+const FALLBACK_MODEL = "big-pickle";
 const MIN_INTERVAL_MS = 15_000;
 
+const bareModelId = (value: string) => (value.startsWith("opencode/") ? value.slice("opencode/".length) : value);
+
+// ASTEROIDS_AI_MODEL wins; otherwise the free model the daily picker verified
+// with a real tool call (space-opencode-free-model.json), then big-pickle.
 function configuredModel(): string {
-  const raw = (process.env.ASTEROIDS_AI_MODEL ?? "").trim();
-  const bare = raw.startsWith("opencode/") ? raw.slice("opencode/".length) : raw;
-  const id = bare || DEFAULT_MODEL;
-  return MODEL_ID_PATTERN.test(id) ? id : DEFAULT_MODEL;
+  const id = bareModelId((process.env.ASTEROIDS_AI_MODEL ?? "").trim()) || bareModelId(readActiveFreeOpenCodeModel());
+  return MODEL_ID_PATTERN.test(id) ? id : FALLBACK_MODEL;
 }
 
 const systemPrompt =

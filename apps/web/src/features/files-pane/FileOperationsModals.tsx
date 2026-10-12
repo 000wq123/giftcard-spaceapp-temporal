@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
-import { X, FolderPlus, FileInput, Edit3, Trash2, AlertTriangle } from "lucide-react";
+import { X, FolderPlus, FileInput, Edit3, Trash2, AlertTriangle } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 
 export interface CreateModalProps {

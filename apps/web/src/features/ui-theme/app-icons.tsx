@@ -1,11 +1,64 @@
 import {
+  Gitlab as LucideGitlab,
+  AlignJustify as LucideAlignJustify,
+  ArrowRight as LucideArrowRight,
+  Columns as LucideColumns,
+  FileDown as LucideFileDown,
+  FileUp as LucideFileUp,
+  Filter as LucideFilter,
+  ScrollText as LucideScrollText,
+  Table as LucideTable,
+  AlertCircle as LucideAlertCircle,
+  ArrowDown as LucideArrowDown,
+  ArrowUpCircle as LucideArrowUpCircle,
+  ArrowUpDown as LucideArrowUpDown,
+  BellOff as LucideBellOff,
+  BellRing as LucideBellRing,
+  BookOpen as LucideBookOpen,
+  Box as LucideBox,
+  Calendar as LucideCalendar,
+  ChevronUp as LucideChevronUp,
+  Clock as LucideClock,
+  Code2 as LucideCode2,
+  Compass as LucideCompass,
+  CornerLeftUp as LucideCornerLeftUp,
+  CreditCard as LucideCreditCard,
+  Edit as LucideEdit,
+  Edit2 as LucideEdit2,
+  Edit3 as LucideEdit3,
+  FileAudio as LucideFileAudio,
+  FileCode as LucideFileCode,
+  FileJson as LucideFileJson,
+  FileText as LucideFileText,
+  Flame as LucideFlame,
+  Image as LucideImage,
+  Key as LucideKey,
+  Layers as LucideLayers,
+  LayoutGrid as LucideLayoutGrid,
+  Link2 as LucideLink2,
+  List as LucideList,
+  Package as LucidePackage,
+  PanelLeftClose as LucidePanelLeftClose,
+  Plug as LucidePlug,
+  Server as LucideServer,
+  Settings as LucideSettings,
+  Share2 as LucideShare2,
+  Sliders as LucideSliders,
+  TrendingDown as LucideTrendingDown,
+  TrendingUp as LucideTrendingUp,
+  Unlink as LucideUnlink,
+  XCircle as LucideXCircle,
+  ZoomIn as LucideZoomIn,
+  ZoomOut as LucideZoomOut,
   ALargeSmall as LucideALargeSmall,
   Activity as LucideActivity,
   AlertTriangle as LucideAlertTriangle,
   Archive as LucideArchive,
+  ArrowDownToLine as LucideArrowDownToLine,
   ArrowLeft as LucideArrowLeft,
   ArrowRightLeft as LucideArrowRightLeft,
   ArrowUp as LucideArrowUp,
+  ArrowUpToLine as LucideArrowUpToLine,
   Bell as LucideBell,
   Bookmark as LucideBookmark,
   BookmarkPlus as LucideBookmarkPlus,
@@ -14,6 +67,7 @@ import {
   Brain as LucideBrain,
   BrainCircuit as LucideBrainCircuit,
   Bug as LucideBug,
+  CalendarDays as LucideCalendarDays,
   Camera as LucideCamera,
   Check as LucideCheck,
   CheckCircle2 as LucideCheckCircle2,
@@ -36,7 +90,6 @@ import {
   Crop as LucideCrop,
   Database as LucideDatabase,
   Download as LucideDownload,
-  Dumbbell as LucideDumbbell,
   Eraser as LucideEraser,
   ExternalLink as LucideExternalLink,
   Eye as LucideEye,
@@ -59,6 +112,7 @@ import {
   Github as LucideGithub,
   GripVertical as LucideGripVertical,
   HardDrive as LucideHardDrive,
+  Hash as LucideHash,
   Home as LucideHome,
   History as LucideHistory,
   Images as LucideImages,
@@ -130,6 +184,7 @@ import {
   Trash2 as LucideTrash2,
   TriangleAlert as LucideTriangleAlert,
   Undo2 as LucideUndo2,
+  Unlock as LucideUnlock,
   Unplug as LucideUnplug,
   Upload as LucideUpload,
   UserCheck as LucideUserCheck,
@@ -141,64 +196,114 @@ import {
   X as LucideX,
   Youtube as LucideYoutube,
   Zap as LucideZap,
+  ArrowUpRight as LucideArrowUpRight,
+  Highlighter as LucideHighlighter,
+  ImagePlus as LucideImagePlus,
+  PenLine as LucidePenLine,
+  Redo2 as LucideRedo2,
+  Type as LucideType,
   type LucideIcon,
   type LucideProps
 } from "lucide-react";
-import { createContext, forwardRef, useContext, type ReactNode } from "react";
+import { createContext, forwardRef, useContext, useEffect, useState, type ReactNode } from "react";
 import type { ModernIconPack } from "../../ui-theme.js";
-import { appIconMaterialSymbols, type AppIconName } from "./app-icon-map.js";
-import { materialRoundedPaths, type MaterialSymbolName } from "./material-symbol-paths.js";
-import { motionGeometricIcons } from "./motion-geometric-icons.js";
+import type { AppIconName } from "./app-icon-map.js";
+import { getLoadedAppIconPack, isAppIconPackReady, loadAppIconPack } from "./icon-pack-registry.js";
 
 export type { LucideIcon, LucideProps } from "lucide-react";
 
 const AppIconPackContext = createContext<ModernIconPack>("lucide");
 
 export function AppIconProvider({ children, pack }: { children: ReactNode; pack: ModernIconPack }) {
-  return <AppIconPackContext.Provider value={pack}>{children}</AppIconPackContext.Provider>;
-}
-
-function createMaterialSymbol(name: MaterialSymbolName): LucideIcon {
-  const definition = materialRoundedPaths[name];
-  const Component = forwardRef<SVGSVGElement, LucideProps>(function MaterialRoundedSymbol(
-    {
-      absoluteStrokeWidth: _absoluteStrokeWidth,
-      children: _children,
-      color = "currentColor",
-      fill: _fill,
-      size = 24,
-      stroke: _stroke,
-      strokeWidth: _strokeWidth,
-      ...props
-    },
-    ref
-  ) {
-    return (
-      <svg
-        ref={ref}
-        {...props}
-        width={size}
-        height={size}
-        viewBox={definition.viewBox}
-        fill="currentColor"
-        color={color}
-        stroke="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        {definition.paths.map((path, index) => <path d={path} key={index} />)}
-      </svg>
+  const ready = isAppIconPackReady(pack);
+  const [, markPackLoaded] = useState(0);
+  useEffect(() => {
+    if (ready) return;
+    let active = true;
+    loadAppIconPack(pack).then(
+      () => { if (active) markPackLoaded((value) => value + 1); },
+      () => undefined
     );
-  });
-  Component.displayName = `MaterialRounded(${name})`;
-  return Component as LucideIcon;
+    return () => { active = false; };
+  }, [pack, ready]);
+  // Until an on-demand pack has loaded, render the default pack (startup awaits it in main.tsx).
+  return <AppIconPackContext.Provider value={ready ? pack : "lucide"}>{children}</AppIconPackContext.Provider>;
 }
 
-const materialRoundedIcons = Object.fromEntries(
-  (Object.keys(materialRoundedPaths) as MaterialSymbolName[])
-    .map((name) => [name, createMaterialSymbol(name)])
-) as Record<MaterialSymbolName, LucideIcon>;
-
+const SpaceDumbbell = forwardRef<SVGSVGElement, LucideProps>(function SpaceDumbbell(
+  { size = 24, strokeWidth = 2, className, ...props },
+  ref
+) {
+  return (
+    <svg
+      {...props}
+      ref={ref}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={["lucide-dumbbell", className].filter(Boolean).join(" ")}
+      aria-hidden={props["aria-hidden"] ?? true}
+    >
+      <path d="M6 6v12" />
+      <path d="M2 9v6" />
+      <path d="M6 12h12" />
+      <path d="M18 6v12" />
+      <path d="M22 9v6" />
+    </svg>
+  );
+});
+SpaceDumbbell.displayName = "Dumbbell";
 const lucideIcons = {
+  AlertCircle: LucideAlertCircle,
+  ArrowDown: LucideArrowDown,
+  ArrowUpCircle: LucideArrowUpCircle,
+  ArrowUpDown: LucideArrowUpDown,
+  BellOff: LucideBellOff,
+  BellRing: LucideBellRing,
+  BookOpen: LucideBookOpen,
+  Box: LucideBox,
+  Calendar: LucideCalendar,
+  ChevronDown: LucideChevronDown,
+  ChevronUp: LucideChevronUp,
+  Clock: LucideClock,
+  Code2: LucideCode2,
+  Compass: LucideCompass,
+  CornerLeftUp: LucideCornerLeftUp,
+  CreditCard: LucideCreditCard,
+  Dumbbell: SpaceDumbbell as LucideIcon,
+  Edit: LucideEdit,
+  Edit2: LucideEdit2,
+  Edit3: LucideEdit3,
+  FileAudio: LucideFileAudio,
+  FileCode: LucideFileCode,
+  FileJson: LucideFileJson,
+  FileText: LucideFileText,
+  Flame: LucideFlame,
+  Image: LucideImage,
+  Key: LucideKey,
+  Layers: LucideLayers,
+  LayoutGrid: LucideLayoutGrid,
+  Link2: LucideLink2,
+  List: LucideList,
+  Package: LucidePackage,
+  PanelLeftClose: LucidePanelLeftClose,
+  Plug: LucidePlug,
+  Server: LucideServer,
+  Settings: LucideSettings,
+  Share2: LucideShare2,
+  Sliders: LucideSliders,
+  Timer: LucideTimer,
+  TrendingDown: LucideTrendingDown,
+  TrendingUp: LucideTrendingUp,
+  Unlink: LucideUnlink,
+  XCircle: LucideXCircle,
+  ZoomIn: LucideZoomIn,
+  ZoomOut: LucideZoomOut,
   ALargeSmall: LucideALargeSmall,
   Activity: LucideActivity,
   AlertTriangle: LucideAlertTriangle,
@@ -321,6 +426,7 @@ const lucideIcons = {
   Trash2: LucideTrash2,
   TriangleAlert: LucideTriangleAlert,
   Undo2: LucideUndo2,
+  Unlock: LucideUnlock,
   Unplug: LucideUnplug,
   Upload: LucideUpload,
   UserCheck: LucideUserCheck,
@@ -334,28 +440,16 @@ const lucideIcons = {
 } satisfies Record<AppIconName, LucideIcon>;
 
 function createPackAwareIcon(name: AppIconName, fallback: LucideIcon): LucideIcon {
-  const materialName = appIconMaterialSymbols[name] as MaterialSymbolName;
-  const MaterialIcon = materialRoundedIcons[materialName];
-  const MotionIcon = motionGeometricIcons[name];
   const Component = forwardRef<SVGSVGElement, LucideProps>(function AppIcon(props, ref) {
     const pack = useContext(AppIconPackContext);
-    if (pack === "material-rounded" && MaterialIcon) {
+    const PackIcon = pack === "lucide" ? undefined : getLoadedAppIconPack(pack)?.[name];
+    if (PackIcon) {
       return (
-        <MaterialIcon
+        <PackIcon
           {...props}
           ref={ref}
           data-app-icon={name}
-          data-icon-pack="material-rounded"
-        />
-      );
-    }
-    if (pack === "motion" && MotionIcon) {
-      return (
-        <MotionIcon
-          {...props}
-          ref={ref}
-          data-app-icon={name}
-          data-icon-pack="motion"
+          data-icon-pack={pack}
         />
       );
     }
@@ -372,6 +466,51 @@ const packAwareIcons = Object.fromEntries(
 ) as Record<AppIconName, LucideIcon>;
 
 export const {
+  AlertCircle,
+  ArrowDown,
+  ArrowUpCircle,
+  ArrowUpDown,
+  BellOff,
+  BellRing,
+  BookOpen,
+  Box,
+  Calendar,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  Code2,
+  Compass,
+  CornerLeftUp,
+  CreditCard,
+  Dumbbell,
+  Edit,
+  Edit2,
+  Edit3,
+  FileAudio,
+  FileCode,
+  FileJson,
+  FileText,
+  Flame,
+  Image,
+  Key,
+  Layers,
+  LayoutGrid,
+  Link2,
+  List,
+  Package,
+  PanelLeftClose,
+  Plug,
+  Server,
+  Settings,
+  Share2,
+  Sliders,
+  Timer,
+  TrendingDown,
+  TrendingUp,
+  Unlink,
+  XCircle,
+  ZoomIn,
+  ZoomOut,
   ALargeSmall,
   Activity,
   AlertTriangle,
@@ -494,6 +633,7 @@ export const {
   Trash2,
   TriangleAlert,
   Undo2,
+  Unlock,
   Unplug,
   Upload,
   UserCheck,
@@ -512,9 +652,26 @@ export const PictureInPicture = LucidePictureInPicture;
 export const PictureInPicture2 = LucidePictureInPicture2;
 export const VolumeX = LucideVolumeX;
 export const StickyNote = LucideStickyNote;
-export const Timer = LucideTimer;
-export const Dumbbell = LucideDumbbell;
-export const ChevronDown = LucideChevronDown;
+export const ArrowUpToLine = LucideArrowUpToLine;
+export const ArrowDownToLine = LucideArrowDownToLine;
+export const Hash = LucideHash;
+// Data and diff surfaces: Lucide glyphs routed through the shared icon module.
+export const AlignJustify = LucideAlignJustify;
+export const ArrowRight = LucideArrowRight;
+export const Columns = LucideColumns;
+export const FileDown = LucideFileDown;
+export const FileUp = LucideFileUp;
+export const Filter = LucideFilter;
+export const ScrollText = LucideScrollText;
+export const Table = LucideTable;
+export const Gitlab = LucideGitlab;
+// Snip editor annotation glyphs.
+export const ArrowUpRight = LucideArrowUpRight;
+export const Highlighter = LucideHighlighter;
+export const ImagePlus = LucideImagePlus;
+export const PenLine = LucidePenLine;
+export const Redo2 = LucideRedo2;
+export const Type = LucideType;
 
 const ChromeBrand = forwardRef<SVGSVGElement, LucideProps>(function ChromeBrand(props, ref) {
   return (
@@ -583,3 +740,4 @@ const DiscordBrand = forwardRef<SVGSVGElement, LucideProps>(function DiscordBran
 });
 DiscordBrand.displayName = "BrandIcon(Discord)";
 export const Discord = DiscordBrand as LucideIcon;
+export { LucideCalendarDays as CalendarDays };

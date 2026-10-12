@@ -5,6 +5,9 @@ import { nextPilotControls, type TacticalProfile, type LivePilotDirective } from
 import { MultiArenaEngine, type ArenaShip } from "../asteroids/multi-arena.js";
 import { createRenderer } from "../asteroids/render.js";
 import { observeArcadePalette } from "../asteroids/theme.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { benchmarkPost } from "./benchmark-api.js";
+import { ChessBenchmark } from "./ChessBenchmark.js";
 import "./benchmark-game.css";
 
 // Direct same-origin fetch (no live-api.ts import): the demo bundle boundary
@@ -97,51 +100,6 @@ interface AsteroidsChampionship {
 }
 
 type BenchmarkMode = "championship" | "duel" | "shared_arena";
-
-let cachedCsrfToken: string | null = null;
-let cachedCsrfHeader = "x-space-csrf-token";
-
-async function fetchCsrf(): Promise<string> {
-  if (cachedCsrfToken) return cachedCsrfToken;
-  try {
-    const res = await fetch("/api/auth/csrf", { credentials: "same-origin" });
-    if (res.ok) {
-      const data = (await res.json()) as { csrfToken?: string; headerName?: string };
-      if (data.csrfToken) cachedCsrfToken = data.csrfToken;
-      if (data.headerName) cachedCsrfHeader = data.headerName;
-      return cachedCsrfToken || "";
-    }
-  } catch {}
-  return "";
-}
-
-async function benchmarkPost<T>(url: string, body: unknown): Promise<T> {
-  const token = await fetchCsrf();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers[cachedCsrfHeader] = token;
-
-  let res = await fetch(url, {
-    method: "POST",
-    credentials: "same-origin",
-    headers,
-    body: JSON.stringify(body),
-  });
-
-  if (res.status === 403) {
-    cachedCsrfToken = null;
-    const retryToken = await fetchCsrf();
-    if (retryToken) headers[cachedCsrfHeader] = retryToken;
-    res = await fetch(url, {
-      method: "POST",
-      credentials: "same-origin",
-      headers,
-      body: JSON.stringify(body),
-    });
-  }
-
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as T;
-}
 
 async function fetchAvailableModels(): Promise<AvailableModel[]> {
   const freeResponse = await fetch("/api/asteroids/benchmark/models", { credentials: "same-origin" });
@@ -1043,7 +1001,7 @@ function GameBenchmark() {
           disabled={running}
           style={benchmarkMode === "shared_arena" ? { borderColor: "#00f0ff", color: "#00f0ff", boxShadow: "0 0 10px rgba(0,240,255,0.2)" } : {}}
         >
-          💥 All-in-One Arena (Όλοι στο ίδιο game)
+          💥 All-in-One Arena (everyone in one game)
         </button>
       </div>
 
@@ -1053,7 +1011,7 @@ function GameBenchmark() {
             <div>
               <strong style={{ color: "#00f0ff" }}>💥 Dogfight Battle Royale · All AI Models in ONE Shared Game</strong>
               <span>
-                Όλα τα AI μοντέλα πετούν στον <b>ίδιο χώρο μάχης</b>, πυροβολούν το ένα το άλλο και αποφεύγουν αστεροειδείς! Το τελευταίο μοντέλο που επιβιώνει ανακηρύσσεται <b>Survivor Champion</b>, ενώ καταγράφονται επακριβώς η 1η, 2η και 3η θέση επιβίωσης και τα hits/kills.
+                All AI models fly in the <b>same battle arena</b>, shoot at each other and dodge asteroids! The last model standing is crowned <b>Survivor Champion</b>, and the exact 1st, 2nd and 3rd survival places are recorded along with hits/kills.
               </span>
             </div>
             <div className="benchmark-duel-quickbar">
@@ -1121,19 +1079,15 @@ function GameBenchmark() {
                     ? "OpenRouter"
                     : "GitHub CLI";
                 return (
-                  <label className="benchmark-provider-toggle" key={provider}>
-                    <input
-                      type="checkbox"
-                      checked={enabledProviders[provider]}
-                      disabled={running || count === 0}
-                      onChange={() => setEnabledProviders((current) => ({ ...current, [provider]: !current[provider] }))}
-                    />
-                    <span className="benchmark-switch" aria-hidden="true" />
-                    <span>
-                      <strong>{name}</strong>
-                      <small>{count} models</small>
-                    </span>
-                  </label>
+                  <SpaceToggle
+                    key={provider}
+                    className="benchmark-provider-toggle"
+                    label={<strong>{name}</strong>}
+                    detail={`${count} models`}
+                    checked={Boolean(enabledProviders[provider])}
+                    disabled={running || count === 0}
+                    onChange={() => setEnabledProviders((current) => ({ ...current, [provider]: !current[provider] }))}
+                  />
                 );
               })}
             </fieldset>
@@ -1477,9 +1431,30 @@ function scoreLabel(score: number | null): string {
   return score === null ? "—" : String(score);
 }
 
+type BenchmarkGame = "asteroids" | "chess";
+const GAME_STORAGE_KEY = "space.benchmark.game";
+
+function storedGame(): BenchmarkGame {
+  try {
+    return window.localStorage.getItem(GAME_STORAGE_KEY) === "chess" ? "chess" : "asteroids";
+  } catch {
+    return "asteroids";
+  }
+}
+
 export function BenchmarkPage({ onBack }: { onBack: () => void }) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [game, setGame] = useState<BenchmarkGame>(storedGame);
+  // A game stays mounted once opened, so switching tabs never ends a running Asteroids battle.
+  const [visited, setVisited] = useState<Record<BenchmarkGame, boolean>>(() => ({ asteroids: false, chess: false, [storedGame()]: true }));
+  const chooseGame = (next: BenchmarkGame) => {
+    setGame(next);
+    setVisited((current) => (current[next] ? current : { ...current, [next]: true }));
+    try {
+      window.localStorage.setItem(GAME_STORAGE_KEY, next);
+    } catch {}
+  };
 
   const load = useCallback(async () => {
     setState({ status: "loading" });
@@ -1519,8 +1494,8 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
         <div className="benchmark-title-block">
           <span className="benchmark-title-icon" aria-hidden="true"><Gauge /></span>
           <div>
-            <h1>Asteroids AI Benchmark</h1>
-            <p>Live AI championship — games, scores and rankings.</p>
+            <h1>AI Games Benchmark</h1>
+            <p>Live AI championships in Asteroids and Chess — games, scores and rankings.</p>
           </div>
         </div>
         <button type="button" className="benchmark-refresh" onClick={() => void load()}>
@@ -1546,7 +1521,39 @@ export function BenchmarkPage({ onBack }: { onBack: () => void }) {
         <p className="benchmark-status">No benchmark runs yet. Run space-model-benchmark and publish the results.</p>
       )}
 
-      <GameBenchmark />
+      <div className="benchmark-games">
+        <div className="benchmark-game-tabs" role="tablist" aria-label="Benchmark games">
+          {([
+            ["asteroids", "Asteroids"],
+            ["chess", "Chess"],
+          ] as const).map(([id, title]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`benchmark-tab-${id}`}
+              aria-controls={`benchmark-panel-${id}`}
+              aria-selected={game === id}
+              className="benchmark-game-tab"
+              onClick={() => chooseGame(id)}
+            >
+              <span aria-hidden="true">{id === "chess" ? "♞" : "☄"}</span>
+              {title}
+            </button>
+          ))}
+        </div>
+
+        {visited.asteroids && (
+          <div role="tabpanel" id="benchmark-panel-asteroids" aria-labelledby="benchmark-tab-asteroids" hidden={game !== "asteroids"}>
+            <GameBenchmark />
+          </div>
+        )}
+        {visited.chess && (
+          <div role="tabpanel" id="benchmark-panel-chess" aria-labelledby="benchmark-tab-chess" hidden={game !== "chess"}>
+            <ChessBenchmark visible={game === "chess"} />
+          </div>
+        )}
+      </div>
 
       {selectedRun && false && state.status === "ready" && runs.length > 0 && (
         <section className="benchmark-content">

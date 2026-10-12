@@ -1,5 +1,5 @@
 import headless from "@xterm/headless";
-import type { PaneCliSession } from "@space/contracts";
+import { cliTurnInterruptKey, type PaneCliSession } from "@space/contracts";
 
 /** Only confirmed dimensions of this host generation describe its replay. */
 export function restoreRoomTerminalGeometry(generationId: string, restored: boolean,
@@ -8,8 +8,21 @@ export function restoreRoomTerminalGeometry(generationId: string, restored: bool
   return persisted?.generationId === generationId ? { cols: persisted.cols, rows: persisted.rows } : null;
 }
 
+type ProjectedLine = NonNullable<ReturnType<headless.Terminal["buffer"]["active"]["getLine"]>>;
+
+/** Faint cells become spaces: a TUI draws placeholders and suggestions faint, never typed text. */
+function undimmedLineText(line: ProjectedLine, trimRight: boolean): string {
+  let text = "";
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    text += cell.isDim() ? " ".repeat(cell.getWidth()) : cell.getChars() || " ";
+  }
+  return trimRight ? text.replace(/\s+$/u, "") : text;
+}
+
 /** Bounded, on-demand terminal projection; does not mount or resize the live pane. */
-export async function projectRoomTerminalScreen(chunks: string[], cols = 100, rows = 30, unwrap = false): Promise<string> {
+export async function projectRoomTerminalScreen(chunks: string[], cols = 100, rows = 30, unwrap = false, omitFaint = false): Promise<string> {
   const terminal = new headless.Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
   try {
     // The host already retains at most 8 MiB. Cutting that replay again can
@@ -23,7 +36,8 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
     const lines: string[] = [];
     for (let index = 0; index < buffer.length; index++) {
       const line = buffer.getLine(index);
-      const text = line?.translateToString(!(unwrap && buffer.getLine(index + 1)?.isWrapped)) ?? '';
+      const trimRight = !(unwrap && buffer.getLine(index + 1)?.isWrapped);
+      const text = !line ? '' : omitFaint ? undimmedLineText(line, trimRight) : line.translateToString(trimRight);
       if (unwrap && line?.isWrapped && lines.length) lines[lines.length - 1] += text;
       else lines.push(text);
     }
@@ -32,12 +46,14 @@ export async function projectRoomTerminalScreen(chunks: string[], cols = 100, ro
 }
 
 export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN" {
-  if (
-    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|thought\s+for\s+\d+s?|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(screen) ||
-    /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(screen)
-  ) return "RUNNING";
   if (/select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to proceed/i.test(screen)) return "WAITING_FOR_INPUT";
-  if (/(?:^|\n)\s*[❯›>]\s*[^\n]*$/m.test(screen) || /(?:ask anything|type your message|send a message)/i.test(screen)) return "IDLE";
+  if (/(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|type (?:your )?message|send a message)/i.test(screen)) return "IDLE";
+  const cleanScreen = screen.replace(/waiting for background terminal[^\n]*(?:esc(?:ape)? to interrupt|\/ps to view|\/stop to close)[^\n]*/gi, "");
+  if (
+    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[(·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(cleanScreen) ||
+    /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(cleanScreen)
+  ) return "RUNNING";
+  if (/(?:^|\n)\s*[❯›>]\s*[^\n]*$/m.test(screen)) return "IDLE";
   return "UNKNOWN";
 }
 
@@ -59,7 +75,7 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
     // frame and shortcut footer; server idle alone never proves readiness.
     const lines = screen.toLowerCase().split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(-9);
     const border = lines.findLastIndex(line => /^╹[▀━─]{3,}$/.test(line));
-    if (border === lines.length - 2 && /^(?:\/|~\/|[a-z]:\\).*\btab agents\b.*\bctrl\+p commands$/.test(lines[border + 1] ?? "") && /^[┃│║]$/.test(lines[border - 1] ?? "")) {
+    if (border === lines.length - 2 && /^(?:\/|~\/|[a-z]:\\).*(?:\btab agents\b|\d+(?:\.\d+)?[kmb]? \((?:100|\d{1,2})(?:\.\d+)?%\)).*\bctrl\+p commands$/.test(lines[border + 1] ?? "") && /^[┃│║]$/.test(lines[border - 1] ?? "")) {
       let start = border - 2;
       while (start >= 0 && /^[┃│║]\s+\S/.test(lines[start]!)) start--;
       const rows = lines.slice(start + 1, border - 1);
@@ -116,6 +132,25 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
       controls.some(line => /^gpt-[\w.-]+\s+\w+\s*[·•]\s*\//.test(line))) return "default";
     return null;
   }
+  // Rails captured from the installed TUIs (omp 18.6, qodercli 1.1.58, droid 0.234); prose never matches.
+  const recent = screen.split(/\r?\n/).map((line) => line.toLowerCase().replace(/\s+/g, " ").trim()).filter(Boolean).slice(-10);
+  if (runtimeId === "cli:omp") {
+    // Status rail "π > ⟳ <model> > 🗺 Plan ⏸ > 📁 /etc ▶─…": the Plan segment is absent in Build.
+    const rail = recent.findLast((line) => /^π\s*>/.test(line));
+    return rail ? (/🗺\s*plan\b/.test(rail) ? "plan" : "build") : null;
+  }
+  if (runtimeId === "cli:qoder") {
+    // Mode rail "YOLO Shift+Tab to Auto Mode | plan on"; the default mode shows only its hint.
+    const rail = recent.findLast((line) => /shift\+tab to /.test(line));
+    if (!rail) return null;
+    if (/\|\s*plan on\b/.test(rail)) return "plan";
+    return rail.match(/^(yolo|auto mode|don't ask|accept edits)\s+shift\+tab to /)?.[1] ?? (rail.startsWith("shift+tab to ") ? "default" : null);
+  }
+  if (runtimeId === "cli:droid") {
+    // Spec mode titles the composer box; the autonomy rail is always present.
+    if (recent.some((line) => /^╭─+\s*spec\s*─/.test(line))) return "plan";
+    return recent.some((line) => /^auto \((?:off|low|medium|high)\)\s*·/.test(line)) ? "build" : null;
+  }
   if (runtimeId === "cli:deepseek") {
     const match = text.match(/\[\s*(workspace|read-only|yolo|plan)\s*[·•]\s*ready/i);
     if (match?.[1]) return match[1].toLowerCase();
@@ -124,7 +159,7 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
   return text.match(/\b(plan|build|default|auto|yolo|ask|auto edit)\s*(?:mode|on)\b/i)?.[1]?.toLowerCase() ?? null;
 }
 
-/** Mirrors the native floating Stop control: Codex uses Escape, other CLIs Ctrl-C. */
+/** Mirrors the native floating Stop control: the TUI's own interrupt key (see cliTurnInterruptKey). */
 export function roomTerminalInterruptKey(runtimeId: string): string {
-  return runtimeId === "cli:codex" ? "\u001b" : "\u0003";
+  return cliTurnInterruptKey(runtimeId) === "escape" ? "\u001b" : "\u0003";
 }

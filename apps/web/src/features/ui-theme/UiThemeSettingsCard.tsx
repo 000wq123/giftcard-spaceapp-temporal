@@ -1,17 +1,24 @@
 import { Palette } from "./app-icons.js";
-import type { ModernAppearance, ModernIconPack, UiTheme } from "../../ui-theme.js";
+import type { ModernAppearance, ModernIconPack, UiBackground, UiTheme } from "../../ui-theme.js";
 import "./ui-theme-settings-card.css";
 
 export function UiThemeSettingsCard({
   currentAppearance,
+  currentBackground = "spaceapp",
   currentIconPack,
   currentTheme,
   onChange
 }: {
   currentAppearance: ModernAppearance;
+  currentBackground?: UiBackground;
   currentIconPack: ModernIconPack;
   currentTheme: UiTheme;
-  onChange: (selection: { appearance: ModernAppearance; iconPack: ModernIconPack; theme: UiTheme }) => void;
+  onChange: (selection: {
+    appearance: ModernAppearance;
+    background: UiBackground;
+    iconPack: ModernIconPack;
+    theme: UiTheme;
+  }) => void;
 }) {
   return (
     <section className="agent-settings-card settings-flat-card ui-theme-settings-card" aria-label="Interface appearance">
@@ -19,7 +26,7 @@ export function UiThemeSettingsCard({
         <Palette aria-hidden="true" />
         <span>
           <strong>Interface appearance</strong>
-          <small>Saved in this browser. Each change reloads only this tab.</small>
+          <small>Saved to your account and synced across all devices.</small>
         </span>
       </div>
 
@@ -34,6 +41,7 @@ export function UiThemeSettingsCard({
           value={currentTheme}
           onChange={(event) => onChange({
             appearance: currentAppearance,
+            background: currentBackground,
             iconPack: currentIconPack,
             theme: event.target.value as UiTheme
           })}
@@ -57,6 +65,7 @@ export function UiThemeSettingsCard({
           disabled={currentTheme !== "modern"}
           onChange={(event) => onChange({
             appearance: event.target.value as ModernAppearance,
+            background: currentBackground,
             iconPack: currentIconPack,
             theme: currentTheme
           })}
@@ -78,6 +87,7 @@ export function UiThemeSettingsCard({
           value={currentIconPack}
           onChange={(event) => onChange({
             appearance: currentAppearance,
+            background: currentBackground,
             iconPack: event.target.value as ModernIconPack,
             theme: currentTheme
           })}
@@ -85,6 +95,27 @@ export function UiThemeSettingsCard({
           <option value="lucide">Lucide</option>
           <option value="material-rounded">Material Rounded</option>
           <option value="motion">Motion Geometric</option>
+        </select>
+      </label>
+
+      <label className="settings-flat-row">
+        <span className="settings-flat-row-copy">
+          <strong>Background</strong>
+          <small>SpaceApp artwork or clean theme default.</small>
+        </span>
+        <select
+          aria-label="Background"
+          name="space-ui-background"
+          value={currentBackground}
+          onChange={(event) => onChange({
+            appearance: currentAppearance,
+            background: event.target.value as UiBackground,
+            iconPack: currentIconPack,
+            theme: currentTheme
+          })}
+        >
+          <option value="spaceapp">SpaceApp</option>
+          <option value="none">Theme default (no background)</option>
         </select>
       </label>
     </section>

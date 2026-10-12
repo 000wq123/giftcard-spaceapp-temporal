@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { dispatchRailMenuChange } from "../rail-popover.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 export const ROOM_THEME_MENU_ID = "room-theme-menu";
 
@@ -127,6 +128,7 @@ export function RoomThemeMenu({
   useEffect(() => {
     if (embedded) return;
     const handlePointerDown = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       onClose();

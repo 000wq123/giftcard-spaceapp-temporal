@@ -14,10 +14,19 @@ import {
   Video,
   Camera,
   Square,
+  Minus,
+  Copy,
   Crop
 } from "../ui-theme/app-icons.js";
 import "./desktop-window-titlebar.css";
 import { toggleBrowserFullscreen } from "./fullscreen.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+import {
+  desktopReleaseDownloadUrl,
+  isDesktopVersionNewer,
+  parseDesktopRelease,
+  type DesktopReleaseInfo
+} from "./desktop-release.js";
 
 const ChevronDownIcon = () => (
   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ opacity: 0.65 }}>
@@ -39,31 +48,6 @@ interface DesktopSystemInfo {
   electronVersion: string;
   nodeVersion?: string;
   isWayland?: boolean;
-}
-
-interface DesktopReleaseInfo {
-  version: string;
-  name?: string;
-  builtAt?: string;
-  download7zUrl?: string;
-  downloadZipUrl?: string;
-  installerUrl?: string;
-  targets?: any[];
-}
-
-function isVersionNewer(remoteVersion?: string, localVersion?: string): boolean {
-  if (!remoteVersion || !localVersion) return false;
-  const parse = (v: string) =>
-    v.replace(/^[^\d]*/, "")
-      .split(".")
-      .map((n) => parseInt(n, 10) || 0);
-
-  const [rMaj = 0, rMin = 0, rPat = 0] = parse(remoteVersion);
-  const [lMaj = 0, lMin = 0, lPat = 0] = parse(localVersion);
-
-  if (rMaj !== lMaj) return rMaj > lMaj;
-  if (rMin !== lMin) return rMin > lMin;
-  return rPat > lPat;
 }
 
 export function DesktopWindowTitlebar({
@@ -114,7 +98,19 @@ export function DesktopWindowTitlebar({
     }
   }, [desktopBridge]);
 
-  const [systemInfo, setSystemInfo] = useState<DesktopSystemInfo | null>(null);
+  const [systemInfo, setSystemInfo] = useState<DesktopSystemInfo | null>(() => {
+    if (typeof window === "undefined") return null;
+    const ua = (navigator.userAgent || "").toLowerCase();
+    const isLinux = ua.includes("linux") || ua.includes("x11");
+    const isMac = ua.includes("mac");
+    const platform = isLinux ? "linux" : isMac ? "darwin" : "win32";
+    return {
+      platform: platform as any,
+      arch: "x64",
+      version: "",
+      electronVersion: ""
+    };
+  });
   const [latestRelease, setLatestRelease] = useState<DesktopReleaseInfo | null>(null);
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [isAboutDialogOpen, setIsAboutDialogOpen] = useState(false);
@@ -139,33 +135,15 @@ export function DesktopWindowTitlebar({
     if (desktopBridge?.getSystemInfo) {
       desktopBridge.getSystemInfo().then((info: DesktopSystemInfo) => {
         if (info) setSystemInfo(info);
-      }).catch(() => {
-        setSystemInfo({
-          platform: "win32",
-          arch: "x64",
-          version: "",
-          electronVersion: ""
-        });
-      });
-    } else {
-      setSystemInfo({
-        platform: "win32",
-        arch: "x64",
-        version: "",
-        electronVersion: ""
-      });
+      }).catch(() => {});
     }
   }, [isDesktop, desktopBridge]);
 
   const checkForUpdates = async () => {
     try {
       const res = await fetch("/api/desktop/latest", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.version) {
-          setLatestRelease(data);
-        }
-      }
+      // Fail closed: an unavailable or malformed release clears any previously advertised update.
+      setLatestRelease(res.ok ? parseDesktopRelease(await res.json()) : null);
     } catch (err) {
       console.warn("Could not check for desktop updates:", err);
     }
@@ -207,6 +185,7 @@ export function DesktopWindowTitlebar({
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       if (menuContainerRef.current && !menuContainerRef.current.contains(event.target as Node)) {
         setIsAppMenuOpen(false);
       }
@@ -235,7 +214,11 @@ export function DesktopWindowTitlebar({
 
   const currentVersion = systemInfo?.version || "unknown";
   const targetVersion = latestRelease?.version || currentVersion;
-  const hasUpdate = Boolean(latestRelease?.version && isVersionNewer(latestRelease.version, currentVersion));
+  const releaseDownloadUrl = desktopReleaseDownloadUrl(latestRelease, systemInfo?.platform);
+  const releaseDownloadName = releaseDownloadUrl
+    ? decodeURIComponent(releaseDownloadUrl.slice(releaseDownloadUrl.lastIndexOf("/") + 1))
+    : null;
+  const hasUpdate = Boolean(latestRelease && releaseDownloadUrl && isDesktopVersionNewer(latestRelease.version, systemInfo?.version));
 
   const platformLabel = systemInfo?.platform === "win32"
     ? `Windows (${systemInfo?.arch || "x64"})`
@@ -467,21 +450,20 @@ export function DesktopWindowTitlebar({
     }
   };
 
-  const handleDownloadSetup = () => {
+  const handleDownloadSetup = (): boolean => {
+    if (!releaseDownloadUrl || !releaseDownloadName) return false;
     try {
-      const isLinux = systemInfo?.platform === "linux";
-      const filename = isLinux
-        ? `SpaceApp-${targetVersion}.AppImage`
-        : `SpaceApp-Setup-${targetVersion}.exe`;
       const a = document.createElement("a");
-      a.href = `/api/desktop/download/${filename}`;
-      a.download = filename;
+      a.href = releaseDownloadUrl;
+      a.download = releaseDownloadName;
       a.style.display = "none";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      return true;
     } catch (err) {
       console.warn("Could not download setup installer:", err);
+      return false;
     }
   };
 
@@ -518,20 +500,29 @@ export function DesktopWindowTitlebar({
 
   const handleOneClickUpdate = async () => {
     setIsUpdating(true);
-    // 1. Download directly to user's Downloads folder
-    handleDownloadSetup();
+    setUpdateStatus("in-progress");
 
-    // 2. Also notify desktopBridge if present to initiate background preparation and auto-launch
-    if (desktopBridge?.installUpdate) {
-      try {
-        void desktopBridge.installUpdate({ version: targetVersion });
-      } catch (err) {
-        console.warn("Desktop bridge installUpdate notice:", err);
+    try {
+      if (desktopBridge?.installUpdate) {
+        const res = await desktopBridge.installUpdate({
+          version: targetVersion,
+          url: typeof window !== "undefined" ? window.location.origin : undefined
+        });
+        if (res) {
+          // Success: update script is executing and the app will close and restart automatically
+          return;
+        }
       }
+      if ((desktopBridge as any)?.runInstaller) {
+        const res = await (desktopBridge as any).runInstaller({ version: targetVersion });
+        if (res?.success) return;
+      }
+    } catch (err) {
+      console.warn("One-click update execution notice:", err);
     }
 
-    // 3. Set status to installer-ready so the user can choose to run it or open Downloads
-    setUpdateStatus("installer-ready");
+    // Fallback only if no desktop bridge was available (e.g. running in standard browser)
+    setUpdateStatus(handleDownloadSetup() ? "fallback-downloaded" : "idle");
     setIsUpdating(false);
   };
 
@@ -566,7 +557,14 @@ export function DesktopWindowTitlebar({
                 {hasUpdate && (
                   <>
                     <span className="desktop-window-titlebar-update-dot" aria-hidden="true" />
-                    <span className="desktop-window-titlebar-update-badge">
+                    <span
+                      className="desktop-window-titlebar-update-badge"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleStartAutoUpdate();
+                      }}
+                      title={`Click to update to v${targetVersion} with 1 click!`}
+                    >
                       Update v{targetVersion}!
                     </span>
                   </>
@@ -810,10 +808,73 @@ export function DesktopWindowTitlebar({
           </button>
         </div>
 
-        <div className="desktop-window-titlebar-drag-spacer" />
+        <div
+          className="desktop-window-titlebar-drag-spacer"
+          onDoubleClick={() => {
+            if (desktopBridge?.toggleMaximize) {
+              desktopBridge.toggleMaximize().then((isMax: boolean) => {
+                if (typeof isMax === "boolean") setIsWindowMaximized(isMax);
+              }).catch(() => {});
+            }
+          }}
+        />
 
         <div className="desktop-window-titlebar-right">
-          <div className="desktop-window-titlebar-wco-spacer" aria-hidden="true" />
+          {systemInfo?.platform === "win32" ? (
+            <div className="desktop-window-titlebar-wco-spacer" aria-hidden="true" />
+          ) : (
+            <div className="desktop-window-controls" role="toolbar" aria-label="Window controls">
+              <button
+                type="button"
+                className="desktop-window-control-btn desktop-window-control-minimize"
+                onClick={() => {
+                  if (desktopBridge?.minimizeWindow) {
+                    desktopBridge.minimizeWindow();
+                  } else if (desktopBridge?.minimizeToTray) {
+                    desktopBridge.minimizeToTray();
+                  }
+                }}
+                title="Minimize"
+                aria-label="Minimize"
+              >
+                <Minus aria-hidden="true" style={{ width: 14, height: 14 }} />
+              </button>
+
+              <button
+                type="button"
+                className="desktop-window-control-btn desktop-window-control-maximize"
+                onClick={() => {
+                  if (desktopBridge?.toggleMaximize) {
+                    desktopBridge.toggleMaximize().then((isMax: boolean) => {
+                      if (typeof isMax === "boolean") setIsWindowMaximized(isMax);
+                    }).catch(() => {});
+                  }
+                }}
+                title={isWindowMaximized ? "Restore Down" : "Maximize"}
+                aria-label={isWindowMaximized ? "Restore Down" : "Maximize"}
+              >
+                {isWindowMaximized ? (
+                  <Copy aria-hidden="true" style={{ width: 12, height: 12 }} />
+                ) : (
+                  <Square aria-hidden="true" style={{ width: 12, height: 12 }} />
+                )}
+              </button>
+
+              <button
+                type="button"
+                className="desktop-window-control-btn desktop-window-control-close"
+                onClick={() => {
+                  if (desktopBridge?.closeWindow) {
+                    desktopBridge.closeWindow();
+                  }
+                }}
+                title="Close"
+                aria-label="Close"
+              >
+                <X aria-hidden="true" style={{ width: 14, height: 14 }} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -902,9 +963,7 @@ export function DesktopWindowTitlebar({
                       <strong>Setup Installer Ready in Downloads</strong>
                     </div>
                     <p>
-                      {systemInfo?.platform === "linux"
-                        ? `SpaceApp-${targetVersion}.AppImage was saved to your Downloads folder.`
-                        : `SpaceApp-Setup-${targetVersion}.exe was saved to your Downloads folder.`}
+                      {`${releaseDownloadName ?? `SpaceApp ${targetVersion}`} was saved to your Downloads folder.`}
                     </p>
                     <div style={{ display: "flex", gap: "8px", marginTop: "10px", flexWrap: "wrap" }}>
                       <button

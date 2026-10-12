@@ -102,9 +102,9 @@ async function loadAntigravityModels(): Promise<Array<{ id: string; displayName:
 const CODEX_ENV_FILE = "/var/lib/spaceapp-user/.config/codex-lb-provider.env";
 const CODEX_KEY_FILE = process.env.SPACE_CODEX_LB_KEY_FILE ?? "/opt/spaceapp/secrets/space-codex-lb-provider.key";
 const CODEX_MODELS_CACHE_FILE = "/var/lib/spaceapp-user/.codex/models_cache.json";
-const CODEX_LB_BASE_URL = "http://127.0.0.1:2458";
+export const CODEX_LB_BASE_URL = "http://127.0.0.1:2458";
 
-async function getCodexApiKey(): Promise<string | null> {
+export async function getCodexApiKey(): Promise<string | null> {
   try {
     const key = (await readFile(CODEX_KEY_FILE, "utf8")).trim();
     if (key) return key;
@@ -318,93 +318,21 @@ export async function fetchModelTactics(modelId: string, situation?: unknown): P
     if (isJev) {
       try {
         const decisionsService = createDecisionsService();
-        const decisionResult = await decisionsService.decide({
-          state: typeof situation === "object" && situation !== null
+        const outcome = await decisionsService.decideTacticalMovement(
+          typeof situation === "object" && situation !== null
             ? { ...situation, hostiles: "Alien gunships deploying lasers and collision hazards", objective: "Maximum dogfight score with lethal accuracy and evasive dashing" }
-            : { rocks: 8, difficulty: 4, sector: "Asteroids dogfight arena", hostiles: "Alien gunships deploying lasers", objective: "Maximum combat score with lethal accuracy" },
-          questions: {
-            target_preference: {
-              type: "choice",
-              instructions: "Select tactical target priority for starship fire control.",
-              criteria: {
-                threat: "Prioritize incoming collision hazards and active lethal hostile raiders to ensure survival",
-                enemies: "Hunt and eliminate high-value alien gunships and raiders for maximum score",
-                rocks: "Fire at distant drifting rock debris",
-                nearest: "Engage nearest radar contact",
-              },
-            },
-            combat_style: {
-              type: "choice",
-              instructions: "Select combat dogfight doctrine.",
-              criteria: {
-                interceptor: "Precision interceptor hunting high-value threats",
-                blitz: "High-speed aggressive combat assault with heavy ordnance",
-                kiting: "Defensive standoff evasion",
-                defensive: "Low-risk perimeter sweep",
-              },
-            },
-            aggression: {
-              type: "score",
-              instructions: "Combat aggression and tactical bomb deployment authorization.",
-              criteria: ["Cautious standoff", "Standard patrol", "Aggressive tactical dogfight", "Full combat assault with heavy bombs"],
-            },
-            mobility: {
-              type: "score",
-              instructions: "Thruster mobility and emergency evasive dash readiness.",
-              criteria: ["Stationary drift", "Gentle maneuvers", "Active evasive thrusting", "High-mobility tactical dashing"],
-            },
-            precision: {
-              type: "score",
-              instructions: "Marksman targeting discipline and ballistic lead calculation.",
-              criteria: ["Wide spread fire", "Focused burst fire", "Pinpoint marksman precision"],
-            },
-            lead_aiming: {
-              type: "score",
-              instructions: "Ballistic trajectory deflection prediction.",
-              criteria: ["Direct aim without lead", "Moderate lead estimation", "Full predictive trajectory intercept calculation"],
-            },
-          },
-        });
-
-        const latencyMs = Date.now() - start;
-        if (decisionResult.available && decisionResult.answers) {
-          const answers = decisionResult.answers as Record<string, { choice?: string; score?: number }>;
-          const targetChoice = String(answers["target_preference"]?.choice ?? "");
-          const validPrefs = ["nearest", "threat", "rocks", "enemies"] as const;
-          const targetPref = validPrefs.includes(targetChoice as any)
-            ? (targetChoice as TacticalDoctrine["targetPreference"])
-            : fallbackTactic.targetPreference;
-
-          const aggScore = Number(answers["aggression"]?.score);
-          const mobScore = Number(answers["mobility"]?.score);
-          const precScore = Number(answers["precision"]?.score);
-          const leadScore = Number(answers["lead_aiming"]?.score);
-
-          const agg = Number.isFinite(aggScore) ? Math.min(0.95, Math.max(0.4, 0.45 + (aggScore / 3) * 0.5)) : fallbackTactic.aggression;
-          const mob = Number.isFinite(mobScore) ? Math.min(0.95, Math.max(0.4, 0.45 + (mobScore / 3) * 0.45)) : fallbackTactic.mobility;
-          const prec = Number.isFinite(precScore) ? Math.max(0.4, Math.min(0.95, 0.45 + (precScore / 2) * 0.45)) : fallbackTactic.precision;
-          const lead = Number.isFinite(leadScore) ? Math.max(0.4, Math.min(0.95, 0.45 + (leadScore / 2) * 0.45)) : fallbackTactic.leadAiming;
-
-          const style = String(answers["combat_style"]?.choice ?? "");
-          const tacticLines: Record<string, string> = {
-            blitz: "JEV: High-speed blitz assault",
-            interceptor: "JEV: Precision interceptor lock",
-            kiting: "JEV: Standoff evasive deflection",
-            defensive: "JEV: Perimeter defensive sweep",
-          };
-          const tactic = tacticLines[style] ?? "JEV: Tactical doctrine active";
-
-          return {
-            aggression: Math.round(agg * 100) / 100,
-            precision: Math.round(prec * 100) / 100,
-            mobility: Math.round(mob * 100) / 100,
-            leadAiming: Math.round(lead * 100) / 100,
-            targetPreference: targetPref,
-            tactic,
-            latencyMs,
-            source: "model",
-          };
-        }
+            : { rocks: 8, difficulty: 4, sector: "Asteroids dogfight arena", hostiles: "Alien gunships deploying lasers", objective: "Maximum combat score with lethal accuracy" }
+        );
+        return {
+          aggression: outcome.aggression,
+          precision: outcome.precision,
+          mobility: outcome.mobility,
+          leadAiming: outcome.leadAiming,
+          targetPreference: outcome.targetPreference,
+          tactic: outcome.tactic,
+          latencyMs: outcome.latencyMs ?? (Date.now() - start),
+          source: outcome.source,
+        };
       } catch {
         fallbackTactic.latencyMs = Date.now() - start;
         return fallbackTactic;

@@ -15,7 +15,7 @@ import {
   Edit2,
   PanelLeftClose,
   PanelLeft
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 
 export interface FileManagerToolbarProps {
   currentPath: string;

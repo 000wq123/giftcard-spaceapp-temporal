@@ -1,4 +1,5 @@
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { LIVE_IMAGE_MAX_DATA_URL_CHARS } from "./live-real-view.js";
 
 const abortError = () => new DOMException("Capture cancelled.", "AbortError");
 function waitForFrame(video: HTMLVideoElement, signal: AbortSignal) {
@@ -41,15 +42,22 @@ export async function captureLiveVisual(source: "camera" | "screen", signal: Abo
     await waitForFrame(video, signal);
     if (signal.aborted) throw abortError();
     if (stream.getVideoTracks()[0]?.readyState === "ended") throw new Error("The selected capture source was closed.");
-    const scale = Math.min(1, 1280 / video.videoWidth, 720 / video.videoHeight);
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Image capture is unavailable in this browser.");
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
-    if (!dataUrl.startsWith("data:image/jpeg;base64,")) throw new Error("The selected capture source did not produce an image.");
+    // Smaller and lighter encodings are tried until the image fits the voice relay's 64 KB message limit.
+    let dataUrl = "";
+    for (const [width, height, quality] of [[1280, 720, 0.82], [1280, 720, 0.6], [960, 540, 0.6], [640, 360, 0.5], [480, 270, 0.4]] as const) {
+      const scale = Math.min(1, width / video.videoWidth, height / video.videoHeight);
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      dataUrl = canvas.toDataURL("image/jpeg", quality);
+      if (dataUrl.length <= LIVE_IMAGE_MAX_DATA_URL_CHARS) break;
+    }
+    if (!dataUrl.startsWith("data:image/jpeg;base64,") || dataUrl.length > LIVE_IMAGE_MAX_DATA_URL_CHARS) {
+      throw new Error("The selected capture source did not produce an image.");
+    }
     return { type: "image" as const, dataUrl, filename: `${source}-capture.jpg` };
   } finally {
     // Also runs after cancellation, missing canvas, video.play errors and late

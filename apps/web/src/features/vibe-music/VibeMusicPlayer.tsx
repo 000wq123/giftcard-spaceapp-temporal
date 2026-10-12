@@ -1,5 +1,7 @@
 import { railPopoverPosition, useMenuWheel } from "../rail-popover.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { DEFAULT_SPACE_VOLUME, SPACE_VOLUME_STORAGE_KEY, getSpaceVolume, setSpaceVolume, subscribeSpaceVolume } from '../../space-audio.js';
+import { saveUserSettingDebounced } from '../user-settings/user-settings-manager.js';
 import { registerRoomPlaybackTarget } from "../room-agent/room-playback-control.js";
 import { ChevronLeft, ChevronRight, ExternalLink, ListFilter, Music2, Pause, Play, Radio, RefreshCw, RotateCcw, Trash2, Volume2, X, Youtube } from "../ui-theme/app-icons.js";
 import { createPortal } from "react-dom";
@@ -24,7 +26,16 @@ import {
   type YouTubeLinkTarget,
   type YouTubePlaylistPlayer
 } from "./youtubePlaylistPlayer.js";
+import {
+  VIBE_MUSIC_PANEL_ID,
+  VIBE_MUSIC_PLAYBACK_STORAGE_KEY,
+  VIBE_MUSIC_PLAYBACK_TARGET_ID,
+  readReloadPlayback,
+  type SavedMusicPlayback
+} from "./vibe-music-session.js";
 import "./vibe-music.css";
+
+export { VIBE_MUSIC_PANEL_ID, VIBE_MUSIC_PLAYBACK_STORAGE_KEY } from "./vibe-music-session.js";
 
 export const CODE_RADIO_PRIMARY_STREAM_URL = "https://coderadio-admin-v2.freecodecamp.org/listen/coderadio/radio.mp3";
 export const CODE_RADIO_FALLBACK_STREAM_URL = "https://coderadio-admin-v2.freecodecamp.org/listen/coderadio/low.mp3";
@@ -33,8 +44,6 @@ export const CODE_RADIO_ATTRIBUTION_URL = "https://coderadio.freecodecamp.org/";
 export const VIBE_MUSIC_VOLUME_STORAGE_KEY = SPACE_VOLUME_STORAGE_KEY;
 export const VIBE_MUSIC_PLAYLIST_LINK_STORAGE_KEY = "space.vibeMusic.playlistLinkId";
 export const VIBE_MUSIC_PLAYLIST_PROGRESS_STORAGE_KEY = "space.vibeMusic.playlistProgress";
-export const VIBE_MUSIC_PLAYBACK_STORAGE_KEY = "space.vibeMusic.playback.v1";
-export const VIBE_MUSIC_PANEL_ID = "vibe-music-player";
 export const VIBE_MUSIC_YOUTUBE_STAGE_ID = "vibe-music-youtube-stage";
 
 const DEFAULT_VOLUME = DEFAULT_SPACE_VOLUME;
@@ -97,25 +106,6 @@ type StoredPlaylistProgress = {
   videoId: string | null;
 };
 
-type SavedMusicPlayback = { source: MusicSource; playing: boolean; linkId: string | null; savedAt: number };
-
-function readReloadPlayback(enabled: boolean): SavedMusicPlayback | null {
-  if (!enabled || getSpaceRuntime().kind !== "live") return null;
-  try {
-    const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
-    if (navigation?.type !== "reload") return null;
-    const raw = getSpaceRuntime().platform.sessionStorage.getItem(VIBE_MUSIC_PLAYBACK_STORAGE_KEY);
-    if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    if (!isPlainObject(value) || !["radio", "playlist"].includes(String(value.source)) || typeof value.playing !== "boolean" || typeof value.savedAt !== "number" || Date.now() - value.savedAt > 60_000 || value.savedAt > Date.now()) return null;
-    const linkId = typeof value.linkId === "string" ? value.linkId : null;
-    if (value.source === "playlist" && !linkId) return null;
-    return { source: value.source as MusicSource, playing: value.playing, linkId, savedAt: value.savedAt };
-  } catch {
-    return null;
-  }
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -159,6 +149,7 @@ function persistPlaylistLinkId(linkId: string, shouldPersist: boolean) {
   if (!shouldPersist) return;
   try {
     getSpaceRuntime().platform.localStorage.setItem(VIBE_MUSIC_PLAYLIST_LINK_STORAGE_KEY, linkId);
+    saveUserSettingDebounced("vibeMusicPlaylistLinkId", linkId);
   } catch {
     // Playlist selection persistence is best effort only.
   }
@@ -1039,7 +1030,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   directPlaybackState.current = { status, playlistStatus, source };
   useEffect(() => {
     if (!activeRoomId) return;
-    return registerRoomPlaybackTarget("vibe-music", { roomId: activeRoomId, kind: "MUSIC",
+    return registerRoomPlaybackTarget(VIBE_MUSIC_PLAYBACK_TARGET_ID, { roomId: activeRoomId, kind: "MUSIC",
       playing: source === "playlist" ? playlistStatus === "playing" : status === "playing",
       async control(command) {
         if (command.operation === "volume" || command.operation === "mute" || command.operation === "unmute") {
@@ -1499,6 +1490,7 @@ export function VibeMusicPlayer({ activeRoomId, mobile, open, onOpenChange, onOp
   useEffect(() => {
     if (!open || mobile || portalTarget) return;
     function handleOutsidePointer(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (panelRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       onOpenChange(false);

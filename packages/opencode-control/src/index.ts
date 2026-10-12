@@ -95,8 +95,11 @@ export async function readOpenCodeServerControl(
       : "127.0.0.1";
     // Fast-path wrapper control files write the loopback host, which is only
     // reachable from inside the runtime netns. The Space API runs in the root
-    // netns and must use the runtime's static bridge address instead.
-    const serverHost = isOpenCodeLoopbackHost(rawServerHost) ? openCodeSharedServerHost : rawServerHost;
+    // netns and must use the runtime's static bridge address instead, unless
+    // the launcher recorded that its server runs in the host network.
+    const serverHost = isOpenCodeLoopbackHost(rawServerHost) && control.serverNetwork !== "host"
+      ? openCodeSharedServerHost
+      : rawServerHost;
     if (
       control.version !== 1 ||
       control.spaceSessionId !== spaceSessionId ||
@@ -124,6 +127,42 @@ export async function readOpenCodeServerControl(
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     if (error && typeof error === "object" && "code" in error && error.code === "EACCES") return null;
+    return null;
+  }
+}
+
+export function opencodeServerMappingPath(
+  spaceSessionId: string,
+  stateRoot = join(opencodeDirectParityRoot, "state")
+): string {
+  return join(stateRoot, "opencode", "space-cli-sessions", `${safeSpaceSessionFileName(spaceSessionId)}.json`);
+}
+
+export async function readOpenCodeServerControlFromMapping(
+  spaceSessionId: string,
+  stateRoot?: string
+): Promise<OpenCodeServerControl | null> {
+  const resolvedStateRoot = stateRoot ?? join(opencodeDirectParityRoot, "state");
+  const mappingPath = opencodeServerMappingPath(spaceSessionId, resolvedStateRoot);
+  try {
+    const metadata = await stat(mappingPath);
+    if (!metadata.isFile() || metadata.size <= 0 || metadata.size > opencodeServerControlMaxBytes) return null;
+    const parsed = JSON.parse(await readFile(mappingPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const mapping = parsed as Record<string, unknown>;
+    const nativeSessionId = typeof mapping.nativeSessionId === "string" ? mapping.nativeSessionId : "";
+    if (!opencodeNativeSessionIdPattern.test(nativeSessionId)) return null;
+
+    const fallback = await resolveOpenCodeTitleFallbackControl(resolvedStateRoot);
+    if (!fallback) return null;
+
+    return {
+      ...fallback,
+      spaceSessionId,
+      nativeSessionId,
+      updatedAt: typeof mapping.updatedAt === "string" ? mapping.updatedAt : fallback.updatedAt
+    };
+  } catch {
     return null;
   }
 }

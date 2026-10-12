@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
+import { openWorkspacePath, descriptorPath } from "./workspace-filesystem.js";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,6 +12,7 @@ import { idSchema, isAgentFileArtifact, type Artifact } from "@space/contracts";
 import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
+import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -104,10 +106,12 @@ export interface PersistAgentFileInput {
   runtimeId: string;
   originalFilename: string;
   declaredMimeType: string;
-  buffer: Buffer;
+  buffer?: Buffer;
+  sourcePath?: string;
   traceId: string;
   docxNormalizer?: AgentFileDocxNormalizer;
   source?: "AGENT_OUTPUT" | "AGENT_OUTPUT_BACKFILL" | "USER_UPLOAD";
+  folder?: string;
   backfillProvenance?: {
     sourceStorageUri: string;
     sourceArtifactId: string | null;
@@ -410,106 +414,144 @@ export function agentFileStoragePath(input: {
 }
 
 export async function persistAgentFile(input: PersistAgentFileInput) {
-  const originalFilename = safeOriginalFilename(input.originalFilename);
-  const sourceMimeType = resolveAgentFileMimeType(originalFilename, input.declaredMimeType, input.buffer);
-  const sourceSha256 = createHash("sha256").update(input.buffer).digest("hex");
-  const shouldNormalizeDocx = sourceMimeType === docxMimeType;
-  const persistedBuffer = shouldNormalizeDocx
-    ? await (input.docxNormalizer ?? normalizeAgentFileDocx)({
-        buffer: input.buffer,
-        originalFilename
-      })
-    : input.buffer;
-  if (shouldNormalizeDocx && (persistedBuffer.byteLength <= 0 || persistedBuffer.byteLength > agentFileMaxBytes)) {
-    throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild produced an invalid file size.");
-  }
-  if (
-    shouldNormalizeDocx &&
-    createHash("sha256").update(persistedBuffer).digest("hex") === sourceSha256
-  ) {
-    throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild did not rewrite the package.");
-  }
-  const mimeType = resolveAgentFileMimeType(originalFilename, input.declaredMimeType, persistedBuffer);
-  if (shouldNormalizeDocx && mimeType !== docxMimeType) {
-    throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild produced an invalid package.");
-  }
-  const day = new Date().toISOString().slice(0, 10);
-  const fileId = safeStorageSegment(makeSpaceId("agent_file"));
-  const storedFilename = `${fileId}-${originalFilename}`;
-  const filePath = agentFileStoragePath({
-    artifactRoot: input.artifactRoot,
-    roomId: input.roomId,
-    paneId: input.paneId,
-    cliSessionId: input.cliSessionId,
-    day,
-    storedFilename
-  });
-  const partialPath = `${filePath}.partial-${safeStorageSegment(makeSpaceId("write"))}`;
-  const storageUri =
-    `space-artifact://agent-files/${encodeURIComponent(input.roomId)}/` +
-    `${encodeURIComponent(input.paneId ?? agentFileUserPaneSegment)}/` +
-    `${encodeURIComponent(input.cliSessionId ?? agentFileUserSessionSegment)}/${day}/${encodeURIComponent(storedFilename)}`;
-  const sha256 = createHash("sha256").update(persistedBuffer).digest("hex");
-  const kind: Artifact["kind"] = mimeType.startsWith("image/")
-    ? "IMAGE"
-    : mimeType.startsWith("video/")
-      ? "VIDEO"
-      : "EXPORT";
-
-  const storageDirectory = dirname(filePath);
-  await mkdir(storageDirectory, { recursive: true, mode: agentFileDirectoryMode });
-  await chmod(storageDirectory, agentFileDirectoryMode);
-  let persisted = false;
+  if ((input.buffer === undefined) === (input.sourcePath === undefined)) throw new Error("Exactly one Agent File source is required.");
+  const sourceHandle = input.sourcePath ? await openWorkspacePath(input.artifactRoot, input.sourcePath) : undefined;
+  let storageHandle: Awaited<ReturnType<typeof openWorkspacePath>> | undefined;
   try {
-    await writeFile(partialPath, persistedBuffer, { flag: "wx", mode: agentFileStorageMode });
-    await rename(partialPath, filePath);
-    persisted = true;
-    await chmod(filePath, agentFileStorageMode);
-    await verifyFileHash(filePath, sha256, persistedBuffer.byteLength);
-  } catch (error) {
-    await unlink(partialPath).catch(() => undefined);
-    if (persisted) await unlink(filePath).catch(() => undefined);
-    throw error;
-  }
-
-  try {
-    return await input.store.createArtifact(
-      {
-        roomId: input.roomId,
-        paneId: input.paneId,
-        kind,
-        mimeType,
-        storageUri,
-        sha256,
-        byteSize: persistedBuffer.byteLength,
-        metadata: {
-          source: input.source ?? "AGENT_OUTPUT",
-          originalFilename,
-          storedFilename,
-          ...(input.cliSessionId ? { cliSessionId: input.cliSessionId } : {}),
-          runtimeId: input.runtimeId,
-          previewKind: agentFilePreviewKindFor(mimeType, originalFilename),
-          ...(shouldNormalizeDocx
-            ? {
-                wordCompatibility: "LIBREOFFICE_REBUILT",
-                agentFileSourceSha256: sourceSha256,
-                agentFileSourceByteSize: input.buffer.byteLength
-              }
-            : {}),
-          ...(input.backfillProvenance
-            ? {
-                backfillSourceStorageUri: input.backfillProvenance.sourceStorageUri,
-                backfillSourceArtifactId: input.backfillProvenance.sourceArtifactId
-              }
-            : {})
+    const originalFilename = safeOriginalFilename(input.originalFilename);
+    const sourceSize = input.buffer?.byteLength ?? (await sourceHandle!.stat()).size;
+    if (sourceSize <= 0 || sourceSize > agentFileMaxBytes) throw new Error("Invalid Agent File source size.");
+    const sample = input.buffer ?? Buffer.alloc(Math.min(sourceSize, 8192));
+    if (sourceHandle) await sourceHandle.read(sample, 0, sample.length, 0);
+    const sourceMimeType = resolveAgentFileMimeType(originalFilename, input.declaredMimeType, sample);
+    const sourceHash = createHash("sha256");
+    if (input.buffer) sourceHash.update(input.buffer);
+    else {
+      let hashedBytes = 0;
+      for await (const chunk of sourceHandle!.createReadStream({ start: 0, end: sourceSize, autoClose: false })) {
+        hashedBytes += chunk.length;
+        if (hashedBytes > sourceSize) throw new Error("Agent File source changed during upload.");
+        sourceHash.update(chunk);
+      }
+      if (hashedBytes !== sourceSize) throw new Error("Agent File source changed during upload.");
+    }
+    const sourceSha256 = sourceHash.digest("hex");
+    const shouldNormalizeDocx = sourceMimeType === docxMimeType;
+    let persistedBuffer = input.buffer;
+    if (shouldNormalizeDocx) {
+      // The existing DOCX normalizer requires a buffer. Only this bounded format
+      // is materialized; ordinary files stream end-to-end from private staging.
+      const docxSource = input.buffer ?? Buffer.alloc(sourceSize);
+      if (sourceHandle) {
+        let offset = 0;
+        while (offset < sourceSize) {
+          const { bytesRead } = await sourceHandle.read(docxSource, offset, sourceSize - offset, offset);
+          if (!bytesRead) throw new AgentFileDocxNormalizationError("The DOCX source changed during upload.");
+          offset += bytesRead;
         }
-      },
-      input.traceId
-    );
-  } catch (error) {
-    await unlink(filePath).catch(() => undefined);
-    throw error;
-  }
+        if (createHash("sha256").update(docxSource).digest("hex") !== sourceSha256) throw new AgentFileDocxNormalizationError("The DOCX source changed during upload.");
+      }
+      persistedBuffer = await (input.docxNormalizer ?? normalizeAgentFileDocx)({ buffer: docxSource, originalFilename });
+      if (persistedBuffer.byteLength <= 0 || persistedBuffer.byteLength > agentFileMaxBytes) {
+        throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild produced an invalid file size.");
+      }
+      if (createHash("sha256").update(persistedBuffer).digest("hex") === sourceSha256) {
+        throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild did not rewrite the package.");
+      }
+    }
+    const persistedSize = persistedBuffer?.byteLength ?? sourceSize;
+    const mimeType = persistedBuffer ? resolveAgentFileMimeType(originalFilename, input.declaredMimeType, persistedBuffer) : sourceMimeType;
+    if (shouldNormalizeDocx && mimeType !== docxMimeType) {
+      throw new AgentFileDocxNormalizationError("The Word-compatible DOCX rebuild produced an invalid package.");
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    const fileId = safeStorageSegment(makeSpaceId("agent_file"));
+    const storedFilename = `${fileId}-${originalFilename}`;
+    const logicalFilePath = agentFileStoragePath({
+      artifactRoot: input.artifactRoot,
+      roomId: input.roomId,
+      paneId: input.paneId,
+      cliSessionId: input.cliSessionId,
+      day,
+      storedFilename
+    });
+    const storageUri =
+      `space-artifact://agent-files/${encodeURIComponent(input.roomId)}/` +
+      `${encodeURIComponent(input.paneId ?? agentFileUserPaneSegment)}/` +
+      `${encodeURIComponent(input.cliSessionId ?? agentFileUserSessionSegment)}/${day}/${encodeURIComponent(storedFilename)}`;
+    const sha256 = persistedBuffer ? createHash("sha256").update(persistedBuffer).digest("hex") : sourceSha256;
+    const kind: Artifact["kind"] = mimeType.startsWith("image/")
+      ? "IMAGE"
+      : mimeType.startsWith("video/")
+        ? "VIDEO"
+        : "EXPORT";
+
+    const storageDirectory = dirname(logicalFilePath);
+    storageHandle = await openWorkspacePath(input.artifactRoot, storageDirectory, true, true);
+    const filePath = join(descriptorPath(storageHandle), storedFilename);
+    const partialPath = `${filePath}.partial-${safeStorageSegment(makeSpaceId("write"))}`;
+    let persisted = false;
+    try {
+      const output = await open(partialPath, "wx", agentFileStorageMode);
+      try {
+        if (persistedBuffer) await output.writeFile(persistedBuffer);
+        else {
+          for await (const chunk of sourceHandle!.createReadStream({ start: 0, end: sourceSize - 1, autoClose: false })) {
+            await output.writeFile(chunk);
+          }
+        }
+        await output.chmod(agentFileStorageMode);
+        await output.sync();
+      } finally { await output.close(); }
+      await rename(partialPath, filePath);
+      persisted = true;
+      await verifyFileHash(filePath, sha256, persistedSize);
+    } catch (error) {
+      await unlink(partialPath).catch(() => undefined);
+      if (persisted) await unlink(filePath).catch(() => undefined);
+      throw error;
+    }
+
+    try {
+      return await recordUploadedArtifact(input.store,
+        {
+          roomId: input.roomId,
+          paneId: input.paneId,
+          kind,
+          mimeType,
+          storageUri,
+          sha256,
+          byteSize: persistedSize,
+          metadata: {
+            source: input.source ?? "AGENT_OUTPUT",
+            originalFilename,
+            storedFilename,
+            ...(input.folder ? { folder: input.folder } : {}),
+            ...(input.cliSessionId ? { cliSessionId: input.cliSessionId } : {}),
+            runtimeId: input.runtimeId,
+            previewKind: agentFilePreviewKindFor(mimeType, originalFilename),
+            ...(shouldNormalizeDocx
+              ? {
+                  wordCompatibility: "LIBREOFFICE_REBUILT",
+                  agentFileSourceSha256: sourceSha256,
+                  agentFileSourceByteSize: sourceSize
+                }
+              : {}),
+            ...(input.backfillProvenance
+              ? {
+                  backfillSourceStorageUri: input.backfillProvenance.sourceStorageUri,
+                  backfillSourceArtifactId: input.backfillProvenance.sourceArtifactId
+                }
+              : {})
+          }
+        },
+        input.traceId, filePath
+      );
+    } catch (error) {
+      if (!(error instanceof UploadRecordUncertainError)) await unlink(filePath).catch(() => undefined);
+      throw error;
+    }
+  } finally { await storageHandle?.close(); await sourceHandle?.close(); }
 }
 
 export interface BackfillAgentFileInput {
@@ -565,16 +607,16 @@ function localAgentFilePath(artifactRoot: string, artifact: Artifact): string {
 }
 
 async function verifyFileHash(filePath: string, expectedSha256: string, expectedByteSize: number): Promise<void> {
-  const fileStat = await stat(filePath);
-  if (!fileStat.isFile() || fileStat.size !== expectedByteSize) {
-    throw new Error("Agent File integrity verification failed: stored file size does not match.");
-  }
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
-  const sha256 = hash.digest("hex");
-  if (sha256 !== expectedSha256) {
-    throw new Error("Agent File integrity verification failed: stored file hash does not match.");
-  }
+  const handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const fileStat = await handle.stat();
+    if (!fileStat.isFile() || fileStat.size !== expectedByteSize) {
+      throw new Error("Agent File integrity verification failed: stored file size does not match.");
+    }
+    const hash = createHash("sha256");
+    for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk);
+    if (hash.digest("hex") !== expectedSha256) throw new Error("Agent File integrity verification failed: stored file hash does not match.");
+  } finally { await handle.close(); }
 }
 
 export async function backfillAgentFile(input: BackfillAgentFileInput): Promise<BackfillAgentFileResult> {

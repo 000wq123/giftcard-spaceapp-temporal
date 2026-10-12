@@ -2,7 +2,7 @@ import { SurfaceErrorBoundary } from "./features/SurfaceErrorBoundary.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { clearStaleBuildRecoveryGuard, handleStaleBuildLoadError, renderReloadFallback } from "./entry-load-recovery.js";
-import { resolveEntryRoute } from "./entry-route.js";
+import { PUBLIC_SITE_URL, resolveEntryRoute } from "./entry-route.js";
 import { enableStrictCspCompatibility } from "./strict-csp.js";
 import {
   appDiagnosticsSessionIsAuthenticated,
@@ -25,12 +25,13 @@ async function mount() {
     const diagnosticsStartup = startAppDiagnosticsBootstrap();
     await diagnosticsStartup.beforeMount;
   }
-  const root = createRoot(document.getElementById("root")!);
-  if (route === "homepage") {
-    const { Homepage } = await import("./features/homepage/Homepage.js");
-    root.render(<StrictMode><SurfaceErrorBoundary><Homepage /></SurfaceErrorBoundary></StrictMode>);
+  if (route === "public-site") {
+    // The old in-app homepage was retired; the public site is spaceapp.dev.
+    window.location.replace(PUBLIC_SITE_URL);
     return route;
   }
+  const root = createRoot(document.getElementById("root")!);
+
 
   await import("./styles.css");
   if (route === "demo") {
@@ -41,15 +42,20 @@ async function mount() {
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
   }
-  const [{ LiveSpaceApp }, { readUiTheme }] = await Promise.all([
+  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }] = await Promise.all([
     import("./live/LiveSpaceApp.js"),
-    import("./ui-theme.js")
+    import("./ui-theme.js"),
+    import("./features/ui-theme/icon-pack-registry.js")
   ]);
+  document.documentElement.dataset.uiBackground = readUiBackground(window.localStorage);
+  // Non-default icon packs load on demand; await the stored one like the theme CSS.
+  const iconPackReady = loadAppIconPack(readModernIconPack(window.localStorage)).catch(() => undefined);
   if (readUiTheme(window.localStorage) !== "classic") {
     await import("./features/ui-theme/modern-theme.css");
     await import("./features/ui-theme/codex-theme.css");
     await import("./features/ui-theme/motion-theme.css");
   }
+  await iconPackReady;
   root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /></SurfaceErrorBoundary></StrictMode>);
   return route;
 }

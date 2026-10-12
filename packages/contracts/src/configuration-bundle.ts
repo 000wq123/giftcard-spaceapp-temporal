@@ -19,7 +19,9 @@ export const configBundleMetadataSchema = z.object({
   clipboardItemsCount: z.number().int().nonnegative(),
   taskItemsCount: z.number().int().nonnegative(),
   cliRuntimesCount: z.number().int().nonnegative(),
-  providersCount: z.number().int().nonnegative()
+  providersCount: z.number().int().nonnegative(),
+  apiKeysCount: z.number().int().nonnegative().optional(),
+  credentialsCount: z.number().int().nonnegative().optional()
 });
 
 export const configBundleSourceSchema = z.object({
@@ -41,7 +43,9 @@ export const spaceConfigDataSchema = z.object({
   cliRuntimeSettings: z.array(cliRuntimeSettingSchema).default([]),
   codexCliModeDefaults: codexCliModeDefaultsSchema.optional(),
   providerSettings: providerSettingsSchema.optional(),
-  providers: z.array(providerSchema).default([])
+  providers: z.array(providerSchema).default([]),
+  apiKeys: z.record(z.string(), z.string()).optional(),
+  credentials: z.record(z.string(), z.string()).optional()
 });
 
 export const spaceConfigBundleSchema = z.object({
@@ -59,6 +63,8 @@ export type SpaceConfigRoom = z.infer<typeof spaceConfigRoomSchema>;
 export const exportConfigOptionsSchema = z.object({
   userId: z.string().optional(),
   includeClosedPanes: z.boolean().optional().default(false),
+  includeApiKeys: z.boolean().optional().default(false),
+  includeCredentials: z.boolean().optional().default(false),
   sections: z.array(z.enum([
     "rooms",
     "userSettings",
@@ -66,7 +72,9 @@ export const exportConfigOptionsSchema = z.object({
     "clipboardItems",
     "taskItems",
     "cliRuntimeSettings",
-    "providers"
+    "providers",
+    "apiKeys",
+    "credentials"
   ])).optional()
 });
 export type ExportConfigOptions = z.input<typeof exportConfigOptionsSchema>;
@@ -77,6 +85,10 @@ export type ImportConfigMode = z.infer<typeof importConfigModeSchema>;
 export const importConfigOptionsSchema = z.object({
   mode: importConfigModeSchema.optional().default("replace"),
   targetUserId: z.string().optional(),
+  importApiKeys: z.boolean().optional().default(true),
+  importCredentials: z.boolean().optional().default(true),
+  secretsDir: z.string().optional(),
+  credentialsDir: z.string().optional(),
   pathRewrite: z.object({
     from: z.string(),
     to: z.string()
@@ -102,7 +114,9 @@ export const importConfigResultSchema = z.object({
     tasksImported: z.number().int().nonnegative(),
     settingsUpdated: z.boolean(),
     cliRuntimesImported: z.number().int().nonnegative(),
-    providersImported: z.number().int().nonnegative()
+    providersImported: z.number().int().nonnegative(),
+    apiKeysImported: z.number().int().nonnegative().optional(),
+    credentialsImported: z.number().int().nonnegative().optional()
   }),
   warnings: z.array(z.string()).default([])
 });

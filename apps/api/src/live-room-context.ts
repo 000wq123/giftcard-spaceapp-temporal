@@ -23,10 +23,10 @@ export async function buildLiveRoomContext(input: {
       : observed?.state === "EXITED" ? "STOPPED" as const
       : observed?.state === "WAITING_FOR_INPUT" ? "WAITING_FOR_INPUT" as const
       : observed?.state === "RUNNING" && task?.status === "RUNNING" && task.timing?.source === "NATIVE" ? "RUNNING" as const
-      : observed?.state === "IDLE" && task?.status !== "RUNNING" ? "IDLE" as const
+      : (observed?.state === "IDLE" || (observed?.state === "RUNNING" && task?.status === "COMPLETED")) && task?.status !== "RUNNING" ? "IDLE" as const
       : "UNKNOWN" as const;
     return {
-      id: pane.id, title: pane.title, mode: pane.mode, runtimeId: pane.terminalRuntimeId ?? pane.providerId ?? null,
+      id: pane.id, title: pane.title, paneName: pane.paneName ?? null, mode: pane.mode, runtimeId: pane.terminalRuntimeId ?? pane.providerId ?? null,
       status: observed?.state ?? "UNKNOWN", activity,
       configuredModelId: observed?.configuredModelId ?? pane.modelId ?? null,
       effectiveModelId: observed?.effectiveModelId ?? (observed?.modelVerificationStatus === "VERIFIED" ? observed.modelId ?? null : null),

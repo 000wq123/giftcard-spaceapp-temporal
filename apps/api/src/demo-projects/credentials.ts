@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const keyLengthBytes = 32;
@@ -33,15 +33,33 @@ export class DemoCredentialStore {
     await chmod(this.root, 0o700);
     await mkdir(this.credentialDirectory, { recursive: true, mode: 0o700 });
     await chmod(this.credentialDirectory, 0o700);
+    await chmod(this.keyPath, 0o600).catch(() => undefined);
+    try {
+      const entries = await readdir(this.credentialDirectory, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          await chmod(join(this.credentialDirectory, entry.name), 0o600).catch(() => undefined);
+        }
+      }
+    } catch {
+      // Credential directory may be empty or newly created.
+    }
     await this.masterKey();
   }
 
   private async masterKey(): Promise<Buffer> {
     if (this.cachedKey) return this.cachedKey;
     try {
-      const info = await stat(this.keyPath);
-      if (!info.isFile() || fileMode(info.mode) !== 0o600) {
+      let info = await stat(this.keyPath);
+      if (!info.isFile()) {
         throw new Error("The demo credential master key permissions are invalid.");
+      }
+      if (fileMode(info.mode) !== 0o600) {
+        await chmod(this.keyPath, 0o600).catch(() => undefined);
+        info = await stat(this.keyPath);
+        if (fileMode(info.mode) !== 0o600) {
+          throw new Error("The demo credential master key permissions are invalid.");
+        }
       }
       const raw = (await readFile(this.keyPath, "utf8")).trim();
       const key = Buffer.from(raw, "base64");
@@ -98,9 +116,16 @@ export class DemoCredentialStore {
   async read(reference: string): Promise<Record<string, unknown>> {
     const key = await this.masterKey();
     const path = this.credentialPath(reference);
-    const info = await stat(path);
-    if (!info.isFile() || fileMode(info.mode) !== 0o600) {
+    let info = await stat(path);
+    if (!info.isFile()) {
       throw new Error("The demo credential file permissions are invalid.");
+    }
+    if (fileMode(info.mode) !== 0o600) {
+      await chmod(path, 0o600).catch(() => undefined);
+      info = await stat(path);
+      if (fileMode(info.mode) !== 0o600) {
+        throw new Error("The demo credential file permissions are invalid.");
+      }
     }
     const raw = await readFile(path, { encoding: "utf8" });
     if (Buffer.byteLength(raw) > maximumPayloadBytes) throw new Error("The demo credential payload is too large.");

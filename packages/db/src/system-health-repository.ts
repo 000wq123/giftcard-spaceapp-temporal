@@ -188,9 +188,14 @@ export class PostgresSystemHealthRepository implements SystemHealthRepository {
     );
   }
   async sweep(at: string) {
+    // resolution_seconds is constrained to 10/60/900; one range per resolution
+    // seeks the (resolution_seconds, bucket_at, metric_id) primary key instead
+    // of scanning every bucket once a minute.
     await this.pool.query(
-      `DELETE FROM system_health_metric_buckets WHERE bucket_at < $1::timestamptz -
-      CASE resolution_seconds WHEN 10 THEN interval '2 hours' WHEN 60 THEN interval '48 hours' ELSE interval '31 days' END`,
+      `DELETE FROM system_health_metric_buckets
+       WHERE (resolution_seconds = 10 AND bucket_at < $1::timestamptz - interval '2 hours')
+          OR (resolution_seconds = 60 AND bucket_at < $1::timestamptz - interval '48 hours')
+          OR (resolution_seconds = 900 AND bucket_at < $1::timestamptz - interval '31 days')`,
       [at],
     );
   }

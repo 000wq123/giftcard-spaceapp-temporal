@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LiveStatsWindow } from "./LiveStatsWindow.js";
 import { useLiveCoordinator, useLiveSessionState } from "./LiveSessionProvider.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
 export function LiveRailSession() {
   const coordinator = useLiveCoordinator();
@@ -89,7 +90,7 @@ export function LiveRailSession() {
             <span role="status">{state?.contextState === "ready" ? state.status : state?.enabled ? "Updating room context…" : "Disconnected"}</span>
             <button type="button" onClick={() => coordinator?.setMuted(!state?.muted)}>{state?.muted ? "Unmute" : "Mute"}</button>
             <button type="button" onClick={() => coordinator?.toggle()}>{state?.enabled ? "Disconnect" : "Connect"}</button>
-            <label><input type="checkbox" checked={roomOnly} onChange={event => setRoomOnly(event.target.checked)} />This room only</label>
+            <SpaceToggle className="live-rail-room-toggle" label="This room only" checked={roomOnly} onChange={setRoomOnly} />
             {state?.error ? <p role="alert">{state.error}</p> : null}
           </div>
           <div className="live-rail-conversation-body" ref={conversationBodyRef} aria-live="polite" onScroll={(event) => {

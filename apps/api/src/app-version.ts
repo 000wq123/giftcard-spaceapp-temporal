@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { apiPackageVersion } from "./package-version.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,13 +32,17 @@ export interface SemverParts {
 
 function normalizeVersion(value: string | undefined): string {
   const candidate = value?.trim();
-  if (!candidate) return "v0.1.0";
+  if (!candidate) return `v${apiPackageVersion}`;
   return candidate.startsWith("v") ? candidate : `v${candidate}`;
 }
 
 export function parseSemver(value: string): SemverParts | null {
   const match = SEMVER_PATTERN.exec(value.trim());
   if (!match) return null;
+  const core = match.slice(1, 4);
+  if (core.some((part) => !part || /^0\d/.test(part) || !Number.isSafeInteger(Number(part)))) return null;
+  if (match[4]?.split(".").some((part) => !part || /^0\d+$/.test(part))) return null;
+  if (match[5]?.split(".").some((part) => !part)) return null;
   return {
     major: Number.parseInt(match[1] ?? "0", 10),
     minor: Number.parseInt(match[2] ?? "0", 10),
@@ -64,7 +69,24 @@ export function compareSemver(left: string, right: string): number {
   if (a.prerelease === b.prerelease) return 0;
   if (a.prerelease === null) return 1;
   if (b.prerelease === null) return -1;
-  return a.prerelease.localeCompare(b.prerelease);
+  const leftParts = a.prerelease.split(".");
+  const rightParts = b.prerelease.split(".");
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const leftPart = leftParts[index];
+    const rightPart = rightParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) {
+      // BigInt avoids precision loss for long numeric prerelease identifiers.
+      return BigInt(leftPart) < BigInt(rightPart) ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart < rightPart ? -1 : 1;
+  }
+  return 0;
 }
 
 export function semverOffsetRecent(current: string, latest: string): number {

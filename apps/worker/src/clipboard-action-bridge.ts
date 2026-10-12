@@ -91,6 +91,8 @@ function formatClipboardItem(item: ClipboardItem, maximum: number): string {
     `characters=${item.characterCount}`,
     `lastUsedAt=${item.lastUsedAt}`
   ];
+  if (item.minimumReasoning) fields.push(`minimumReasoning=${item.minimumReasoning}`);
+  if (item.minimumModel) fields.push(`minimumModel=${redactMemoryText(item.minimumModel).slice(0, 160)}`);
   if (item.roomId) fields.push(`room=${item.roomId}`);
   if (item.paneId) fields.push(`pane=${item.paneId}`);
   if (item.paneTitle) fields.push(`paneTitle=${redactMemoryText(item.paneTitle).slice(0, 160)}`);
@@ -185,6 +187,9 @@ export async function executeClipboardActionBridge(input: {
         const agentPlan = saveAgentClipboardPlanInputSchema.parse({
           text: request.action.text,
           title: request.action.title,
+          minimumModel: request.action.minimumModel,
+          minimumReasoning: request.action.minimumReasoning,
+          steps: request.action.steps,
           roomId: input.turnInput.roomId,
           paneId: input.turnInput.paneId,
           paneTitle: await paneTitleForTurn(input.store, input.turnInput)
@@ -195,7 +200,7 @@ export async function executeClipboardActionBridge(input: {
           source: "PLAN"
         });
         lines.push(
-          `- EXECUTED clipboard:save-plan; id=${item.id}; title=${item.title ?? "(untitled)"}; characters=${item.characterCount}; occurrences=${item.occurrenceCount}`
+          `- EXECUTED clipboard:save-plan; id=${item.id}; title=${item.title ?? "(untitled)"}; minimumModel=${item.minimumModel ?? "(none)"}; minimumReasoning=${item.minimumReasoning ?? "(none)"}; characters=${item.characterCount}; occurrences=${item.occurrenceCount}`
         );
         executedActionCount += 1;
         continue;

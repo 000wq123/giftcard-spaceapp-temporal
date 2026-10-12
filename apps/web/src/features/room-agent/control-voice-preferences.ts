@@ -25,7 +25,8 @@ export async function applyControlVoicePreferences(input: unknown, isCurrent: ()
     language: patch.language === undefined ? current.language : voiceTranscriptionLanguageSchema.parse(patch.language) };
   writeVoiceComposerSettings(next);
   const readBack = readVoiceComposerSettings({ strict: true });
-  if (Object.keys(next).some(key => readBack[key as keyof typeof next] !== next[key as keyof typeof next])) {
+  // Compare by value: list preferences such as hidden shortcuts are fresh arrays on every read.
+  if (Object.keys(next).some(key => JSON.stringify(readBack[key as keyof typeof next]) !== JSON.stringify(next[key as keyof typeof next]))) {
     throw new Error("Voice preference read-back did not match the requested update. Inspect preferences before retrying.");
   }
   return { ok: true, evidence: { applied: true, persisted: true, scope: "BROWSER_VOICE_COMPOSER", changesActiveLiveSession: false,

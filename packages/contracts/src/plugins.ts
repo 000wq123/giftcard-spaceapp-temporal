@@ -70,7 +70,9 @@ export const pluginConnectionStateSchema = z.object({
 });
 
 export const pluginWithStateSchema = pluginCatalogItemSchema.extend({
-  connection: pluginConnectionStateSchema
+  connection: pluginConnectionStateSchema,
+  enabled: z.boolean().optional(),
+  available: z.boolean().optional()
 });
 
 export const connectPluginInputSchema = z.object({

@@ -1,7 +1,15 @@
 import { findCodexWriterThreads } from "./codex-thread-writer.js";
+import { qoderNativeSessionId, qoderNativeSessionIdPattern } from "./qoder-native-session.js";
 import { loadGeminiNativeTurns, geminiTurnActivity } from "./gemini-native-turns.js";
+import {
+  findLatestGeminiConversationIdForWorkspace,
+  geminiNativeConversationIdPattern,
+  readGeminiPaneConversation,
+  writeGeminiPaneConversation
+} from "./gemini-native-session.js";
 import { issueControlToken } from "./space-control-token.js";
 import { projectRoomTerminalScreen, restoreRoomTerminalGeometry } from "./room-terminal-screen.js";
+import { CLAUDE_EFFORT_LEVELS, CLAUDE_PANE_MODEL_PREFIX } from "./cli-native-model-picker.js";
 import { readRoomHostScreen, readRoomHostScreenSnapshot } from "./room-host-screen.js";
 import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
@@ -12,8 +20,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { WebSocket } from "ws";
 import {
-  CLI_UPLOAD_WRAPPED_PATH_PATTERN,
-  isUploadPathCutoff,
+  CLI_UPLOAD_PATH_HOLD_MS,
+  maskUploadPaths,
+  splitUploadPathOutput,
   CliHostClient,
   CliHostError,
   type CliHostAttachInput,
@@ -75,7 +84,9 @@ import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 import { findCliRunLifecycleAdapter } from "./cli-run-lifecycle-adapters.js";
 import { isCliRenderProofSession } from "./cli-render-proof-fixture.js";
 import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
-import { reasonixNativeSessionRefPattern } from "./reasonix-native-session.js";
+import { reasonixNativeSessionRefPattern, resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
+import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
+import { qwenNativeSessionIdPattern } from "./task-title-native.js";
 import {
   activeCliSessionObserverRuntime,
   isCliRuntimeTerminalLaunchable
@@ -148,7 +159,9 @@ function codexStartupProgressIndex(output: string): number {
     if (match.index !== undefined) {
       const current = Number.parseInt(match[1]!, 10);
       const total = Number.parseInt(match[2]!, 10);
-      if (current < total) {
+      // A complete newer Codex header supersedes old startup progress.
+      // Keep a pending progress marker in the current screen blocking input.
+      if (current < total && match.index > normalized.lastIndexOf("openai codex")) {
         return Number.MAX_SAFE_INTEGER;
       }
     }
@@ -156,16 +169,21 @@ function codexStartupProgressIndex(output: string): number {
   return progressIndex;
 }
 
-function latestCodexModelState(output: string): {
+interface CodexModelState {
   status: string;
   headerEndIndex: number;
   normalizedOutput: string;
-} | null {
+  latestHeaderIndex: number;
+  /** Start of a footer status line ("gpt-6-astra medium · /dir"), Codex 0.162+. */
+  footerIndex: number | null;
+}
+
+function latestCodexModelState(output: string): CodexModelState | null {
   const normalized = output.replace(codexControlAnsiPattern, "").toLowerCase();
   const latestHeaderIndex = normalized.lastIndexOf("openai codex");
   if (latestHeaderIndex < 0) return null;
   const latestScreen = normalized.slice(latestHeaderIndex);
-  let state: { status: string; headerEndIndex: number; normalizedOutput: string } | null = null;
+  let state: CodexModelState | null = null;
   for (const match of latestScreen.matchAll(
     /\bmodel:\s*([a-z0-9][a-z0-9._:-]*)(?:\s+([a-z0-9][a-z0-9._:-]*))?(?:\s+[·•]\s*\S+)?(?:\s+\/(?:[ \t]*\r?\n[ \t]*)?model\b)?/g
   )) {
@@ -174,7 +192,9 @@ function latestCodexModelState(output: string): {
     state = {
       status: isLoa ? "loading" : match[1],
       headerEndIndex: latestHeaderIndex + match.index + match[0].length,
-      normalizedOutput: normalized
+      normalizedOutput: normalized,
+      latestHeaderIndex,
+      footerIndex: null
     };
   }
   if (!state) {
@@ -186,7 +206,9 @@ function latestCodexModelState(output: string): {
       state = {
         status: match[1],
         headerEndIndex: latestHeaderIndex + match.index + match[0].length,
-        normalizedOutput: normalized
+        normalizedOutput: normalized,
+        latestHeaderIndex,
+        footerIndex: latestHeaderIndex + match.index
       };
     }
   }
@@ -210,8 +232,18 @@ export function codexInputReady(output: string): boolean {
   }
   if (modelState.status === "loading") return false;
   const promptIndex = modelState.normalizedOutput.lastIndexOf("›");
-  return promptIndex > modelState.headerEndIndex &&
-    promptIndex > codexStartupProgressIndex(modelState.normalizedOutput);
+  const progressIndex = codexStartupProgressIndex(modelState.normalizedOutput);
+  if (promptIndex > modelState.headerEndIndex && promptIndex > progressIndex) return true;
+  // Codex 0.162+ has no "model:" header line; it draws the loaded model in the
+  // footer after the composer ("› Ask Codex…  gpt-6-astra medium · /dir"), so
+  // the prompt precedes it. Accept that layout once the latest header's
+  // composer is followed by its footer with no newer loading or startup state.
+  const footerIndex = modelState.footerIndex;
+  return footerIndex !== null &&
+    promptIndex > modelState.latestHeaderIndex &&
+    footerIndex > promptIndex &&
+    footerIndex > progressIndex &&
+    footerIndex > modelState.normalizedOutput.lastIndexOf("loading");
 }
 
 export function geminiInputReady(output: string): boolean {
@@ -294,6 +326,7 @@ interface ManagedCliSession {
   hostOutputQueue: CliHostOutputBatch[];
   hostOutputFlushTimer: ReturnType<typeof setTimeout> | null;
   pendingHiddenTail: string;
+  pendingHiddenTailEvent: Extract<CliHostEvent, { type: "output" }> | null;
   pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
   nextTranscriptSequence: number;
   persistQueue: Promise<void>;
@@ -533,6 +566,7 @@ export interface CliEnvironmentContext {
   accountProfileId?: string | null;
   modelId?: string | null;
   reasoningEffort?: string | null;
+  geminiConversationId?: string | null;
 }
 
 interface CliTerminalConnection {
@@ -572,7 +606,29 @@ export interface CliTerminalManagerOptions {
   onTelemetry?: (event: CliTerminalManagerTelemetryEvent) => void;
   onTaskInput?: (paneId: string) => void;
   withOperatorMutation?: <T>(paneId: string, work: () => Promise<T>) => Promise<T>;
+  /**
+   * The exact native task to resume when a host-lost session of a runtime that declares
+   * REFERENCE resume has no recorded reference. Defaults to the DeepSeek (Reasonix)
+   * session index match that task-history resume uses; null restarts fresh.
+   */
+  resolveHostLossNativeTaskRef?: HostLossNativeTaskRefResolver;
 }
+
+export type HostLossNativeTaskRefResolver = (input: {
+  session: PaneCliSession;
+  firstUserMessage: string | null;
+  cwd: string | null;
+}) => Promise<string | null>;
+
+const defaultHostLossNativeTaskRefResolver: HostLossNativeTaskRefResolver = async ({ session, firstUserMessage, cwd }) => {
+  if (session.runtimeId !== "cli:deepseek") return null;
+  const startedAtMs = Date.parse(session.startedAt);
+  return resolveReasonixNativeSessionRef({
+    workspace: cwd ?? session.cwd ?? "/etc",
+    firstUserMessage,
+    ...(Number.isFinite(startedAtMs) ? { paneStartedAtMs: startedAtMs } : {})
+  });
+};
 
 export interface CliTerminalManagerTelemetryEvent {
   event:
@@ -709,6 +765,7 @@ type CliSpawnSession = Pick<PaneCliSession, "codexThreadId" | "modelId"> & {
   codexResumeModelId?: string | null;
   codexResumeReasoningEffort?: string | null;
   nativeTaskRef?: string | null;
+  sessionId?: string;
 };
 
 export function supportsNativeCliResume(runtimeId: string): boolean {
@@ -875,18 +932,34 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     if (runtimeDescriptor) Object.assign(env, runtimeDescriptor.environment);
     else env.CODEX_HOME = home;
   }
+  if (runtimeDescriptor?.accountProfileEnv && context.accountProfileId && context.accountProfileId !== "main") {
+    // The descriptor names the variable its wrapper reads; its sudoers keeps it (cli-adapter-runtime-contract.test.ts).
+    env[runtimeDescriptor.accountProfileEnv] = context.accountProfileId;
+  }
+  if (context.runtimeId === "cli:claude") {
+    // Only a pane's own pick pins its model; the runtime's generic default id never does.
+    const family = context.modelId?.startsWith(CLAUDE_PANE_MODEL_PREFIX) ? context.modelId.slice(CLAUDE_PANE_MODEL_PREFIX.length) : null;
+    if (family && /^(?:opus|fable|sonnet|haiku)$/.test(family)) {
+      env.SPACE_CLAUDE_MODEL = family;
+      if (context.reasoningEffort && (CLAUDE_EFFORT_LEVELS as readonly string[]).includes(context.reasoningEffort)) {
+        env.SPACE_CLAUDE_EFFORT = context.reasoningEffort;
+      }
+    }
+  }
   if (
-    (context.runtimeId === "cli:gemini" || context.runtimeId === "cli:copilot" || context.runtimeId === "cli:cursor") &&
-    context.accountProfileId &&
-    context.accountProfileId !== "main"
+    runtimeDescriptor?.paneModelLaunchEnv &&
+    context.modelId &&
+    context.modelId !== runtimeDescriptor.defaultModelId
   ) {
-    if (context.runtimeId === "cli:gemini") env.SPACE_GEMINI_ACCOUNT_PROFILE = context.accountProfileId;
-    if (context.runtimeId === "cli:copilot") env.SPACE_COPILOT_ACCOUNT_PROFILE = context.accountProfileId;
-    if (context.runtimeId === "cli:cursor") env.SPACE_CURSOR_ACCOUNT_PROFILE = context.accountProfileId;
+    // Codex/Antigravity parity: a pane's own model pick starts the CLI on that model. The wrapper
+    // validates the id and maps it to the CLI's native --model/--effort flags.
+    env.SPACE_CLI_MODEL_ID = context.modelId;
+    if (context.reasoningEffort) env.SPACE_CLI_REASONING_EFFORT = context.reasoningEffort;
   }
   if (context.runtimeId === "cli:gemini") {
     if (context.modelId) env.SPACE_GEMINI_MODEL = context.modelId;
     if (context.reasoningEffort) env.SPACE_GEMINI_EFFORT = context.reasoningEffort;
+    if (context.geminiConversationId) env.SPACE_GEMINI_CONVERSATION_ID = context.geminiConversationId;
   }
   if (runtimeDescriptor?.loginBootstrapRuntimeEnv && config.cliLoginBootstrap[runtimeDescriptor.key]) {
     env[runtimeDescriptor.loginBootstrapRuntimeEnv] = "1";
@@ -949,6 +1022,38 @@ export function buildCliSpawnArgs(runtime: AgentRuntime, session?: CliSpawnSessi
     // the only store its own resume resolver enumerates (it writes new sessions
     // into its linear/v4 store). See reasonix-native-session.ts.
     return ["--resume", session.nativeTaskRef];
+  }
+  if (
+    runtime.id === "cli:gemini" &&
+    (session?.launchMode === "RESUME" || session?.codexThreadId || session?.nativeTaskRef)
+  ) {
+    return ["--continue"];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:claude" &&
+    session.nativeTaskRef &&
+    claudeNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    // A bare --resume opens Claude's session picker; the recorded native session resumes exactly.
+    return ["--resume", session.nativeTaskRef];
+  }
+  if (
+    session?.launchMode === "RESUME" &&
+    runtime.id === "cli:qwen" &&
+    session.nativeTaskRef &&
+    qwenNativeSessionIdPattern.test(session.nativeTaskRef)
+  ) {
+    // The ref is the session the metadata bridge bound to this pane's process; without one,
+    // Qwen falls back to its provider-selection `--continue` below.
+    return ["--resume", session.nativeTaskRef];
+  }
+  if (runtime.id === "cli:qoder" && session?.sessionId) {
+    // Qoder runs in a session Space can name: resume that exact one rather than the folder's latest.
+    const ref = session.nativeTaskRef && qoderNativeSessionIdPattern.test(session.nativeTaskRef)
+      ? session.nativeTaskRef
+      : qoderNativeSessionId(session.sessionId);
+    return session.launchMode === "RESUME" ? ["-r", ref] : ["--session-id", ref];
   }
   if (session?.launchMode === "RESUME" && runtimeDescriptor?.nativeResumeArgs) {
     return [...runtimeDescriptor.nativeResumeArgs];
@@ -1047,14 +1152,14 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
   const sql = `
     SELECT id
     FROM threads
-    WHERE cwd = ${sqliteQuote(input.cwd)}
-      AND coalesce(archived, 0) = 0
+    WHERE coalesce(archived, 0) = 0
       AND thread_source = 'user'
       AND agent_path IS NULL
       AND ${writerThreads.length
         ? `id IN (${writerThreads.map(sqliteQuote).join(", ")})`
         : `substr(rollout_path, 1, length(${quotedRolloutRoot})) = ${quotedRolloutRoot}`}
     ORDER BY
+      (cwd = ${sqliteQuote(input.cwd)}) DESC,
       coalesce(recency_at_ms, updated_at_ms, created_at_ms, 0) DESC,
       coalesce(updated_at_ms, created_at_ms, 0) DESC,
       id DESC
@@ -1841,6 +1946,15 @@ export class CliTerminalManager {
     return { text, revision };
   }
 
+  /** The room screen with faint cells blanked, read on demand for draft checks; never cached. */
+  async observeRoomScreenUndimmed(sessionId: string): Promise<string> {
+    const managed = this.sessions.get(sessionId);
+    if (managed) await this.flushHostOutput(managed);
+    const chunks = await this.options.store.listPaneCliTranscriptChunks(sessionId, 256);
+    const output = chunks.filter((chunk) => chunk.stream !== "stdin" && chunk.stream !== "system").slice(-256);
+    return projectRoomTerminalScreen(output.map(chunk => chunk.content), managed?.roomScreenCols ?? 100, managed?.roomScreenRows ?? 30, true, true);
+  }
+
   /**
    * Nudge a fullscreen TUI into repainting its current frame without typing.
    * A same-dimensions resize only repaints changed regions, which is not
@@ -1980,6 +2094,9 @@ export class CliTerminalManager {
     if (session.purpose === "NORMAL" && inputResult?.accepted !== false && terminalData.trim()) {
       this.scheduleCodexNullAgentMessageCheck(managed, markerAtMs - 1000, terminalData);
       this.scheduleCodexThreadBind(managed, markerAtMs - 1000);
+      if (managed.runtimeId === "cli:gemini") {
+        this.scheduleGeminiConversationBind(managed);
+      }
     }
     if (terminalData.trim()) {
       await this.options.store.touchPaneCliSessionActivity(sessionId, traceId);
@@ -2126,7 +2243,10 @@ export class CliTerminalManager {
       const tracked = recovery ?? this.sessions.get(sessionId)?.turnMarkers.get(marker);
       if (!tracked) return unavailable;
       const native = await this.readGeminiTurns(persisted);
-      return native ? geminiTurnActivity(native.turns, marker, tracked) : unavailable;
+      if (!native) return unavailable;
+      const activity = geminiTurnActivity(native.turns, marker, tracked);
+      if (activity.turnId && !tracked.turnId) tracked.turnId = activity.turnId;
+      return activity;
     }
     if ((!managed || managed.closed) && recovery) {
       const session = persisted ?? await this.options.store.getPaneCliSession(sessionId);
@@ -2193,7 +2313,8 @@ export class CliTerminalManager {
 
   private async readGeminiTurns(session: PaneCliSession) {
     const host = await this.inspectSessionHost(session).catch(() => null);
-    return loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: host?.pid ?? null }).catch(() => null);
+    // Prompt delivery waits on this read; never answer it from the shared cache.
+    return loadGeminiNativeTurns({ paneId: session.paneId, sessionId: session.sessionId, rootPid: host?.pid ?? null }, { fresh: true }).catch(() => null);
   }
 
   async getCurrentTurnActivity(sessionId: string): Promise<CodexCliTurnActivity> {
@@ -2550,17 +2671,40 @@ export class CliTerminalManager {
     const boundSession = codexForkThreadId
       ? baseSession
       : restoringAfterHostLoss
-        ? await this.bindCodexThreadIdBeforeResume(session, traceId)
+        ? session.runtimeId === "cli:gemini"
+          ? await this.bindGeminiConversationIdBeforeResume(session, traceId)
+          : await this.bindCodexThreadIdBeforeResume(session, traceId)
         : session;
-    const nativeTaskRef = session.cliTaskRevisionId
-      ? (await this.options.store.getCliTaskRevision(session.cliTaskRevisionId))?.nativeTaskRef ?? null
+    const taskRevision = session.cliTaskRevisionId
+      ? await this.options.store.getCliTaskRevision(session.cliTaskRevisionId)
       : null;
+    let nativeTaskRef = taskRevision?.nativeTaskRef ?? null;
+    // A runtime that declares REFERENCE resume but has no provider-selection form
+    // (DeepSeek) resumes a host-lost session only with its exact native task.
+    const declaresReference = findCliRuntimeDescriptor(session.runtimeId)?.declaresNativeReference === true;
+    if (restoringAfterHostLoss && declaresReference && !nativeTaskRef &&
+      !supportsNativeCliResume(session.runtimeId) && !boundSession.codexThreadId) {
+      nativeTaskRef = await (this.options.resolveHostLossNativeTaskRef ?? defaultHostLossNativeTaskRefResolver)({
+        session, firstUserMessage: taskRevision?.firstUserMessage || null, cwd: taskRevision?.cwd ?? session.cwd
+      }).catch(() => null);
+    }
     const baseSpawnSession: CliSpawnSession = codexForkThreadId
       ? await this.withCodexHistoryForkSettings(session, codexForkThreadId)
       : restoringAfterHostLoss
         ? await this.withCodexResumeSettings(boundSession)
         : boundSession;
-    const spawnSession: CliSpawnSession = { ...baseSpawnSession, nativeTaskRef };
+    const effectiveLaunchMode =
+      restoringAfterHostLoss && (
+        supportsNativeCliResume(session.runtimeId) || Boolean(boundSession.codexThreadId) ||
+        (declaresReference && Boolean(nativeTaskRef))
+      )
+        ? "RESUME" as const
+        : baseSpawnSession.launchMode;
+    const spawnSession: CliSpawnSession = {
+      ...baseSpawnSession,
+      launchMode: effectiveLaunchMode,
+      nativeTaskRef: nativeTaskRef ?? (boundSession.runtimeId === "cli:gemini" ? boundSession.codexThreadId : null)
+    };
     const env = buildCliEnvironment(this.options.config, {
       roomId: session.roomId,
       paneId: session.paneId,
@@ -2571,7 +2715,8 @@ export class CliTerminalManager {
       sessionAllocatedMonotonicNs: inspected ? undefined : this.sessionAllocationMonotonicNs(session.sessionId),
       accountProfileId: session.accountProfileId,
       modelId: boundSession.modelId,
-      reasoningEffort: boundSession.reasoningEffort
+      reasoningEffort: boundSession.reasoningEffort,
+      geminiConversationId: boundSession.codexThreadId ?? spawnSession.nativeTaskRef ?? undefined
     });
     if (env.TMPDIR && !isDirectOperatorParityRuntime(session.runtimeId)) {
       await mkdir(env.TMPDIR, { recursive: true });
@@ -2695,6 +2840,7 @@ export class CliTerminalManager {
       hostOutputQueue: [],
       hostOutputFlushTimer: null,
       pendingHiddenTail: "",
+      pendingHiddenTailEvent: null,
       pendingHiddenTailTimer: null,
       nextTranscriptSequence: (transcript.at(-1)?.sequence ?? -1) + 1,
       persistQueue: Promise.resolve(),
@@ -2734,7 +2880,7 @@ export class CliTerminalManager {
       session.sessionId,
       {
         status: "RUNNING",
-        launchMode: "FRESH",
+        launchMode: restoringAfterHostLoss ? "RESUME" : "FRESH",
         statusReason:
           replayContinuity === "TRUNCATED"
             ? "CLI terminal reattached after earlier unpersisted output exceeded the host replay window."
@@ -2745,7 +2891,9 @@ export class CliTerminalManager {
                 : session.launchMode === "RESUME"
                   ? "CLI process attached in native task resume mode."
                 : restoringAfterHostLoss
-                  ? "CLI host process was recreated with exact Codex thread, model, and reasoning resume settings."
+                  ? (session.runtimeId === "cli:codex"
+                      ? "CLI host process was recreated with exact Codex thread, model, and reasoning resume settings."
+                      : `${runtime.displayName} host process recreated with exact resume after host loss.`)
                   : "CLI process attached to the independent pane host.",
         isActive: true
       },
@@ -2782,7 +2930,7 @@ export class CliTerminalManager {
       store: this.options.store,
       paneId: session.paneId,
       sessionId: session.sessionId,
-      cwd: codexDirectParityCwd,
+      cwd: session.cwd ?? codexDirectParityCwd,
       findThreadId: this.options.findCodexThreadId
     });
     if (!codexThreadId) return session;
@@ -2795,6 +2943,62 @@ export class CliTerminalManager {
       }
       throw error;
     }
+  }
+
+  private async bindGeminiConversationIdBeforeResume(session: PaneCliSession, traceId: string): Promise<PaneCliSession> {
+    if (session.runtimeId !== "cli:gemini") return session;
+    let conversationId = session.codexThreadId && geminiNativeConversationIdPattern.test(session.codexThreadId)
+      ? session.codexThreadId
+      : null;
+    if (!conversationId && session.cliTaskRevisionId) {
+      const revision = await this.options.store.getCliTaskRevision(session.cliTaskRevisionId);
+      if (revision?.nativeTaskRef && geminiNativeConversationIdPattern.test(revision.nativeTaskRef)) {
+        conversationId = revision.nativeTaskRef;
+      }
+    }
+    if (!conversationId) {
+      conversationId = await readGeminiPaneConversation(session.paneId);
+    }
+    if (!conversationId && session.cwd) {
+      conversationId = await findLatestGeminiConversationIdForWorkspace(session.cwd, session.accountProfileId);
+    }
+    if (conversationId && geminiNativeConversationIdPattern.test(conversationId)) {
+      await writeGeminiPaneConversation(session.paneId, conversationId);
+      try {
+        await this.options.store.claimPaneCliCodexThread(session.sessionId, conversationId, "AUTO", traceId);
+        return (await this.options.store.getPaneCliSession(session.sessionId)) ?? session;
+      } catch (error) {
+        if (error instanceof SpaceConflictError) {
+          return session;
+        }
+        throw error;
+      }
+    }
+    return session;
+  }
+
+  private scheduleGeminiConversationBind(managed: ManagedCliSession): void {
+    if (managed.closed || managed.codexThreadId) return;
+    const bind = async () => {
+      let conversationId = await readGeminiPaneConversation(managed.paneId);
+      if (!conversationId && managed.cwd) {
+        conversationId = await findLatestGeminiConversationIdForWorkspace(managed.cwd, null);
+      }
+      if (conversationId && geminiNativeConversationIdPattern.test(conversationId)) {
+        try {
+          await this.options.store.claimPaneCliCodexThread(
+            managed.sessionId,
+            conversationId,
+            "AUTO",
+            "req:cli-gemini-conversation-bind"
+          );
+          managed.codexThreadId = conversationId;
+        } catch {
+          // Non-blocking conflict or failure
+        }
+      }
+    };
+    setTimeout(() => { void bind().catch(() => undefined); }, 3000).unref?.();
   }
 
   private async codexHistoryTransferForkThreadId(session: PaneCliSession): Promise<string | null> {
@@ -2827,7 +3031,7 @@ export class CliTerminalManager {
     try {
       const settings = await findResumeSettings({
         threadId: session.codexThreadId,
-        cwd: codexDirectParityCwd
+        cwd: session.cwd ?? codexDirectParityCwd
       });
       if (!settings) return session;
       return {
@@ -3584,17 +3788,8 @@ export class CliTerminalManager {
         if (chunk.stream !== "stdout" && chunk.stream !== "stderr") continue;
         if (!chunk.content) continue;
         const raw = replayPendingTail ? `${replayPendingTail}${chunk.content}` : chunk.content;
-        replayPendingTail = "";
-        let content = raw.includes("/cli-uploads/")
-          ? raw.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "")
-          : raw;
-        if (content.includes("/cli-uploads/")) {
-          const cutoff = isUploadPathCutoff(content);
-          if (cutoff >= 0) {
-            replayPendingTail = content.slice(cutoff);
-            content = content.slice(0, cutoff);
-          }
-        }
+        const { visible: content, held } = splitUploadPathOutput(raw);
+        replayPendingTail = held;
         if (!content) continue;
         const frames = this.serialize({ type: "output", stream: chunk.stream, data: content });
         this.sendSerialized(socket, frames);
@@ -3605,11 +3800,8 @@ export class CliTerminalManager {
         }
       }
       if (replayPendingTail) {
-        const stripped = replayPendingTail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-        if (stripped && !stripped.includes("/cli-uploads/") && isUploadPathCutoff(stripped) < 0) {
-          const frames = this.serialize({ type: "output", stream: "stdout", data: stripped });
-          this.sendSerialized(socket, frames);
-        }
+        const frames = this.serialize({ type: "output", stream: "stdout", data: maskUploadPaths(replayPendingTail) });
+        this.sendSerialized(socket, frames);
       }
     }, replayPrerequisite, false);
     await transcriptReplay;
@@ -3778,6 +3970,34 @@ export class CliTerminalManager {
     return next;
   }
 
+  private emitHostOutput(
+    managed: ManagedCliSession,
+    event: Extract<CliHostEvent, { type: "output" }>,
+    data: string
+  ): void {
+    if (!data) return;
+    managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
+    managed.controlOutputRevision += 1;
+    this.scheduleQwenAuthBootstrap(managed);
+    if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
+      managed.startupOutput = `${managed.startupOutput}${data}`.slice(-16_000);
+    }
+    this.broadcast(managed, { type: "output", stream: event.stream, data });
+    this.bufferHostOutput(managed, { ...event, data });
+  }
+
+  private flushHeldHostOutput(managed: ManagedCliSession): void {
+    if (managed.pendingHiddenTailTimer !== null) {
+      clearTimeout(managed.pendingHiddenTailTimer);
+      managed.pendingHiddenTailTimer = null;
+    }
+    const tail = managed.pendingHiddenTail;
+    const event = managed.pendingHiddenTailEvent;
+    managed.pendingHiddenTail = "";
+    managed.pendingHiddenTailEvent = null;
+    if (tail && event) this.emitHostOutput(managed, event, maskUploadPaths(tail));
+  }
+
   private handleHostEvent(managed: ManagedCliSession, event: CliHostEvent): void {
     if (managed.closed) return;
     if (event.type === "output") {
@@ -3787,39 +4007,21 @@ export class CliTerminalManager {
       }
       const raw = managed.pendingHiddenTail ? `${managed.pendingHiddenTail}${event.data}` : event.data;
       managed.pendingHiddenTail = "";
-      let data = raw.includes("/cli-uploads/")
-        ? raw.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "")
-        : raw;
-      if (data.includes("/cli-uploads/")) {
-        const cutoff = isUploadPathCutoff(data);
-        if (cutoff >= 0) {
-          managed.pendingHiddenTail = data.slice(cutoff);
-          data = data.slice(0, cutoff);
-          managed.pendingHiddenTailTimer = setTimeout(() => {
-            managed.pendingHiddenTailTimer = null;
-            const tail = managed.pendingHiddenTail;
-            managed.pendingHiddenTail = "";
-            if (tail) {
-              const strippedTail = tail.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-              if (strippedTail && !strippedTail.includes("/cli-uploads/") && isUploadPathCutoff(strippedTail) < 0) {
-                this.broadcast(managed, { type: "output", stream: event.stream, data: strippedTail });
-                this.bufferHostOutput(managed, { ...event, data: strippedTail });
-              }
-            }
-          }, 1500);
-        }
+      managed.pendingHiddenTailEvent = null;
+      // Upload paths are masked in place; bytes are never removed or dropped
+      // because TUIs with relative cursor rendering corrupt otherwise.
+      const { visible, held } = splitUploadPathOutput(raw);
+      if (held) {
+        managed.pendingHiddenTail = held;
+        managed.pendingHiddenTailEvent = event;
+        managed.pendingHiddenTailTimer = setTimeout(() => {
+          if (!managed.closed) this.flushHeldHostOutput(managed);
+        }, CLI_UPLOAD_PATH_HOLD_MS);
       }
-      if (!data) return;
-      managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
-      if (data.length > 0) managed.controlOutputRevision += 1;
-      this.scheduleQwenAuthBootstrap(managed);
-      if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
-        managed.startupOutput = `${managed.startupOutput}${data}`.slice(-16_000);
-      }
-      this.broadcast(managed, { type: "output", stream: event.stream, data });
-      this.bufferHostOutput(managed, { ...event, data });
+      this.emitHostOutput(managed, event, visible);
       return;
     }
+    this.flushHeldHostOutput(managed);
     if (managed.purpose === "LOGIN") {
       if (event.status === "EXITED" && event.exitCode === 0) {
         this.handleSuccessfulLoginExit(managed);
@@ -3829,10 +4031,6 @@ export class CliTerminalManager {
       return;
     }
     managed.closed = true;
-    if (managed.pendingHiddenTailTimer !== null) {
-      clearTimeout(managed.pendingHiddenTailTimer);
-      managed.pendingHiddenTailTimer = null;
-    }
     this.sessions.delete(managed.sessionId);
     managed.controlOutput = "";
     managed.startupOutput = "";
@@ -4351,7 +4549,7 @@ export class CliTerminalManager {
       store: this.options.store,
       paneId: managed.paneId,
       sessionId: managed.sessionId,
-      cwd: codexDirectParityCwd,
+      cwd: managed.cwd ?? codexDirectParityCwd,
       findThreadId: this.options.findCodexThreadId
     });
     if (codexThreadId) {

@@ -1,19 +1,24 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 
 export const RAIL_ORDER_KEY = 'space:room-rail-order:v1';
 export const RAIL_IDS = ['previous', 'next', 'rooms', 'create', 'layout', 'sticky', 'keyboard', 'music', 'snip-tool', 'live-model', 'quick-links', 'docks', 'tools', 'fullscreen', 'expand'];
 
 export const UPPER_RAIL_ORDER_KEY = 'space:upper-rail-order:v1';
-export const UPPER_RAIL_IDS = ['agents-dashboard', 'minimized-bar', 'accounts', 'codex-reset', 'cli', 'memory', 'cpu', 'rtt'];
+export const UPPER_RAIL_IDS = ['minimized-bar', 'agents-dashboard', 'accounts', 'codex-reset', 'cli', 'memory', 'cpu', 'rtt'];
 
 export const LOWER_RAIL_ORDER_KEY = RAIL_ORDER_KEY;
 export const LOWER_RAIL_IDS = RAIL_IDS;
 
 export function normalizeRailOrder(value: unknown, allowedIds: string[] = RAIL_IDS): string[] {
   const existing = [...new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && allowedIds.includes(id)) : [])];
-  // Introduce the dashboard at the top once, preserving every existing relative order.
-  if (allowedIds === UPPER_RAIL_IDS && !existing.includes('agents-dashboard')) existing.unshift('agents-dashboard');
+  if (allowedIds === UPPER_RAIL_IDS) {
+    const withoutMinBar = existing.filter(id => id !== 'minimized-bar');
+    if (!withoutMinBar.includes('agents-dashboard')) withoutMinBar.unshift('agents-dashboard');
+    const missing = allowedIds.filter(id => id !== 'minimized-bar' && !withoutMinBar.includes(id));
+    return ['minimized-bar', ...withoutMinBar, ...missing];
+  }
   const missing = allowedIds.filter(id => !existing.includes(id));
   if (missing.length === 0) return existing;
   const expandIndex = existing.indexOf('expand');
@@ -77,7 +82,14 @@ export function useRailOrder(
     const clear = () => icons.forEach(icon => icon.removeAttribute('data-drop-position'));
     const save = (next: string[]) => {
       setOrder(next);
-      try { getSpaceRuntime().platform.localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Session order still works. */ }
+      try {
+        getSpaceRuntime().platform.localStorage.setItem(storageKey, JSON.stringify(next));
+        if (group === "upper") {
+          saveUserSettingDebounced("upperRailOrder", next);
+        } else {
+          saveUserSettingDebounced("lowerRailOrder", next);
+        }
+      } catch { /* Session order still works. */ }
     };
     const start = (event: DragEvent) => {
       const icon = iconAt(event.target);

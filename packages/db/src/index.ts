@@ -77,3 +77,18 @@ export * from "./space-control-repository.js";
 export * from "./live-memory-repository.js";
 export * from "./demo-projects-repository.js";
 export * from "./live-history-repository.js";
+export * from "./source-control-repository.js";
+
+export * from "./plan-execution-repository.js";
+export * from "./dots-repository.js";
+export * from "./dot-goals-repository.js";
+export * from "./dot-schedules-repository.js";
+export * from "./dot-memory-repository.js";
+export * from "./dot-deliverables-repository.js";
+export * from "./connector-accounts-repository.js";
+export * from "./dot-delegations-repository.js";
+export * from "./auto-route-shadow-repository.js";
+export * from "./session-revocation-repository.js";
+export * from "./dot-evals-repository.js";
+export * from "./channels-repository.js";
+export * from "./gateway-repository.js";

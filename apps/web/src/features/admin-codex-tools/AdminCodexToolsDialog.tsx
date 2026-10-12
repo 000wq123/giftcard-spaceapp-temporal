@@ -225,7 +225,13 @@ export function AdminCodexToolsDialog({
     try {
       const nextSpeed = await client.updateSpeedDefault(modelId, tier);
       setSpeed(nextSpeed);
-      setSpeedMessage(`${displayName} now uses ${tier === "FAST" ? "Fast" : "Standard"}.`);
+      if (client === defaultClient && getSpaceRuntimeKind() === "demo") {
+        setSpeedMessage(DEMO_LOCAL_REPLY);
+      } else if (nextSpeed.models.find((model) => model.modelId === modelId)?.tier === tier) {
+        setSpeedMessage(`${displayName} now uses ${tier === "FAST" ? "Fast" : "Standard"}.`);
+      } else {
+        setSpeedError("Speed default was not changed.");
+      }
     } catch (reason) {
       setSpeedError(errorMessage(reason, `Failed to update ${displayName} speed default.`));
     } finally {

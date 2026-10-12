@@ -8,6 +8,8 @@
 .workspace-back { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 6px 8px; border: 1px solid var(--room-border, #343638); border-radius: 8px; background: var(--room-surface-soft, #202425); color: var(--room-text, #f4efe5); cursor: pointer; }
 .workspace-back svg { width: 16px; height: 16px; }
 .workspace-detail-content { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 0 12px 12px; scrollbar-width: thin; }
+/* A dock shown as a Workspace page fills it, so dock-kit lists scroll inside the dock instead of collapsing. */
+.workspace-detail-content > .workspace-dock-detail { height: 100%; min-height: 0; }
 .workspace-pane-layout-view {
   grid-column: 1 / -1;
   width: 100%;
@@ -62,7 +64,7 @@
 .workspace-room-rename, .workspace-room-rename > label { display: grid; gap: 12px; }
 .workspace-room-rename :is(input, button) { min-height: 44px; padding: 10px; border: 1px solid var(--room-border, #343638); border-radius: 8px; background: var(--room-surface-soft, #202425); color: var(--room-text, #f4efe5); }
 
-.workspace-detail-content :is(.attachment-modal, .task-dock-shell.is-fullscreen, .clipboard-dock-shell.is-fullscreen, .agent-files-dock-shell.is-fullscreen, .media-dock-shell.is-fullscreen, .embedded-dashboard-dialog, .links-panel, .dock-panel, .side-surface-panel) { position: relative; inset: auto; width: 100%; min-width: 0; max-width: 100%; height: auto; min-height: 0; max-height: none; margin: 0; transform: none; overflow: visible; }
+.workspace-detail-content :is(.attachment-modal, .dock-kit-shell.is-fullscreen, .task-dock-shell.is-fullscreen, .clipboard-dock-shell.is-fullscreen, .agent-files-dock-shell.is-fullscreen, .media-dock-shell.is-fullscreen, .embedded-dashboard-dialog, .links-panel, .dock-panel, .side-surface-panel) { position: relative; inset: auto; width: 100%; min-width: 0; max-width: 100%; height: auto; min-height: 0; max-height: none; margin: 0; transform: none; overflow: visible; }
 .workspace-detail-content .embedded-dashboard-frame { height: 460px; }
 .workspace-detail-content .embedded-dashboard-dialog { display: block; }
 .workspace-detail-content .demo-mode-root { position: relative; inset: auto; width: 100%; height: auto; display: grid; gap: 12px; }

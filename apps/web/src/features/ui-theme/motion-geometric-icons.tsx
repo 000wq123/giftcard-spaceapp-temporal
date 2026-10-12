@@ -390,6 +390,13 @@ export const motionGeometricIcons: Partial<Record<AppIconName, LucideIcon>> = {
       <circle cx="12" cy="16" r="1.3" fill="currentColor" stroke="none" />
     </>
   )),
+  Unlock: makeMotionIcon("Unlock", () => (
+    <>
+      <rect x="4" y="11" width="16" height="10" rx="2.5" />
+      <path d="M8 11V7a4 4 0 0 1 8 0" />
+      <circle cx="12" cy="16" r="1.3" fill="currentColor" stroke="none" />
+    </>
+  )),
   Link: makeMotionIcon("Link", () => (
     <>
       <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />

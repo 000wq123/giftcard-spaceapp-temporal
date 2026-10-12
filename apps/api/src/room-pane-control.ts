@@ -10,7 +10,7 @@ export interface RoomRuntimeType {
   terminalRuntimeId?: string; modelId?: string; selectedModelConfigId?: string;
 }
 export interface RoomPaneObservation {
-  paneId: string; title: string; runtimeId: string | null; sessionId: string | null;
+  paneId: string; paneName?: string | null; title: string; runtimeId: string | null; sessionId: string | null;
   state: "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "EXITED" | "ERROR" | "UNKNOWN";
   nativeTaskRef: string | null; modelId: string | null; nativeMode: string | null;
   checkedAt: string; tasks: NativeTaskExecution[];
@@ -70,7 +70,7 @@ export function createRoomPaneController(options: {
       durationMs: null, source: run ? "OBSERVED" : "UNKNOWN", observedAt: nowIso() };
     const modelsUsed: RoomTaskModelUsage[] = [];
     return {
-      paneId: pane.id, title: pane.title, runtimeId: chatView?.modelProviders.find(provider => provider.isCurrent)?.providerId ?? session?.selectedProviderId ?? pane.providerId,
+      paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, runtimeId: chatView?.modelProviders.find(provider => provider.isCurrent)?.providerId ?? session?.selectedProviderId ?? pane.providerId,
       sessionId: session?.sessionId ?? null, nativeTaskRef: session?.threadId ?? null,
       modelId: selected?.model ?? session?.selectedModelId ?? pane.modelId, nativeMode: chatView?.collaborationMode ?? session?.collaborationMode ?? null,
       ...(chatView ? { models: [...models.values()], modes: ["default", "plan"] } : {}),

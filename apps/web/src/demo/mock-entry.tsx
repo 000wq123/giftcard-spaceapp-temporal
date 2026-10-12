@@ -27,7 +27,7 @@ async function mount() {
   // Never block the first render on cache setup. The worker scope is demo-only.
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if ("serviceWorker" in navigator && location.protocol === "https:") {
-      void navigator.serviceWorker.register("/demoappnew/mock-worker.js", { scope: "/demoappnew/", updateViaCache: "none" }).catch(() => {});
+      void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}mock-worker.js`, { scope: import.meta.env.BASE_URL, updateViaCache: "none" }).catch(() => {});
     }
   }));
 }

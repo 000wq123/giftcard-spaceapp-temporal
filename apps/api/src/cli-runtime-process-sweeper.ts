@@ -10,7 +10,9 @@ const sweepExecutable = "/opt/spaceapp/bin/space-cli-process-sweep";
 const sweepTimeoutMs = 60_000;
 
 export const cliProcessSweepExclusionPatterns: readonly RegExp[] = [
-  /chrome[_-]devtools[_-]mcp/i
+  /chrome[_-]devtools[_-]mcp/i,
+  /deepseek[_-]harness/i,
+  /\bdsh\b/i
 ];
 
 export interface RuntimeProcessTableRow {

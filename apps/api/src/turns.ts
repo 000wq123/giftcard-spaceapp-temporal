@@ -1,4 +1,3 @@
-import { Client, Connection } from "@temporalio/client";
 import {
   CODEX_APP_SERVER_TURN_WORKFLOW_TYPE,
   DUMMY_TURN_WORKFLOW_TYPE,
@@ -9,6 +8,51 @@ import {
   type DummyTurnInput,
   type TurnStartResult
 } from "@space/contracts";
+import { recordWorkflowStart } from "./api-metrics.js";
+import { connectTemporalClient, type TemporalClientFactory } from "./temporal-client.js";
+import { withTurnTraceparent, workflowCorrelationMemo } from "./trace-context.js";
+
+interface TemporalStarterOptions {
+  address: string;
+  namespace: string;
+  taskQueue: string;
+  clientFactory?: TemporalClientFactory;
+}
+
+/**
+ * Starts one turn workflow. The Space request id (traceId) and the request's
+ * W3C traceparent travel in the workflow input and in the Temporal memo, so a
+ * workflow found in Temporal leads back to the API request and vice versa.
+ */
+async function startTurnWorkflow(
+  workflowType: string,
+  options: TemporalStarterOptions,
+  input: DummyTurnInput,
+  workflowId: string
+): Promise<{ workflowId: string; firstExecutionRunId: string }> {
+  let lease;
+  try {
+    lease = await (options.clientFactory ?? connectTemporalClient)(options);
+  } catch (error) {
+    recordWorkflowStart(workflowType, "FAILED", error);
+    throw error;
+  }
+  try {
+    const handle = await lease.client.workflow.start(workflowType, {
+      args: [input],
+      taskQueue: options.taskQueue,
+      workflowId,
+      memo: workflowCorrelationMemo({ traceId: input.traceId, traceparent: input.traceparent })
+    });
+    recordWorkflowStart(workflowType, "STARTED");
+    return { workflowId: handle.workflowId, firstExecutionRunId: handle.firstExecutionRunId };
+  } catch (error) {
+    recordWorkflowStart(workflowType, "FAILED", error);
+    throw error;
+  } finally {
+    await lease.close();
+  }
+}
 
 export class TurnStarterDisabledError extends Error {
   constructor(message = "Temporal dummy turns are disabled.") {
@@ -30,6 +74,7 @@ export class DisabledTurnStarter implements TurnStarter {
   }
 
   async start(): Promise<TurnStartResult> {
+    recordWorkflowStart(DUMMY_TURN_WORKFLOW_TYPE, "DISABLED");
     throw new TurnStarterDisabledError(
       "Temporal dummy turns are disabled. Set SPACE_ENABLE_DUMMY_TURNS=true and run the Temporal worker before starting turns."
     );
@@ -37,13 +82,7 @@ export class DisabledTurnStarter implements TurnStarter {
 }
 
 export class TemporalTurnStarter implements TurnStarter {
-  constructor(
-    private readonly options: {
-      address: string;
-      namespace: string;
-      taskQueue: string;
-    }
-  ) {}
+  constructor(private readonly options: TemporalStarterOptions) {}
 
   plan(input: DummyTurnInput): TurnStartResult {
     const parsed = dummyTurnInputSchema.parse(input);
@@ -61,29 +100,19 @@ export class TemporalTurnStarter implements TurnStarter {
   }
 
   async start(input: DummyTurnInput): Promise<TurnStartResult> {
-    const parsed = dummyTurnInputSchema.parse(input);
+    const parsed = withTurnTraceparent(dummyTurnInputSchema.parse(input));
     const planned = this.plan(parsed);
-    const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
-    try {
-      const client = new Client({ connection, namespace: this.options.namespace });
-      const handle = await client.workflow.start(DUMMY_TURN_WORKFLOW_TYPE, {
-        args: [parsed],
-        taskQueue: this.options.taskQueue,
-        workflowId: planned.workflowId
-      });
-      return turnStartResultSchema.parse({
-        workflowId: handle.workflowId,
-        runId: handle.firstExecutionRunId,
-        roomId: parsed.roomId,
-        paneId: parsed.paneId,
-        traceId: parsed.traceId,
-        status: "QUEUED",
-        runtime: "DUMMY_TEMPORAL",
-        artifactIds: parsed.artifactIds
-      });
-    } finally {
-      await connection.close();
-    }
+    const handle = await startTurnWorkflow(DUMMY_TURN_WORKFLOW_TYPE, this.options, parsed, planned.workflowId);
+    return turnStartResultSchema.parse({
+      workflowId: handle.workflowId,
+      runId: handle.firstExecutionRunId,
+      roomId: parsed.roomId,
+      paneId: parsed.paneId,
+      traceId: parsed.traceId,
+      status: "QUEUED",
+      runtime: "DUMMY_TEMPORAL",
+      artifactIds: parsed.artifactIds
+    });
   }
 }
 
@@ -95,6 +124,7 @@ export class DisabledCodexAppServerTurnStarter implements TurnStarter {
   }
 
   async start(): Promise<TurnStartResult> {
+    recordWorkflowStart(CODEX_APP_SERVER_TURN_WORKFLOW_TYPE, "DISABLED");
     throw new TurnStarterDisabledError(
       "Codex App Server turns are disabled. Set SPACE_ENABLE_CODEX_TURNS=true only after the real Codex turn workflow is ready and approved."
     );
@@ -102,13 +132,7 @@ export class DisabledCodexAppServerTurnStarter implements TurnStarter {
 }
 
 export class TemporalCodexAppServerTurnStarter implements TurnStarter {
-  constructor(
-    private readonly options: {
-      address: string;
-      namespace: string;
-      taskQueue: string;
-    }
-  ) {}
+  constructor(private readonly options: TemporalStarterOptions) {}
 
   plan(input: DummyTurnInput): TurnStartResult {
     const parsed = dummyTurnInputSchema.parse(input);
@@ -126,37 +150,24 @@ export class TemporalCodexAppServerTurnStarter implements TurnStarter {
   }
 
   async start(input: DummyTurnInput): Promise<TurnStartResult> {
-    const parsed = dummyTurnInputSchema.parse(input);
+    const parsed = withTurnTraceparent(dummyTurnInputSchema.parse(input));
     const planned = this.plan(parsed);
-    const connection = await Connection.connect({ address: this.options.address, connectTimeout: "5s" });
-    try {
-      const client = new Client({ connection, namespace: this.options.namespace });
-      const handle = await client.workflow.start(CODEX_APP_SERVER_TURN_WORKFLOW_TYPE, {
-        args: [parsed],
-        taskQueue: this.options.taskQueue,
-        workflowId: planned.workflowId
-      });
-      return turnStartResultSchema.parse({
-        workflowId: handle.workflowId,
-        runId: handle.firstExecutionRunId,
-        roomId: parsed.roomId,
-        paneId: parsed.paneId,
-        traceId: parsed.traceId,
-        status: "QUEUED",
-        runtime: "CODEX_APP_SERVER",
-        artifactIds: parsed.artifactIds
-      });
-    } finally {
-      await connection.close();
-    }
+    const handle = await startTurnWorkflow(CODEX_APP_SERVER_TURN_WORKFLOW_TYPE, this.options, parsed, planned.workflowId);
+    return turnStartResultSchema.parse({
+      workflowId: handle.workflowId,
+      runId: handle.firstExecutionRunId,
+      roomId: parsed.roomId,
+      paneId: parsed.paneId,
+      traceId: parsed.traceId,
+      status: "QUEUED",
+      runtime: "CODEX_APP_SERVER",
+      artifactIds: parsed.artifactIds
+    });
   }
 }
 
-interface StarterFactoryOptions {
+interface StarterFactoryOptions extends TemporalStarterOptions {
   enabled: boolean;
-  address: string;
-  namespace: string;
-  taskQueue: string;
 }
 
 export function createTurnStarter(options: StarterFactoryOptions): TurnStarter {

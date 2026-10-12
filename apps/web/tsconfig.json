@@ -5,7 +5,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist-types",
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@space/contracts": ["../../packages/contracts/dist/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx", "vite.config.ts"]
 }

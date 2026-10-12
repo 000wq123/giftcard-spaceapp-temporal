@@ -34,7 +34,7 @@ export const PUBLIC_SPACEAPP_KNOWLEDGE: readonly PublicSpaceappFact[] = [
     answer: "SpaceApp has persistent owner memory. The public streaming assistant uses only its separate, operator-approved streaming memory and cannot read personal owner memory."
   },
   {
-    id: "live", version: "1", source: "docs/live-control-upgrade-plan.md#summary",
+    id: "live", version: "1", source: "docs/plans/live-control-upgrade-plan.md#summary",
     keywords: ["live", "voice", "talk", "audio"],
     answer: "The Live pane supports voice interaction with the owner. Public streaming use must be explicitly selected and receives a restricted public context."
   },

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 const menuItemSelector = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 
@@ -33,6 +34,7 @@ export function useCodexPopover(open: boolean, onOpenChange: (open: boolean) => 
       enabledMenuItems(popoverRef.current ?? document.body)[0]?.focus();
     });
     function handlePointerDown(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       if (triggerRef.current?.contains(event.target as Node) || popoverRef.current?.contains(event.target as Node)) return;
       close();
     }

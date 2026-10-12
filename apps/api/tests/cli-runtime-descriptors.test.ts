@@ -1,9 +1,14 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   cliRuntimeDescriptors,
   findCliRuntimeDescriptor
 } from "../src/cli-runtime-descriptors.js";
 import { cliRunLifecycleAdapters } from "../src/cli-run-lifecycle-adapters.js";
+
+const deployDirectory = new URL("../../../deploy/", import.meta.url);
+const hostSudoersRulesShipped = existsSync(deployDirectory) &&
+  readdirSync(deployDirectory).some((name) => name.endsWith("-vscode-parity.sudoers"));
 
 describe("CLI runtime descriptors", () => {
   it("requires verified credential observation and smoke support for Space-managed setup connections", () => {
@@ -31,6 +36,17 @@ describe("CLI runtime descriptors", () => {
       }
       expect(descriptor.credentialObservationAction, descriptor.id).toBe("credential-observation");
       expect(descriptor.credentialSmokeMarker, descriptor.id).toBe(`SPACE_${descriptor.key.toUpperCase()}_OK`);
+    }
+  });
+
+  // The wrapper sudoers rules ship with the host deployment (deploy/); the
+  // public installer runs CLIs through its container wrapper and has none.
+  it.runIf(hostSudoersRulesShipped)("only declares native resume arguments that the wrapper's sudoers rule accepts", () => {
+    for (const descriptor of cliRuntimeDescriptors) {
+      if (!descriptor.nativeResumeArgs) continue;
+      const sudoers = readFileSync(new URL(`../../../deploy/space-${descriptor.key}-vscode-parity.sudoers`, import.meta.url), "utf8");
+      const command = `/opt/spaceapp/bin/${descriptor.commandName} --run-inner ${descriptor.nativeResumeArgs.join(" ")}`;
+      expect(sudoers.split("\n").map((line) => line.trim().replace(/,? \\$|,$/, "")), descriptor.id).toContain(command);
     }
   });
 
@@ -210,7 +226,7 @@ describe("CLI runtime descriptors", () => {
         DEEPSEEK_HOME: "/var/lib/spaceapp-user/.codex/space-deepseek"
       },
       nativeResumeArgs: null,
-      defaultModelId: "deepseek-chat"
+      defaultModelId: "deepseek-flash/deepseek-flash"
     });
   });
 

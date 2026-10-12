@@ -53,10 +53,19 @@ export function taskRequestFingerprint(value: string): string {
   return cleanTaskText(value).normalize("NFKC").toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, " ").trim();
 }
 
+/** A lone pasted login code, API key, token or hash is never a task description. */
+export function looksLikeCredentialToken(value: string): boolean {
+  const text = value.trim();
+  if (text.length < 24 || !/^[A-Za-z0-9_\-#.=+/~:]+$/.test(text)) return false;
+  if (/^[0-9a-f]{32,}$/i.test(text)) return true;
+  return /[A-Z]/.test(text) && /[a-z]/.test(text) && /\d/.test(text);
+}
+
 /** Conservative local noise filter; uncertain substantive changes go to one summary call. */
 export function isSubstantiveTaskRequest(value: string): boolean {
   if(/^\s*(?:#\s*AGENTS\.md instructions for\b|Another language model started to solve this problem and produced a summary\b)/i.test(value))return false;
   const text = cleanTaskText(value);
+  if (looksLikeCredentialToken(text)) return false;
   const normalized = taskRequestFingerprint(text).normalize("NFD").replace(/\p{M}/gu, "");
   if (!normalized || /^(?:yes|no|ok|okay|thanks|thank you|continue|go ahead|proceed|resume|ναι|οχι|ενταξει|συνεχισε|συνεχεια|ευχαριστω|προχωρα|κανε το)(?:\s+(?:please|παρακαλω))?$/.test(normalized)) return false;
   if (/^(?:\/\w+|[$>]\s|(?:cd|ls|pwd|cat|rg|git|npm|pnpm|node|curl|sudo|systemctl)\s)/i.test(text)) return false;

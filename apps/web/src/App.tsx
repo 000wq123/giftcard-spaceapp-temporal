@@ -1,7 +1,42 @@
-import { CliShortcutUserContext } from "./features/terminal-pane/cli-shortcut-usage.js";
+import { bridgePlanExecutionEvent } from "./features/terminal-pane/plan-execution-events.js";
+import { PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX, PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX, PaneCard, PaneModeIcon, SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY, SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY, dispatchAgentPaneAction, dispatchTerminalPaneAction, displayPaneTitle } from "./features/pane-card/PaneCard.js";
+export { formatTerminalSessionDebugInfo, formatTerminalSessionClipboardText } from "./features/pane-card/PaneCard.js";
+import { MovePaneDialog, TaskHistoryDialog, type TaskHistoryDialogItem } from "./features/pane-dialogs/PaneDialogs.js";
+import { type AppView, isRecord, isTransientUpstreamErrorMessage, isTransientUpstreamRuntimeError, parseStreamEvent, readAppView, streamEventTypes } from "./app-shell-utils.js";
+import {
+  MAX_PANE_COLUMN_SPAN,
+  calculatePaneGridBaseRows,
+  canPaneGrowAtCurrentPlacement,
+  clampPaneColumnSpan,
+  computePaneGridPlacements,
+  detectPaneGridColumnCount,
+  measureSingleLineTitleWidth,
+  paneGridDensityMetrics,
+  paneHeaderNeedsSecondRow,
+  remToPx,
+  resolvePaneGridColumnCount,
+  resolvePaneGridPlacements,
+  roomToolbarNeedsSecondRow,
+  sortPanesForGrid,
+  type PaneColumnAnchor,
+  type PaneColumnAnchorMap,
+  type PaneDensity,
+  type PaneGridPlacement,
+  type PaneGridPlacementSeed,
+  type ShellMode
+} from "./features/pane-grid/pane-grid-layout.js";
+export { roomToolbarNeedsSecondRow, paneHeaderNeedsSecondRow, resolvePaneGridPlacements, calculatePaneGridBaseRows } from "./features/pane-grid/pane-grid-layout.js";
+export type { PaneColumnAnchor, PaneColumnAnchorMap } from "./features/pane-grid/pane-grid-layout.js";
+import { MobileActionSheet } from "./features/action-surfaces/MobileActionSheet.js";
+import { DesktopActionManager } from "./features/action-surfaces/DesktopActionManager.js";
+import type { PaneOverflowCommand } from "./features/action-surfaces/action-surface-shared.js";
+import { LoginScreen } from "./features/auth/LoginScreen.js";
+import { VoiceSettingsCard } from "./features/voice-input/VoiceSettingsCard.js";
+import { clearLegacyCliShortcutUsage } from "./features/terminal-pane/CliShortcutsMenu.js";
 import { openManage, consolidatedResourceActions, consolidatedManageActions } from "./features/server-actions/manage-navigation.js";
 import { useSpaceControlClient } from "./features/room-agent/space-control-client.js";
 import { useRailOrder } from "./features/ui-theme/use-rail-order.js";
+import { syncRailScale } from "./features/ui-theme/rail-dynamic-scaling.js";
 import { useTouchContextMenu } from "./features/ui-theme/use-touch-context-menu.js";
 import { RailVisibilityMenu } from "./features/ui-theme/RailVisibilityMenu.js";
 import { LiveSessionProvider } from "./features/live-pane/LiveSessionProvider.js";
@@ -22,6 +57,9 @@ import { AsteroidsGate } from "./features/asteroids/AsteroidsGate.js";
 import { canPlayAsteroids } from "./features/asteroids/eligibility.js";
 import { TaskTitleDetails } from "./features/task-titles/TaskTitleDetails.js";
 import { TaskTitleSettings } from "./features/task-titles/TaskTitleSettings.js";
+import { WorktreeBadge } from "./features/worktrees/WorktreeBadge.js";
+import { PaneWorkingTimeBadge } from "./features/pane-working-time/index.js";
+import { createWorktree } from "./features/worktrees/worktree-client.js";
 import { RecoverableSurface } from "./features/SurfaceErrorBoundary.js";
 import { readDockSession, writeDockSession } from "./features/workspace-session.js";
 import { SystemHealth, useResourceIndicators } from "./features/system-health/SystemHealth.js";
@@ -30,6 +68,7 @@ import type { OskCliCommand } from "./features/osk-keyboard/cli-shortcuts.js";
 import {
   AppIconProvider,
   Activity,
+  GitMerge,
   ALargeSmall,
   ArrowRightLeft,
   Archive,
@@ -70,6 +109,7 @@ import {
   Grid2X2,
   GripVertical,
   HardDrive,
+  Hash,
   History,
   Images,
   Keyboard,
@@ -124,13 +164,13 @@ import {
   Users,
   Wrench,
   X,
-  Youtube,
-  Zap
+  Youtube
 } from "./features/ui-theme/app-icons.js";
 import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
 import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
+import { connectorResultMessage } from "./features/agent-pane/connector-result.js";
 import { cloneElement, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useAutoDismiss } from "./use-auto-dismiss.js";
@@ -196,9 +236,15 @@ import type {
   CliRuntimeSettingsResponse,
   AgentSessionHistoryItem,
   AdminUserItem,
+  OpenProjectResult,
   UserSettings
 } from "@space/contracts";
-import { LIVE_AUDIO_PROVIDERS, type LiveAudioProviderId, paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
+import {
+  saveUserSettingDebounced,
+  seedInitialLocalSettingsToServer,
+  syncFromServer
+} from "./features/user-settings/user-settings-manager.js";
+import { MAX_ROOMS, LIVE_AUDIO_PROVIDERS, type LiveAudioProviderId, paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
 import {
   nextCategoryColor,
   readStoredCategoryFilter,
@@ -271,12 +317,12 @@ import {
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
-import { useAppVersion } from "./features/app-version/use-app-version.js";
+import { HealthDock } from "./features/health/HealthDock.js";
+import { statusTone } from "./features/status-tone.js";
 import {
   AppDiagnosticsGlobalIndicators,
-  AppDiagnosticsSettingsCard,
   useDiagnosticsState
-} from "./features/app-diagnostics/AppDiagnosticsSettingsCard.js";
+} from "./features/app-diagnostics/AppDiagnosticsIndicators.js";
 import { emitAppDiagnosticsPerformance } from "./app-diagnostics/app-diagnostics-performance.js";
 import {
   applyAppDiagnosticsStatus,
@@ -284,14 +330,16 @@ import {
 } from "./app-diagnostics/app-diagnostics-bootstrap.js";
 import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
 import { GitBranch } from "./features/ui-theme/app-icons.js";
-import { Plug, ArrowUpDown } from "lucide-react";
-import { PluginsSettingsCard } from "./features/plugins/PluginsSettingsCard.js";
-import { KeyboardAutocorrectSettingsCard } from "./features/keyboard-autocorrect/KeyboardAutocorrectSettingsCard.js";
+import { Plug, ArrowUpDown } from "./features/ui-theme/app-icons.js";
+import { SOURCE_CONTROL_CONNECTION_EVENT, sourceControlClient } from "./features/source-control/client.js";
 import { applyServerKeyboardAutocorrectSettings } from "./features/keyboard-autocorrect/keyboard-autocorrect-settings.js";
-import { DateTimeSettingsCard } from "./features/date-time-settings/DateTimeSettingsCard.js";
 import { applyServerDateTimeSettings } from "./features/date-time-settings/date-time-settings.js";
-import { GoogleAccountSettingsCard } from "./features/auth/GoogleAccountSettingsCard.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
+import { DOCK_DEFINITIONS, useDocksVisibility } from "./features/docks/use-docks-visibility.js";
+import { DockNotice, useDockConfirm } from "./features/dock-kit/DockKit.js";
+import { DockKeepAliveHost } from "./features/docks/DockKeepAliveHost.js";
+import { preloadDockModules } from "./features/docks/dock-preloader.js";
+import { usePanesVisibility } from "./features/pane-visibility/use-panes-visibility.js";
 import { DesktopNavigation } from "./features/ui-theme/DesktopNavigation.js";
 import { WorkspaceRoomSettings } from "./features/ui-theme/WorkspaceRoomSettings.js";
 import { WorkspacePortalMount } from "./features/ui-theme/WorkspaceSurface.js";
@@ -307,10 +355,6 @@ import {
   StreamingOverlay,
   StreamingOverlayProvider
 } from "./features/streaming/StreamingOverlay.js";
-import {
-  getTerminalPreviewLines,
-  subscribeTerminalPreview
-} from "./features/terminal-pane/terminal-preview-service.js";
 import { reorderPanesByTarget, setPaneDragData, type PaneDropPosition } from "./features/pane-drag/pane-drag.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import {
@@ -330,15 +374,17 @@ import {
   modernRoomToolbarStorageKeys,
   readModernAppearance,
   readModernIconPack,
+  readUiBackground,
   readUiTheme,
   resolveModernColorMode,
   shouldMeasureToolbarLayout,
   writeModernAppearance,
   writeModernIconPack,
+  writeUiBackground,
   writeUiTheme,
   type ModernAppearance,
-  type ModernColorMode,
   type ModernIconPack,
+  type UiBackground,
   type UiTheme
 } from "./ui-theme.js";
 import { RoomPaneComposer } from "./features/room-pane-composer/RoomPaneComposer.js";
@@ -353,6 +399,7 @@ import {
 } from "./features/toolbar-menu-ids.js";
 import { CliLauncherMenu } from "./features/cli-launcher/CliLauncherMenu.js";
 import { PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
+import { useRootRemSize } from "./features/pane-layout/use-root-rem-size.js";
 import {
   createTerminalBootstrapBarrier,
   TerminalPane,
@@ -361,11 +408,18 @@ import {
 } from "./features/terminal-pane/index.js";
 import { registerYouTubeBrowseIntent } from "./features/browser-pane/youtube-browse-intent.js";
 import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
+import { paneRuntimeBlockedReason, roomPaneLimit } from "./pane-runtime-availability.js";
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
-import { VIBE_MUSIC_PANEL_ID, VibeMusicPlayer } from "./features/vibe-music/VibeMusicPlayer.js";
-import { SnipToolOverlay } from "./features/snip-tool/SnipToolOverlay.js";
+import { VIBE_MUSIC_PANEL_ID, useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
 import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
-import { DesktopWidgetsLayer, useDesktopWidgets } from "./features/desktop-widgets/index.js";
+import {
+  DEFAULT_PUSHUP_CONFIG,
+  DesktopWidgetsLayer,
+  loadWidgetConfig,
+  saveWidgetConfig,
+  useDesktopWidgets,
+  useWidgetsVisibility
+} from "./features/desktop-widgets/index.js";
 import { useRailMenuDodge } from "./features/rail-popover.js";
 import {
   ToolbarMetrics,
@@ -386,6 +440,7 @@ import {
   MINIMIZED_PANE_BAR_TOGGLE_ID,
   MinimizedPaneBarToggle
 } from "./features/pane-float/MinimizedPaneBarToggle.js";
+import { MinimizedPaneChip, MinimizedPanePreviewCard } from "./features/pane-float/MinimizedPanePreview.js";
 import { DesktopDisplayControls } from "./features/desktop-screens/DesktopDisplayControls.js";
 import { isDocumentFullscreen, toggleBrowserFullscreen } from "./features/desktop-titlebar/fullscreen.js";
 import { DesktopWindowTitlebar } from "./features/desktop-titlebar/DesktopWindowTitlebar.js";
@@ -397,8 +452,6 @@ import {
 import {
   clearLifecycleDebugEvents,
   classifyRoomSwitchTemperature,
-  LIFECYCLE_DEBUG_UPDATED_EVENT,
-  readLifecycleDebugSnapshot,
   recordLifecycleDebugEvent,
   recordRoomSwitchMeasurementPhase,
   startRoomSwitchMeasurement,
@@ -406,9 +459,7 @@ import {
   type LifecycleDebugSnapshot
 } from "./lifecycle-debug.js";
 import {
-  writeVoiceComposerSettings,
-  applyServerVoiceSettings,
-  type VoiceComposerSettings
+  applyServerVoiceSettings
 } from "./voice-settings.js";
 import { applyServerLivePaneSettings } from "./features/live-pane/live-pane-config.js";
 import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
@@ -429,6 +480,7 @@ import {
   WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
 } from "./warm-room-startup.js";
 import { reuseVersionedItems, useStableCallback } from "./render-performance.js";
+import { lazyWithPreload } from "./lazy-with-preload.js";
 import {
   readStoredWarmRoomConnectedPaneLimit,
   readStoredWarmRoomEnabled,
@@ -442,22 +494,7 @@ import {
   writeStoredSuppressNotifications,
   applyServerSuppressNotifications
 } from "./notifications-settings.js";
-
-const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
-  CHAT: MessageSquare,
-  CODE: CodeXml,
-  BROWSER: Eye,
-  REVIEW: GitCompare,
-  SWARM: Boxes,
-  DESIGN: Sparkles,
-  TERMINAL: Terminal,
-  YOUTUBE: Youtube,
-  VNC: Monitor,
-  HARNESS: Network,
-  LIVE: Mic,
-  FILES: FolderOpen,
-  DEMOS: Boxes
-};
+import { scheduleT3BundlePrefetch } from "./features/t3code-pane/t3code-prefetch.js";
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
@@ -467,43 +504,10 @@ const DEFAULT_PROJECT_PRESETS: { label: string; path: string }[] = [
   { label: "space2", path: "/opt/spaceapp/projects/space2" }
 ];
 
-function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
-  const runtimeId = pane.terminalRuntimeId?.replace(/^cli:/, "") ?? "codex";
-  const runtimeBrand = pane.mode === "TERMINAL"
-    ? cliRuntimePresentation(runtimeId)
-    : pane.mode === "HARNESS"
-      ? cliRuntimePresentation("cli:harness")
-      : undefined;
-  if (runtimeBrand) {
-    return (
-      <img
-        src={runtimeBrand.iconSrc}
-        alt=""
-        aria-hidden="true"
-        data-terminal-runtime-brand={runtimeBrand.brand}
-        draggable={false}
-      />
-    );
-  }
-  const Icon = modeIcons[pane.mode];
-  return <Icon aria-hidden="true" />;
-}
-
-type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "cli" | "agent-sessions";
+type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "source-control" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "cli" | "agent-sessions";
 type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
-type ShellMode = "desktop" | "tablet" | "mobile";
-type AppView = "workspace" | "help" | "benchmark";
-type PaneDensity = "regular" | "dense" | "tight";
-type PaneGridPlacement = {
-  columnStart: number;
-  rowIndex: number;
-  effectiveSpan: number;
-  canGrow: boolean;
-  canReset: boolean;
-};
-type PaneGridPlacementSeed = Omit<PaneGridPlacement, "canGrow" | "canReset">;
 type RoomRuntimeSnapshot = {
   roomId: string;
   panes: Pane[];
@@ -525,10 +529,13 @@ export function shellVisiblePaneIds(
 ): string[] {
   const visiblePanes = shellMode === "mobile" ? panes : panes.filter((pane) => !pane.isMinimized);
   if (shellMode === "mobile" || fullscreenLayout) {
-    const selectedPane = visiblePanes.find((pane) => pane.id === selectedPaneId && !pane.isMinimized)
-      ?? visiblePanes.find((p) => !p.isMinimized)
-      ?? visiblePanes.find((pane) => pane.id === selectedPaneId)
-      ?? visiblePanes[0];
+    const selectedPane =
+      shellMode === "mobile"
+        ? (selectedPaneId ? visiblePanes.find((pane) => pane.id === selectedPaneId) : null) ?? visiblePanes[0]
+        : visiblePanes.find((pane) => pane.id === selectedPaneId && !pane.isMinimized)
+          ?? visiblePanes.find((p) => !p.isMinimized)
+          ?? visiblePanes.find((pane) => pane.id === selectedPaneId)
+          ?? visiblePanes[0];
     return selectedPane ? [selectedPane.id] : [];
   }
   const maximizedPanes = visiblePanes.filter((pane) => pane.isMaximized);
@@ -613,43 +620,21 @@ function TerminalBootstrapBoundary({
   return children(barrierByPaneIdRef.current);
 }
 
-export type PaneColumnAnchor = number | { columnStart: number; rowIndex?: number };
-export type PaneColumnAnchorMap = Map<string, PaneColumnAnchor>;
-
-const LazyMemoryWorkspace = lazy(() =>
-  import("./features/memory-workspace/MemoryWorkspace.js").then((module) => ({ default: module.MemoryWorkspace }))
+const LazyMemoryWorkspace = lazyWithPreload(() =>
+  import("./features/memory-workspace/MemoryWorkspace.js").then((module) => ({ default: module.MemoryWorkspace })),
+  { idle: true }
 );
 const LazySystemAnalyticsWorkspace = lazy(() =>
   import("./features/system-analytics/SystemAnalyticsWorkspace.js")
     .then((module) => ({ default: module.SystemAnalyticsWorkspace }))
 );
-const LazyAgentPane = lazy(() =>
-  import("./features/agent-pane/AgentPane.js").then((module) => ({ default: module.AgentPane }))
-);
-const LazyBrowserPane = lazy(() =>
-  import("./features/browser-pane/BrowserPane.js").then((module) => ({ default: module.BrowserPane }))
-);
-const LazyYouTubePane = lazy(() =>
-  import("./features/browser-pane/YouTubePane.js").then((module) => ({ default: module.YouTubePane }))
-);
-const LazyVncPane = lazy(() =>
-  import("./features/vnc-pane/VncPane.js").then((module) => ({ default: module.VncPane }))
-);
-const LazyHarnessPane = lazy(() =>
-  import("./features/harness-pane/HarnessPane.js").then((module) => ({ default: module.HarnessPane }))
-);
-const LazyLivePane = lazy(() =>
-  import("./features/live-pane/LivePane.js").then((module) => ({ default: module.LivePane }))
-);
-const LazyDemosPane = lazy(() =>
-  import("./features/demos-pane/DemosPane.js").then((module) => ({ default: module.DemosPane }))
-);
-const LazyFilesPane = lazy(() =>
-  import("./features/files-pane/FilesPane.js").then((module) => ({ default: module.FilesPane }))
-);
 const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
     .then((module) => ({ default: module.AdminOperationsDialog }))
+);
+const LazyMaintenanceHub = lazy(() =>
+  import("./features/admin-operations/MaintenanceHub.js")
+    .then((module) => ({ default: module.MaintenanceHub }))
 );
 const LazyAdminCodexToolsDialog = lazy(() =>
   import("./features/admin-codex-tools/AdminCodexToolsDialog.js")
@@ -658,6 +643,10 @@ const LazyAdminCodexToolsDialog = lazy(() =>
 const LazyUserManagementDialog = lazy(() =>
   import("./features/user-management/UserManagementDialog.js")
     .then((module) => ({ default: module.UserManagementDialog }))
+);
+const LazySpaceGatewayDialog = lazy(() =>
+  import("./features/space-gateway/SpaceGatewayDialog.js")
+    .then((module) => ({ default: module.SpaceGatewayDialog }))
 );
 const LazySetupConnectionsWizard = lazy(() =>
   import("./features/setup-connections/SetupConnectionsWizard.js")
@@ -680,72 +669,147 @@ const LazyBenchmarkPage = lazy(() =>
 const LazyDemoModeOverlay = lazy(() =>
   import("./features/demo-mode/DemoModeOverlay.js").then((module) => ({ default: module.DemoModeOverlay }))
 );
-const LazyRoomAgentDock = lazy(() =>
-  import("./features/room-agent/RoomAgentDock.js").then((module) => ({ default: module.RoomAgentDock }))
+const LazyRoomAgentDock = lazyWithPreload(() =>
+  import("./features/room-agent/RoomAgentDock.js").then((module) => ({ default: module.RoomAgentDock })),
+  { idle: true }
 );
-const LazyMediaDock = lazy(() =>
-  import("./features/media-dock/MediaDock.js").then((module) => ({ default: module.MediaDock }))
+const LazyMediaDock = lazyWithPreload(() =>
+  import("./features/media-dock/MediaDock.js").then((module) => ({ default: module.MediaDock })),
+  { idle: true }
 );
-const LazyStreamingDock = lazy(() =>
-  import("./features/streaming/StreamingDock.js").then((module) => ({ default: module.StreamingDock }))
+const LazyStreamingDock = lazyWithPreload(() =>
+  import("./features/streaming/StreamingDock.js").then((module) => ({ default: module.StreamingDock })),
+  { idle: true }
 );
-const LazyCliDock = lazy(() =>
-  import("./features/cli-dock/CliDock.js").then((module) => ({ default: module.CliDock }))
+const LazyCliDock = lazyWithPreload(() =>
+  import("./features/cli-dock/CliDock.js").then((module) => ({ default: module.CliDock })),
+  { idle: true }
 );
 const LazyAgentsDashboard = lazy(() => import("./features/agents-dashboard/AgentsDashboard.js").then(module => ({ default: module.AgentsDashboard })));
 
-const LazyAgentSessionsDock = lazy(() =>
-  import("./features/agent-sessions/AgentSessionsDock.js").then((module) => ({ default: module.AgentSessionsDock }))
+const LazyAgentSessionsDock = lazyWithPreload(() =>
+  import("./features/agent-sessions/AgentSessionsDock.js").then((module) => ({ default: module.AgentSessionsDock })),
+  { idle: true }
 );
-const LazyAgentFilesDock = lazy(() =>
-  import("./features/agent-files/AgentFilesDock.js").then((module) => ({ default: module.AgentFilesDock }))
+const LazyAgentFilesDock = lazyWithPreload(() =>
+  import("./features/agent-files/AgentFilesDock.js").then((module) => ({ default: module.AgentFilesDock })),
+  { idle: true }
 );
-const LazySharedChatDock = lazy(() =>
-  import("./features/shared-chat/SharedChatDock.js").then((module) => ({ default: module.SharedChatDock }))
+const LazySharedChatDock = lazyWithPreload(() =>
+  import("./features/shared-chat/SharedChatDock.js").then((module) => ({ default: module.SharedChatDock })),
+  { idle: true }
 );
-const LazyClipboardDock = lazy(() =>
-  import("./features/clipboard-dock/ClipboardDock.js").then((module) => ({ default: module.ClipboardDock }))
+const LazyClipboardDock = lazyWithPreload(() =>
+  import("./features/clipboard-dock/ClipboardDock.js").then((module) => ({ default: module.ClipboardDock })),
+  { idle: true }
 );
-const LazyTaskDock = lazy(() =>
-  import("./features/task-dock/TaskDock.js").then((module) => ({ default: module.TaskDock }))
+const LazyTaskDock = lazyWithPreload(() =>
+  import("./features/task-dock/TaskDock.js").then((module) => ({ default: module.TaskDock })),
+  { idle: true }
 );
-const LazyUiThemeSettingsCard = lazy(() =>
-  import("./features/ui-theme/UiThemeSettingsCard.js").then((module) => ({ default: module.UiThemeSettingsCard }))
+const LazyUiThemeSettingsCard = lazyWithPreload(() =>
+  import("./features/ui-theme/UiThemeSettingsCard.js").then((module) => ({ default: module.UiThemeSettingsCard })),
+  { idle: true }
 );
-const LazySourceControlPublishingCard = lazy(() =>
+const LazySourceControlPublishingCard = lazyWithPreload(() =>
   import("./features/source-control-publishing/SourceControlPublishingCard.js")
-    .then((module) => ({ default: module.SourceControlPublishingCard }))
+    .then((module) => ({ default: module.SourceControlPublishingCard })),
+  { idle: true }
 );
-const LazyCodexCliDefaultsCard = lazy(() =>
+const LazySourceControlDock = lazyWithPreload(() => import("./features/source-control/SourceControlDock.js").then(module => ({ default: module.SourceControlDock })), { idle: true });
+// Opened only from a room's Project Directory, so it is not preloaded at idle.
+const LazyProjectSourcePicker = lazyWithPreload(() => import("./features/source-control/ProjectSourcePicker.js").then(module => ({ default: module.ProjectSourcePicker })));
+const LazyCodexCliDefaultsCard = lazyWithPreload(() =>
   import("./features/codex-cli-defaults/CodexCliDefaultsCard.js")
-    .then((module) => ({ default: module.CodexCliDefaultsCard }))
+    .then((module) => ({ default: module.CodexCliDefaultsCard })),
+  { idle: true }
 );
-const LazyTelegramIntegrationCard = lazy(() =>
+const LazyTelegramIntegrationCard = lazyWithPreload(() =>
   import("./features/telegram-integration/TelegramIntegrationCard.js")
-    .then((module) => ({ default: module.TelegramIntegrationCard }))
+    .then((module) => ({ default: module.TelegramIntegrationCard })),
+  { idle: true }
 );
-const LazyConfigurationMigrationCard = lazy(() =>
+const LazyConfigurationMigrationCard = lazyWithPreload(() =>
   import("./features/settings/ConfigurationMigrationCard.js")
-    .then((module) => ({ default: module.ConfigurationMigrationCard }))
+    .then((module) => ({ default: module.ConfigurationMigrationCard })),
+  { idle: true }
 );
 const LazyOnScreenKeyboard = lazy(() =>
   import("./features/osk-keyboard/OnScreenKeyboard.js").then((module) => ({ default: module.OnScreenKeyboard }))
 );
 const LazyCliLauncherMenu = CliLauncherMenu;
-const LazyChatLauncherMenu = lazy(() =>
-  import("./features/chat-launcher/ChatLauncherMenu.js").then((module) => ({ default: module.ChatLauncherMenu }))
+const LazyChatLauncherMenu = lazyWithPreload(() =>
+  import("./features/chat-launcher/ChatLauncherMenu.js").then((module) => ({ default: module.ChatLauncherMenu })),
+  { idle: true }
 );
-const LazyServerActionsMenu = lazy(() =>
-  import("./features/server-actions/ServerActionsMenu.js").then((module) => ({ default: module.ServerActionsMenu }))
+const LazyServerActionsMenu = lazyWithPreload(() =>
+  import("./features/server-actions/ServerActionsMenu.js").then((module) => ({ default: module.ServerActionsMenu })),
+  { idle: true }
 );
 const LazyPaneLayoutMenu = PaneLayoutMenu;
-const LazyPaneSpanAllMenu = lazy(() =>
-  import("./features/pane-layout/PaneSpanAllMenu.js").then((module) => ({ default: module.PaneSpanAllMenu }))
+const LazyPaneSpanAllMenu = lazyWithPreload(() =>
+  import("./features/pane-layout/PaneSpanAllMenu.js").then((module) => ({ default: module.PaneSpanAllMenu })),
+  { idle: true }
 );
-const agentPaneLoadingFallback = <div className="pane-copy" role="status">Loading chat pane…</div>;
-const browserPaneLoadingFallback = <div className="pane-copy" role="status">Loading browser pane…</div>;
+const LazyVibeMusicPlayer = lazyWithPreload(() =>
+  import("./features/vibe-music/VibeMusicPlayer.js").then((module) => ({ default: module.VibeMusicPlayer })),
+  { idle: true }
+);
+const LazySnipToolOverlay = lazyWithPreload(() =>
+  import("./features/snip-tool/SnipToolOverlay.js").then((module) => ({ default: module.SnipToolOverlay })),
+  { idle: true }
+);
+const LazyEnvironmentPresetCard = lazyWithPreload(() =>
+  import("./features/settings/EnvironmentPresetCard.js").then((module) => ({ default: module.EnvironmentPresetCard })),
+  { idle: true }
+);
+const LazyGoogleAccountSettingsCard = lazyWithPreload(() =>
+  import("./features/auth/GoogleAccountSettingsCard.js").then((module) => ({ default: module.GoogleAccountSettingsCard })),
+  { idle: true }
+);
+const LazyDocksSettingsCard = lazyWithPreload(() =>
+  import("./features/settings/DocksSettingsCard.js").then((module) => ({ default: module.DocksSettingsCard })),
+  { idle: true }
+);
+const LazyPanesSettingsCard = lazyWithPreload(() =>
+  import("./features/settings/PanesSettingsCard.js").then((module) => ({ default: module.PanesSettingsCard })),
+  { idle: true }
+);
+const LazyWidgetsSettingsCard = lazyWithPreload(() =>
+  import("./features/settings/WidgetsSettingsCard.js").then((module) => ({ default: module.WidgetsSettingsCard })),
+  { idle: true }
+);
+const LazyDateTimeSettingsCard = lazyWithPreload(() =>
+  import("./features/date-time-settings/DateTimeSettingsCard.js").then((module) => ({ default: module.DateTimeSettingsCard })),
+  { idle: true }
+);
+const LazyAppDiagnosticsSettingsCard = lazyWithPreload(() =>
+  import("./features/app-diagnostics/AppDiagnosticsSettingsCard.js")
+    .then((module) => ({ default: module.AppDiagnosticsSettingsCard })),
+  { idle: true }
+);
+const LazyDeployQueueSettingsCard = lazyWithPreload(() =>
+  import("./features/deploy-queue/DeployQueueSettingsCard.js")
+    .then((module) => ({ default: module.DeployQueueSettingsCard })),
+  { idle: true }
+);
+const LazyPluginsSettingsCard = lazyWithPreload(() =>
+  import("./features/plugins/PluginsSettingsCard.js").then((module) => ({ default: module.PluginsSettingsCard })),
+  { idle: true }
+);
+const LazyKeyboardAutocorrectSettingsCard = lazyWithPreload(() =>
+  import("./features/keyboard-autocorrect/KeyboardAutocorrectSettingsCard.js")
+    .then((module) => ({ default: module.KeyboardAutocorrectSettingsCard })),
+  { idle: true }
+);
+const LazyPromptVariablesSettingsCard = lazyWithPreload(() =>
+  import("./features/prompt-variables/PromptVariablesSettingsCard.js")
+    .then((module) => ({ default: module.PromptVariablesSettingsCard })),
+  { idle: true }
+);
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
 const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
+
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
 
 const roomEventLimit = 50;
@@ -765,70 +829,12 @@ const ADMIN_MODE_REQUESTED_STORAGE_KEY = "space.adminModeRequested";
 const OSK_PANEL_ID = "space-osk-keyboard";
 const ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY = "space.roomToolbar.hiddenActionIds.v3";
 const ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY = "space.roomToolbar.actionOrder.v3";
-const PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX = "space.paneToolbar.hiddenActionIds";
-const PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX = "space.paneToolbar.actionOrder";
-const SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY = "space.paneToolbar.sharedCodex.hiddenActionIds";
-const SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY = "space.paneToolbar.sharedCodex.actionOrder";
 const SELECTED_ROOM_ID_STORAGE_KEY = "space.selectedRoomId";
 const SELECTED_PANE_ID_STORAGE_KEY = "space.selectedPaneId";
 const DISMISSED_STORAGE_WARNING_STORAGE_KEY = "space.dismissedStorageWarning";
-const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
-const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
 const MOBILE_SHELL_MAX_WIDTH = 767;
 const TABLET_SHELL_MAX_WIDTH = 1100;
-const MAX_PANE_COLUMN_SPAN = 4;
 const ROOM_CLI_ACTIVITY_POLL_INTERVAL_MS = 5_000;
-
-function readAppView(): AppView {
-  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
-  if (pathname === "/help") return "help";
-  if (pathname === "/benchmark") return "benchmark";
-  return "workspace";
-}
-
-const paneGridDensityMetrics: Record<PaneDensity, { minWidthRem: number; gapRem: number }> = {
-  regular: { minWidthRem: 19, gapRem: 0.375 },
-  dense: { minWidthRem: 16, gapRem: 0.3125 },
-  tight: { minWidthRem: 14, gapRem: 0.25 }
-};
-
-type TerminalPaneAction =
-  | { action: "upload" | "reconnect" | "copy" | "paste" | "focus" | "cancel_login" | "new_task" }
-  | { action: "attach_clip_image"; file: File }
-  | { action: "insert_text"; text: string }
-  | { action: "keyboard_input"; text: string }
-  | { action: "cli_shortcut"; commandId: string }
-  | { action: "insert_clipboard_text"; text: string }
-  | { action: "start_task_item"; objective: string }
-  | { action: "ensure_plan_mode" }
-  | { action: "enter_native_plan_mode"; runtimeId: "cli:gemini" | "cli:qwen" | "cli:omp" }
-  | { action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
-  | { action: "replace_session"; session: PaneCliSessionResponse }
-  | {
-      action: "save_to_memory";
-      modelId: string;
-      text: string;
-      memory: {
-        scope: MemoryEntry["scope"];
-        roomId?: string | null;
-        title: string;
-        provenance: string;
-      };
-      };
-type AgentPaneAction =
-  | "upload"
-  | "plan"
-  | "resume"
-  | "copy"
-  | "reconnect"
-  | "interrupt"
-  | "save_to_memory"
-  | "new_task"
-  | "attach_folder"
-  | "manage_goal";
-type AgentPaneDetailAction =
-  | { action: "insert_text"; text: string }
-  | { action: "open_thread"; threadId: string };
 const SUPPORTED_CLIP_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 type ClipImageTarget = {
@@ -837,60 +843,13 @@ type ClipImageTarget = {
   paneMode: Pane["mode"] | null;
 };
 
-function isTransientUpstreamErrorMessage(message: string | null): boolean {
-  if (!message) return false;
-  return (
-    message.startsWith("UPSTREAM_UNAVAILABLE:") ||
-    message.includes("Space API is not reachable from the web server.") ||
-    message.startsWith("Request failed: 502")
-  );
-}
-
-function isTransientUpstreamRuntimeError(error: unknown): boolean {
-  if (error instanceof SpaceApiError) {
-    return error.code === "UPSTREAM_UNAVAILABLE" || error.status === 0 || error.status === 502;
-  }
-  if (error instanceof Error) {
-    return isTransientUpstreamErrorMessage(error.message);
-  }
-  return false;
-}
-
-const streamEventTypes: SpaceEvent["type"][] = [
-  "ROOM_CREATED",
-  "PANE_CREATED",
-  "PANE_UPDATED",
-  "PANE_CLOSED",
-  "TURN_STARTED",
-  "TURN_DELTA",
-  "TURN_COMPLETED",
-  "TURN_FAILED",
-  "APPROVAL_REQUESTED",
-  "ARTIFACT_CREATED",
-  "CAPABILITY_STATUS_CHANGED",
-  "MEMORY_SAVED",
-  "SKILL_PROPOSED",
-  "IMPORT_CANDIDATE_CREATED",
-  "IMPORT_CANDIDATE_DECIDED",
-  "SWARM_TASK_CREATED",
-  "SWARM_TASK_UPDATED",
-  "SWARM_LOCK_CLAIMED",
-  "SWARM_LOCK_RELEASED",
-  "SWARM_MESSAGE_POSTED",
-  "SWARM_RECONCILED",
-  "REVIEW_CHECK_RECORDED",
-  "REVIEW_DIFF_RECORDED",
-  "REVIEW_DECISION_CREATED",
-  "BROWSER_HANDOFF_REQUESTED",
-  "ROOM_WATCHDOG_ALERT"
-];
-
 const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; surfaceLabel: string }> = {
   rooms: { icon: PanelLeft, label: "rooms", surfaceLabel: "Rooms" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
   "shared-chat": { icon: MessageSquare, label: "shared chat", surfaceLabel: "Shared Chat" },
   media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
   streaming: { icon: Radio, label: "streaming dock", surfaceLabel: "Streaming dock" },
+  "source-control": { icon: GitBranch, label: "source control", surfaceLabel: "Source Control" },
   "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
   clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
   tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
@@ -902,276 +861,6 @@ const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; su
 };
 
 type BlueprintStatus = "LIVE" | "GATED" | "NEXT";
-
-function remToPx(rem: number) {
-  if (typeof window === "undefined" || typeof document === "undefined") return rem * 16;
-  const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize || "16");
-  return rem * (Number.isFinite(rootFontSize) ? rootFontSize : 16);
-}
-
-let titleMeasureCanvas: HTMLCanvasElement | null = null;
-
-function measureSingleLineTitleWidth(element: HTMLElement | null, fallbackRem = 8) {
-  if (!element || typeof window === "undefined" || typeof document === "undefined") return remToPx(fallbackRem);
-  const text = element.textContent?.trim();
-  if (!text) return remToPx(1);
-  if (typeof navigator !== "undefined" && /\bjsdom\b/i.test(navigator.userAgent)) {
-    return Math.max(element.scrollWidth, remToPx(fallbackRem));
-  }
-
-  const computed = window.getComputedStyle(element);
-  const font =
-    computed.font && computed.font !== ""
-      ? computed.font
-      : `${computed.fontStyle} ${computed.fontVariant} ${computed.fontWeight} ${computed.fontSize} / ${computed.lineHeight} ${computed.fontFamily}`;
-  titleMeasureCanvas ??= document.createElement("canvas");
-  const context = titleMeasureCanvas.getContext("2d");
-  if (!context) return Math.max(element.scrollWidth, remToPx(fallbackRem));
-
-  context.font = font;
-  const letterSpacing = Number.parseFloat(computed.letterSpacing || "");
-  const spacingWidth = Number.isFinite(letterSpacing) ? Math.max(text.length - 1, 0) * letterSpacing : 0;
-  return Math.ceil(context.measureText(text).width + spacingWidth);
-}
-
-export function roomToolbarNeedsSecondRow(input: {
-  availableWidth: number;
-  titleWidth: number;
-  lbWidth: number;
-  actionsWidth: number;
-  columnGap: number;
-}) {
-  if (input.availableWidth <= 0) return false;
-  const requiredWidth = input.titleWidth + input.lbWidth + input.actionsWidth + input.columnGap * 2;
-  return requiredWidth > input.availableWidth + 1;
-}
-
-export function paneHeaderNeedsSecondRow(input: {
-  availableWidth: number;
-  paddingLeft: number;
-  paddingRight: number;
-  badgeWidth: number;
-  titleWidth: number;
-  actionsWidth: number;
-  fixedWidth: number;
-  columnGap: number;
-}) {
-  if (input.availableWidth <= 0) return false;
-  const requiredWidth =
-    input.paddingLeft +
-    input.paddingRight +
-    input.badgeWidth +
-    input.titleWidth +
-    input.actionsWidth +
-    input.fixedWidth +
-    input.columnGap * 3;
-  return requiredWidth > input.availableWidth + 1;
-}
-
-function clampPaneColumnSpan(columnSpan: number | null | undefined, columnCount: number) {
-  return Math.max(1, Math.min(MAX_PANE_COLUMN_SPAN, columnSpan ?? 1, columnCount));
-}
-
-function sortPanesForGrid(panes: Pane[]) {
-  return [...panes].sort((left, right) => {
-    if (left.order !== right.order) return left.order - right.order;
-    const leftCreatedAt = Date.parse(left.createdAt);
-    const rightCreatedAt = Date.parse(right.createdAt);
-    if (Number.isFinite(leftCreatedAt) && Number.isFinite(rightCreatedAt) && leftCreatedAt !== rightCreatedAt) {
-      return leftCreatedAt - rightCreatedAt;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
-
-function detectPaneGridColumnCount(input: { shellMode: ShellMode; paneDensity: PaneDensity; containerWidth: number }) {
-  if (input.shellMode === "mobile") return 1;
-  if (input.shellMode === "tablet") return 2;
-  const metrics = paneGridDensityMetrics[input.paneDensity];
-  const minWidthPx = remToPx(metrics.minWidthRem);
-  const gapPx = remToPx(metrics.gapRem);
-  return Math.max(1, Math.floor((Math.max(input.containerWidth, minWidthPx) + gapPx) / (minWidthPx + gapPx)));
-}
-
-function resolvePaneGridColumnCount(input: {
-  shellMode: ShellMode;
-  paneDensity: PaneDensity;
-  containerWidth: number;
-  paneLayoutColumns: Room["paneLayoutColumns"];
-  visiblePaneCount: number;
-  forceTabletTwoColumns?: boolean;
-}) {
-  if (input.containerWidth > 0 && input.containerWidth <= 768) return 1;
-  if (input.paneLayoutColumns === 0) return 1;
-  const automaticColumns = Math.min(4, detectPaneGridColumnCount(input));
-  const requestedColumns = input.paneLayoutColumns ?? automaticColumns;
-  const responsiveColumns =
-    input.shellMode === "mobile"
-      ? 1
-      : input.shellMode === "tablet"
-        ? input.forceTabletTwoColumns && input.paneLayoutColumns === null && input.visiblePaneCount > 1
-          ? 2
-          : Math.min(requestedColumns, 2)
-        : requestedColumns;
-  return Math.max(1, Math.min(responsiveColumns, Math.max(input.visiblePaneCount, 1)));
-}
-
-function computePaneGridPlacements(panes: Pane[], columnCount: number, anchoredColumnStarts: PaneColumnAnchorMap = new Map()) {
-  const placements = new Map<string, PaneGridPlacementSeed>();
-  const occupancy: boolean[][] = [];
-  let cursorRow = 0;
-  let cursorColumn = 1;
-
-  const ensureRow = (rowIndex: number) => {
-    while (occupancy.length <= rowIndex) {
-      occupancy.push(Array.from({ length: columnCount }, () => false));
-    }
-  };
-
-  const rangeIsAvailable = (row: boolean[], columnStart: number, span: number) => {
-    if (columnStart + span - 1 > columnCount) return false;
-    for (let offset = 0; offset < span; offset += 1) {
-      if (row[columnStart - 1 + offset]) return false;
-    }
-    return true;
-  };
-
-  const placeAutoFlowPane = (span: number) => {
-    let rowIndex = 0;
-    let columnStart = 1;
-
-    while (true) {
-      if (columnStart > columnCount) {
-        rowIndex += 1;
-        columnStart = 1;
-        continue;
-      }
-      ensureRow(rowIndex);
-      if (columnStart + span - 1 > columnCount) {
-        rowIndex += 1;
-        columnStart = 1;
-        continue;
-      }
-      if (!rangeIsAvailable(occupancy[rowIndex] ?? [], columnStart, span)) {
-        columnStart += 1;
-        continue;
-      }
-      return { rowIndex, columnStart };
-    }
-  };
-
-  const placeAnchoredPane = (anchorColumnStart: number, span: number, startRow: number) => {
-    const columnStart = Math.max(1, Math.min(anchorColumnStart, columnCount - span + 1));
-    let rowIndex = startRow;
-
-    while (true) {
-      ensureRow(rowIndex);
-      if (rangeIsAvailable(occupancy[rowIndex] ?? [], columnStart, span)) {
-        return { rowIndex, columnStart };
-      }
-      rowIndex += 1;
-    }
-  };
-
-  for (const pane of sortPanesForGrid(panes)) {
-    const effectiveSpan = clampPaneColumnSpan(pane.columnSpan, columnCount);
-    const anchorData = anchoredColumnStarts.get(pane.id);
-    const anchoredColumnStart = typeof anchorData === "number" ? anchorData : anchorData?.columnStart;
-    const anchoredRowIndex = typeof anchorData === "object" ? anchorData?.rowIndex : undefined;
-    const placement =
-      anchoredColumnStart === undefined
-        ? placeAutoFlowPane(effectiveSpan)
-        : placeAnchoredPane(anchoredColumnStart, effectiveSpan, anchoredRowIndex ?? cursorRow);
-
-    for (let offset = 0; offset < effectiveSpan; offset += 1) {
-      occupancy[placement.rowIndex]![placement.columnStart - 1 + offset] = true;
-    }
-    placements.set(pane.id, {
-      columnStart: placement.columnStart,
-      rowIndex: placement.rowIndex,
-      effectiveSpan
-    });
-    cursorRow = placement.rowIndex;
-    cursorColumn = placement.columnStart + effectiveSpan;
-  }
-
-  return placements;
-}
-
-function canPaneGrowAtCurrentPlacement(input: {
-  pane: Pane;
-  columnCount: number;
-  basePlacements: Map<string, PaneGridPlacementSeed>;
-}) {
-  const currentPlacement = input.basePlacements.get(input.pane.id);
-  if (!currentPlacement || input.pane.isMaximized) return false;
-
-  const nextColumnSpan = clampPaneColumnSpan((input.pane.columnSpan ?? 1) + 1, input.columnCount);
-  return nextColumnSpan > currentPlacement.effectiveSpan;
-}
-
-export function resolvePaneGridPlacements(panes: Pane[], columnCount: number, anchoredColumnStarts: PaneColumnAnchorMap = new Map()) {
-  const placements = new Map<string, PaneGridPlacement>();
-  const basePlacements = computePaneGridPlacements(panes, columnCount, anchoredColumnStarts);
-
-  for (const pane of sortPanesForGrid(panes)) {
-    const basePlacement = basePlacements.get(pane.id);
-    if (!basePlacement) continue;
-    placements.set(pane.id, {
-      ...basePlacement,
-      canGrow: canPaneGrowAtCurrentPlacement({
-        pane,
-        columnCount,
-        basePlacements
-      }),
-      canReset: !pane.isMaximized && (pane.columnSpan ?? 1) > 1
-    });
-  }
-
-  return placements;
-}
-
-export function calculatePaneGridBaseRows(input: {
-  placements: Map<string, { rowIndex: number; effectiveSpan?: number }>;
-  visiblePaneCount: number;
-  columnCount: number;
-  targetEmptySlots?: number;
-}): {
-  naturalRows: number;
-  naturalEmptySlots: number;
-  actualBaseRows: number;
-  targetEmptySlots: number;
-  minCount: number;
-  maxCount: number;
-} {
-  const { placements, visiblePaneCount, columnCount, targetEmptySlots: storedTarget } = input;
-  const maxPaneRowIndex =
-    placements.size > 0
-      ? Math.max(0, ...Array.from(placements.values(), (placement) => placement.rowIndex))
-      : (visiblePaneCount > 0 ? Math.ceil(visiblePaneCount / Math.max(columnCount, 1)) - 1 : 0);
-  const naturalRows = Math.max(1, maxPaneRowIndex + 1);
-  const occupiedCells =
-    placements.size > 0
-      ? Array.from(placements.values()).reduce((sum, p) => sum + (p.effectiveSpan ?? 1), 0)
-      : visiblePaneCount;
-  const naturalCapacity = naturalRows * columnCount;
-  const naturalEmptySlots = Math.max(0, naturalCapacity - occupiedCells);
-  const MAX_ROOM_EMPTY_SLOTS = 6;
-  const minCount = 0;
-  const maxCount = Math.min(MAX_ROOM_EMPTY_SLOTS, Math.max(minCount, 16 - visiblePaneCount));
-  const targetEmptySlots = typeof storedTarget === "number"
-    ? Math.max(minCount, Math.min(maxCount, storedTarget))
-    : 0;
-  const additionalSlotsNeeded = Math.max(0, targetEmptySlots - naturalEmptySlots);
-  const neededCells = Math.min(16, naturalCapacity + additionalSlotsNeeded);
-  const rowsForSlots = Math.ceil(neededCells / Math.max(columnCount, 1));
-  const maxPossibleRows = Math.max(1, Math.ceil(16 / Math.max(columnCount, 1)));
-  const actualBaseRows = Math.min(
-    maxPossibleRows,
-    Math.max(naturalRows, rowsForSlots, 1)
-  );
-  return { naturalRows, naturalEmptySlots, actualBaseRows, targetEmptySlots, minCount, maxCount };
-}
 
 interface BlueprintProgressItem {
   label: string;
@@ -1206,31 +895,6 @@ interface BlueprintProgressProps {
   storageWarning: string;
 }
 
-function statusTone(status: string) {
-  if (
-    status === "VERIFIED" ||
-    status === "EXECUTED" ||
-    status === "TOOL_EXECUTION_OK" ||
-    status === "LIVE" ||
-    status === "READY" ||
-    status === "RUNNING" ||
-    status === "COMPLETE" ||
-    status === "COMPLETED"
-  ) {
-    return "ok";
-  }
-  if (status === "WARN" || status === "GATED") return "warn";
-  if (status === "ERROR" || status === "FAILED" || status === "BLOCKED") return "bad";
-  return "muted";
-}
-
-function readableCode(code: string) {
-  return code
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part[0] + part.slice(1).toLowerCase())
-    .join(" ");
-}
 
 function readViewportWidth() {
   return typeof window === "undefined" ? 1440 : window.innerWidth;
@@ -1308,7 +972,9 @@ const paneModeLabels: Record<Pane["mode"], string> = {
   HARNESS: "Harness",
   LIVE: "Live",
   FILES: "Files",
-  DEMOS: "Demo Projects"
+  DATABASES: "Databases",
+  DEMOS: "Demo Projects",
+  T3CODE: "T3 Code"
 };
 
 function paneModeLabel(mode: Pane["mode"]): string {
@@ -1319,22 +985,19 @@ function paneTitleForMode(mode: Pane["mode"], index: number): string {
   return `${paneModeLabel(mode)} ${index}`;
 }
 
-function displayPaneTitle(pane: Pick<Pane, "mode" | "title">): string {
-  if (pane.mode !== "TERMINAL") return pane.title;
-  return pane.title.replace(/^Terminal\b/i, "CLI");
+function formatPaneFullTitle(pane: Pick<Pane, "mode" | "title"> & { paneName?: string | null }): string {
+  const baseTitle = pane.mode === "TERMINAL" ? pane.title.replace(/^Terminal\b/i, "CLI") : pane.title;
+  if (!pane.paneName) return baseTitle;
+  if (!baseTitle || baseTitle.trim().toLowerCase() === pane.paneName.trim().toLowerCase()) return pane.paneName;
+  return `${pane.paneName} · ${baseTitle}`;
 }
 
-type TaskHistoryDialogItem = CodexHistoryItem | CliTaskHistoryItem;
-
-function appendUniqueTaskHistoryItems(current: TaskHistoryDialogItem[], incoming: TaskHistoryDialogItem[]): TaskHistoryDialogItem[] {
-  const ids = new Set(current.map((item) => item.id));
-  const merged = [...current];
-  for (const item of incoming) {
-    if (ids.has(item.id)) continue;
-    ids.add(item.id);
-    merged.push(item);
-  }
-  return merged;
+/** Second line of a minimized pane card: the task title, or the CLI / pane type when there is none. */
+function minimizedPaneSubtitle(pane: Pick<Pane, "mode" | "title" | "terminalRuntimeId"> & { paneName?: string | null }): string {
+  const baseTitle = pane.mode === "TERMINAL" ? pane.title.replace(/^Terminal\b/i, "CLI") : pane.title;
+  if (pane.paneName && baseTitle && baseTitle.trim().toLowerCase() !== pane.paneName.trim().toLowerCase()) return baseTitle;
+  if (pane.mode === "TERMINAL") return cliRuntimeLabel(pane.terminalRuntimeId) ?? "CLI";
+  return paneModeLabel(pane.mode);
 }
 
 function sortRoomsByOrder(rooms: Room[]): Room[] {
@@ -1381,881 +1044,7 @@ function reorderRoomsById(rooms: Room[], draggedRoomId: string, targetRoomId: st
   return next.map((room, index) => (room.order === index ? room : { ...room, order: index }));
 }
 
-type PaneOverflowCommand = {
-  id: string;
-  label: string;
-  description: string;
-  title?: string;
-  ariaLabel: string;
-  icon: LucideIcon;
-  onClick: () => void;
-  disabled?: boolean;
-};
 
-function enabledButtons(container: HTMLElement): HTMLButtonElement[] {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
-}
-
-type PopupCloseIntent = "auto" | "dismissal" | "activation";
-
-function restorePopupTriggerFocus(
-  popup: HTMLElement | null,
-  trigger: HTMLButtonElement | null,
-  closeIntent: PopupCloseIntent
-) {
-  if (!trigger?.isConnected) return;
-  const activeElement = document.activeElement;
-  const focusInPopup = Boolean(activeElement && popup?.contains(activeElement));
-  const focusMovedToDestination =
-    activeElement instanceof HTMLElement &&
-    activeElement.isConnected &&
-    activeElement !== document.body &&
-    activeElement !== trigger &&
-    !focusInPopup;
-  if (focusMovedToDestination) return;
-  if (closeIntent !== "auto" || focusInPopup || !activeElement || activeElement === document.body) trigger.focus();
-}
-
-function MobileActionSheet({
-  actionSections,
-  actions,
-  commandSectionLabel = "Task commands",
-  commands = [],
-  hiddenActionIds,
-  label,
-  onClose,
-  onHideAction,
-  onRunCommand,
-  onShowAction,
-  onRunAction,
-  plainActions = false,
-  popupId,
-  summary,
-  triggerRef,
-}: {
-  actionSections?: Array<{ id: string; label: string; actions: IconToolbarAction[] }>;
-  actions: IconToolbarAction[];
-  commandSectionLabel?: string;
-  commands?: PaneOverflowCommand[];
-  hiddenActionIds: string[];
-  label: string;
-  onClose: () => void;
-  onHideAction: (actionId: string) => void;
-  onRunCommand?: (command: PaneOverflowCommand) => void;
-  onShowAction: (actionId: string) => void;
-  onRunAction: (action: IconToolbarAction) => void;
-  plainActions?: boolean;
-  popupId: string;
-  summary?: ReactNode;
-  triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
-  const hiddenSet = new Set(hiddenActionIds);
-  const toolbarSections = actionSections ?? [{ id: "toolbar", label: plainActions ? "Pane actions" : "Toolbar buttons", actions }];
-  const dialogRef = useRef<HTMLElement>(null);
-  const closeIntentRef = useRef<PopupCloseIntent>("auto");
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (dialog) enabledButtons(dialog)[0]?.focus();
-    return () => restorePopupTriggerFocus(dialog, triggerRef.current, closeIntentRef.current);
-  }, [triggerRef]);
-
-  function dismiss() {
-    closeIntentRef.current = "dismissal";
-    onClose();
-  }
-
-  function runCommand(command: PaneOverflowCommand) {
-    closeIntentRef.current = "activation";
-    onRunCommand?.(command);
-  }
-
-  function runAction(action: IconToolbarAction) {
-    closeIntentRef.current = "activation";
-    onRunAction(action);
-  }
-
-  function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      dismiss();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const buttons = enabledButtons(dialog);
-    const first = buttons[0];
-    const last = buttons.at(-1);
-    if (!first || !last) {
-      event.preventDefault();
-      return;
-    }
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || !dialog.contains(active))) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
-  return (
-    <div className="mobile-action-sheet-backdrop" onClick={dismiss}>
-      <section
-        id={popupId}
-        ref={dialogRef}
-        className="mobile-action-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-label={label}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleDialogKeyDown}
-      >
-        <header>
-          <strong>{label}</strong>
-          <button type="button" className="mobile-action-sheet-close" aria-label={`Close ${label}`} onClick={dismiss}>
-            <X aria-hidden="true" />
-          </button>
-        </header>
-        <div className="mobile-action-sheet-list">
-          {summary}
-          {commands.length ? (
-            <div className="mobile-action-sheet-section" role="group" aria-label={commandSectionLabel}>
-              <span className="mobile-action-sheet-section-label">{commandSectionLabel}</span>
-              {commands.map((command) => {
-                const CommandIcon = command.icon;
-                return (
-                  <div className="mobile-action-sheet-row" key={command.id}>
-                    <button
-                      type="button"
-                      className="mobile-action-sheet-main"
-                      aria-label={command.ariaLabel}
-                      title={command.title}
-                      disabled={command.disabled}
-                      onClick={() => runCommand(command)}
-                    >
-                      <CommandIcon aria-hidden="true" />
-                      <span>
-                        <strong>{command.label}</strong>
-                        <small>{command.description}</small>
-                      </span>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-          {toolbarSections.map((section) => section.actions.length ? (
-            <div className="mobile-action-sheet-section" role="group" aria-label={section.label} key={section.id}>
-              <span className="mobile-action-sheet-section-label">{section.label}</span>
-              {section.actions.map((action) => {
-                const ActionIcon = action.icon;
-                const isHidden = hiddenSet.has(action.id);
-                if (plainActions) {
-                  return (
-                    <div className="mobile-action-sheet-row" key={action.id}>
-                      <button
-                        type="button"
-                        className="mobile-action-sheet-main"
-                        aria-label={action.ariaLabel}
-                        aria-controls={action.ariaControls}
-                        aria-expanded={action.ariaExpanded}
-                        aria-haspopup={action.ariaHasPopup}
-                        disabled={action.disabled}
-                        onClick={() => runAction(action)}
-                      >
-                        <ActionIcon aria-hidden="true" />
-                        <span>
-                          <strong>{action.label}</strong>
-                          <small>{action.title}</small>
-                        </span>
-                      </button>
-                    </div>
-                  );
-                }
-                return (
-                  <div className={isHidden ? "mobile-action-sheet-row is-hidden" : "mobile-action-sheet-row"} key={action.id}>
-                    <button
-                      type="button"
-                      className="mobile-action-sheet-main"
-                      aria-label={action.ariaLabel}
-                      aria-controls={action.ariaControls}
-                      aria-expanded={action.ariaExpanded}
-                      aria-haspopup={action.ariaHasPopup}
-                      disabled={action.disabled || isHidden}
-                      onClick={() => runAction(action)}
-                    >
-                      <ActionIcon aria-hidden="true" />
-                      <span>
-                        <strong>{action.label}</strong>
-                        <small>{isHidden ? "Hidden" : action.title}</small>
-                      </span>
-                    </button>
-                    {action.hideable === false ? null : (
-                      <button
-                        type="button"
-                        className="mobile-action-sheet-toggle"
-                        aria-label={`${isHidden ? "Show" : "Hide"} ${action.label}`}
-                        onClick={() => {
-                          if (isHidden) {
-                            onShowAction(action.id);
-                          } else {
-                            onHideAction(action.id);
-                          }
-                        }}
-                      >
-                        {isHidden ? "Show" : "Hide"}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null)}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function DesktopActionManager({
-  actions,
-  commandSectionLabel = "Task commands",
-  commands = [],
-  hiddenActionIds,
-  label,
-  onClose,
-  onHideAction,
-  onReorderAction,
-  onRunAction,
-  onRunCommand,
-  onShowAction,
-  plainActions = false,
-  preferPaneInside = false,
-  primaryActionIds,
-  popupId,
-  triggerRef
-}: {
-  actions: IconToolbarAction[];
-  commandSectionLabel?: string;
-  commands?: PaneOverflowCommand[];
-  hiddenActionIds: string[];
-  label: string;
-  onClose: () => void;
-  onHideAction: (actionId: string) => void;
-  onReorderAction?: (draggedId: string, targetId: string, position?: "before" | "after") => void;
-  onRunAction?: (action: IconToolbarAction) => void;
-  onRunCommand?: (command: PaneOverflowCommand) => void;
-  onShowAction: (actionId: string) => void;
-  plainActions?: boolean;
-  preferPaneInside?: boolean;
-  primaryActionIds?: string[];
-  popupId: string;
-  triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
-  const hiddenSet = new Set(hiddenActionIds);
-  const primarySet = primaryActionIds ? new Set(primaryActionIds) : null;
-  const menuRef = useRef<HTMLDivElement>(null);
-  const closeIntentRef = useRef<PopupCloseIntent>("auto");
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [dropPosition, setDropPosition] = useState<"before" | "after">("after");
-  const draggedIdRef = useRef<string | null>(null);
-  const dropPositionRef = useRef<"before" | "after">("after");
-  const isDraggingRef = useRef(false);
-  const [position, setPosition] = useState<{
-    left: number;
-    top: number;
-    ready: boolean;
-    width: number | null;
-    maxHeight: number | null;
-    placement: "pane-inside-above" | "pane-inside-below" | "trigger-above" | "trigger-below";
-  }>({
-    left: 8,
-    top: 8,
-    ready: false,
-    width: null,
-    maxHeight: null,
-    placement: "trigger-below"
-  });
-
-  useLayoutEffect(() => {
-    function updatePosition() {
-      const trigger = triggerRef.current;
-      const menu = menuRef.current;
-      if (!trigger || !menu) return;
-      const margin = 8;
-      const gap = 8;
-      const triggerRect = trigger.getBoundingClientRect();
-      const menuRect = menu.getBoundingClientRect();
-      const width = menuRect.width || Math.min(320, window.innerWidth - margin * 2);
-      const scrollEl = menu.querySelector<HTMLElement>(".icon-action-manager-scroll");
-      const scrollContentHeight = scrollEl && scrollEl.scrollHeight > scrollEl.offsetHeight
-        ? menu.offsetHeight - scrollEl.offsetHeight + scrollEl.scrollHeight
-        : 0;
-      const height = Math.max(menuRect.height, scrollContentHeight) || Math.min(448, window.innerHeight * 0.7);
-      const maxLeft = Math.max(margin, window.innerWidth - width - margin);
-      const maxTop = Math.max(margin, window.innerHeight - height - margin);
-      const pane = preferPaneInside ? trigger.closest<HTMLElement>(".pane-card") : null;
-      if (pane) {
-        const paneRect = pane.getBoundingClientRect();
-        const paneLeft = Math.max(margin, paneRect.left);
-        const paneRight = Math.min(window.innerWidth - margin, paneRect.right);
-        const paneTop = Math.max(margin, paneRect.top);
-        const paneBottom = Math.min(window.innerHeight - margin, paneRect.bottom);
-        const insideWidth = Math.max(1, Math.min(width, paneRight - paneLeft - margin * 2));
-        const belowTop = triggerRect.bottom + gap;
-        const belowHeight = Math.max(0, paneBottom - margin - belowTop);
-        const aboveHeight = Math.max(0, triggerRect.top - gap - (paneTop + margin));
-        const placeBelow = belowHeight >= height || belowHeight >= aboveHeight;
-        const availableHeight = placeBelow ? belowHeight : aboveHeight;
-        const insideHeight = Math.max(1, Math.min(height, availableHeight));
-        const insideTop = placeBelow
-          ? belowTop
-          : Math.max(paneTop + margin, triggerRect.top - gap - insideHeight);
-        setPosition({
-          left: Math.max(
-            paneLeft + margin,
-            Math.min(triggerRect.right - insideWidth, paneRight - margin - insideWidth)
-          ),
-          top: insideTop,
-          ready: true,
-          width: insideWidth,
-          maxHeight: insideHeight,
-          placement: placeBelow ? "pane-inside-below" : "pane-inside-above"
-        });
-        return;
-      }
-      const availableHeightBelow = Math.max(0, window.innerHeight - margin - (triggerRect.bottom + gap));
-      const availableHeightAbove = Math.max(0, triggerRect.top - gap - margin);
-      const fitsBelow = height <= availableHeightBelow;
-      const fitsAbove = height <= availableHeightAbove;
-      const placeBelow = fitsBelow || (!fitsAbove && availableHeightBelow >= availableHeightAbove);
-      const availableHeight = placeBelow ? availableHeightBelow : availableHeightAbove;
-      const desiredTop = placeBelow
-        ? triggerRect.bottom + gap
-        : triggerRect.top - gap - Math.min(height, availableHeight);
-      const actualMaxHeight = height > availableHeight ? availableHeight : null;
-      setPosition({
-        left: Math.max(margin, Math.min(triggerRect.right - width, maxLeft)),
-        top: Math.max(margin, Math.min(desiredTop, maxTop)),
-        ready: true,
-        width: null,
-        maxHeight: actualMaxHeight,
-        placement: placeBelow ? "trigger-below" : "trigger-above"
-      });
-    }
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [preferPaneInside, triggerRef]);
-
-  useEffect(() => {
-    const menu = menuRef.current;
-    return () => restorePopupTriggerFocus(menu, triggerRef.current, closeIntentRef.current);
-  }, [triggerRef]);
-
-  useEffect(() => {
-    if (!position.ready) return;
-    const frame = window.requestAnimationFrame(() => {
-      const menu = menuRef.current;
-      if (menu) enabledButtons(menu)[0]?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [position.ready]);
-
-  function dismiss() {
-    closeIntentRef.current = "dismissal";
-    onClose();
-  }
-
-  function runCommand(command: PaneOverflowCommand) {
-    closeIntentRef.current = "activation";
-    onRunCommand?.(command);
-  }
-
-  function runAction(action: IconToolbarAction) {
-    closeIntentRef.current = "activation";
-    onRunAction?.(action);
-  }
-
-  function handleDragStart(event: ReactDragEvent<HTMLElement>, actionId: string) {
-    if (!onReorderAction) return;
-    isDraggingRef.current = true;
-    draggedIdRef.current = actionId;
-    setDraggedId(actionId);
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", actionId);
-    }
-  }
-
-  function handleDragOver(event: ReactDragEvent<HTMLElement>, actionId: string) {
-    const currentDragged = draggedIdRef.current || draggedId;
-    if (!onReorderAction || !currentDragged || currentDragged === actionId) return;
-    event.preventDefault();
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = "move";
-    }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const rowHeight = rect.height || 36;
-    const midY = rect.top + rowHeight / 2;
-    const clientY = typeof event.clientY === "number" ? event.clientY : midY - 1;
-    const position = clientY < midY ? "before" : "after";
-    dropPositionRef.current = position;
-    setDragOverId(actionId);
-    setDropPosition(position);
-  }
-
-  function handleDragLeave(event: ReactDragEvent<HTMLElement>, actionId: string) {
-    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-    if (dragOverId === actionId) {
-      setDragOverId(null);
-    }
-  }
-
-  function handleDrop(event: ReactDragEvent<HTMLElement>, targetActionId: string) {
-    const sourceId = draggedIdRef.current || draggedId || event.dataTransfer?.getData("text/plain");
-    if (!onReorderAction || !sourceId || sourceId === targetActionId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const effectivePos = dropPositionRef.current || dropPosition;
-    onReorderAction(sourceId, targetActionId, effectivePos);
-    draggedIdRef.current = null;
-    setDraggedId(null);
-    setDragOverId(null);
-    setTimeout(() => {
-      isDraggingRef.current = false;
-    }, 100);
-  }
-
-  function handleDragEnd() {
-    draggedIdRef.current = null;
-    setDraggedId(null);
-    setDragOverId(null);
-    setTimeout(() => {
-      isDraggingRef.current = false;
-    }, 100);
-  }
-
-  function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      dismiss();
-      return;
-    }
-    const menu = menuRef.current;
-    if (!menu) return;
-    const items = enabledButtons(menu);
-    if (!items.length) return;
-    if (onReorderAction && (event.altKey || event.ctrlKey) && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-      const activeElement = document.activeElement;
-      const activeButton = items.find((btn) => btn === activeElement);
-      const actionId = activeButton?.dataset.actionId;
-      if (actionId) {
-        event.preventDefault();
-        const currentIndex = actions.findIndex((a) => a.id === actionId);
-        if (currentIndex !== -1) {
-          const targetIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
-          const targetAction = actions[targetIndex];
-          if (targetAction) {
-            onReorderAction(actionId, targetAction.id, event.key === "ArrowUp" ? "before" : "after");
-            requestAnimationFrame(() => {
-              const nextBtn = menu.querySelector<HTMLButtonElement>(`button[data-action-id="${actionId}"]`);
-              nextBtn?.focus();
-            });
-            return;
-          }
-        }
-      }
-    }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const activeIndex = items.findIndex((item) => item === document.activeElement);
-    const nextIndex = event.key === "Home"
-      ? 0
-      : event.key === "End"
-        ? items.length - 1
-        : event.key === "ArrowUp"
-          ? activeIndex <= 0 ? items.length - 1 : activeIndex - 1
-          : activeIndex < 0 || activeIndex === items.length - 1 ? 0 : activeIndex + 1;
-    items[nextIndex]?.focus();
-  }
-
-  return createPortal(
-    <div
-      id={popupId}
-      ref={menuRef}
-      className="icon-overflow-menu icon-action-manager"
-      role="menu"
-      aria-label={label}
-      data-placement={position.placement}
-      style={{
-        left: `${position.left}px`,
-        top: `${position.top}px`,
-        width: position.width === null ? undefined : `${position.width}px`,
-        maxHeight: position.maxHeight === null ? undefined : `${position.maxHeight}px`,
-        visibility: position.ready ? "visible" : "hidden"
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={handleMenuKeyDown}
-    >
-      {commands.length ? (
-        <div className="icon-action-manager-section" role="group" aria-label={commandSectionLabel}>
-          <span className="icon-action-manager-section-label">{commandSectionLabel}</span>
-          {commands.map((command) => {
-            const CommandIcon = command.icon;
-            return (
-              <button
-                key={command.id}
-                type="button"
-                role="menuitem"
-                aria-label={command.ariaLabel}
-                title={command.title ?? command.description}
-                disabled={command.disabled}
-                onClick={() => runCommand(command)}
-              >
-                <CommandIcon aria-hidden="true" />
-                <span>{command.label}{command.disabled && <small className="action-disabled-reason">{command.title ?? command.description}</small>}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-      {actions.length ? <div className="icon-action-manager-scroll">
-        <div className="icon-action-manager-section" role="group" aria-label={plainActions ? "Pane actions" : "Toolbar buttons"}>
-          <span className="icon-action-manager-section-label">{plainActions ? "Pane actions" : "Toolbar buttons"}</span>
-          {actions.map((action) => {
-            const ActionIcon = action.icon;
-            const isHidden = hiddenSet.has(action.id);
-            const isShown = !isHidden && (primarySet?.has(action.id) ?? true);
-            const canHide = action.hideable !== false;
-            const stateLabel = isShown ? (canHide ? "Hide" : "Shown") : "Show";
-            const isDraggable = Boolean(onReorderAction) && action.draggable !== false;
-            const isDragging = draggedId === action.id;
-            const isDragOver = dragOverId === action.id;
-            const rowDragClass = isDragging
-              ? " is-dragging"
-              : isDragOver
-                ? dropPosition === "before"
-                  ? " is-drag-over-before"
-                  : " is-drag-over-after"
-                : "";
-
-            return (
-              <div
-                key={action.id}
-                className={`icon-action-manager-row${rowDragClass}`}
-                draggable={isDraggable}
-                onDragStart={(event) => handleDragStart(event, action.id)}
-                onDragOver={(event) => handleDragOver(event, action.id)}
-                onDragLeave={(event) => handleDragLeave(event, action.id)}
-                onDrop={(event) => handleDrop(event, action.id)}
-                onDragEnd={handleDragEnd}
-              >
-                {plainActions ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    data-action-id={action.id}
-                    aria-label={action.ariaLabel}
-                    title={action.title}
-                    disabled={action.disabled}
-                    onClick={(event) => {
-                      if (isDraggingRef.current) {
-                        event.preventDefault();
-                        return;
-                      }
-                      runAction(action);
-                    }}
-                  >
-                    <ActionIcon aria-hidden="true" />
-                    <span>{action.label}{action.disabled && <small className="action-disabled-reason">{action.title}</small>}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    role="menuitemcheckbox"
-                    data-action-id={action.id}
-                    aria-checked={isShown}
-                    aria-label={`${stateLabel} ${action.ariaLabel}`}
-                    disabled={isShown && !canHide}
-                    onClick={(event) => {
-                      if (isDraggingRef.current) {
-                        event.preventDefault();
-                        return;
-                      }
-                      if (isShown) {
-                        onHideAction(action.id);
-                      } else {
-                        onShowAction(action.id);
-                      }
-                    }}
-                  >
-                    <ActionIcon aria-hidden="true" />
-                    <span>{action.label}</span>
-                    <span className="icon-action-manager-state">{stateLabel}</span>
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div> : null}
-    </div>,
-    document.body
-  );
-}
-
-function TaskHistoryDialog({
-  mode,
-  paneTitle,
-  runtimeLabel,
-  items,
-  loading,
-  error,
-  loadMorePending,
-  hasMore,
-  query,
-  onClose,
-  onSelect,
-  onLoadMore,
-  onQueryChange
-}: {
-  mode: "chat" | "cli";
-  paneTitle: string;
-  runtimeLabel: string;
-  items: TaskHistoryDialogItem[];
-  loading: boolean;
-  error: string | null;
-  loadMorePending: boolean;
-  hasMore: boolean;
-  query: string;
-  onClose: () => void;
-  onSelect: (item: TaskHistoryDialogItem) => void;
-  onLoadMore: () => void;
-  onQueryChange: (query: string) => void;
-}) {
-  const isChat = mode === "chat";
-  let description = `Open an existing Codex thread in ${paneTitle}.`;
-  if (!isChat) {
-    description = `Shared Space CLI task history. Continue a task in ${paneTitle} with ${runtimeLabel}; the runtime stays unchanged.`;
-  }
-  return (
-    <div className="attachment-modal codex-resume-modal" onClick={onClose}>
-      <section
-        className="attachment-modal-body codex-resume-modal-body"
-        role="dialog"
-        aria-modal="true"
-        aria-label={isChat ? "Open Codex task history" : "Resume CLI task"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button
-          type="button"
-          className="terminal-upload-modal-close codex-resume-modal-close"
-          aria-label={isChat ? "Close task history" : "Close resume task history"}
-          onClick={onClose}
-        >
-          <X aria-hidden="true" />
-        </button>
-        <div className="codex-resume-modal-header">
-          <span className="terminal-upload-modal-label codex-resume-modal-label">
-            <History aria-hidden="true" />
-            {isChat ? "Task history" : "Resume task"}
-          </span>
-          <strong>{isChat ? "Codex task history" : "CLI task history"}</strong>
-          <small>{description}</small>
-        </div>
-        <div className="codex-resume-search">
-          <Search aria-hidden="true" />
-          <input
-            type="search"
-            aria-label={isChat ? "Search Codex tasks" : "Search CLI tasks"}
-            placeholder="Search tasks"
-            autoComplete="off"
-            autoFocus
-            value={query}
-            onChange={(event) => onQueryChange(event.currentTarget.value)}
-          />
-          {query ? (
-            <button type="button" aria-label="Clear task search" title="Clear task search" onClick={() => onQueryChange("")}>
-              <X aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-        <div className="vscode-codex-task-list codex-resume-task-list">
-          {loading ? (
-            <div className="vscode-codex-state" role="status">
-              <Loader2 aria-hidden="true" />
-              <span>Loading tasks</span>
-            </div>
-          ) : error ? (
-            <div className="vscode-codex-state" role="alert">
-              <span>{error}</span>
-            </div>
-          ) : items.length ? (
-            items.map((item) => {
-              const runtimeId = "runtimeId" in item ? item.runtimeId : "cli:codex";
-              const runtimeBrand = cliRuntimePresentation(runtimeId);
-              const itemProviderLabel = "providerLabel" in item ? item.providerLabel : "Codex";
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="vscode-codex-task-row"
-                  onClick={() => onSelect(item)}
-                  aria-label={`${itemProviderLabel} task ${item.title}`}
-                >
-                  <div className="cli-task-history-row-content">
-                    <strong>{item.title}</strong>
-                    <span className="cli-task-history-provider">
-                      {runtimeBrand ? (
-                        <img
-                          src={runtimeBrand.iconSrc}
-                          alt=""
-                          aria-hidden="true"
-                          data-terminal-runtime-brand={runtimeBrand.brand}
-                          draggable={false}
-                        />
-                      ) : (
-                        <Terminal aria-hidden="true" />
-                      )}
-                      <span>{itemProviderLabel}</span>
-                    </span>
-                  </div>
-                </button>
-              );
-            })
-          ) : (
-            <div className="vscode-codex-state" role="status">
-              <span>{isChat ? "No Codex tasks found" : "No CLI tasks found"}</span>
-            </div>
-          )}
-        </div>
-        <div className="codex-resume-modal-actions">
-          <button type="button" onClick={onClose}>
-            Close
-          </button>
-          {hasMore ? (
-            <button type="button" onClick={onLoadMore} disabled={loadMorePending}>
-              {loadMorePending ? "Loading..." : "Load more"}
-            </button>
-          ) : null}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function MovePaneDialog({
-  paneTitle,
-  targetRooms,
-  targetRoomId,
-  pending,
-  error,
-  onTargetRoomChange,
-  onClose,
-  onConfirm
-}: {
-  paneTitle: string;
-  targetRooms: Room[];
-  targetRoomId: string;
-  pending: boolean;
-  error: string | null;
-  onTargetRoomChange: (roomId: string) => void;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="attachment-modal codex-resume-modal" onClick={onClose}>
-      <section
-        className="attachment-modal-body codex-resume-modal-body"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Move pane to another room"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button type="button" className="terminal-upload-modal-close codex-resume-modal-close" aria-label="Close pane move dialog" onClick={onClose}>
-          <X aria-hidden="true" />
-        </button>
-        <div className="codex-resume-modal-header">
-          <span className="terminal-upload-modal-label codex-resume-modal-label">
-            <ArrowRightLeft aria-hidden="true" />
-            Move pane
-          </span>
-          <strong>{paneTitle}</strong>
-          <small>This v1 moves only inactive panes without live CLI, browser, or agent bindings.</small>
-        </div>
-        <label className="provider-form-row">
-          <span>Target room</span>
-          <select
-            aria-label="Target room"
-            value={targetRoomId}
-            disabled={pending || targetRooms.length === 0}
-            onChange={(event) => onTargetRoomChange(event.currentTarget.value)}
-          >
-            {targetRooms.map((room) => (
-              <option key={room.id} value={room.id}>
-                {room.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {error ? (
-          <div className="validation-result bad" role="alert">
-            {error}
-          </div>
-        ) : null}
-        <div className="codex-resume-modal-actions">
-          <button type="button" onClick={onClose} disabled={pending}>
-            Cancel
-          </button>
-          <button type="button" onClick={onConfirm} disabled={pending || !targetRooms.length || !targetRoomId}>
-            {pending ? "Moving..." : "Move pane"}
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-export function formatTerminalSessionDebugInfo(metadata: TerminalSessionMetadata): { label: string; title: string } | null {
-  const runtimeLabel = cliRuntimeLabel(metadata.runtimeId ?? "cli:codex") ?? "Space CLI";
-  if (metadata.codexThreadId) {
-    return {
-      label: metadata.codexThreadId.slice(0, 8),
-      title: `${runtimeLabel} session ${metadata.codexThreadId}`
-    };
-  }
-  if (!metadata.sessionId) return null;
-  const normalized = metadata.sessionId.replace(/^cli_session:/, "");
-  return {
-    label: normalized.slice(0, 8),
-    title: `${runtimeLabel} session ${metadata.sessionId}`
-  };
-}
-
-export function formatTerminalSessionClipboardText(metadata: TerminalSessionMetadata): string | null {
-  const sessionId = metadata.sessionId?.trim();
-  if (!sessionId) return null;
-  return [
-    `CLI session ID: ${sessionId}`,
-    ...(metadata.codexThreadId ? [`Codex thread ID: ${metadata.codexThreadId}`] : [])
-  ].join("\n");
-}
-
-function dispatchAgentPaneSettingsUpdated(paneId: string | null, session?: AgentPaneSession) {
-  window.dispatchEvent(new CustomEvent(AGENT_PANE_SETTINGS_EVENT, { detail: { paneId, session } }));
-}
 
 function readStoredTerminalFontSize(): number {
   if (typeof window === "undefined") return DEFAULT_TERMINAL_FONT_SIZE;
@@ -2307,16 +1096,6 @@ function readStoredRoomExtraEmptySlots(): Record<string, number> {
   }
 }
 
-function paneToolbarHiddenStorageKey(mode: Pane["mode"]): string {
-  if (mode === "CHAT" || mode === "TERMINAL") return SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY;
-  return `${PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX}.${mode}`;
-}
-
-function paneToolbarActionOrderStorageKey(mode: Pane["mode"]): string {
-  if (mode === "CHAT" || mode === "TERMINAL") return SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY;
-  return `${PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX}.${mode}`;
-}
-
 const migratedCliToolbarStorages = new WeakSet<Storage>();
 
 function migrateLegacyCliToolbarPreferences(storage: Storage): void {
@@ -2337,18 +1116,6 @@ function migrateLegacyCliToolbarPreferences(storage: Storage): void {
   }
 }
 
-function dispatchTerminalPaneAction(paneId: string, action: TerminalPaneAction) {
-  window.dispatchEvent(new CustomEvent(TERMINAL_PANE_ACTION_EVENT, { detail: { paneId, ...action } }));
-}
-
-function terminalPlanModeAction(runtimeId: string): TerminalPaneAction {
-  if (runtimeId === "cli:claude") return { action: "ensure_plan_mode" };
-  if (runtimeId === "cli:gemini" || runtimeId === "cli:qwen" || runtimeId === "cli:omp") {
-    return { action: "enter_native_plan_mode", runtimeId };
-  }
-  return { action: "control_key", key: "shift_tab" };
-}
-
 function pickCliMemorySaveModelId(models: Model[]): string {
   const exactMatch = models.find((model) => model.id === "gpt-5-mini");
   if (exactMatch) return exactMatch.id;
@@ -2356,11 +1123,6 @@ function pickCliMemorySaveModelId(models: Model[]): string {
   if (miniCodexModel) return miniCodexModel.id;
   const genericMiniModel = models.find((model) => /mini/i.test(model.id));
   return genericMiniModel?.id ?? "gpt-5-mini";
-}
-
-function dispatchAgentPaneAction(paneId: string, action: AgentPaneAction | AgentPaneDetailAction) {
-  const detail = typeof action === "string" ? { paneId, action } : { paneId, ...action };
-  dispatchAgentPaneActionEvent(detail);
 }
 
 function dispatchAgentPaneAttachments(paneId: string, artifacts: Artifact[]) {
@@ -2376,412 +1138,15 @@ function isRoomNotFoundError(error: unknown, roomId: string): boolean {
   return error.message.includes("NOT_FOUND") && error.message.includes(`Room ${roomId} was not found`);
 }
 
-function fallbackMemorySearchStatus(mode: MemorySearchMode): MemorySearchStatus {
-  return {
-    mode,
-    keyword: {
-      status: "VERIFIED",
-      statusReason: "Keyword index is available.",
-      checkedAt: null
-    },
-    semantic: {
-      status: "DISABLED",
-      statusReason: "Embedding smoke is pending.",
-      checkedAt: null
-    }
-  };
-}
 
-function embeddingSmokeRemediation(smoke: MemoryEmbeddingSmokeCheck | null): string | null {
-  if (!smoke) return null;
-  if (
-    smoke.provider === "codex-lb" &&
-    smoke.code === "EMBEDDING_PROVIDER_SMOKE_FAILED" &&
-    /HTTP\s+(404|405)\b/.test(smoke.message)
-  ) {
-    return "Codex-LB /v1/embeddings is not available; add a real embeddings endpoint there or switch to a dedicated direct OpenAI embedding key, then rerun smoke.";
-  }
-  if (smoke.code === "EMBEDDING_KEY_NAME_NOT_DEDICATED") {
-    return "Use a dedicated key label that starts with space- before enabling semantic memory.";
-  }
-  if (smoke.code === "EMBEDDING_CREDENTIAL_MISSING" || smoke.code === "EMBEDDING_KEY_FILE_UNREADABLE") {
-    return "Install the dedicated embedding credential file under /opt/spaceapp/secrets with space-readable permissions, then rerun smoke.";
-  }
-  return null;
-}
 
-function buildBlueprintProgressState({
-  readiness,
-  mcp,
-  latestSmoke,
-  latestMemoryEmbeddingSmoke,
-  latestMemoryVectorReadiness,
-  providers,
-  skills,
-  importCandidates,
-  swarmState,
-  rooms,
-  panes,
-  codexAppServer,
-  observability,
-  workerReadiness
-}: BlueprintProgressProps) {
-  const dependencies = readiness?.dependencies;
-  const verifiedProviders = providers.filter((provider) => provider.status === "VERIFIED").length;
-  const codexTurnLive = dependencies?.codexTurns === "enabled" && codexAppServer?.status === "READY";
-  const mcpVerified = mcp?.gateway.status === "VERIFIED";
-  const workerLive = workerReadiness?.status === "RUNNING" || dependencies?.worker === "RUNNING";
-  const vectorReadinessLabel = latestMemoryVectorReadiness?.code
-    ? readableCode(latestMemoryVectorReadiness.code)
-    : "Vector readiness pending";
-  const embeddingSmokeLabel = latestMemoryEmbeddingSmoke?.code
-    ? readableCode(latestMemoryEmbeddingSmoke.code)
-    : "Embedding smoke pending";
-  const progressItems: BlueprintProgressItem[] = [
-    {
-      label: "Postgres state",
-      status: dependencies?.store === "postgres" ? "LIVE" : "GATED",
-      detail: dependencies ? `${dependencies.store} canonical state` : "Loading readiness"
-    },
-    {
-      label: "Temporal workflows",
-      status: dependencies?.temporal === "enabled" ? "LIVE" : "GATED",
-      detail: dependencies ? `Workflow plane ${dependencies.temporal}` : "Loading workflow plane"
-    },
-    {
-      label: "Temporal worker",
-      status: workerLive ? "LIVE" : "GATED",
-      detail: workerReadiness
-        ? `${workerReadiness.status}; ${workerReadiness.workflowPollerCount} workflow / ${workerReadiness.activityPollerCount} activity pollers`
-        : dependencies?.worker
-          ? `Worker ${dependencies.worker}`
-          : "Loading worker readiness"
-    },
-    {
-      label: "Observability",
-      status: observability ? "LIVE" : "GATED",
-      detail: observability
-        ? `${observability.totals.requestCount} requests / p95 ${formatDurationMs(observability.totals.p95Ms)}`
-        : "Metrics snapshot loading"
-    },
-    {
-      label: "Rooms and panes",
-      status: "LIVE",
-      detail: `${rooms.length} rooms / ${panes.length} open panes`
-    },
-    {
-      label: "Memory registry",
-      status: "LIVE",
-      detail: latestMemoryEmbeddingSmoke?.code
-        ? `Keyword active; ${vectorReadinessLabel}; embeddings ${embeddingSmokeLabel}`
-        : `Native save/search active; ${vectorReadinessLabel}`
-    },
-    {
-      label: "Skill proposals",
-      status: "LIVE",
-      detail: `${skills.length} proposals loaded; execution remains gated`
-    },
-    {
-      label: "Import gates",
-      status: "LIVE",
-      detail: `${importCandidates.filter((candidate) => candidate.status === "PENDING").length} pending explicit imports`
-    },
-    {
-      label: "Browser evidence",
-      status: "LIVE",
-      detail: "Screenshot, DOM, console and network smoke artifacts"
-    },
-    {
-      label: "Review gate",
-      status: "LIVE",
-      detail: "Ship/block decisions, evidence IDs and rollback notes"
-    },
-    {
-      label: "MCP execution gate",
-      status: mcpVerified ? "LIVE" : "GATED",
-      detail: mcp ? `${mcp.gateway.status} / ${mcp.gateway.toolCount} verified tools` : "Loading gateway"
-    },
-    {
-      label: "Codex real turn gated",
-      status: codexTurnLive ? "LIVE" : "GATED",
-      detail: codexAppServer ? `${codexAppServer.status}: ${readableCode(codexAppServer.reasonCode)}` : "Loading adapter status"
-    },
-    {
-      label: "Provider smoke gated",
-      status: verifiedProviders > 0 ? "LIVE" : "GATED",
-      detail: verifiedProviders > 0 ? `${verifiedProviders}/${providers.length} providers verified` : "Dedicated credentials required"
-    },
-    {
-      label: "pgvector semantic search",
-      status: latestMemoryVectorReadiness?.status === "VERIFIED" && latestMemoryEmbeddingSmoke?.status === "VERIFIED" ? "LIVE" : "GATED",
-      detail: `${vectorReadinessLabel}; ${embeddingSmokeLabel}`
-    },
-    {
-      label: "Swarm orchestration",
-      status: swarmState ? "LIVE" : "NEXT",
-      detail: swarmState
-        ? `${swarmState.tasks.length} tasks / ${swarmState.locks.filter((lock) => lock.status === "ACTIVE").length} active locks; execution disabled`
-        : "Worktree locks, mailbox and reconcile workflow"
-    }
-  ];
-  const liveCount = progressItems.filter((item) => item.status === "LIVE").length;
-  const visibleCount = progressItems.filter((item) => item.status === "LIVE" || item.status === "GATED").length;
-  const completionPct = Math.round((liveCount / progressItems.length) * 100);
-  const latestSmokeLabel = latestSmoke?.code ? readableCode(latestSmoke.code) : "MCP smoke not run";
 
-  return {
-    progressItems,
-    liveCount,
-    visibleCount,
-    completionPct,
-    latestSmokeLabel,
-    nextItem: progressItems.find((item) => item.status === "NEXT"),
-    gatedItems: progressItems.filter((item) => item.status === "GATED")
-  };
-}
 
-function launchBlockerTone(severity: LaunchBlockerSeverity) {
-  if (severity === "hard") return "bad";
-  if (severity === "gate") return "muted";
-  return "ok";
-}
 
-function buildLaunchBlockers(props: BlueprintProgressProps): LaunchBlocker[] {
-  const blockers: LaunchBlocker[] = [];
-  const dependencies = props.readiness?.dependencies;
-  const verifiedProviders = props.providers.filter((provider) => provider.status === "VERIFIED").length;
-  const vectorReady =
-    props.latestMemoryVectorReadiness?.status === "VERIFIED" &&
-    props.latestMemoryVectorReadiness.code === "MEMORY_VECTOR_READY";
-  const embeddingReady =
-    props.latestMemoryEmbeddingSmoke?.status === "VERIFIED" &&
-    props.latestMemoryEmbeddingSmoke.code === "EMBEDDING_SMOKE_OK";
 
-  if (props.storageReadiness && props.storageReadiness.status !== "VERIFIED") {
-    blockers.push({
-      label: "Dedicated storage volume",
-      detail: `${props.storageReadiness.statusReason} App free ${formatBytes(props.storageReadiness.app.availableBytes)}; root used ${props.storageReadiness.root.usedPercent}%.`,
-      severity: props.storageReadiness.status === "BLOCKED" ? "hard" : "gate"
-    });
-  } else if (!props.storageReadiness && props.storageWarning.trim()) {
-    blockers.push({
-      label: "Dedicated storage volume",
-      detail: props.storageWarning,
-      severity: "hard"
-    });
-  }
 
-  if (!props.readiness) {
-    blockers.push({
-      label: "Readiness snapshot",
-      detail: "The API readiness endpoint has not loaded yet.",
-      severity: "gate"
-    });
-  } else if (!props.readiness.ok) {
-    blockers.push({
-      label: "API readiness",
-      detail: `Ready check is not green; worker is ${dependencies?.worker ?? "unknown"}.`,
-      severity: "hard"
-    });
-  }
 
-  if (dependencies && dependencies.store !== "postgres") {
-    blockers.push({
-      label: "Postgres canonical state",
-      detail: `Current store is ${dependencies.store}; production launch requires Postgres as source of truth.`,
-      severity: "hard"
-    });
-  }
 
-  if (dependencies && dependencies.temporal !== "enabled") {
-    blockers.push({
-      label: "Temporal workflow plane",
-      detail: `Temporal is ${dependencies.temporal}; turns, approvals and retries require durable workflows.`,
-      severity: "hard"
-    });
-  }
-
-  if (props.workerReadiness && props.workerReadiness.status !== "RUNNING") {
-    blockers.push({
-      label: "Temporal worker pollers",
-      detail: props.workerReadiness.statusReason,
-      severity: "hard"
-    });
-  }
-
-  if (!props.observability) {
-    blockers.push({
-      label: "Observability snapshot",
-      detail: "Metrics snapshot has not loaded, so launch evidence is incomplete.",
-      severity: "gate"
-    });
-  }
-
-  if (props.codexAppServer?.status !== "READY") {
-    blockers.push({
-      label: "Codex App Server real turn",
-      detail: props.codexAppServer?.statusReason ?? "Adapter status has not loaded.",
-      severity: "gate"
-    });
-  }
-
-  if (verifiedProviders === 0) {
-    blockers.push({
-      label: "Dedicated provider credential",
-      detail: "No provider has passed dedicated credential validation and model refresh.",
-      severity: "gate"
-    });
-  }
-
-  if (props.mcp?.gateway.status !== "VERIFIED") {
-    blockers.push({
-      label: "MCP discovery and tool allowlist",
-      detail: props.mcp?.gateway.statusReason ?? "Gateway status has not loaded.",
-      severity: "gate"
-    });
-  }
-
-  if (!vectorReady || !embeddingReady) {
-    const remediation = embeddingSmokeRemediation(props.latestMemoryEmbeddingSmoke);
-    blockers.push({
-      label: "Semantic memory embeddings",
-      detail: vectorReady
-        ? remediation ?? `pgvector storage is ready, but embedding provider smoke has not passed${props.latestMemoryEmbeddingSmoke?.message ? `: ${props.latestMemoryEmbeddingSmoke.message}` : "."}`
-        : props.latestMemoryVectorReadiness?.message ?? "Vector readiness has not loaded.",
-      severity: "gate"
-    });
-  }
-
-  if (props.swarmState?.executionStatus === "DISABLED") {
-    blockers.push({
-      label: "Swarm execution gate",
-      detail: props.swarmState.statusReason,
-      severity: "gate"
-    });
-  }
-
-  return blockers;
-}
-
-function MinimizedPanePreviewCard({
-  pane,
-  isRunning,
-  latestTurn,
-  onRestore
-}: {
-  pane: Pane;
-  isRunning: boolean;
-  latestTurn?: Turn | null;
-  onRestore: () => void;
-}) {
-  const [terminalLines, setTerminalLines] = useState<string[]>(() => {
-    if (pane.mode === "TERMINAL") {
-      return getTerminalPreviewLines(pane.id, 5);
-    }
-    return [];
-  });
-
-  useEffect(() => {
-    if (pane.mode !== "TERMINAL") return;
-    const update = () => {
-      setTerminalLines(getTerminalPreviewLines(pane.id, 5));
-    };
-    update();
-    const unsubscribe = subscribeTerminalPreview((updatedPaneId) => {
-      if (!updatedPaneId || updatedPaneId === pane.id) {
-        update();
-      }
-    });
-    const interval = setInterval(() => {
-      if (document.visibilityState === "visible") update();
-    }, 10_000);
-    return () => {
-      unsubscribe();
-      clearInterval(interval);
-    };
-  }, [pane.id, pane.mode]);
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      className={`minimized-preview-card ${isRunning ? "is-running" : ""}`}
-      data-category-color={pane.categoryColor ?? undefined}
-      onClick={onRestore}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onRestore();
-        }
-      }}
-      aria-label={`Restore pane ${displayPaneTitle(pane)}`}
-      title={`Click to restore ${pane.title}`}
-    >
-      <header className="minimized-preview-card-header">
-        <div className="minimized-preview-card-identity">
-          <PaneModeIcon pane={pane} />
-          <span className="minimized-preview-card-title" title={pane.title}>{displayPaneTitle(pane)}</span>
-        </div>
-      </header>
-      <div className="minimized-preview-card-body">
-        {pane.mode === "TERMINAL" ? (
-          terminalLines.length > 0 ? (
-            <div className="minimized-preview-terminal-view">
-              {terminalLines.map((line, idx) => {
-                const isLast = idx === terminalLines.length - 1;
-                return (
-                  <div key={idx} className="minimized-preview-terminal-line" title={line}>
-                    <span>{line || "\u00A0"}</span>
-                    {isLast && isRunning ? (
-                      <span className="minimized-preview-terminal-cursor">▋</span>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="minimized-preview-placeholder">
-              {isRunning ? (
-                <>
-                  <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
-                  <span>Agent running terminal command...</span>
-                </>
-              ) : (
-                <span>No active terminal output</span>
-              )}
-            </div>
-          )
-        ) : pane.mode === "CHAT" ? (
-          <div className="minimized-preview-chat-view">
-            {latestTurn?.prompt ? (
-              <div className="minimized-preview-chat-prompt">
-                <span className="minimized-preview-prompt-tag">&gt;</span>
-                <span className="minimized-preview-prompt-text">{latestTurn.prompt}</span>
-              </div>
-            ) : null}
-            {latestTurn?.status ? (
-              <div className="minimized-preview-chat-summary">
-                Status: {latestTurn.status}
-              </div>
-            ) : isRunning ? (
-              <div className="minimized-preview-placeholder">
-                <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
-                <span>Generating response...</span>
-              </div>
-            ) : (
-              <div className="minimized-preview-placeholder">Ready</div>
-            )}
-          </div>
-        ) : (
-          <div className="minimized-preview-generic-view">
-            <span className="minimized-preview-generic-mode">{pane.mode}</span>
-            <span className="minimized-preview-generic-subtitle">{pane.title}</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function applyServerUserSettings(
   storage: Storage,
@@ -2789,50 +1154,20 @@ function applyServerUserSettings(
   currentUiTheme: UiTheme,
   currentModernAppearance: ModernAppearance,
   currentModernIconPack: ModernIconPack,
+  currentUiBackground: UiBackground = "spaceapp",
   userId?: string
 ): { themeChanged: boolean } {
-  let themeChanged = false;
-  if (settings.uiTheme && settings.uiTheme !== currentUiTheme) {
-    writeUiTheme(storage, settings.uiTheme);
-    themeChanged = true;
-  }
-  if (settings.modernAppearance && settings.modernAppearance !== currentModernAppearance) {
-    writeModernAppearance(storage, settings.modernAppearance);
-    themeChanged = true;
-  }
-  if (settings.modernIconPack && settings.modernIconPack !== currentModernIconPack) {
-    writeModernIconPack(storage, settings.modernIconPack);
-    themeChanged = true;
-  }
-  if (settings.dateTime) {
-    applyServerDateTimeSettings(settings.dateTime, userId);
-  }
-  if (settings.voice) {
-    applyServerVoiceSettings(settings.voice);
-  }
-  if (settings.livePane) {
-    applyServerLivePaneSettings(settings.livePane);
-  }
-  if (settings.keyboardAutocorrect) {
-    applyServerKeyboardAutocorrectSettings(settings.keyboardAutocorrect);
-  }
-  if (typeof settings.suppressNotifications === "boolean") {
-    applyServerSuppressNotifications(settings.suppressNotifications);
-  }
-  if (typeof settings.warmRoomEnabled === "boolean") {
-    applyServerWarmRoomEnabled(settings.warmRoomEnabled);
-  }
-  if (typeof settings.warmRoomConnectedPaneLimit === "number") {
-    applyServerWarmRoomConnectedPaneLimit(settings.warmRoomConnectedPaneLimit);
-  }
-  if (typeof settings.cliImagePreviewLimit === "number") {
-    applyServerCliImagePreviewLimit(settings.cliImagePreviewLimit);
-  }
+  let { themeChanged } = syncFromServer(settings, storage, userId);
+  if (settings.uiTheme && settings.uiTheme !== currentUiTheme) themeChanged = true;
+  if (settings.modernAppearance && settings.modernAppearance !== currentModernAppearance) themeChanged = true;
+  if (settings.modernIconPack && settings.modernIconPack !== currentModernIconPack) themeChanged = true;
+  if (settings.uiBackground && settings.uiBackground !== currentUiBackground) themeChanged = true;
   return { themeChanged };
 }
 
 export function App() {
   useEffect(() => bindSpaceMediaVolume(), []);
+  useEffect(() => clearLegacyCliShortcutUsage(), []);
   const runtime = getSpaceRuntime();
   const runtimeKind = getSpaceRuntimeKind();
   const { ensureServerSettings } = useVoiceInput();
@@ -2878,25 +1213,35 @@ export function App() {
   });
   const [modernAppearance] = useState<ModernAppearance>(() => readModernAppearance(runtime.platform.localStorage));
   const [modernIconPack] = useState<ModernIconPack>(() => readModernIconPack(runtime.platform.localStorage));
+  const [uiBackground] = useState<UiBackground>(() => readUiBackground(runtime.platform.localStorage));
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
   const modernColorMode = uiTheme === "codex" || uiTheme === "motion" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
   useEffect(() => {
     document.documentElement.dataset.interfaceTheme = uiTheme;
-    return () => { delete document.documentElement.dataset.interfaceTheme; };
-  }, [uiTheme]);
+    document.documentElement.dataset.uiBackground = uiBackground;
+    return () => {
+      delete document.documentElement.dataset.interfaceTheme;
+      delete document.documentElement.dataset.uiBackground;
+    };
+  }, [uiTheme, uiBackground]);
   const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
   useEffect(() => {
     const body = document.body;
     const html = document.documentElement;
+    body.setAttribute("data-ui-background", uiBackground);
+    html.setAttribute("data-ui-background", uiBackground);
     if (uiTheme === "classic") {
       body.removeAttribute("data-ui-theme");
       body.removeAttribute("data-color-mode");
       body.removeAttribute("data-icon-pack");
       html.removeAttribute("data-color-mode");
       html.style.colorScheme = "dark";
-      return;
+      return () => {
+        body.removeAttribute("data-ui-background");
+        html.removeAttribute("data-ui-background");
+      };
     }
     body.setAttribute("data-ui-theme", "modern");
     body.setAttribute("data-color-mode", modernColorMode);
@@ -2908,8 +1253,10 @@ export function App() {
       if (body.getAttribute("data-color-mode") === modernColorMode) body.removeAttribute("data-color-mode");
       if (body.getAttribute("data-icon-pack") === modernIconPack) body.removeAttribute("data-icon-pack");
       if (html.getAttribute("data-color-mode") === modernColorMode) html.removeAttribute("data-color-mode");
+      body.removeAttribute("data-ui-background");
+      html.removeAttribute("data-ui-background");
     };
-  }, [modernColorMode, modernIconPack, uiTheme]);
+  }, [modernColorMode, modernIconPack, uiTheme, uiBackground]);
   const [auth, setAuth] = useState<AuthMe | null>(null);
   const [adminModeRequested, setAdminModeRequestedState] = useState(() => readStoredBoolean(ADMIN_MODE_REQUESTED_STORAGE_KEY));
   const setAdminModeRequested = useCallback((next: boolean | ((current: boolean) => boolean)) => {
@@ -2933,9 +1280,12 @@ export function App() {
       try {
         runtime.platform.localStorage.setItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY, JSON.stringify(next));
       } catch {}
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("roomExtraEmptySlots", next);
+      }
       return next;
     });
-  }, [runtime.platform.localStorage]);
+  }, [runtime.platform.localStorage, auth?.isAuthenticated]);
   const [isDemoModeActive, setIsDemoModeActive] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
@@ -2996,6 +1346,11 @@ export function App() {
   const [adminSelectedUserId, setAdminSelectedUserId] = useState<string>("");
   const [adminUsersList, setAdminUsersList] = useState<AdminUserItem[]>([]);
 
+  // T3 Code is the owner's: warm its client bundle once the page is idle.
+  useEffect(() => {
+    if (auth?.user?.role === "ADMIN") scheduleT3BundlePrefetch();
+  }, [auth?.user?.role]);
+
   useEffect(() => {
     if (auth?.user?.role === "ADMIN") {
       api.listAdminUsers()
@@ -3040,6 +1395,7 @@ export function App() {
   const [showDownloadBanner, setShowDownloadBanner] = useState(true);
   const [roomListOverflow, setRoomListOverflow] = useState(false);
   const [roomListMaxHeight, setRoomListMaxHeight] = useState<number | null>(null);
+  const [roomPaneCounts, setRoomPaneCounts] = useState<Record<string, number>>({});
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
   const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
@@ -3083,6 +1439,18 @@ export function App() {
   }, []);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [roomEvents, setRoomEvents] = useState<SpaceEvent[]>([]);
+  const bridgedPlanEventsRef = useRef(new Set<string>());
+  useEffect(() => {
+    // Presentation invalidation from the shared persisted room feed, including replay/fallback.
+    for (const event of roomEvents) {
+      if (event.type !== "PLAN_EXECUTION_UPDATED" || bridgedPlanEventsRef.current.has(event.id)) continue;
+      bridgedPlanEventsRef.current.add(event.id);
+      bridgePlanExecutionEvent(event);
+    }
+    if (bridgedPlanEventsRef.current.size > 256) {
+      bridgedPlanEventsRef.current = new Set([...bridgedPlanEventsRef.current].slice(-256));
+    }
+  }, [roomEvents]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings | null>(null);
   const [models, setModels] = useState<Model[]>([]);
@@ -3125,15 +1493,30 @@ export function App() {
     };
   }, []);
   const [codexEnvironmentSummary, setCodexEnvironmentSummary] = useState<CodexEnvironment | null>(null);
+  // Panes only read isCodexEnabled; keep their prop stable across the 30 s
+  // environment poll so cached rooms do not re-render on every check.
+  const paneCodexEnabled = codexEnvironmentSummary ? codexEnvironmentSummary.isCodexEnabled : null;
+  const paneCodexEnvironment = useMemo(
+    () => (paneCodexEnabled === null ? null : { isCodexEnabled: paneCodexEnabled }),
+    [paneCodexEnabled]
+  );
   const isCodexEnabled = codexEnvironmentSummary?.isCodexEnabled ?? true;
   const [cliRuntimeSettings, setCliRuntimeSettings] = useState<CliRuntimeSettingsResponse | null>(null);
   const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
   const isHarnessEnabled = cliRuntimeSettings?.harness?.enabled ?? true;
   const [restoredDock] = useState(() => readDockSession(runtime.platform.sessionStorage, Object.keys(sideSurfaceMeta)));
   const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>(() => (restoredDock?.surface as SideSurface | undefined) ?? "rooms");
+  const [sourceControlEnabled, setSourceControlEnabled] = useState(false);
+  const { hiddenDockIds, isDockHidden } = useDocksVisibility();
+  const { hiddenPaneIds, isPaneHidden } = usePanesVisibility();
+  const { hiddenWidgetIds, isWidgetHidden } = useWidgetsVisibility();
   const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
   const [isRoomToolbarHidden, setIsRoomToolbarHidden] = useState(() => readStoredBoolean(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY));
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(() => isDocumentFullscreen());
+
+  useEffect(() => {
+    preloadDockModules();
+  }, []);
 
   useEffect(() => {
     const bridge = (window as any).spaceDesktop;
@@ -3258,6 +1641,13 @@ export function App() {
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
   const [isVibeMusicOpen, setIsVibeMusicOpen] = useState(false);
   const [isSnipToolOpen, setIsSnipToolOpen] = useState(false);
+  useEffect(() => {
+    if (isSnipToolOpen) {
+      document.body.setAttribute("data-snip-tool-active", "true");
+    } else {
+      document.body.removeAttribute("data-snip-tool-active");
+    }
+  }, [isSnipToolOpen]);
   const [isOskKeyboardOpen, setIsOskKeyboardOpen] = useState(false);
   const oskKeyboardMountedRef = useRef(false);
   const [isServerActionsMenuOpen, setIsServerActionsMenuOpen] = useState(false);
@@ -3277,8 +1667,12 @@ export function App() {
   }, [auth?.user?.role]);
 
   const [isSetupConnectionsOpen, setIsSetupConnectionsOpen] = useState(false);
+  const [workspaceSetupHost, setWorkspaceSetupHost] = useState<HTMLDivElement | null>(null);
+  const workspaceSetupBack = useRef<(() => void) | null>(null);
+  const setupFromWorkspace = useRef(false);
   const setupConnectionsMounted = useRef(false);
-  if (isSetupConnectionsOpen) setupConnectionsMounted.current = true;
+  if (workspaceSetupHost) setupFromWorkspace.current = true;
+  if (isSetupConnectionsOpen || workspaceSetupHost) setupConnectionsMounted.current = true;
   const [isServerRestartDialogOpen, setIsServerRestartDialogOpen] = useState(false);
   const [adminCodexTool, setAdminCodexTool] = useState<AdminCodexTool | null>(null);
   const [adminOperationTool, setAdminOperationTool] = useState<AdminOperationTool | null>(null);
@@ -3304,6 +1698,8 @@ export function App() {
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
   const [workspaceNavigationDetail, setWorkspaceNavigationDetail] = useState<string | null>(null);
   const [workspaceUserLink, setWorkspaceUserLink] = useState<UserLink | null>(null);
+  const [workspaceStickyItem, setWorkspaceStickyItem] = useState<ClipboardItem | null>(null);
+  const roomDeleteConfirm = useDockConfirm();
   useEffect(() => {
     if (workspaceNavigationDetail !== "link-preview") setWorkspaceUserLink(null);
   }, [workspaceNavigationDetail]);
@@ -3331,6 +1727,52 @@ export function App() {
   const [dockExpandedRoomId, setDockExpandedRoomId] = useState<string | null>(null);
   const [dockProjectPathDrafts, setDockProjectPathDrafts] = useState<Record<string, string>>({});
   const [dockProjectSavingRoomId, setDockProjectSavingRoomId] = useState<string | null>(null);
+  const [defaultWorktreeEnabled, setDefaultWorktreeEnabled] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("space.worktree.defaultEnabled");
+      if (stored !== null) return stored === "true";
+    } catch {}
+    return true; // Default true
+  });
+  const [roomWorktreeOverrides, setRoomWorktreeOverrides] = useState<Record<string, boolean>>(() => {
+    try {
+      const stored: Record<string, boolean> = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("space.room.") && key.endsWith(".isolatedWorktree")) {
+          const roomId = key.slice("space.room.".length, -".isolatedWorktree".length);
+          stored[roomId] = localStorage.getItem(key) === "true";
+        }
+      }
+      return stored;
+    } catch {
+      return {};
+    }
+  });
+
+  function isRoomWorktreeEnabled(roomId: string): boolean {
+    if (typeof roomWorktreeOverrides[roomId] === "boolean") {
+      return roomWorktreeOverrides[roomId];
+    }
+    try {
+      const stored = localStorage.getItem(`space.room.${roomId}.isolatedWorktree`);
+      if (stored !== null) return stored === "true";
+    } catch {}
+    return defaultWorktreeEnabled;
+  }
+
+  function setRoomWorktreeEnabled(roomId: string, enabled: boolean) {
+    try {
+      localStorage.setItem(`space.room.${roomId}.isolatedWorktree`, String(enabled));
+    } catch {}
+    setRoomWorktreeOverrides((prev) => {
+      const next = { ...prev, [roomId]: enabled };
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("roomWorktreeOverrides", next);
+      }
+      return next;
+    });
+  }
   const [projectPresets, setProjectPresets] = useState<{ label: string; path: string }[]>(() => {
     try {
       const saved = localStorage.getItem("space:project_presets");
@@ -3353,16 +1795,42 @@ export function App() {
   });
   const [isAddingPresetRoomId, setIsAddingPresetRoomId] = useState<string | null>(null);
   const [newPresetDraft, setNewPresetDraft] = useState("");
+  // Shared project picker: a room assignment is bound to the room that opened the picker.
+  const [projectPickerRoom, setProjectPickerRoom] = useState<{ id: string; name: string } | null>(null);
+  const [roomProjectSources, setRoomProjectSources] = useState<Record<string, string>>({});
+  const latestRoomsRef = useRef(rooms);
+  latestRoomsRef.current = rooms;
+
+  function addOpenedProjectPreset(project: { label: string; path: string }) {
+    setProjectPresets((prev) => {
+      if (prev.some((p) => p.path === project.path)) return prev;
+      let label = project.label;
+      for (let index = 2; prev.some((p) => p.label.toLowerCase() === label.toLowerCase()); index++) label = `${project.label} (${index})`;
+      const next = [...prev, { label, path: project.path }];
+      try {
+        localStorage.setItem("space:project_presets", JSON.stringify(next));
+      } catch {}
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("projectPresets", next);
+      }
+      return next;
+    });
+  }
+
+  async function assignPickedProjectToRoom(roomId: string, result: OpenProjectResult) {
+    const targetRoom = latestRoomsRef.current.find((r) => r.id === roomId);
+    if (!targetRoom) throw new Error("The room was removed. The project is ready; choose it again from another room.");
+    const updated = await api.updateRoom(roomId, { name: targetRoom.name, projectPath: result.projectPath });
+    setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+    setDockProjectPathDrafts((prev) => ({ ...prev, [roomId]: result.projectPath }));
+    setRoomProjectSources((prev) => ({ ...prev, [roomId]: `${result.source.label}${result.source.detail ? ` · ${result.source.detail}` : ""}` }));
+  }
 
   async function ensureProjectFolder(targetPath: string) {
     if (!targetPath || !targetPath.trim()) return;
     try {
-      await fetch("/api/projects/ensure", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ path: targetPath.trim() })
-      });
+      // The shared client attaches the CSRF token that this mutation requires.
+      await api.ensureProject({ path: targetPath.trim() });
     } catch {}
   }
 
@@ -3377,6 +1845,9 @@ export function App() {
       try {
         localStorage.setItem("space:project_presets", JSON.stringify(next));
       } catch {}
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("projectPresets", next);
+      }
       return next;
     });
     setDockProjectPathDrafts((prev) => ({ ...prev, [roomId]: projectPath }));
@@ -3435,8 +1906,15 @@ export function App() {
       const params = new URLSearchParams(window.location.search);
       const googleLinked = params.get("googleLinked");
       const googleLinkError = params.get("googleLinkError");
-      if (googleLinked === "true") {
-        setAccountNotice("Google account linked successfully.");
+      const connectorResult = connectorResultMessage(params.get("connector"));
+      if (connectorResult) {
+        if (connectorResult.tone === "notice") setAccountNotice(connectorResult.text);
+        else setAccountError(connectorResult.text);
+        params.delete("connector");
+        const query = params.toString();
+        window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+      } else if (googleLinked === "true") {
+        setAccountNotice("Google account linked. To save its browser sign-in, select it in a Browser or YouTube pane and choose “Sign in to selected account” once.");
         const nextUrl = window.location.pathname;
         window.history.replaceState({}, document.title, nextUrl);
       } else if (googleLinkError) {
@@ -3459,7 +1937,6 @@ export function App() {
   const [paneDragOverId, setPaneDragOverId] = useState<string | null>(null);
   const [paneDragOverPosition, setPaneDragOverPosition] = useState<PaneDropPosition>("before");
   const [dragOverSlotKey, setDragOverSlotKey] = useState<string | null>(null);
-  const [lifecycleDebugSnapshot, setLifecycleDebugSnapshot] = useState<LifecycleDebugSnapshot>(() => readLifecycleDebugSnapshot());
   const [error, setError] = useState<string | null>(null);
   const [paneCreationPendingMode, setPaneCreationPendingMode] = useState<Pane["mode"] | null>(null);
   const [roomCreationPending, setRoomCreationPending] = useState(false);
@@ -3467,6 +1944,7 @@ export function App() {
   const [paneCompletionLifecycle, setPaneCompletionLifecycle] = useState<PaneCompletionLifecycleState>(
     createPaneCompletionLifecycleState
   );
+  const rootRemSize = useRootRemSize();
   const [paneGridWidth, setPaneGridWidth] = useState(() => readViewportWidth());
   const [paneGridHeight, setPaneGridHeight] = useState(0);
   const [pendingBrowserHandoffPaneId, setPendingBrowserHandoffPaneId] = useState<string | null>(null);
@@ -3498,6 +1976,7 @@ export function App() {
     readyReported: boolean;
   } | null>(null);
   const roomRevealReadyPaneIdsRef = useRef(new Map<string, Set<string>>());
+  const roomPresentedGeometryRef = useRef(new Map<string, string>());
   const roomRevealDebugLastMissingRef = useRef(new Map<string, string>());
   const roomTerminalBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomTerminalPrefillBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
@@ -3515,6 +1994,7 @@ export function App() {
   const healthSurfaceDataPromiseRef = useRef<Promise<void> | null>(null);
   const settingsSurfaceDataLoadedRef = useRef(false);
   const healthSurfaceDataLoadedRef = useRef(false);
+  const [healthSurfaceError, setHealthSurfaceError] = useState<string | null>(null);
   const roomRuntimeLastPolledAtRef = useRef(new Map<string, number>());
   const roomRefreshQueueRef = useRef(createCoalescedRefreshQueue());
   const roomCatalogRefreshQueueRef = useRef(createCoalescedRefreshQueue());
@@ -3721,6 +2201,7 @@ export function App() {
   }
 
   function removeRoomRuntime(roomId: string) {
+    roomPresentedGeometryRef.current.delete(roomId);
     roomRuntimeLastPolledAtRef.current.delete(roomId);
     warmRoomIdsRef.current = warmRoomIdsRef.current.filter((candidate) => candidate !== roomId);
     roomRevealReadyPaneIdsRef.current.delete(roomId);
@@ -3960,6 +2441,51 @@ export function App() {
     finishPreparingRoomWhenReady(roomId);
   }
 
+  function roomPresentationGeometryKey(roomId: string): string {
+    const room = rooms.find(candidate => candidate.id === roomId);
+    const snapshot = roomRuntimesRef.current[roomId];
+    // State and viewport numbers only: no synchronous layout measurement.
+    return JSON.stringify([
+      window.innerWidth, window.innerHeight, window.devicePixelRatio,
+      shellMode, paneGridWidth, paneGridHeight, rootRemSize, terminalFontSize,
+      room?.updatedAt, room?.paneLayoutColumns, room?.paneLayoutHeight,
+      snapshot?.panes.map(pane => [pane.id, pane.updatedAt])
+    ]);
+  }
+
+  function canImmediatelyPresentWarmCliRoom(roomId: string): boolean {
+    if (document.visibilityState === "hidden" ||
+        roomPresentedGeometryRef.current.get(roomId) !== roomPresentationGeometryKey(roomId)) return false;
+    if (!warmRoomEnabled || !warmRoomIdsRef.current.includes(roomId) ||
+        roomPaneLoadStatesRef.current[roomId] !== "loaded" ||
+        !roomTerminalBarrierReady(roomId) || !roomTerminalPrefillBarrierReady(roomId)) return false;
+    const snapshot = roomRuntimesRef.current[roomId];
+    if (!snapshot) return false;
+    const visibleIds = visibleTerminalPaneIds(snapshot);
+    // Keep mixed/browser rooms and empty rooms on the existing reveal path.
+    if (!visibleIds.length || snapshot.panes.some(pane => !pane.isMinimized && pane.mode !== "TERMINAL")) return false;
+    const layer = Array.from(document.querySelectorAll<HTMLElement>(".room-runtime-layer"))
+      .find(element => element.dataset.roomRuntimeId === roomId);
+    if (!layer || layer.dataset.presentationState !== "hidden") return false;
+    const paneElements = Array.from(layer.querySelectorAll<HTMLElement>("[data-space-pane-id]"));
+    return visibleIds.every(paneId => {
+      const pane = paneElements.find(element => element.dataset.spacePaneId === paneId);
+      const terminal = pane?.querySelector<HTMLElement>(".terminal-pane");
+      const host = terminal?.querySelector<HTMLElement>(".terminal-xterm");
+      return terminal?.dataset.terminalStatus === "attached" &&
+        terminal.dataset.terminalPrefillReady === "true" &&
+        terminal.dataset.terminalLoading === "false" &&
+        terminal.dataset.terminalActionPending === "false" &&
+        terminal.dataset.terminalHasError === "false" &&
+        host?.dataset.terminalPendingPrefillEvents === "0" &&
+        host.dataset.terminalPendingPrefillBytes === "0" &&
+        host.dataset.terminalInitialGeometry !== "pending" &&
+        host.dataset.terminalSocketParked !== "true" &&
+        Boolean(host.querySelector(".xterm-screen")) &&
+        !host.querySelector("[data-terminal-resize-frame]");
+    });
+  }
+
   function activateRoom(
     roomId: string | null,
     options: { preserveOutgoing?: boolean } = {}
@@ -3969,6 +2495,9 @@ export function App() {
     const outgoingDisplayedRoomId = preserveOutgoing ? displayedRoomIdRef.current : null;
     if (preserveOutgoing && currentRoomId && activeRuntimeRoomIdRef.current === currentRoomId) {
       replaceRoomRuntime(snapshotActiveRoom(currentRoomId));
+      if (displayedRoomIdRef.current === currentRoomId && !preparingRoomIdRef.current) {
+        roomPresentedGeometryRef.current.set(currentRoomId, roomPresentationGeometryKey(currentRoomId));
+      }
     }
     if (currentRoomId !== roomId) previousWarmRoomIdRef.current = currentRoomId;
     const supersededMetric = roomPresentationMetricRef.current;
@@ -4004,6 +2533,7 @@ export function App() {
     recordRoomPresentationMetric(roomId, generation, "START");
     const cached = roomRuntimesRef.current[roomId];
     const shouldHoldOutgoingRoom = Boolean(
+      !canImmediatelyPresentWarmCliRoom(roomId) &&
       outgoingDisplayedRoomId &&
       outgoingDisplayedRoomId !== roomId &&
       roomRuntimesRef.current[outgoingDisplayedRoomId]
@@ -4536,8 +3066,12 @@ export function App() {
 
   async function refreshRoomEvents(roomId: string) {
     const eventPayload = await api.events({ roomId, pageSize: 50, sortOrder: "desc" });
+    if (!appMountedRef.current) return;
     hydratePaneCompletionEvents(roomId, eventPayload.data);
-    setRoomEvents([...eventPayload.data]);
+    // A slow response must not overwrite another room's events after a switch.
+    if (selectedRoomIdRef.current !== roomId) return;
+    // Keep unchanged event objects so panes whose events did not change skip re-rendering.
+    setRoomEvents((current) => reuseVersionedItems(current, eventPayload.data, (event) => event.createdAt));
   }
 
   const appendRoomEvent = useCallback((event: SpaceEvent, applyCompletion = true) => {
@@ -4582,6 +3116,10 @@ export function App() {
 
     const me = await api.me();
     if (me.settings) {
+      if (me.isAuthenticated) {
+        const seeded = await seedInitialLocalSettingsToServer(api, me.settings, runtime.platform.localStorage);
+        if (seeded) me.settings = seeded;
+      }
       if (typeof me.settings.suppressNotifications === "boolean") {
         setSuppressNotifications(me.settings.suppressNotifications);
       }
@@ -4597,12 +3135,49 @@ export function App() {
       if (typeof me.settings.roomTheme === "string" && roomThemes.some((t) => t.id === me.settings?.roomTheme)) {
         setRoomTheme(me.settings.roomTheme as RoomTheme);
       }
+      if (typeof me.settings.terminalFontSize === "number") {
+        setTerminalFontSize(me.settings.terminalFontSize);
+      }
+      if (typeof me.settings.showSessionDebugIds === "boolean") {
+        setShowSessionDebugIds(me.settings.showSessionDebugIds);
+      }
+      if (typeof me.settings.cliDebugModeEnabled === "boolean") {
+        setCliDebugModeEnabled(me.settings.cliDebugModeEnabled);
+      }
+      if (typeof me.settings.cliFloatsHidden === "boolean") {
+        setCliFloatsHidden(me.settings.cliFloatsHidden);
+      }
+      if (typeof me.settings.sensitiveDataMasked === "boolean") {
+        setMaskSensitiveData(me.settings.sensitiveDataMasked);
+      }
+      if (typeof me.settings.roomToolbarHidden === "boolean") {
+        setIsRoomToolbarHidden(me.settings.roomToolbarHidden);
+      }
+      if (typeof me.settings.roomFocusMode === "boolean") {
+        setIsRoomFocusMode(me.settings.roomFocusMode);
+      }
+      if (typeof me.settings.roomsRailHidden === "boolean") {
+        setIsDesktopSideSurfaceOpen(!me.settings.roomsRailHidden);
+      }
+      if (typeof me.settings.worktreeDefaultEnabled === "boolean") {
+        setDefaultWorktreeEnabled(me.settings.worktreeDefaultEnabled);
+      }
+      if (me.settings.roomWorktreeOverrides && typeof me.settings.roomWorktreeOverrides === "object") {
+        setRoomWorktreeOverrides(me.settings.roomWorktreeOverrides as Record<string, boolean>);
+      }
+      if (Array.isArray(me.settings.projectPresets)) {
+        setProjectPresets(me.settings.projectPresets as { label: string; path: string }[]);
+      }
+      if (me.settings.roomExtraEmptySlots && typeof me.settings.roomExtraEmptySlots === "object") {
+        setRoomExtraEmptySlots(me.settings.roomExtraEmptySlots as Record<string, number>);
+      }
       const { themeChanged } = applyServerUserSettings(
         runtime.platform.localStorage,
         me.settings,
         uiTheme,
         modernAppearance,
         modernIconPack,
+        uiBackground,
         me.user?.id
       );
       if (themeChanged) {
@@ -4656,9 +3231,14 @@ export function App() {
       // refresh is the trigger) and never blocks the bootstrap — the shell
       // becomes interactive without waiting for warm hydration.
       const startBackgroundWarm = () => {
-        const validRoomIds = new Set(roomPayload.data.map((room) => room.id));
+        const activeRoom = roomPayload.data.find((room) => room.id === nextRoomId);
+        if (activeRoom?.kind === "AGENT_PROOF") {
+          return;
+        }
+        const candidateRooms = roomPayload.data.filter((room) => room.kind !== "AGENT_PROOF");
+        const validRoomIds = new Set(candidateRooms.map((room) => room.id));
         const hydrationRoomIds = selectWarmHydrationRoomIds({
-          roomIds: roomPayload.data.map((room) => room.id),
+          roomIds: candidateRooms.map((room) => room.id),
           activeRoomId: nextRoomId,
           mruRoomIds: readRoomMru(runtime.platform.sessionStorage, validRoomIds),
           maxWarmRooms: warmRoomLimits(warmConnectedPaneLimit).maxRooms
@@ -4686,7 +3266,7 @@ export function App() {
           WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
         ).catch(() => undefined).finally(() => {
           if (!appMountedRef.current) return;
-          const otherRoomIds = roomPayload.data
+          const otherRoomIds = candidateRooms
             .map((room) => room.id)
             .filter((roomId) => roomId !== nextRoomId);
           void runWithConcurrency(
@@ -4727,10 +3307,15 @@ export function App() {
     if (me.user?.role === "ADMIN") {
       void api.setupOverview()
         .then((overview) => {
-          if (appMountedRef.current && !overview.isComplete) setIsSetupConnectionsOpen(true);
+          if (appMountedRef.current && !overview.isComplete) {
+            setupFromWorkspace.current = false;
+            setIsSetupConnectionsOpen(true);
+          }
         })
         .catch(() => {
-          // Onboarding discovery is best-effort and must not delay or block room hydration.
+          // Onboarding discovery must not delay or block room hydration, but the
+          // owner should know setup status is unknown rather than see nothing.
+          if (appMountedRef.current) setError("Setup status could not be loaded. Open Setup wizard from the room toolbar to finish setup.");
         });
     }
   }
@@ -4752,10 +3337,11 @@ export function App() {
     }
   }
 
-  async function loadHealthSurfaceData() {
-    if (healthSurfaceDataLoadedRef.current) return;
+  async function loadHealthSurfaceData(force = false) {
+    if (healthSurfaceDataLoadedRef.current && !force) return;
     if (healthSurfaceDataPromiseRef.current) return healthSurfaceDataPromiseRef.current;
     const request = Promise.allSettled([
+      force ? api.readyz() : Promise.resolve(null),
       loadSettingsSurfaceData(),
       api.models(),
       api.mcp(),
@@ -4765,7 +3351,8 @@ export function App() {
       api.worker()
     ]).then((results) => {
       if (!appMountedRef.current) return;
-      const [, modelResult, mcpResult, smokeResult, storageResult, observabilityResult, workerResult] = results;
+      const [readyResult, , modelResult, mcpResult, smokeResult, storageResult, observabilityResult, workerResult] = results;
+      if (readyResult.status === "fulfilled" && readyResult.value) setReadiness(readyResult.value);
       if (modelResult.status === "fulfilled") setModels(modelResult.value.data);
       if (mcpResult.status === "fulfilled") setMcp(mcpResult.value);
       if (smokeResult.status === "fulfilled") setLatestMcpSmoke(smokeResult.value.data);
@@ -4773,6 +3360,7 @@ export function App() {
       if (observabilityResult.status === "fulfilled") setObservability(observabilityResult.value);
       if (workerResult.status === "fulfilled") setWorkerReadiness(workerResult.value);
       healthSurfaceDataLoadedRef.current = results.every((result) => result.status === "fulfilled");
+      setHealthSurfaceError(healthSurfaceDataLoadedRef.current ? null : "Some health checks could not be loaded. Refresh to try again.");
     });
     healthSurfaceDataPromiseRef.current = request;
     try {
@@ -4793,10 +3381,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    function syncLifecycleDebugSnapshot() {
-      setLifecycleDebugSnapshot(readLifecycleDebugSnapshot());
-    }
-    window.addEventListener(LIFECYCLE_DEBUG_UPDATED_EVENT, syncLifecycleDebugSnapshot);
     const navigationEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     recordLifecycleDebugEvent({
       type: "app_boot",
@@ -4804,7 +3388,6 @@ export function App() {
       detail: `nav=${navigationEntry?.type ?? "unknown"} width=${readViewportWidth()} url=${window.location.pathname}`,
       shellMode
     });
-    syncLifecycleDebugSnapshot();
     const handlePageShow = (event: PageTransitionEvent) => {
       recordLifecycleDebugEvent({
         type: "window_pageshow",
@@ -4842,7 +3425,6 @@ export function App() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      window.removeEventListener(LIFECYCLE_DEBUG_UPDATED_EVENT, syncLifecycleDebugSnapshot);
       window.removeEventListener("pageshow", handlePageShow);
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -4873,10 +3455,26 @@ export function App() {
       setPaneGridHeight((current) => (Math.abs(current - nextHeight) > 1 ? nextHeight : current));
     };
 
-    updatePaneGridWidth();
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePaneGridWidth) : null;
+    // The observer delivers initial geometry before paint. Measuring during
+    // every room effect forces styles/layout while sibling panes still update.
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver((entries) => {
+      const entry = entries.find((entry) => entry.target === grid);
+      if (!entry) {
+        updatePaneGridWidth();
+        return;
+      }
+      // The grid has no border/padding: contentRect matches its usable client
+      // size, excluding scrollbar space. Retain geometry while hidden (0x0).
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      if (width > 0) setPaneGridWidth((current) => (Math.abs(current - width) > 1 ? width : current));
+      if (height > 0) setPaneGridHeight((current) => (Math.abs(current - height) > 1 ? height : current));
+    }) : null;
     resizeObserver?.observe(grid);
-    window.addEventListener("resize", updatePaneGridWidth);
+    if (!resizeObserver) {
+      updatePaneGridWidth();
+      window.addEventListener("resize", updatePaneGridWidth);
+    }
     return () => {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", updatePaneGridWidth);
@@ -4934,19 +3532,32 @@ export function App() {
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(terminalFontSize));
-  }, [terminalFontSize]);
-
-  useEffect(() => {
-    writeStoredCliImagePreviewLimit(cliImagePreviewLimit);
-  }, [cliImagePreviewLimit]);
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("terminalFontSize", terminalFontSize);
+    }
+  }, [terminalFontSize, auth?.isAuthenticated]);
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(SESSION_DEBUG_IDS_STORAGE_KEY, String(showSessionDebugIds));
-  }, [showSessionDebugIds]);
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("showSessionDebugIds", showSessionDebugIds);
+    }
+  }, [showSessionDebugIds, auth?.isAuthenticated]);
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(CLI_DEBUG_MODE_STORAGE_KEY, String(cliDebugModeEnabled));
-  }, [cliDebugModeEnabled]);
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("cliDebugModeEnabled", cliDebugModeEnabled);
+    }
+  }, [cliDebugModeEnabled, auth?.isAuthenticated]);
+
+  useEffect(() => {
+    const hidden = !isDesktopSideSurfaceOpen;
+    runtime.platform.localStorage.setItem(SIDE_SURFACE_HIDDEN_STORAGE_KEY, String(hidden));
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("roomsRailHidden", hidden);
+    }
+  }, [isDesktopSideSurfaceOpen, auth?.isAuthenticated]);
 
   useEffect(() => {
     runtime.platform.localStorage.setItem(ROOM_THEME_STORAGE_KEY, roomTheme);
@@ -5023,6 +3634,9 @@ export function App() {
 
   async function handleLogin(nextAuth: AuthMe) {
     if (nextAuth.isAuthenticated && nextAuth.settings) {
+      const seeded = await seedInitialLocalSettingsToServer(api, nextAuth.settings, runtime.platform.localStorage);
+      if (seeded) nextAuth.settings = seeded;
+
       if (typeof nextAuth.settings.suppressNotifications === "boolean") {
         setSuppressNotifications(nextAuth.settings.suppressNotifications);
       }
@@ -5038,12 +3652,49 @@ export function App() {
       if (typeof nextAuth.settings.roomTheme === "string" && roomThemes.some((t) => t.id === nextAuth.settings?.roomTheme)) {
         setRoomTheme(nextAuth.settings.roomTheme as RoomTheme);
       }
+      if (typeof nextAuth.settings.terminalFontSize === "number") {
+        setTerminalFontSize(nextAuth.settings.terminalFontSize);
+      }
+      if (typeof nextAuth.settings.showSessionDebugIds === "boolean") {
+        setShowSessionDebugIds(nextAuth.settings.showSessionDebugIds);
+      }
+      if (typeof nextAuth.settings.cliDebugModeEnabled === "boolean") {
+        setCliDebugModeEnabled(nextAuth.settings.cliDebugModeEnabled);
+      }
+      if (typeof nextAuth.settings.cliFloatsHidden === "boolean") {
+        setCliFloatsHidden(nextAuth.settings.cliFloatsHidden);
+      }
+      if (typeof nextAuth.settings.sensitiveDataMasked === "boolean") {
+        setMaskSensitiveData(nextAuth.settings.sensitiveDataMasked);
+      }
+      if (typeof nextAuth.settings.roomToolbarHidden === "boolean") {
+        setIsRoomToolbarHidden(nextAuth.settings.roomToolbarHidden);
+      }
+      if (typeof nextAuth.settings.roomFocusMode === "boolean") {
+        setIsRoomFocusMode(nextAuth.settings.roomFocusMode);
+      }
+      if (typeof nextAuth.settings.roomsRailHidden === "boolean") {
+        setIsDesktopSideSurfaceOpen(!nextAuth.settings.roomsRailHidden);
+      }
+      if (typeof nextAuth.settings.worktreeDefaultEnabled === "boolean") {
+        setDefaultWorktreeEnabled(nextAuth.settings.worktreeDefaultEnabled);
+      }
+      if (nextAuth.settings.roomWorktreeOverrides && typeof nextAuth.settings.roomWorktreeOverrides === "object") {
+        setRoomWorktreeOverrides(nextAuth.settings.roomWorktreeOverrides as Record<string, boolean>);
+      }
+      if (Array.isArray(nextAuth.settings.projectPresets)) {
+        setProjectPresets(nextAuth.settings.projectPresets as { label: string; path: string }[]);
+      }
+      if (nextAuth.settings.roomExtraEmptySlots && typeof nextAuth.settings.roomExtraEmptySlots === "object") {
+        setRoomExtraEmptySlots(nextAuth.settings.roomExtraEmptySlots as Record<string, number>);
+      }
       const { themeChanged } = applyServerUserSettings(
         runtime.platform.localStorage,
         nextAuth.settings,
         uiTheme,
         modernAppearance,
         modernIconPack,
+        uiBackground,
         nextAuth.user?.id
       );
       if (themeChanged) {
@@ -5053,8 +3704,10 @@ export function App() {
     }
     setAuth(nextAuth);
     if (nextAuth.isAuthenticated) {
-      const diagnosticsStartup = startAppDiagnosticsBootstrap();
-      await diagnosticsStartup.beforeMount;
+      if (runtimeKind !== "demo") {
+        const diagnosticsStartup = startAppDiagnosticsBootstrap();
+        await diagnosticsStartup.beforeMount;
+      }
       await refresh();
     }
   }
@@ -5062,7 +3715,10 @@ export function App() {
   async function handleOwnerClaim(input: SetupClaimInput) {
     const nextAuth = await api.claimSetup(input);
     setSetupStatus({ setupRequired: false, expiresAt: null });
-    if (!nextAuth.isOnboardingComplete) setIsSetupConnectionsOpen(true);
+    if (!nextAuth.isOnboardingComplete) {
+      setupFromWorkspace.current = false;
+      setIsSetupConnectionsOpen(true);
+    }
     await handleLogin(nextAuth);
   }
 
@@ -5098,6 +3754,10 @@ export function App() {
 
   async function createRoom() {
     if (roomCreationPendingRef.current) return;
+    if (rooms.length >= MAX_ROOMS) {
+      setError(`Maximum room limit (${MAX_ROOMS}) reached. Close or delete an existing room to create a new one.`);
+      return;
+    }
     roomCreationPendingRef.current = true;
     setRoomCreationPending(true);
     setError(null);
@@ -5106,7 +3766,9 @@ export function App() {
       try {
         room = await api.createRoom(
           nextGeneratedRoomName(rooms.map((room) => room.name)),
-          0
+          0,
+          undefined,
+          "/opt/spaceapp"
         );
       } catch (err) {
         setError(`Room creation failed: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -5147,7 +3809,7 @@ export function App() {
     const roomId = targetRoomId || selectedRoomId;
     if (!roomId || panes.length >= 16) return;
     const targetRoom = rooms.find((r) => r.id === roomId);
-    const targetCwd = targetRoom?.projectPath || "/etc";
+    const targetCwd = targetRoom?.projectPath || "/opt/spaceapp";
     const created = await api.createPane(roomId, "CLI ROOT", "TERMINAL", {
       cwd: targetCwd,
       terminalRuntimeId: "cli:root"
@@ -5155,6 +3817,18 @@ export function App() {
     setPanes((current) => [...current, created]);
     setSelectedPaneId(created.id);
     await loadRoomRuntime(roomId);
+  }
+
+  async function addWorktreePane(targetRoomId?: string) {
+    const roomId = targetRoomId || selectedRoomId;
+    if (!roomId || panes.length >= 16) return;
+    await addRoomPanes(roomId, {
+      panes: [{
+        mode: "TERMINAL",
+        terminalRuntimeId: "cli:gemini",
+        useWorktree: true
+      }]
+    });
   }
 
   async function addFilesPane(count = 1, targetRoomId?: string) {
@@ -5174,11 +3848,11 @@ export function App() {
           pane = await api.updatePane(closedMatch.id, {
             isClosed: false,
             status: "IDLE",
-            cwd: targetRoom?.projectPath || undefined
+            cwd: targetRoom?.projectPath || "/opt/spaceapp"
           });
         } else {
           pane = await api.createPane(roomId, paneTitleForMode("FILES", panes.length + 1), "FILES", {
-            cwd: targetRoom?.projectPath || undefined
+            cwd: targetRoom?.projectPath || "/opt/spaceapp"
           });
         }
         setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
@@ -5191,10 +3865,53 @@ export function App() {
     }
   }
 
+  async function addDatabasesPane(count = 1, targetRoomId?: string) {
+    const roomId = targetRoomId || selectedRoomId;
+    if (!roomId || panes.length >= 16) return;
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    if (targetRoom?.projectPath) {
+      await ensureProjectFolder(targetRoom.projectPath);
+    }
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
+    try {
+      for (let i = 0; i < targetCount; i++) {
+        const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
+        const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === "DATABASES");
+        let pane: Pane;
+        if (closedMatch) {
+          pane = await api.updatePane(closedMatch.id, {
+            isClosed: false,
+            status: "IDLE",
+            cwd: targetRoom?.projectPath || "/opt/spaceapp"
+          });
+        } else {
+          pane = await api.createPane(roomId, paneTitleForMode("DATABASES", panes.length + 1), "DATABASES", {
+            cwd: targetRoom?.projectPath || "/opt/spaceapp"
+          });
+        }
+        setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
+        setSelectedPaneId(pane.id);
+      }
+      await refreshRoomEvents(roomId);
+      await loadRoomRuntime(roomId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Databases pane failed to open");
+    }
+  }
+
   async function addDemosPane(count = 1) {
     if (!selectedRoomId || panes.length >= 16) return;
     const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
     const newPanes = Array.from({ length: targetCount }, () => ({ mode: "DEMOS" as const }));
+    await addRoomPanes(selectedRoomId, { panes: newPanes });
+  }
+
+  async function addT3CodePane(count = 1) {
+    if (!selectedRoomId || panes.length >= 16) return;
+    const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
+    // Same room worktree isolation as CLI panes: each T3 pane gets its own worktree.
+    const useWorktree = isRoomWorktreeEnabled(selectedRoomId);
+    const newPanes = Array.from({ length: targetCount }, () => ({ mode: "T3CODE" as const, ...(useWorktree ? { useWorktree: true } : {}) }));
     await addRoomPanes(selectedRoomId, { panes: newPanes });
   }
 
@@ -5249,14 +3966,16 @@ export function App() {
     }
 
     const targetRoom = rooms.find((r) => r.id === roomId);
-    const roomCwd = targetRoom?.projectPath || "/etc";
+    const effectiveProjectPath = targetRoom?.projectPath || dockProjectPathDrafts[roomId]?.trim() || "/opt/spaceapp";
+    const roomCwd = effectiveProjectPath;
     cliPaneCreationPendingRef.current = true;
     setCliPaneCreationPending(true);
     const targetCount = Math.min(Math.max(1, count), 16 - panesRef.current.length);
     if (targetCount <= 0) return;
     try {
       const optimisticPanes: Pane[] = [];
-      const baseOrder = panesRef.current.length;
+      const currentPanes = panesRef.current;
+      const baseOrder = currentPanes.reduce((max, p) => Math.max(max, p.order), -1) + 1;
       const nowIso = new Date().toISOString();
       const baseTimestamp = Date.now().toString(36);
 
@@ -5264,7 +3983,7 @@ export function App() {
         const optimisticId = `pane:optimistic-${baseTimestamp}-${i}`;
         const optimisticTitle =
           runtime.id === "cli:codex"
-            ? paneTitleForMode("TERMINAL", baseOrder + i + 1)
+            ? paneTitleForMode("TERMINAL", currentPanes.length + i + 1)
             : runtime.displayName;
         optimisticPanes.push({
           id: optimisticId,
@@ -5277,7 +3996,7 @@ export function App() {
           modelId: null,
           terminalRuntimeId: runtime.id === "cli:codex" ? null : runtime.id,
           reasoningEffort: "medium",
-          cwd: targetRoom?.projectPath ? targetRoom.projectPath : (runtime.id === "cli:codex" ? null : "/etc"),
+          cwd: effectiveProjectPath ? effectiveProjectPath : (runtime.id === "cli:codex" ? null : "/etc"),
           order: baseOrder + i,
           columnSpan: 1,
           isMaximized: false,
@@ -5294,17 +4013,34 @@ export function App() {
       // Show skeleton cards immediately
       if (selectedRoomIdRef.current === roomId) {
         setPanes((current) => [...current, ...optimisticPanes]);
-        if (optimisticPanes[0]) {
-          setSelectedPaneId(optimisticPanes[0].id);
-        }
       }
 
       // Create all panes concurrently
       const createPromises = optimisticPanes.map(async (optPane) => {
+        let paneCwd = roomCwd;
+        if (effectiveProjectPath && isRoomWorktreeEnabled(roomId)) {
+          try {
+            const wt = await createWorktree({
+              repoPath: effectiveProjectPath,
+              roomId,
+              baseBranch: "main",
+              linkModules: true
+            });
+            paneCwd = wt.worktreePath;
+            if (!targetRoom?.projectPath && targetRoom) {
+              void api.updateRoom(roomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
+                setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+              });
+            }
+          } catch (err) {
+            console.warn("Failed to provision worktree for CLI pane, falling back to project path:", err);
+            paneCwd = effectiveProjectPath;
+          }
+        }
         const created = runtime.id === "cli:codex"
-          ? await api.createPane(roomId, optPane.title, "TERMINAL", targetRoom?.projectPath ? { cwd: targetRoom.projectPath } : undefined)
+          ? await api.createPane(roomId, optPane.title, "TERMINAL", paneCwd ? { cwd: paneCwd } : undefined)
           : await api.createPane(roomId, runtime.displayName, "TERMINAL", {
-              cwd: roomCwd,
+              cwd: paneCwd,
               terminalRuntimeId: runtime.id
             });
         return { optimisticId: optPane.id, created };
@@ -5445,15 +4181,22 @@ export function App() {
     }
   }, [isAdminMode, selectedRoomId, rooms, auth?.user?.id]);
 
+  // Every room delete is confirmed in the app; running CLI sessions are named in the question.
+  async function requestRoomDelete(room: Room) {
+    if (deletePendingRoomId) return;
+    const activeCli = roomCliActivityCounts[room.id] ?? 0;
+    const confirmed = await roomDeleteConfirm.confirm({
+      title: `Delete ${room.name}?`,
+      message: activeCli > 0
+        ? `This room has ${activeCli} active CLI ${activeCli === 1 ? "session" : "sessions"} that will be terminated. The room and its panes will be removed.`
+        : "The room and its panes will be removed.",
+      confirmLabel: "Delete room"
+    });
+    if (confirmed) await deleteRoom(room.id);
+  }
+
   async function deleteRoom(roomId: string) {
     if (deletePendingRoomId) return;
-    const activeCli = roomCliActivityCounts[roomId] ?? 0;
-    if (activeCli > 0) {
-      const confirmed = window.confirm(
-        `This room has ${activeCli} active CLI ${activeCli === 1 ? "session" : "sessions"} that will be terminated. Delete the room?`
-      );
-      if (!confirmed) return;
-    }
     const deletedRoom = rooms.find((room) => room.id === roomId);
     const nextRooms = rooms.filter((room) => room.id !== roomId);
     const candidateRooms = !isAdminMode ? nextRooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id) : nextRooms;
@@ -5553,13 +4296,50 @@ export function App() {
     const targetCount = Math.min(Math.max(1, count), 16 - panesRef.current.length);
     try {
       for (let i = 0; i < targetCount; i++) {
-        const prior = (await api.panes(roomId, { includeClosed: true }).catch(() => null))?.data ?? [];
+        // The closed-pane lookup does not depend on the worktree: run both together.
+        const priorRequest = api.panes(roomId, { includeClosed: true }).catch(() => null);
+        let paneCwd: string | undefined;
+        if (mode === "TERMINAL") {
+          const targetRoom = rooms.find((r) => r.id === roomId);
+          const effectiveProjectPath = targetRoom?.projectPath || dockProjectPathDrafts[roomId]?.trim() || "/opt/spaceapp";
+          if (isRoomWorktreeEnabled(roomId)) {
+            try {
+              const wt = await createWorktree({
+                repoPath: effectiveProjectPath,
+                roomId,
+                baseBranch: "main",
+                linkModules: true
+              });
+              paneCwd = wt.worktreePath;
+              if (!targetRoom?.projectPath && targetRoom) {
+                void api.updateRoom(roomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
+                  setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+                });
+              }
+            } catch (err) {
+              console.warn("Failed to provision worktree for CLI pane in addPane:", err);
+              paneCwd = effectiveProjectPath;
+            }
+          } else {
+            paneCwd = effectiveProjectPath;
+          }
+        }
+        const prior = (await priorRequest)?.data ?? [];
         const closedMatch = prior.find((candidate) => candidate.isClosed && candidate.mode === mode);
         let pane: Pane;
         if (closedMatch) {
-          pane = await api.updatePane(closedMatch.id, { isClosed: false, status: "IDLE" });
+          pane = await api.updatePane(closedMatch.id, {
+            isClosed: false,
+            status: "IDLE",
+            ...(paneCwd ? { cwd: paneCwd } : {})
+          });
         } else {
-          pane = await api.createPane(roomId, paneTitleForMode(mode, panesRef.current.length + 1), mode);
+          pane = await api.createPane(
+            roomId,
+            paneTitleForMode(mode, panesRef.current.length + 1),
+            mode,
+            paneCwd ? { cwd: paneCwd } : undefined
+          );
         }
         if (mode === "YOUTUBE" && youtubeUrl) {
           registerYouTubeBrowseIntent(pane.id, youtubeUrl);
@@ -5682,7 +4462,12 @@ export function App() {
   }
 
   async function splitPane(sourcePane: Pane, direction: "horizontal" | "vertical") {
-    if (!selectedRoomId || panes.length >= 16) return;
+    if (!selectedRoomId) return;
+    const paneLimit = roomPaneLimit(rooms.find((room) => room.id === selectedRoomId));
+    if (panes.length >= paneLimit) {
+      setError(`This room already has the maximum of ${paneLimit} panes.`);
+      return;
+    }
     const sourceTerminalRuntimeId = sourcePane.mode === "TERMINAL"
       ? sourcePane.terminalRuntimeId ?? "cli:codex"
       : null;
@@ -5690,24 +4475,83 @@ export function App() {
       !isCodexEnabled &&
       (sourcePane.mode === "CHAT" || sourceTerminalRuntimeId === "cli:codex")
     ) return;
-    const pane = await api.createPane(selectedRoomId, paneTitleForMode(sourcePane.mode, panes.length + 1), sourcePane.mode, {
-      providerId: sourcePane.providerId,
-      modelId: sourcePane.modelId,
-      terminalRuntimeId: sourceTerminalRuntimeId,
-      cwd: sourcePane.mode === "TERMINAL" ? null : sourcePane.cwd,
-      vncTarget: sourcePane.mode === "VNC" ? sourcePane.vncTarget : null,
-      split: { parentId: sourcePane.id, direction, size: 50 }
-    });
+
+    let paneCwd = sourcePane.mode === "TERMINAL" ? null : sourcePane.cwd;
+    if (sourcePane.mode === "TERMINAL") {
+      const targetRoom = rooms.find((r) => r.id === selectedRoomId);
+      const effectiveProjectPath = targetRoom?.projectPath || dockProjectPathDrafts[selectedRoomId]?.trim() || "/opt/spaceapp";
+      const baseRepoPath = (sourcePane.cwd && !sourcePane.cwd.includes("/worktrees/") && !sourcePane.cwd.includes("/agent-workspace/"))
+        ? sourcePane.cwd
+        : effectiveProjectPath;
+      if (isRoomWorktreeEnabled(selectedRoomId)) {
+        try {
+          const wt = await createWorktree({
+            repoPath: baseRepoPath,
+            roomId: selectedRoomId,
+            baseBranch: "main",
+            linkModules: true
+          });
+          paneCwd = wt.worktreePath;
+          if (!targetRoom?.projectPath && targetRoom) {
+            void api.updateRoom(selectedRoomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
+              setRooms((current) => current.map((r) => (r.id === selectedRoomId ? updated : r)));
+            });
+          }
+        } catch (err) {
+          console.warn("Failed to provision worktree for split CLI pane, falling back to project path:", err);
+          paneCwd = effectiveProjectPath;
+        }
+      } else {
+        paneCwd = effectiveProjectPath;
+      }
+    }
+
+    let pane: Pane;
+    try {
+      pane = await api.createPane(selectedRoomId, paneTitleForMode(sourcePane.mode, panes.length + 1), sourcePane.mode, {
+        providerId: sourcePane.providerId,
+        modelId: sourcePane.modelId,
+        terminalRuntimeId: sourceTerminalRuntimeId,
+        cwd: paneCwd,
+        vncTarget: sourcePane.mode === "VNC" ? sourcePane.vncTarget : null,
+        split: { parentId: sourcePane.id, direction, size: 50 }
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Pane could not be added.");
+      return;
+    }
     setPanes((current) => [...current, pane]);
     setSelectedPaneId(pane.id);
     await refreshRoomEvents(selectedRoomId);
   }
 
   async function closePane(paneId: string) {
-    await api.closePane(paneId);
+    // Remove the pane first so the click feels instant; the server stops the
+    // pane's session meanwhile and a failure puts the pane back where it was.
+    const closingIndex = panesRef.current.findIndex((pane) => pane.id === paneId);
+    const closingPane = closingIndex >= 0 ? panesRef.current[closingIndex] : null;
+    const wasSelected = selectedPaneIdRef.current === paneId;
     setPanes((current) => current.filter((pane) => pane.id !== paneId));
     setSelectedPaneId((current) => (current === paneId ? null : current));
-    if (selectedRoomId) await loadRoomRuntime(selectedRoomId);
+    try {
+      await api.closePane(paneId);
+    } catch (err) {
+      if (closingPane) {
+        setPanes((current) => {
+          if (current.some((pane) => pane.id === paneId) || current.some((pane) => pane.roomId !== closingPane.roomId)) return current;
+          const restored = [...current];
+          restored.splice(Math.min(closingIndex, restored.length), 0, closingPane);
+          return restored;
+        });
+        if (wasSelected) setSelectedPaneId((current) => current ?? paneId);
+      }
+      setError(err instanceof Error ? err.message : "Pane close failed");
+      return;
+    }
+    const roomId = closingPane?.roomId ?? selectedRoomIdRef.current;
+    // Closing changes only this pane server-side; refresh room metadata in the
+    // background instead of re-hydrating the whole room runtime.
+    if (roomId) void loadRoomMetadata(roomId).catch(() => undefined);
   }
 
   async function toggleMaximize(pane: Pane) {
@@ -5752,77 +4596,153 @@ export function App() {
     }
   });
 
+  // Window flags change on screen first (as toggleMaximize does); the server
+  // result then reconciles them. Returns the previous flags for rollback.
+  function applyOptimisticPaneFlags(
+    roomId: string,
+    flagsFor: (pane: Pane) => Partial<Pick<Pane, "isMinimized" | "isMaximized">> | null
+  ) {
+    const previousFlags = new Map<string, Pick<Pane, "isMinimized" | "isMaximized">>();
+    for (const pane of panesRef.current) {
+      if (pane.roomId !== roomId) continue;
+      const flags = flagsFor(pane);
+      if (!flags) continue;
+      if ((flags.isMinimized ?? pane.isMinimized) === pane.isMinimized && (flags.isMaximized ?? pane.isMaximized) === pane.isMaximized) continue;
+      previousFlags.set(pane.id, { isMinimized: pane.isMinimized, isMaximized: pane.isMaximized });
+    }
+    if (previousFlags.size > 0) {
+      setPanes((current) => current.map((item) => {
+        if (!previousFlags.has(item.id)) return item;
+        const flags = flagsFor(item);
+        return flags ? { ...item, ...flags } : item;
+      }));
+    }
+    return previousFlags;
+  }
+
+  function rollbackOptimisticPaneFlags(previousFlags: Map<string, Pick<Pane, "isMinimized" | "isMaximized">>) {
+    if (previousFlags.size === 0) return;
+    setPanes((current) => current.map((item) => {
+      const flags = previousFlags.get(item.id);
+      return flags ? { ...item, ...flags } : item;
+    }));
+  }
+
+  function reconcileRoomPanes(roomId: string, serverPanes: readonly Pane[]) {
+    if (selectedRoomIdRef.current !== roomId) return;
+    // A failed PATCH leaves updatedAt unchanged, so the window flags are part
+    // of the version: an optimistic object never survives a server mismatch.
+    setPanes((current) => reuseVersionedItems(
+      current,
+      serverPanes,
+      (pane) => `${pane.updatedAt}|${pane.isMinimized}|${pane.isMaximized}`
+    ));
+  }
+
   async function minimizePane(pane: Pane) {
     setError(null);
+    const remainingVisible = sortPanesForGrid(panesRef.current.filter((candidate) => candidate.roomId === pane.roomId && candidate.id !== pane.id && !candidate.isMinimized));
+    const nextPane = remainingVisible.find((candidate) => candidate.order > pane.order) ?? remainingVisible[0] ?? null;
+    const previousSelectedPaneId = selectedPaneIdRef.current;
+    const previousFlags = applyOptimisticPaneFlags(pane.roomId, (candidate) =>
+      candidate.id === pane.id ? { isMinimized: true, isMaximized: false } : null
+    );
+    setSelectedPaneId(nextPane?.id ?? null);
+    setIsMobilePaneFocusMode(false);
+    // With the bar parked behind the float toggle, focus goes to whichever affordance is visible.
+    window.requestAnimationFrame(() => {
+      const restoreChip = minimizedPaneRestoreRefs.current.get(pane.id);
+      if (restoreChip) restoreChip.focus();
+      else document.getElementById(MINIMIZED_PANE_BAR_TOGGLE_ID)?.focus();
+    });
     try {
       const updated = await api.updatePane(pane.id, { isMinimized: true });
-      const remainingVisible = sortPanesForGrid(panes.filter((candidate) => candidate.id !== pane.id && !candidate.isMinimized));
-      const nextPane = remainingVisible.find((candidate) => candidate.order > pane.order) ?? remainingVisible[0] ?? null;
       setPanes((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      setSelectedPaneId(nextPane?.id ?? null);
-      setIsMobilePaneFocusMode(false);
-      // With the bar parked behind the float toggle, focus goes to whichever affordance is visible.
-      window.requestAnimationFrame(() => {
-        const restoreChip = minimizedPaneRestoreRefs.current.get(pane.id);
-        if (restoreChip) restoreChip.focus();
-        else document.getElementById(MINIMIZED_PANE_BAR_TOGGLE_ID)?.focus();
-      });
-      await refreshRoomEvents(pane.roomId);
+      void refreshRoomEvents(pane.roomId).catch(() => undefined);
     } catch (err) {
+      rollbackOptimisticPaneFlags(previousFlags);
+      setSelectedPaneId((current) => (current === (nextPane?.id ?? null) ? previousSelectedPaneId : current));
       setError(err instanceof Error ? err.message : "Pane minimize failed");
     }
   }
 
   async function restorePane(pane: Pane) {
     setError(null);
+    const otherMaximized = panesRef.current.filter(
+      (candidate) => candidate.roomId === pane.roomId && candidate.id !== pane.id && candidate.isMaximized
+    );
+    const previousSelectedPaneId = selectedPaneIdRef.current;
+    const previousFlags = applyOptimisticPaneFlags(pane.roomId, (candidate) => {
+      if (candidate.id === pane.id) return { isMinimized: false, isMaximized: false };
+      return candidate.isMaximized ? { isMaximized: false } : null;
+    });
+    pendingPaneHeaderFocusIdRef.current = pane.id;
+    setSelectedPaneId(pane.id);
+    setIsMobilePaneFocusMode(false);
     const results = await Promise.allSettled([
       api.updatePane(pane.id, { isMinimized: false, isMaximized: false }),
-      ...panes
-        .filter((candidate) => candidate.id !== pane.id && candidate.isMaximized)
-        .map((candidate) => api.updatePane(candidate.id, { isMaximized: false }))
+      ...otherMaximized.map((candidate) => api.updatePane(candidate.id, { isMaximized: false }))
     ]);
     try {
       const reconciled = await api.panes(pane.roomId);
+      reconcileRoomPanes(pane.roomId, reconciled.data);
       const restored = reconciled.data.find((candidate) => candidate.id === pane.id && !candidate.isMinimized);
-      if (restored) pendingPaneHeaderFocusIdRef.current = restored.id;
-      setPanes([...reconciled.data]);
-      if (restored) {
-        setSelectedPaneId(restored.id);
-        setIsMobilePaneFocusMode(false);
+      if (!restored) {
+        if (pendingPaneHeaderFocusIdRef.current === pane.id) pendingPaneHeaderFocusIdRef.current = null;
+        setSelectedPaneId((current) => (current === pane.id ? previousSelectedPaneId : current));
       }
       if (results.some((result) => result.status === "rejected")) {
         setError("Pane restore was only partially applied. Room state was refreshed.");
       }
-      await refreshRoomEvents(pane.roomId);
+      void refreshRoomEvents(pane.roomId).catch(() => undefined);
     } catch (err) {
+      if (results.every((result) => result.status === "rejected")) {
+        rollbackOptimisticPaneFlags(previousFlags);
+        setSelectedPaneId((current) => (current === pane.id ? previousSelectedPaneId : current));
+      }
       setError(err instanceof Error ? err.message : "Pane restore failed");
     }
   }
 
   async function restoreAllPanes() {
     if (!selectedRoomId || restoreAllPending) return;
-    const allWereMinimized = panes.length > 0 && panes.every((pane) => pane.isMinimized);
-    const candidates = panes.filter((pane) => pane.isMinimized || pane.isMaximized).slice(0, 16);
+    const roomId = selectedRoomId;
+    const roomPanes = panesRef.current.filter((pane) => pane.roomId === roomId);
+    const allWereMinimized = roomPanes.length > 0 && roomPanes.every((pane) => pane.isMinimized);
+    const candidates = roomPanes.filter((pane) => pane.isMinimized || pane.isMaximized).slice(0, 16);
+    const candidateIds = new Set(candidates.map((pane) => pane.id));
     setRestoreAllPending(true);
     setError(null);
+    const previousFlags = applyOptimisticPaneFlags(roomId, (pane) =>
+      candidateIds.has(pane.id) ? { isMinimized: false, isMaximized: false } : null
+    );
+    const optimisticVisible = sortPanesForGrid(
+      roomPanes.filter((pane) => candidateIds.has(pane.id) || !pane.isMinimized)
+    );
+    setSelectedPaneId((current) => {
+      if (allWereMinimized) return optimisticVisible[0]?.id ?? null;
+      return optimisticVisible.some((pane) => pane.id === current) ? current : optimisticVisible[0]?.id ?? null;
+    });
+    setIsMobilePaneFocusMode(false);
     const results = await Promise.allSettled(
       candidates.map((pane) => api.updatePane(pane.id, { isMinimized: false, isMaximized: false }))
     );
     try {
-      const reconciled = await api.panes(selectedRoomId);
-      setPanes([...reconciled.data]);
+      const reconciled = await api.panes(roomId);
+      reconcileRoomPanes(roomId, reconciled.data);
       const visiblePanes = reconciled.data.filter((pane) => !pane.isMinimized);
-      setSelectedPaneId((current) => {
-        if (allWereMinimized) return visiblePanes[0]?.id ?? null;
-        return visiblePanes.some((pane) => pane.id === current) ? current : visiblePanes[0]?.id ?? null;
-      });
-      setIsMobilePaneFocusMode(false);
+      if (selectedRoomIdRef.current === roomId) {
+        setSelectedPaneId((current) => (
+          visiblePanes.some((pane) => pane.id === current) ? current : visiblePanes[0]?.id ?? null
+        ));
+      }
       if (results.some((result) => result.status === "rejected")) {
         const failedCount = results.filter((result) => result.status === "rejected").length;
         setError(`Restore all partially failed for ${failedCount} pane${failedCount === 1 ? "" : "s"}. Room state was refreshed.`);
       }
-      await refreshRoomEvents(selectedRoomId);
+      void refreshRoomEvents(roomId).catch(() => undefined);
     } catch (err) {
+      if (results.length > 0 && results.every((result) => result.status === "rejected")) rollbackOptimisticPaneFlags(previousFlags);
       setError(err instanceof Error ? err.message : "Restore all failed");
     } finally {
       setRestoreAllPending(false);
@@ -5831,24 +4751,34 @@ export function App() {
 
   async function minimizeAllPanes() {
     if (!selectedRoomId || minimizeAllPending) return;
-    const candidates = panes.filter((pane) => !pane.isMinimized).slice(0, 16);
+    const roomId = selectedRoomId;
+    const candidates = panesRef.current.filter((pane) => pane.roomId === roomId && !pane.isMinimized).slice(0, 16);
     if (candidates.length === 0) return;
+    const candidateIds = new Set(candidates.map((pane) => pane.id));
+    const previousSelectedPaneId = selectedPaneIdRef.current;
     setMinimizeAllPending(true);
     setError(null);
+    const previousFlags = applyOptimisticPaneFlags(roomId, (pane) =>
+      candidateIds.has(pane.id) ? { isMinimized: true, isMaximized: false } : null
+    );
+    setSelectedPaneId(null);
+    setIsMobilePaneFocusMode(false);
     const results = await Promise.allSettled(
       candidates.map((pane) => api.updatePane(pane.id, { isMinimized: true }))
     );
     try {
-      const reconciled = await api.panes(selectedRoomId);
-      setPanes([...reconciled.data]);
-      setSelectedPaneId(null);
-      setIsMobilePaneFocusMode(false);
+      const reconciled = await api.panes(roomId);
+      reconcileRoomPanes(roomId, reconciled.data);
       if (results.some((result) => result.status === "rejected")) {
         const failedCount = results.filter((result) => result.status === "rejected").length;
         setError(`Minimize all partially failed for ${failedCount} pane${failedCount === 1 ? "" : "s"}. Room state was refreshed.`);
       }
-      await refreshRoomEvents(selectedRoomId);
+      void refreshRoomEvents(roomId).catch(() => undefined);
     } catch (err) {
+      if (results.every((result) => result.status === "rejected")) {
+        rollbackOptimisticPaneFlags(previousFlags);
+        setSelectedPaneId((current) => current ?? previousSelectedPaneId);
+      }
       setError(err instanceof Error ? err.message : "Minimize all failed");
     } finally {
       setMinimizeAllPending(false);
@@ -5881,7 +4811,8 @@ export function App() {
           paneColumnAnchorStartsRef.current.set(pane.id, previousAnchorColumnStart);
         }
       }
-      throw error;
+      // Every caller fires and forgets; report the rollback instead of leaving an unhandled rejection.
+      setError(error instanceof Error ? error.message : "Pane width could not be changed.");
     }
   }
 
@@ -5958,15 +4889,15 @@ export function App() {
   const activePane = useMemo(
     () => {
       if (selectedPaneId) {
-        const match = visiblePanes.find((pane) => pane.id === selectedPaneId && !pane.isMinimized);
+        const match = visiblePanes.find((pane) => pane.id === selectedPaneId && (shellMode === "mobile" || !pane.isMinimized));
         if (match) return match;
       }
-      return visiblePanes.find((pane) => !pane.isMinimized)
+      return (shellMode === "mobile" ? null : visiblePanes.find((pane) => !pane.isMinimized))
         ?? visiblePanes.find((pane) => pane.id === selectedPaneId)
         ?? visiblePanes[0]
         ?? null;
     },
-    [selectedPaneId, visiblePanes]
+    [selectedPaneId, visiblePanes, shellMode]
   );
   const presentationRoom = useMemo(
     () => rooms.find((room) => room.id === displayedRoomId) ?? activeRoom,
@@ -5979,11 +4910,11 @@ export function App() {
   const presentationPanes = presentationRuntime?.panes ?? panes;
   const presentationSelectedPaneId = presentationRuntime?.selectedPaneId ?? selectedPaneId;
   const presentationActivePane = useMemo(() => {
-    const presentationVisiblePanes = presentationPanes.filter((pane) => !pane.isMinimized);
+    const presentationVisiblePanes = presentationPanes.filter((pane) => shellMode === "mobile" || !pane.isMinimized);
     return presentationVisiblePanes.find((pane) => pane.id === presentationSelectedPaneId)
       ?? presentationVisiblePanes[0]
       ?? null;
-  }, [presentationPanes, presentationSelectedPaneId]);
+  }, [presentationPanes, presentationSelectedPaneId, shellMode]);
   const activeTerminalPanesBootstrapped = useMemo(() => {
     if (!activeRoom) return true;
     const bootstrappedPaneIds = new Set(roomRuntimes[activeRoom.id]?.bootstrappedPaneIds ?? []);
@@ -6015,14 +4946,14 @@ export function App() {
   }
 
   function routeCliShortcut(command: OskCliCommand): boolean {
-    if (activePane?.mode === "CHAT" && (command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree")) {
+    if (activePane?.mode === "CHAT" && (command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree" || command.id === "scroll_top" || command.id === "scroll_bottom")) {
       setIsOskKeyboardOpen(false);
       dispatchAgentPaneActionEvent({ paneId: activePane.id, action: command.id });
       return true;
     }
     if (command.action) {
       if (activePane?.mode === "CHAT") {
-        if (command.action === "permissions") setIsOskKeyboardOpen(false);
+        if (command.action === "permissions" || command.action === "scroll_top" || command.action === "scroll_bottom") setIsOskKeyboardOpen(false);
         dispatchAgentPaneActionEvent({ paneId: activePane.id, action: command.action === "plan" ? "toggle_plan" : command.action });
         return true;
       }
@@ -6302,7 +5233,8 @@ export function App() {
       api.invalidateCliRuntimes(change ?? undefined);
       api.invalidateCliRuntimeSettings();
       void api.cliRuntimes().catch(() => undefined);
-      void api.codexEnvironment()
+      // Bypass the 15s environment cache: availability just changed.
+      void api.codexEnvironment(true)
         .then((environment) => {
           if (appMountedRef.current) setCodexEnvironmentSummary(environment);
         })
@@ -6322,6 +5254,9 @@ export function App() {
       void api.roomCliActivity()
         .then((payload) => {
           if (!appMountedRef.current) return;
+          setRoomPaneCounts(Object.fromEntries(
+            payload.data.flatMap((activity) => activity.paneCount === undefined ? [] : [[activity.roomId, activity.paneCount]])
+          ));
           setRoomCliActivityCounts(Object.fromEntries(
             payload.data.map((activity) => [activity.roomId, activity.runningCliCount])
           ));
@@ -6395,11 +5330,12 @@ export function App() {
         shellMode,
         paneDensity,
         containerWidth: paneGridWidth,
+        rootRemSize,
         paneLayoutColumns: null,
         visiblePaneCount: effectiveVisiblePaneCountForAuto,
         forceTabletTwoColumns: uiTheme !== "classic"
       }),
-    [paneDensity, paneGridWidth, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
+    [paneDensity, paneGridWidth, rootRemSize, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
   );
   const paneGridColumnCount = useMemo(
     () =>
@@ -6407,11 +5343,12 @@ export function App() {
         shellMode,
         paneDensity,
         containerWidth: paneGridWidth,
+        rootRemSize,
         paneLayoutColumns: activeRoom?.paneLayoutColumns ?? null,
         visiblePaneCount: effectiveVisiblePaneCountForAuto,
         forceTabletTwoColumns: uiTheme !== "classic"
       }),
-    [activeRoom?.paneLayoutColumns, paneDensity, paneGridWidth, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
+    [activeRoom?.paneLayoutColumns, paneDensity, paneGridWidth, rootRemSize, shellMode, uiTheme, effectiveVisiblePaneCountForAuto]
   );
   if (previousPaneGridColumnCountRef.current !== paneGridColumnCount) {
     previousPaneGridColumnCountRef.current = paneGridColumnCount;
@@ -6474,23 +5411,31 @@ export function App() {
         shellMode,
         paneDensity: paneDensityFor(shellMode, effectiveLayoutPaneCount),
         containerWidth: paneGridWidth,
+        rootRemSize,
         paneLayoutColumns: null,
         visiblePaneCount: effectiveLayoutPaneCount,
         forceTabletTwoColumns: uiTheme !== "classic"
       }),
-    [effectiveLayoutPaneCount, paneGridWidth, shellMode, uiTheme]
+    [effectiveLayoutPaneCount, paneGridWidth, rootRemSize, shellMode, uiTheme]
   );
   const agentNumberByPaneId = useMemo(() => new Map(panes.map((pane, index) => [pane.id, index + 1])), [panes]);
   const isCompactShell = shellMode !== "desktop";
   const isSideSurfaceOpen = isCompactShell ? isCompactSideSurfaceOpen : isDesktopSideSurfaceOpen;
   const activeSideSurfaceLabel = sideSurfaceMeta[activeSideSurface].surfaceLabel;
+  // The visible title uses the same short name as the dock button and Docks settings.
   const activeSideSurfaceDockTitle = useMemo(() => {
-    const raw = sideSurfaceMeta[activeSideSurface]?.surfaceLabel || activeSideSurface;
-    return raw.toLowerCase().endsWith("dock") ? raw : `${raw} dock`;
+    const definition = DOCK_DEFINITIONS.find((dock) => dock.id === activeSideSurface);
+    return definition?.label ?? (sideSurfaceMeta[activeSideSurface]?.surfaceLabel || activeSideSurface).replace(/ dock$/i, "");
   }, [activeSideSurface]);
   const activeSideSurfaceCloseLabel = `Close ${sideSurfaceMeta[activeSideSurface].label}`;
   const showInlineSideSurface = !isCompactShell && isDesktopSideSurfaceOpen;
   const showOverlaySideSurface = isCompactShell && isCompactSideSurfaceOpen;
+  // Once opened, the desktop dock stays mounted (hidden) after closing so a
+  // reopen keeps its cached docks, data, filters and scroll position. Compact
+  // shells use the drawer instead, so the inline host is dropped there.
+  const [inlineSideSurfaceRetained, setInlineSideSurfaceRetained] = useState(false);
+  if (showInlineSideSurface && !inlineSideSurfaceRetained) setInlineSideSurfaceRetained(true);
+  const mountInlineSideSurface = !isCompactShell && (showInlineSideSurface || inlineSideSurfaceRetained);
   useEffect(() => {
     const handleLiveStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ paneId?: string; rail?: boolean; status?: typeof liveRailStatus }>).detail;
@@ -6579,27 +5524,39 @@ export function App() {
       const rect = element.getBoundingClientRect();
       if (rect.height > 0) {
         shell.style.setProperty("--room-toolbar-collapsed-height", `${rect.height}px`);
+        shell.style.setProperty("--room-toolbar-collapsed-top", `${Math.round(rect.top)}px`);
       }
+      syncRailScale(shell);
     };
     measure();
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
     observer?.observe(element);
+    window.addEventListener("resize", measure);
     return () => {
       observer?.disconnect();
+      window.removeEventListener("resize", measure);
       shell.style.removeProperty("--room-toolbar-collapsed-height");
+      shell.style.removeProperty("--room-toolbar-collapsed-top");
+      syncRailScale(shell);
     };
   }, [isRoomToolbarHidden, showOverlaySideSurface, isMemoryWorkspaceOpen]);
   useEffect(() => {
     if (!isRoomToolbarHidden) setLowerRailVisibilityMenu(null);
   }, [isRoomToolbarHidden]);
+  // Settings also open as a Workspace menu page, which needs the same provider catalog.
+  const isSettingsSurfaceVisible = (isSideSurfaceOpen && activeSideSurface === "settings")
+    || workspaceNavigationDetail === "surface-settings"
+    || workspaceNavigationDetail === "advanced-settings";
+  const isHealthSideSurfaceVisible = isSideSurfaceOpen && activeSideSurface === "health";
   useEffect(() => {
-    if (!auth?.isAuthenticated || !isSideSurfaceOpen) return;
-    if (activeSideSurface === "settings") {
+    if (!auth?.isAuthenticated) return;
+    if (isSettingsSurfaceVisible) {
       void loadSettingsSurfaceData().catch(() => undefined);
-    } else if (activeSideSurface === "health") {
-      void loadHealthSurfaceData().catch(() => undefined);
+    } else if (isHealthSideSurfaceVisible) {
+      // Health is a live view: reload the snapshots every time the dock opens.
+      void loadHealthSurfaceData(true).catch(() => undefined);
     }
-  }, [activeSideSurface, auth?.isAuthenticated, isSideSurfaceOpen]);
+  }, [auth?.isAuthenticated, isHealthSideSurfaceVisible, isSettingsSurfaceVisible]);
   const isRoomsSurfaceVisible = Boolean(auth?.isAuthenticated)
     && appView === "workspace"
     && !isMemoryWorkspaceOpen
@@ -6622,6 +5579,9 @@ export function App() {
       try {
         const payload = await api.roomCliActivity();
         if (disposed) return;
+        setRoomPaneCounts(Object.fromEntries(
+          payload.data.flatMap((activity) => activity.paneCount === undefined ? [] : [[activity.roomId, activity.paneCount]])
+        ));
         setRoomCliActivityCounts(Object.fromEntries(
           payload.data.map((activity) => [activity.roomId, activity.runningCliCount])
         ));
@@ -6658,6 +5618,9 @@ export function App() {
       .filter((element) => isJSDOM || element.getClientRects().length > 0);
     window.requestAnimationFrame(() => focusableElements()[0]?.focus());
     function handleKeyDown(event: KeyboardEvent) {
+      // A modal opened from inside the drawer (project picker, diff dialog) owns its own Escape and focus.
+      const nestedModal = event.target instanceof Element ? event.target.closest('dialog[open], [aria-modal="true"]') : null;
+      if (nestedModal && nestedModal !== drawer && drawer?.contains(nestedModal)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -6752,15 +5715,41 @@ export function App() {
   }
 
   const dockOrder: SideSurface[] = ["rooms", "room-agent", "shared-chat", "media", "streaming", "agent-files", "clipboard", "tasks", "links", "settings", "cli", "agent-sessions"];
+  useEffect(() => {
+    if (runtimeKind !== "live" || !auth?.isAuthenticated) { setSourceControlEnabled(false); return; }
+    const controller = new AbortController();
+    const refreshConnections = async (event?: Event) => {
+      try {
+        const connections = await sourceControlClient.connections(controller.signal);
+        if (controller.signal.aborted) return;
+        const enabled = connections.some(connection => connection.status === "CONNECTED");
+        setSourceControlEnabled(enabled);
+        if (enabled && (event as CustomEvent | undefined)?.detail?.openDock) {
+          setActiveSideSurface("source-control");
+          if (isCompactShell) setIsCompactSideSurfaceOpen(true); else setIsDesktopSideSurfaceOpen(true);
+        }
+      } catch { if (!controller.signal.aborted) setSourceControlEnabled(false); }
+    };
+    void refreshConnections(); window.addEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections);
+    return () => { controller.abort(); window.removeEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections); };
+  }, [runtimeKind, auth?.isAuthenticated, auth?.user?.id, isCompactShell]);
+  // Source Control works locally without a provider account; personal dock hiding still applies.
+  const sourceControlAvailable = runtimeKind === "live" && Boolean(auth?.isAuthenticated);
+  if (sourceControlAvailable && !isDockHidden("source-control")) dockOrder.splice(dockOrder.indexOf("settings"), 0, "source-control");
   const availableDocks = dockOrder.filter((surface) =>
-    surface !== "streaming" || auth?.user?.role === "ADMIN"
+    (surface !== "streaming" || auth?.user?.role === "ADMIN") && !isDockHidden(surface)
   );
 
   function navigateDock(direction: "prev" | "next") {
-    const currentIndex = availableDocks.indexOf(activeSideSurface);
+    // Previous/Next follow the dock buttons as the user arranged them.
+    const launcherOrder = roomToolbar.orderedActions
+      .map((action) => action.id.startsWith("surface-") ? action.id.slice("surface-".length) as SideSurface : null)
+      .filter((surface): surface is SideSurface => surface !== null && availableDocks.includes(surface));
+    const order = [...launcherOrder, ...availableDocks.filter((surface) => !launcherOrder.includes(surface))];
+    const currentIndex = order.indexOf(activeSideSurface);
     const offset = direction === "next" ? 1 : -1;
-    const nextIndex = (currentIndex + offset + availableDocks.length) % availableDocks.length;
-    const nextSurface = availableDocks[nextIndex];
+    const nextIndex = (currentIndex + offset + order.length) % order.length;
+    const nextSurface = order[nextIndex];
     if (!nextSurface) return;
     setActiveSideSurface(nextSurface);
     if (isCompactShell) {
@@ -6831,6 +5820,9 @@ export function App() {
       } catch {
         // Best effort only.
       }
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("cliFloatsHidden", next);
+      }
       return next;
     });
   }
@@ -6842,6 +5834,9 @@ export function App() {
         runtime.platform.localStorage.setItem(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY, String(next));
       } catch {
         // Best effort only.
+      }
+      if (auth?.isAuthenticated) {
+        saveUserSettingDebounced("sensitiveDataMasked", next);
       }
       return next;
     });
@@ -7125,7 +6120,7 @@ export function App() {
     () => {
       const actions: IconToolbarAction[] = [
       ...(Object.entries(sideSurfaceMeta) as Array<[SideSurface, (typeof sideSurfaceMeta)[SideSurface]]>)
-        .filter(([surface]) => surface !== "streaming" || auth?.user?.role === "ADMIN")
+        .filter(([surface]) => surface !== "health" && (surface !== "streaming" || auth?.user?.role === "ADMIN") && (surface !== "source-control" || sourceControlAvailable) && !hiddenDockIds.includes(surface))
         .map(([surface, meta]) => {
           const label = sideSurfaceToggleLabel(surface);
           return {
@@ -7181,70 +6176,96 @@ export function App() {
           openStickyNote();
         }
       },
-      {
-        id: "widget-clock",
-        label: "Clock widget",
-        title: "Float Clock widget",
-        ariaLabel: "Clock widget",
-        icon: Clock3,
-        ariaPressed: desktopWidgets.isWidgetEnabled("clock"),
-        onClick: () => {
-          desktopWidgets.toggleWidget("clock");
-        }
-      },
-      {
-        id: "widget-countdown-timer",
-        label: "Countdown timer",
-        title: "Float Countdown Timer widget",
-        ariaLabel: "Countdown timer",
-        icon: Timer,
-        ariaPressed: desktopWidgets.isWidgetEnabled("countdown-timer"),
-        onClick: () => {
-          desktopWidgets.toggleWidget("countdown-timer");
-        }
-      },
-      {
-        id: "widget-pushup-reminder",
-        label: "Push-up reminder",
-        title: "Float Push-up Reminder widget",
-        ariaLabel: "Push-up reminder",
-        icon: Dumbbell,
-        ariaPressed: desktopWidgets.isWidgetEnabled("pushup-reminder"),
-        onClick: () => {
-          desktopWidgets.toggleWidget("pushup-reminder");
-        }
-      },
-      {
-        id: "widget-spaceapp-promo",
-        label: "SpaceApp.dev promo",
-        title: "Float SpaceApp.dev promo widget",
-        ariaLabel: "SpaceApp.dev promo",
-        icon: Rocket,
-        ariaPressed: desktopWidgets.isWidgetEnabled("spaceapp-promo"),
-        onClick: () => {
-          desktopWidgets.toggleWidget("spaceapp-promo");
-        }
-      },
-      {
-        id: "widget-streaming-metrics",
-        label: "Streaming metrics",
-        title: "Float Streaming Metrics widget",
-        ariaLabel: "Streaming metrics widget",
-        icon: Radio,
-        ariaPressed: desktopWidgets.isWidgetEnabled("streaming-metrics"),
-        onClick: () => { desktopWidgets.toggleWidget("streaming-metrics"); }
-      },
-      {
-        id: "widget-ai-quota",
-        label: "AI Quota monitor",
-        title: "Float AI Quota Monitor (Codex, Gemini, Claude)",
-        ariaLabel: "AI Quota monitor",
-        icon: Gauge,
-        ariaPressed: desktopWidgets.isWidgetEnabled("ai-quota"),
-        onClick: () => {
-          desktopWidgets.toggleWidget("ai-quota");
-        }
-      },
+      ...(!isWidgetHidden("clock")
+        ? [
+            {
+              id: "widget-clock",
+              label: "Clock widget",
+              title: "Float Clock widget",
+              ariaLabel: "Clock widget",
+              icon: Clock3,
+              ariaPressed: desktopWidgets.isWidgetEnabled("clock"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("clock");
+              }
+            }
+          ]
+        : []),
+      ...(!isWidgetHidden("countdown-timer")
+        ? [
+            {
+              id: "widget-countdown-timer",
+              label: "Countdown timer",
+              title: "Float Countdown Timer widget",
+              ariaLabel: "Countdown timer",
+              icon: Timer,
+              ariaPressed: desktopWidgets.isWidgetEnabled("countdown-timer"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("countdown-timer");
+              }
+            }
+          ]
+        : []),
+      ...(!isWidgetHidden("pushup-reminder")
+        ? [
+            {
+              id: "widget-pushup-reminder",
+              label: "Push-up reminder",
+              title: "Float Push-up Reminder widget",
+              ariaLabel: "Push-up reminder",
+              icon: Dumbbell,
+              ariaPressed: desktopWidgets.isWidgetEnabled("pushup-reminder"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("pushup-reminder");
+              }
+            }
+          ]
+        : []),
+      ...(!isWidgetHidden("spaceapp-promo")
+        ? [
+            {
+              id: "widget-spaceapp-promo",
+              label: "SpaceApp.dev promo",
+              title: "Float SpaceApp.dev promo widget",
+              ariaLabel: "SpaceApp.dev promo",
+              icon: Rocket,
+              ariaPressed: desktopWidgets.isWidgetEnabled("spaceapp-promo"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("spaceapp-promo");
+              }
+            }
+          ]
+        : []),
+      ...(!isWidgetHidden("streaming-metrics")
+        ? [
+            {
+              id: "widget-streaming-metrics",
+              label: "Streaming metrics",
+              title: "Float Streaming Metrics widget",
+              ariaLabel: "Streaming metrics widget",
+              icon: Radio,
+              ariaPressed: desktopWidgets.isWidgetEnabled("streaming-metrics"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("streaming-metrics");
+              }
+            }
+          ]
+        : []),
+      ...(!isWidgetHidden("ai-quota")
+        ? [
+            {
+              id: "widget-ai-quota",
+              label: "AI Quota & Usage",
+              title: "Float AI Quota & Usage: account availability and reset alerts for Codex, Antigravity and Claude",
+              ariaLabel: "AI Quota & Usage",
+              icon: Gauge,
+              ariaPressed: desktopWidgets.isWidgetEnabled("ai-quota"),
+              onClick: () => {
+                desktopWidgets.toggleWidget("ai-quota");
+              }
+            }
+          ]
+        : []),
       {
         id: "pane-layout",
         label: "Pane layout",
@@ -7380,18 +6401,20 @@ export function App() {
         disabled: !activeRoom || !panes.some((pane) => pane.mode === "TERMINAL" || pane.mode === "CHAT"),
         disabledReason: !activeRoom ? "Choose a room first" : "Open a terminal or chat pane"
       },
-      {
-        id: "add-chat",
-        label: "Add chat pane",
-        title: isCodexEnabled ? "Add chat pane" : "Enable Codex in Settings",
-        ariaLabel: "Add chat pane",
-        icon: MessageSquare,
-        onClick: toggleChatLauncher,
-        ariaControls: CHAT_LAUNCHER_MENU_ID,
-        ariaExpanded: isChatLauncherOpen,
-        ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
-        disabled: !isCodexEnabled || !selectedRoomId || panes.length >= 16
-      },
+      ...(!isPaneHidden("chat")
+        ? [{
+            id: "add-chat",
+            label: "Add chat pane",
+            title: isCodexEnabled ? "Add chat pane" : "Enable Codex in Settings",
+            ariaLabel: "Add chat pane",
+            icon: MessageSquare,
+            onClick: toggleChatLauncher,
+            ariaControls: CHAT_LAUNCHER_MENU_ID,
+            ariaExpanded: isChatLauncherOpen,
+            ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
+            disabled: !isCodexEnabled || !selectedRoomId || panes.length >= 16
+          }]
+        : []),
       {
         id: "add-cli",
         label: "Add CLI pane",
@@ -7427,66 +6450,106 @@ export function App() {
             hideable: false
           }]
         : []),
-      {
-        id: "add-browser",
-        label: "Add browser pane",
-        title: "Add browser pane",
-        ariaLabel: "Add browser pane",
-        icon: Eye,
-        onClick: () => addPane("BROWSER"),
-        disabled: !selectedRoomId || panes.length >= 16
-      },
-      {
-        id: "add-files",
-        label: "File Manager",
-        title: "Add File Manager pane",
-        ariaLabel: "Add File Manager pane",
-        icon: FolderPlus,
-        onClick: () => {
-          if (!activeRoom) return;
-          void addFilesPane();
-        },
-        disabled: !activeRoom || panes.length >= 16
-      },
-      {
-        id: "add-demos",
-        label: "Demo Projects",
-        title: "Add Demo Projects pane",
-        ariaLabel: "Add Demo Projects pane",
-        icon: Boxes,
-        onClick: () => {
-          if (!activeRoom) return;
-          void addDemosPane();
-        },
-        disabled: !activeRoom || panes.length >= 16
-      },
-      {
-        id: "add-youtube",
-        label: "Add YouTube pane",
-        title: "Add YouTube pane",
-        ariaLabel: "Add YouTube pane",
-        icon: Youtube,
-        onClick: () => addPane("YOUTUBE"),
-        disabled: !selectedRoomId || panes.length >= 16
-      },
-      {
-        id: "add-vnc",
-        label: "Add VNC pane",
-        title: "Add VNC pane",
-        ariaLabel: "Add VNC pane",
-        icon: Monitor,
-        onClick: () => addPane("VNC"),
-        disabled: !selectedRoomId || panes.length >= 16
-      },
-      {
-        id: "add-live",
-        label: "Add Live audio pane",
-        title: "Add Live audio pane",
-        ariaLabel: "Add Live audio pane",
-        icon: Mic,
-        onClick: () => void addLivePane(),
-        disabled: !selectedRoomId || panes.length >= 16
-      },
+      ...(!isPaneHidden("browser")
+        ? [{
+            id: "add-browser",
+            label: "Add browser pane",
+            title: "Add browser pane",
+            ariaLabel: "Add browser pane",
+            icon: Eye,
+            onClick: () => addPane("BROWSER"),
+            disabled: !selectedRoomId || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("files")
+        ? [{
+            id: "add-files",
+            label: "File Manager",
+            title: "Add File Manager pane",
+            ariaLabel: "Add File Manager pane",
+            icon: FolderPlus,
+            onClick: () => {
+              if (!activeRoom) return;
+              void addFilesPane();
+            },
+            disabled: !activeRoom || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("databases")
+        ? [{
+            id: "add-databases",
+            label: "Databases",
+            title: "Add Databases pane",
+            ariaLabel: "Add Databases pane",
+            icon: Database,
+            onClick: () => {
+              if (!activeRoom) return;
+              void addDatabasesPane();
+            },
+            disabled: !activeRoom || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("demos")
+        ? [{
+            id: "add-demos",
+            label: "Demo Projects",
+            title: "Add Demo Projects pane",
+            ariaLabel: "Add Demo Projects pane",
+            icon: Boxes,
+            onClick: () => {
+              if (!activeRoom) return;
+              void addDemosPane();
+            },
+            disabled: !activeRoom || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("t3code")
+        ? [{
+            id: "add-t3code",
+            label: "T3 Code",
+            title: "Add T3 Code pane",
+            ariaLabel: "Add T3 Code pane",
+            icon: Cpu,
+            onClick: () => {
+              if (!activeRoom) return;
+              void addT3CodePane();
+            },
+            disabled: !activeRoom || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("youtube")
+        ? [{
+            id: "add-youtube",
+            label: "Add YouTube pane",
+            title: "Add YouTube pane",
+            ariaLabel: "Add YouTube pane",
+            icon: Youtube,
+            onClick: () => addPane("YOUTUBE"),
+            disabled: !selectedRoomId || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("vnc")
+        ? [{
+            id: "add-vnc",
+            label: "Add VNC pane",
+            title: "Add VNC pane",
+            ariaLabel: "Add VNC pane",
+            icon: Monitor,
+            onClick: () => addPane("VNC"),
+            disabled: !selectedRoomId || panes.length >= 16
+          }]
+        : []),
+      ...(!isPaneHidden("live")
+        ? [{
+            id: "add-live",
+            label: "Add Live audio pane",
+            title: "Add Live audio pane",
+            ariaLabel: "Add Live audio pane",
+            icon: Mic,
+            onClick: () => void addLivePane(),
+            disabled: !selectedRoomId || panes.length >= 16
+          }]
+        : []),
       {
         id: "vpn-city",
         label: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
@@ -7522,14 +6585,6 @@ export function App() {
         ariaLabel: "Snip Tool",
         icon: Crop,
         onClick: () => {
-          setIsQuickLinksOpen(false);
-          setIsThemeMenuOpen(false);
-          setIsPaneLayoutMenuOpen(false);
-          setIsPaneSpanAllMenuOpen(false);
-          setIsWorkspaceTextSizePickerOpen(false);
-          setIsServerActionsMenuOpen(false);
-          setIsCliLauncherOpen(false);
-          setIsVibeMusicOpen(false);
           setIsSnipToolOpen((current) => !current);
         },
         ariaPressed: isSnipToolOpen,
@@ -7617,9 +6672,9 @@ export function App() {
       }] : []),
       {
         id: "benchmark",
-        label: "Asteroids Benchmark",
-        title: "Open the Asteroids AI Championship",
-        ariaLabel: "Asteroids Benchmark",
+        label: "Games Benchmark",
+        title: "Open the AI Games Benchmark: Asteroids and Chess",
+        ariaLabel: "Games Benchmark",
         icon: Crosshair,
         onClick: openBenchmark
       },
@@ -7689,6 +6744,7 @@ export function App() {
       activeRoomCategoryColors,
       activeRoomCategoryFilter,
       auth?.user?.role,
+      sourceControlAvailable,
       captureRoomScreen,
       cliPaneCreationPending,
       cliFloatsHidden, resourceIndicatorsVisible, toggleResourceIndicators,
@@ -7722,7 +6778,10 @@ export function App() {
       desktopWidgets,
       isDebugModeActive,
       debugModePending,
-      toggleDebugMode
+      toggleDebugMode,
+      hiddenDockIds,
+      hiddenPaneIds,
+      hiddenWidgetIds
     ]
   );
   const serverActionCommands: ServerActionCommand[] = auth?.user?.role === "ADMIN"
@@ -7785,6 +6844,13 @@ export function App() {
           }
         },
         {
+          id: "space-gateway",
+          label: "Space Gateway",
+          description: "Pool provider accounts, issue gateway API keys, and control routing and context compression.",
+          icon: Network,
+          onSelect: () => openManage("space-gateway")
+        },
+        {
           id: "codex-lb-speed-control",
           label: "Codex-LB speed control",
           description: isCodexEnabled
@@ -7830,7 +6896,7 @@ export function App() {
         {
           id: "reclaim-safe-memory",
           label: "Reclaim safe memory",
-          description: "Free system page cache and release idle runtime memory after bounded safety verification.",
+          description: "Free page cache and stop leftover CLIs of closed panes; CLIs of open panes keep running.",
           icon: RefreshCw,
           onSelect: () => toolbarMetricsRef.current?.openMemoryReclaim(serverActionsButtonRef.current)
         },
@@ -7905,7 +6971,7 @@ export function App() {
   }, {
     id: "next-room", label: "Next room", title: nextRoom?.name ?? "Next room", ariaLabel: "Next room", icon: ChevronRight,
     disabled: !nextRoom, disabledReason: "This is the last room", onClick: () => { if (nextRoom) void selectRoom(nextRoom.id); }
-  }, ...(isHarnessEnabled ? [{
+  }, ...(isHarnessEnabled && !isPaneHidden("harness") ? [{
     id: "add-harness", label: "DeepSeek Harness", title: "Open DeepSeek Harness",
     ariaLabel: "Open DeepSeek Harness", icon: Network,
     onClick: () => void addHarnessPane(), disabled: !selectedRoomId || panes.length >= 16
@@ -8027,7 +7093,9 @@ export function App() {
       else if (action.id === "add-vnc") void addPane("VNC", undefined, count);
       else if (action.id === "add-live") void addLivePane(count);
       else if (action.id === "add-files") void addFilesPane(count);
+      else if (action.id === "add-databases") void addDatabasesPane(count);
       else if (action.id === "add-demos") void addDemosPane(count);
+      else if (action.id === "add-t3code") void addT3CodePane(count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }
@@ -8039,7 +7107,8 @@ export function App() {
     triggerRef,
     paneCount,
     onPaneCountChange,
-    onNavigate
+    onNavigate,
+    availablePanes: passedAvailablePanes
   }: {
     query: string;
     onClose: () => void;
@@ -8047,7 +7116,9 @@ export function App() {
     paneCount?: number;
     onPaneCountChange?: (count: number | ((prev: number) => number)) => void;
     onNavigate?: (id: string) => void;
+    availablePanes?: number;
   }) {
+    const availablePanes = passedAvailablePanes ?? Math.max(0, 16 - panes.length);
     return (
       <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
         <LazyCliLauncherMenu
@@ -8055,7 +7126,8 @@ export function App() {
           query={query}
           mobile={false}
           refreshOnOpen={true}
-          atPaneCap={panes.length >= 16}
+          atPaneCap={panes.length >= 16 || availablePanes <= 0}
+          availablePanes={availablePanes}
           isCodexEnabled={isCodexEnabled}
           onClose={onClose}
           onCreate={addCliRuntimePane}
@@ -8172,6 +7244,9 @@ export function App() {
       runtime.platform.localStorage.setItem(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY, String(hidden));
     } catch {
       // Best effort only.
+    }
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("roomToolbarHidden", hidden);
     }
     setIsRoomToolbarHidden(hidden);
   }
@@ -8308,6 +7383,9 @@ export function App() {
     } catch {
       // Best effort only.
     }
+    if (auth?.isAuthenticated) {
+      saveUserSettingDebounced("roomFocusMode", nextValue);
+    }
     setIsRoomFocusMode(nextValue);
   }
 
@@ -8378,13 +7456,18 @@ export function App() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") void loadCodexEnvironmentSummary();
     };
+    const handleAppResumed = () => {
+      void loadCodexEnvironmentSummary();
+    };
     void loadCodexEnvironmentSummary();
     const interval = window.setInterval(() => void loadCodexEnvironmentSummary(), 30000);
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("space:app-resumed", handleAppResumed);
     return () => {
       disposed = true;
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("space:app-resumed", handleAppResumed);
     };
   }, [auth?.isAuthenticated]);
   useEffect(() => {
@@ -8582,31 +7665,74 @@ export function App() {
     }
   }
 
+  const snipToolInitialModeRef = useRef<"float" | "capturing">("float");
+  const lastPrintScreenRef = useRef({ keyDownAt: 0, triggeredAt: 0 });
+
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // A PrtScn open is one-shot: reopening from the rail shows the capsule again.
+    if (!isSnipToolOpen) snipToolInitialModeRef.current = "float";
 
-    let lastPrtSc = 0;
-    const handlePrintScreenKey = (event: KeyboardEvent) => {
-      if (event.key === "PrintScreen" || event.code === "PrintScreen") {
-        event.preventDefault();
-        const isDesktop = shellMode === "desktop" || Boolean((window as any).spaceDesktop);
-        if (isDesktop) return;
+    const triggerSnipShortcut = () => {
+      const now = Date.now();
+      if (now - lastPrintScreenRef.current.triggeredAt < 350) return;
+      lastPrintScreenRef.current.triggeredAt = now;
 
-        const now = Date.now();
-        if (now - lastPrtSc > 1200) {
-          lastPrtSc = now;
-          void captureRoomScreen();
-        }
+      console.log("[SpaceApp Web] Triggering Snip Tool shortcut (PrtScn)");
+      if (isSnipToolOpen) {
+        window.dispatchEvent(new CustomEvent("space:snip-tool:trigger"));
+      } else {
+        snipToolInitialModeRef.current = "capturing";
+        setIsSnipToolOpen(true);
       }
     };
 
-    window.addEventListener("keydown", handlePrintScreenKey);
+    const isPrintScreenEvent = (event: KeyboardEvent) => {
+      return (
+        event.key === "PrintScreen" ||
+        event.code === "PrintScreen" ||
+        (event as any).key === "Snapshot" ||
+        (event as any).key === "Print" ||
+        event.keyCode === 44 ||
+        event.which === 44
+      );
+    };
+
+    const handlePrintScreenKey = (event: KeyboardEvent) => {
+      if (!isPrintScreenEvent(event)) return;
+
+      console.log(`[SpaceApp] PrintScreen caught: type=${event.type}, key=${event.key}, code=${event.code}, keyCode=${event.keyCode}`);
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Most platforms send keydown + keyup; Windows sends only keyup. Act once per press,
+      // otherwise a slower press opens the selection on keydown and cancels it on keyup.
+      if (event.type === "keydown") {
+        if (event.repeat) return;
+        lastPrintScreenRef.current.keyDownAt = Date.now();
+      } else if (Date.now() - lastPrintScreenRef.current.keyDownAt < 2000) {
+        return;
+      }
+
+      // Clear any multi-monitor screenshot Windows may have placed on clipboard
+      try {
+        if (navigator?.clipboard?.writeText) {
+          void navigator.clipboard.writeText("").catch(() => {});
+        }
+      } catch {}
+
+      triggerSnipShortcut();
+    };
+
+    window.addEventListener("keydown", handlePrintScreenKey, true);
+    window.addEventListener("keyup", handlePrintScreenKey, true);
 
     const desktopBridge = (window as any).spaceDesktop;
     let unsubscribePrintScreen: (() => void) | undefined;
     if (typeof desktopBridge?.onPrintScreen === "function") {
       const unsub = desktopBridge.onPrintScreen(() => {
-        void captureRoomScreen();
+        triggerSnipShortcut();
       });
       if (typeof unsub === "function") {
         unsubscribePrintScreen = unsub;
@@ -8614,10 +7740,11 @@ export function App() {
     }
 
     return () => {
-      window.removeEventListener("keydown", handlePrintScreenKey);
+      window.removeEventListener("keydown", handlePrintScreenKey, true);
+      window.removeEventListener("keyup", handlePrintScreenKey, true);
       unsubscribePrintScreen?.();
     };
-  }, [activeRoom, activePane, shellMode]);
+  }, [isSnipToolOpen]);
 
   function openClipImagePicker(target: ClipImageTarget) {
     pendingClipImageTargetRef.current = target;
@@ -8871,9 +7998,9 @@ export function App() {
         <button
           type="button"
           onClick={() => void createRoom()}
-          disabled={roomCreationPending}
+          disabled={roomCreationPending || rooms.length >= MAX_ROOMS}
           aria-busy={roomCreationPending}
-          title="Create empty room"
+          title={rooms.length >= MAX_ROOMS ? `Maximum room limit (${MAX_ROOMS}) reached` : "Create empty room"}
         >
           <Plus aria-hidden="true" />
           New room
@@ -8881,7 +8008,7 @@ export function App() {
       </div>
       <label className="rooms-search">
         <Search aria-hidden="true" />
-        <input type="search" aria-label="Find a room" placeholder="Find a room…" value={roomSearch} onChange={event => setRoomSearch(event.target.value)} />
+        <input type="search" name="room-search" aria-label="Find a room" placeholder="Find a room…" value={roomSearch} onChange={event => setRoomSearch(event.target.value)} />
       </label>
       {isAdminMode ? (
         <div className="rooms-admin-account-filter">
@@ -9004,50 +8131,73 @@ export function App() {
             title={isRoomListFiltered ? room.name : `Hold the right mouse button to reorder ${room.name}`}
             onPointerDown={(event) => { if (!isRoomListFiltered) handleRoomRightPointerDown(event, room.id); }}
             onContextMenu={(event) => event.preventDefault()}
+            onAnimationEnd={(event) => {
+              if (event.animationName.includes("room-card-press-pop") || event.animationName.includes("shockwave")) {
+                event.currentTarget.classList.remove("is-clicked");
+              }
+            }}
           >
             <div className="room-item-row">
               <button
                 className="room-select"
                 data-room-id={room.id}
-                onClick={() => void selectRoom(room.id, { keepCompactSurfaceOpen: true })}
+                onClick={(event) => {
+                  const item = event.currentTarget.closest<HTMLElement>(".room-item");
+                  if (item) {
+                    item.classList.remove("is-clicked");
+                    void item.offsetWidth;
+                    item.classList.add("is-clicked");
+                  }
+                  void selectRoom(room.id, { keepCompactSurfaceOpen: true });
+                }}
+                onPointerDown={(event) => {
+                  if (event.button === 0) {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    event.currentTarget.style.setProperty("--room-press-x", `${event.clientX - rect.left}px`);
+                    event.currentTarget.style.setProperty("--room-press-y", `${event.clientY - rect.top}px`);
+                  }
+                }}
                 disabled={deletePendingRoomId === room.id || roomReorderPending}
                 aria-label={`Open ${room.name}`}
                 aria-current={room.id === selectedRoomId ? "true" : undefined}
               >
-                <span className="room-name">{room.name}</span>
+                <span className="room-title-row">
+                  <span className="room-name">{room.name}</span>
+                  {room.id === selectedRoomId ? (
+                    <span className="room-active-badge" aria-label="Active room" title="Active room">
+                      <span className="room-active-pulse" aria-hidden="true">
+                        <span className="room-active-dot" />
+                      </span>
+                      <Radio className="room-active-icon" aria-hidden="true" />
+                      <span className="room-active-label">Active</span>
+                    </span>
+                  ) : null}
+                </span>
                 <span className="room-badge-row">
-                  {room.projectPath ? (
-                    <span
-                      className="room-project-tag"
-                      title={`Project: ${room.projectPath}`}
-                      aria-label={`Project: ${room.projectPath}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDockExpandedRoomId(current => current === room.id ? null : room.id);
-                        if (!dockProjectPathDrafts[room.id]) {
-                          setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "" }));
-                        }
-                      }}
-                    >
-                      📁 {room.projectPath.split("/").filter(Boolean).pop() || room.projectPath}
-                    </span>
-                  ) : (
-                    <span
-                      className="room-project-tag is-empty"
-                      title="No project directory configured. Click chevron or tag to set."
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDockExpandedRoomId(current => current === room.id ? null : room.id);
-                        if (!dockProjectPathDrafts[room.id]) {
-                          setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: "" }));
-                        }
-                      }}
-                    >
-                      📁 No project
-                    </span>
-                  )}
+                  {(() => {
+                    const effectivePath = room.projectPath || "/opt/spaceapp";
+                    const folderName = effectivePath.split("/").filter(Boolean).pop() || effectivePath;
+                    return (
+                      <span
+                        className="room-project-tag"
+                        title={`Project: ${effectivePath}`}
+                        aria-label={`Project: ${effectivePath}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDockExpandedRoomId(current => current === room.id ? null : room.id);
+                          if (!dockProjectPathDrafts[room.id]) {
+                            setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: effectivePath }));
+                          }
+                        }}
+                      >
+                        📁 {folderName}
+                      </span>
+                    );
+                  })()}
                   <span className="room-cli-badge">
-                    CLI {roomCliActivityCounts[room.id] ?? "—"}
+                    Panes {roomPaneCounts[room.id] ?? (room.id === selectedRoomId && roomPaneLoadStates[room.id] === "loaded"
+                      ? panes.filter((pane) => !pane.isClosed).length
+                      : roomRuntimes[room.id]?.panes.filter((pane) => !pane.isClosed).length ?? "—")}
                   </span>
                   {roomCliPresentations.length ? (
                     <span
@@ -9092,7 +8242,7 @@ export function App() {
                   e.stopPropagation();
                   setDockExpandedRoomId(current => current === room.id ? null : room.id);
                   if (!dockProjectPathDrafts[room.id]) {
-                    setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "" }));
+                    setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "/opt/spaceapp" }));
                   }
                 }}
               >
@@ -9100,7 +8250,7 @@ export function App() {
               </button>
               <button
                 className="room-delete"
-                onClick={() => deleteRoom(room.id)}
+                onClick={() => void requestRoomDelete(room)}
                 disabled={deletePendingRoomId === room.id || roomReorderPending}
                 title={`Delete ${room.name}`}
                 aria-label={`Delete ${room.name}`}
@@ -9114,6 +8264,19 @@ export function App() {
                   <span className="room-dock-field-title">
                     <Folder aria-hidden="true" /> Project Directory:
                   </span>
+                  {runtimeKind === "live" && auth?.isAuthenticated ? (
+                    <button
+                      type="button"
+                      className="room-dock-choose-project-btn"
+                      disabled={dockProjectSavingRoomId === room.id}
+                      title="Choose a new project, local folder, Git URL or repository"
+                      aria-label={`Choose project for ${room.name}`}
+                      onClick={() => setProjectPickerRoom({ id: room.id, name: room.name })}
+                    >
+                      <FolderOpen aria-hidden="true" />
+                      <span>Choose project</span>
+                    </button>
+                  ) : null}
                   {room.projectPath ? (
                     <button
                       type="button"
@@ -9127,6 +8290,8 @@ export function App() {
                           const updated = await api.updateRoom(room.id, { name: room.name, projectPath: null });
                           setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
                           setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: "" }));
+                        } catch (err) {
+                          setError(err instanceof Error ? `The project directory could not be cleared: ${err.message}` : "The project directory could not be cleared.");
                         } finally {
                           setDockProjectSavingRoomId(null);
                         }
@@ -9142,7 +8307,7 @@ export function App() {
                     type="text"
                     className="room-dock-project-input"
                     placeholder="e.g. /opt/spaceapp"
-                    value={dockProjectPathDrafts[room.id] ?? (room.projectPath || "")}
+                    value={dockProjectPathDrafts[room.id] ?? (room.projectPath || "/opt/spaceapp")}
                     disabled={dockProjectSavingRoomId === room.id}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -9165,10 +8330,13 @@ export function App() {
                     <Save aria-hidden="true" />
                   </button>
                 </div>
+                {roomProjectSources[room.id] && room.projectPath ? (
+                  <p className="room-dock-project-source" title={room.projectPath}>Source: {roomProjectSources[room.id]}</p>
+                ) : null}
                 <div className="room-dock-presets-row">
                   <span className="room-dock-presets-label">Presets:</span>
                   {projectPresets.map((preset) => {
-                    const currentVal = dockProjectPathDrafts[room.id] ?? (room.projectPath || "");
+                    const currentVal = dockProjectPathDrafts[room.id] ?? (room.projectPath || "/opt/spaceapp");
                     const isActive = currentVal === preset.path || (preset.label === "olla" && currentVal === "/srv/olla");
                     return (
                       <button
@@ -9178,6 +8346,12 @@ export function App() {
                         onClick={async () => {
                           setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: preset.path }));
                           await ensureProjectFolder(preset.path);
+                          try {
+                            const updated = await api.updateRoom(room.id, { name: room.name, projectPath: preset.path });
+                            setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
+                          } catch (err) {
+                            setError(err instanceof Error ? `The project preset could not be saved: ${err.message}` : "The project preset could not be saved.");
+                          }
                         }}
                       >
                         {preset.label}
@@ -9187,7 +8361,8 @@ export function App() {
                   <button
                     type="button"
                     className="room-dock-preset-add-btn"
-                    title="Add new English preset"
+                    title="Add a project preset"
+                    aria-label="Add a project preset"
                     onClick={() => {
                       setIsAddingPresetRoomId(isAddingPresetRoomId === room.id ? null : room.id);
                       setNewPresetDraft("");
@@ -9238,21 +8413,44 @@ export function App() {
                     </button>
                   </div>
                 ) : null}
-                {room.projectPath ? (
+                <div
+                  className="room-dock-worktree-setting"
+                  style={{
+                    margin: "10px 0 8px 0",
+                    padding: "8px 10px",
+                    background: "rgba(255, 255, 255, 0.03)",
+                    borderRadius: "6px",
+                    border: "1px solid rgba(255, 255, 255, 0.06)"
+                  }}
+                >
+                  <SpaceToggle
+                    className="room-dock-worktree-toggle"
+                    label={
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                        <GitBranch size={13} aria-hidden="true" /> Isolated Worktrees (Git)
+                      </span>
+                    }
+                    detail={`Dedicated Git branches for CLI tools in this room (${isRoomWorktreeEnabled(room.id) ? "Enabled" : "Disabled"})`}
+                    checked={isRoomWorktreeEnabled(room.id)}
+                    onChange={(enabled) => setRoomWorktreeEnabled(room.id, enabled)}
+                  />
+                </div>
+                {room.projectPath || dockProjectPathDrafts[room.id] ? (
                   <div className="room-dock-actions-row">
                     <button
                       type="button"
                       className="room-dock-action-btn"
                       onClick={async () => {
                         await selectRoom(room.id);
-                        if (room.projectPath) {
-                          await ensureProjectFolder(room.projectPath);
+                        const effective = room.projectPath || dockProjectPathDrafts[room.id];
+                        if (effective) {
+                          await ensureProjectFolder(effective);
                         }
                         const existingFiles = (room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? []).find((p) => !p.isClosed && p.mode === "FILES");
                         if (existingFiles) {
                           setSelectedPaneId(existingFiles.id);
-                          if (room.projectPath) {
-                            window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: room.projectPath } }));
+                          if (effective) {
+                            window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: effective } }));
                           }
                         } else {
                           await addFilesPane(1, room.id);
@@ -9266,8 +8464,9 @@ export function App() {
                       className="room-dock-action-btn"
                       onClick={async () => {
                         await selectRoom(room.id);
-                        if (room.projectPath) {
-                          await ensureProjectFolder(room.projectPath);
+                        const effective = room.projectPath || dockProjectPathDrafts[room.id];
+                        if (effective) {
+                          await ensureProjectFolder(effective);
                         }
                         await addRootAdminPane(room.id);
                       }}
@@ -9282,6 +8481,17 @@ export function App() {
           );
         })}
       </div>
+      {projectPickerRoom ? (
+        <RecoverableSurface fallback={null}>
+          <LazyProjectSourcePicker
+            context={{ kind: "room", roomId: projectPickerRoom.id, roomName: projectPickerRoom.name }}
+            isAdmin={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"}
+            defaultParent="/opt/spaceapp/projects"
+            onOpened={(result) => assignPickedProjectToRoom(projectPickerRoom.id, result)}
+            onClose={() => setProjectPickerRoom(null)}
+          />
+        </RecoverableSurface>
+      ) : null}
       <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
         {showDownloadBanner ? (
           <a
@@ -9304,8 +8514,11 @@ export function App() {
           onApply={addRoomPanes}
           onOpenSettings={openSettingsSurface}
           room={presentationRoom}
+          isWorktreeEnabled={presentationRoom ? isRoomWorktreeEnabled(presentationRoom.id) : false}
+          defaultCollapsed={true}
         />
       </div>
+      {roomDeleteConfirm.confirmDialog}
     </div>
   );
 
@@ -9376,18 +8589,22 @@ export function App() {
 
       // Synchronously set properties on roomList DOM element to avoid visual paint flicker
       if (roomList) {
-        roomList.setAttribute("data-room-overflow", overflows ? "true" : "false");
+        const overflowValue = overflows ? "true" : "false";
+        if (roomList.getAttribute("data-room-overflow") !== overflowValue) {
+          roomList.setAttribute("data-room-overflow", overflowValue);
+        }
         if (overflows) {
-          roomList.style.setProperty("--room-list-max-height", `${Math.round(finalAvailableForRooms)}px`);
-        } else {
+          const height = `${Math.round(finalAvailableForRooms)}px`;
+          if (roomList.style.getPropertyValue("--room-list-max-height") !== height) {
+            roomList.style.setProperty("--room-list-max-height", height);
+          }
+        } else if (roomList.style.getPropertyValue("--room-list-max-height")) {
           roomList.style.removeProperty("--room-list-max-height");
         }
       }
     };
 
     checkBannerFit();
-    const rafId = typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame(checkBannerFit) : null;
-
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(checkBannerFit) : null;
     observer?.observe(panel);
     const roomList = panel.querySelector<HTMLElement>(".room-list");
@@ -9399,11 +8616,10 @@ export function App() {
 
     window.addEventListener("resize", checkBannerFit);
     return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
       observer?.disconnect();
       window.removeEventListener("resize", checkBannerFit);
     };
-  }, [activeSideSurface, filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, preparingRoomId, presentationPanes.length]);
+  }, [activeSideSurface, filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, presentationPanes.length]);
 
   function resumeAgentSessionCodexThread(threadId: string) {
     if (!activePane || !isCodexEnabled) return;
@@ -9460,7 +8676,17 @@ export function App() {
       cliImagePreviewLimit={cliImagePreviewLimit}
       warmRoomEnabled={warmRoomEnabled}
       warmConnectedPaneLimit={warmConnectedPaneLimit}
-      onCliImagePreviewLimitChange={setCliImagePreviewLimit}
+      defaultWorktreeEnabled={defaultWorktreeEnabled}
+      onDefaultWorktreeEnabledChange={(enabled) => {
+        setDefaultWorktreeEnabled(enabled);
+        try {
+          localStorage.setItem("space.worktree.defaultEnabled", String(enabled));
+        } catch {}
+        if (auth?.isAuthenticated) {
+          saveUserSettingDebounced("worktreeDefaultEnabled", enabled);
+        }
+      }}
+      onCliImagePreviewLimitChange={(limit) => setCliImagePreviewLimit(writeStoredCliImagePreviewLimit(limit))}
       onWarmRoomEnabledChange={(enabled) => {
         setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
       }}
@@ -9487,6 +8713,7 @@ export function App() {
         onOpenSetup={() => onNavigate ? onNavigate("setup-connections") : openManage("setup-connections")}
         activePane={activePane}
         currentAppearance={modernAppearance}
+        currentBackground={uiBackground}
         currentIconPack={modernIconPack}
         currentUiTheme={uiTheme}
         isCodexEnabled={isCodexEnabled}
@@ -9497,17 +8724,21 @@ export function App() {
         suppressNotifications={suppressNotifications}
         providerSettings={providerSettings}
         providers={providers}
+        gitPluginsActive={sourceControlEnabled}
+        isHarnessEnabled={isHarnessEnabled}
         onSuppressNotificationsChange={(suppressed) => {
           setSuppressNotifications(writeStoredSuppressNotifications(suppressed));
         }}
         onProviderSettingsRefresh={setProviderSettings}
-        onUiThemeApply={async ({ appearance, iconPack, theme }) => {
+        onUiThemeApply={async ({ appearance, background, iconPack, theme }) => {
           writeModernAppearance(runtime.platform.localStorage, appearance);
+          writeUiBackground(runtime.platform.localStorage, background);
           writeModernIconPack(runtime.platform.localStorage, iconPack);
           writeUiTheme(runtime.platform.localStorage, theme);
           try {
             await api.updateUserSettings({
               modernAppearance: appearance,
+              uiBackground: background,
               modernIconPack: iconPack,
               uiTheme: theme
             });
@@ -9523,6 +8754,10 @@ export function App() {
       <LazyMediaDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
     ) : surface === "streaming" ? (
       <LazyStreamingDock />
+    ) : surface === "source-control" ? (
+      <LazySourceControlDock userId={auth?.user?.id || ""} currentProjectPath={activeRoom?.projectPath}
+        projects={[...projectPresets, ...rooms.filter(room => room.projectPath).map(room => ({ label: room.name, path: room.projectPath! }))]}
+        isAdmin={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} onProjectOpened={addOpenedProjectPreset} />
     ) : surface === "cli" ? (
       cliDockContent
     ) : surface === "agent-sessions" ? (
@@ -9533,7 +8768,7 @@ export function App() {
         onResume={resumeAgentSession}
       />
     ) : surface === "agent-files" ? (
-      <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} />
+      <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} paneTitles={agentFilesPaneTitles} />
     ) : surface === "shared-chat" ? (
       <LazySharedChatDock />
     ) : surface === "clipboard" ? (
@@ -9541,7 +8776,7 @@ export function App() {
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
         activePaneLabel={activePane ? displayPaneTitle(activePane) : null}
         onInsert={insertClipboardItem}
-        onOpenStickyNote={onNavigate ? () => onNavigate("sticky-note") : openStickyNote}
+        onOpenStickyNote={onNavigate ? (item) => { setWorkspaceStickyItem(item ?? null); onNavigate("sticky-note"); } : openStickyNote}
         onClose={() => {
           if (onClose) { onClose(); return; }
           setIsDesktopSideSurfaceOpen(false);
@@ -9571,10 +8806,17 @@ export function App() {
         observability={observability}
         workerReadiness={workerReadiness}
         storageReadiness={storageReadiness}
+        loadError={healthSurfaceError}
+        onRefresh={() => loadHealthSurfaceData(true)}
       />
     );
 
-  const sideSurfaceContent = renderSideSurfaceContent(activeSideSurface);
+  // Agent Files cards name the pane that produced a file; the key keeps the map stable while titles are unchanged.
+  const paneTitleKey = panes.map((pane) => `${pane.id}\u0001${displayPaneTitle(pane)}`).join("\u0002");
+  const agentFilesPaneTitles = useMemo<Record<string, string>>(
+    () => Object.fromEntries(paneTitleKey ? paneTitleKey.split("\u0002").map((entry) => entry.split("\u0001") as [string, string]) : []),
+    [paneTitleKey]
+  );
 
   const targetablePanes = useMemo(() => {
     const roomPanes = panes.filter(
@@ -9607,6 +8849,8 @@ export function App() {
       paneMode: resolvedPane?.mode ?? null
     }, signal);
   });
+
+  const isVibeMusicMounted = useVibeMusicMount(activeRoom?.id, isVibeMusicOpen || Boolean(workspaceMusicHost));
 
   if (!auth || !setupStatus) {
     return (
@@ -9648,35 +8892,42 @@ export function App() {
 
   if (isOskKeyboardOpen || workspaceKeyboardHost) oskKeyboardMountedRef.current = true;
 
-  const vibeMusicPlayer = (
-    <VibeMusicPlayer
-      activeRoomId={activeRoom?.id}
-      mobile={shellMode === "mobile"}
-      open={isVibeMusicOpen || Boolean(workspaceMusicHost)}
-      portalTarget={workspaceMusicHost}
-      onOpenChange={open => { if (!open && workspaceMusicHost) workspaceMusicBack.current?.(); else setIsVibeMusicOpen(open); }}
-      onOpenYouTube={(url) => { void addPane("YOUTUBE", url); }}
-      roomTheme={roomTheme}
-      triggerRef={vibeMusicButtonRef}
-    />
-  );
+  const vibeMusicPlayer = isVibeMusicMounted ? (
+    <RecoverableSurface fallback={null}>
+      <LazyVibeMusicPlayer
+        activeRoomId={activeRoom?.id}
+        mobile={shellMode === "mobile"}
+        open={isVibeMusicOpen || Boolean(workspaceMusicHost)}
+        portalTarget={workspaceMusicHost}
+        onOpenChange={open => { if (!open && workspaceMusicHost) workspaceMusicBack.current?.(); else setIsVibeMusicOpen(open); }}
+        onOpenYouTube={(url) => { void addPane("YOUTUBE", url); }}
+        roomTheme={roomTheme}
+        triggerRef={vibeMusicButtonRef}
+      />
+    </RecoverableSurface>
+  ) : null;
 
   const snipToolOverlay = isSnipToolOpen ? (
-    <SnipToolOverlay
+    <RecoverableSurface fallback={null}>
+    <LazySnipToolOverlay
       isOpen={isSnipToolOpen}
+      initialMode={snipToolInitialModeRef.current}
       roomId={activeRoom?.id}
       onClose={() => setIsSnipToolOpen(false)}
       isMobile={shellMode === "mobile"}
       activePaneId={activePane && !activePane.isMinimized ? activePane.id : null}
-      activePaneTitle={activePane ? activePane.title || activePane.mode : null}
+      activePaneTitle={activePane ? displayPaneTitle(activePane) : null}
       activePaneMode={activePane?.mode ?? null}
+      activePaneName={activePane?.paneName ?? null}
       availablePanes={targetablePanes.map((p) => ({
         id: p.id,
-        title: p.title || p.mode,
-        mode: p.mode
+        title: displayPaneTitle(p),
+        mode: p.mode,
+        paneName: p.paneName ?? null
       }))}
       onCapture={handleSnipCapture}
     />
+    </RecoverableSurface>
   ) : null;
 
   const oskKeyboard = oskKeyboardMountedRef.current ? (
@@ -9700,6 +8951,7 @@ export function App() {
       onUpdateText={(id, text) => updateStickyWindow(id, { text })}
       onUpdateColor={(id, color) => updateStickyWindow(id, { color })}
       onUpdatePosition={(id, x, y) => updateStickyWindow(id, { x, y })}
+      onUpdateItemId={(id, itemId) => updateStickyWindow(id, { itemId })}
       onBringToFront={bringStickyWindowToFront}
     />
   );
@@ -9747,8 +8999,11 @@ export function App() {
           <LazyHelpPage onBack={closeHelp} />
         </RecoverableSurface>
     );
+    // Same provider path as the workspace, so the music player, keyboard, notes and widgets keep
+    // their instances (audio keeps playing) when Help opens and closes.
     return (
       <AppIconProvider pack={modernIconPack}>
+        <LiveSessionProvider ownerId={auth.user?.id || ""} roomId={selectedRoomId || activeRoom?.id || null} roomName={activeRoom?.name}>
         {vibeMusicPlayer}
         {oskKeyboard}
         {stickyNoteLayer}
@@ -9781,6 +9036,7 @@ export function App() {
             {helpContent}
           </div>
         )}
+        </LiveSessionProvider>
       </AppIconProvider>
     );
   }
@@ -9819,6 +9075,10 @@ export function App() {
     const layerSelectedPaneId = isActive ? selectedPaneId : cached?.selectedPaneId ?? null;
     const layerPaneLoadState = roomPaneLoadStates[roomId] ?? "loading";
     const layerRoom = rooms.find((room) => room.id === roomId) ?? null;
+    const layerPaneLimit = roomPaneLimit(layerRoom);
+    const layerAddPaneBlockedReason = layerPanes.length >= layerPaneLimit
+      ? `This room already has the maximum of ${layerPaneLimit} panes.`
+      : null;
     const roomCategoryFilter = activeCategoryColorByRoom[roomId] ?? null;
     const layerRenderPanes = roomCategoryFilter
       ? layerPanes.filter((pane) => pane.categoryColor === roomCategoryFilter)
@@ -9851,6 +9111,7 @@ export function App() {
           shellMode,
           paneDensity: layerDensity,
           containerWidth: paneGridWidth,
+          rootRemSize,
           paneLayoutColumns: layerRoom?.paneLayoutColumns ?? null,
           visiblePaneCount: layerVisiblePanes.length,
           forceTabletTwoColumns: uiTheme !== "classic"
@@ -9901,7 +9162,6 @@ export function App() {
     });
     const layerActualBaseRows = layerFullscreenLayout ? 1 : layerCalculatedBaseRows;
     const layerExplicitHeight =
-      layerHeight > 1 &&
       shellMode !== "mobile" &&
       !layerHasMaximizedPane &&
       !layerFullscreenLayout &&
@@ -9913,10 +9173,15 @@ export function App() {
         : typeof window !== "undefined" && window.innerHeight > 0
           ? Math.max(window.innerHeight - 120, 480)
           : 600;
-    const layerAvailableHeight = Math.max(0, layerEffectiveContainerHeight - (layerActualBaseRows - 1) * layerGridGapPx);
+    const minPaneRowPx = 320;
+    const maxFittingRows = Math.max(
+      1,
+      Math.floor((layerEffectiveContainerHeight + layerGridGapPx) / (minPaneRowPx + layerGridGapPx))
+    );
+    const viewportRows = Math.max(1, Math.min(layerActualBaseRows, maxFittingRows));
     const layerBaselineRowPx = Math.max(
-      layerActualBaseRows > 0 ? layerAvailableHeight / layerActualBaseRows : 192,
-      192
+      Math.round((layerEffectiveContainerHeight - (viewportRows - 1) * layerGridGapPx) / viewportRows),
+      minPaneRowPx
     );
     const layerRowPx = layerExplicitHeight ? Math.round(layerBaselineRowPx * layerHeight) : 0;
 
@@ -10076,7 +9341,7 @@ export function App() {
                     : {
                         gridTemplateRows: shellMode === "mobile" || layerFullscreenLayout
                           ? "minmax(0, 1fr)"
-                          : `repeat(${layerActualBaseRows}, minmax(12rem, 1fr))`
+                          : `repeat(${layerActualBaseRows}, minmax(20rem, 1fr))`
                       })
                 }}
               >
@@ -10095,6 +9360,7 @@ export function App() {
                       hasPendingCompletion={Boolean(
                         pendingPaneCompletionEventId(paneCompletionLifecycle, pane.id)
                       )}
+                      isLifecycleRunning={paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null}
                       isTarget={isPresented && layerActivePane?.id === pane.id}
                       isMoveDialogOpen={isInteractive && paneMoveDialog?.pane.id === pane.id}
                       isVisibleInShell={isPresented && (layerShellVisiblePaneIds.has(pane.id) || floatingYouTubePaneIds.has(pane.id))}
@@ -10112,12 +9378,14 @@ export function App() {
                       uiTheme={uiTheme}
                       shellMode={shellMode}
                       codexTurnsEnabled={codexTurnsEnabled}
-                      codexEnvironment={codexEnvironmentSummary}
-                      cliRuntimeSettings={cliRuntimeSettings}
+                      codexEnvironment={paneCodexEnvironment}
+                      cliRuntimeSettings={pane.mode === "HARNESS" ? cliRuntimeSettings : null}
+                      runtimeBlockedReason={paneRuntimeBlockedReason(pane, cliRuntimeSettings)}
+                      addPaneBlockedReason={layerAddPaneBlockedReason}
                       canMoveToAnotherRoom={rooms.some((room) => room.id !== pane.roomId)}
-                      draggedPaneId={draggedPaneId}
-                      dragOverPaneId={paneDragOverId}
-                      dragOverPosition={paneDragOverPosition}
+                      draggedPaneId={draggedPaneId === pane.id ? draggedPaneId : null}
+                      dragOverPaneId={paneDragOverId === pane.id ? paneDragOverId : null}
+                      dragOverPosition={paneDragOverId === pane.id ? paneDragOverPosition : undefined}
                       paneReorderPending={paneReorderPending}
                       onPaneDragStart={paneCardOnDragStart}
                       onPaneDragEnd={paneCardOnDragEnd}
@@ -10284,7 +9552,7 @@ export function App() {
     }
   }
 
-  const showResourceIndicatorRail = (resourceIndicatorsVisible || showMinimizedBarToggle) && (isRoomToolbarHidden || isMobilePaneFocused);
+  const showResourceIndicatorRail = (resourceIndicatorsVisible || (Boolean(showMinimizedBarToggle) && auth?.user?.role === "ADMIN")) && (isRoomToolbarHidden || isMobilePaneFocused);
   const renderToolbarMetrics = (hideTrigger = true) => (
     <ToolbarMetrics
       hideTrigger={hideTrigger}
@@ -10321,19 +9589,25 @@ export function App() {
               </SettingsSections>
             ) : undefined;
 
+  function renderManageGroupIntro(group: string, open: (id: string) => void) {
+    if (group !== "maintenance") return null;
+    return <RecoverableSurface fallback={<p role="status">Loading maintenance…</p>}><LazyMaintenanceHub onOpenTool={open} /></RecoverableSurface>;
+  }
+
   function renderWorkspaceManageAction(id: string, back: () => void, navigate: (id: string) => void = openManage, inline = false) {
+              if (id === "setup-connections" && inline) return <WorkspacePortalMount onTargetChange={setWorkspaceSetupHost} onBack={back} onBackRef={workspaceSetupBack} />;
               if (id === "space-cli-maintenance" || id === "cli-update-all" || id === "publish-space-release")
                 return <LazyAdminOperationsDialog embedded initialTool={id === "publish-space-release" ? "release" : id === "cli-update-all" ? "update-all" : "maintenance"} onClose={back} />;
               if (id === "codex-lb-speed-control" || id === "cli-session-cleanup" || id === "codex-history-purge")
                 return <LazyAdminCodexToolsDialog embedded initialTool={id === "codex-lb-speed-control" ? "speed" : id === "cli-session-cleanup" ? "cleanup" : "history"} isCodexEnabled={isCodexEnabled} anyCliEnabled={anyCliEnabled} onClose={back} />;
               if (id === "system-services") return <LazySystemServicesDialog embedded onClose={back} />;
               if (id === "user-management") return <LazyUserManagementDialog embedded currentUserId={auth?.user?.id} onClose={back} />;
+              if (id === "space-gateway") return <LazySpaceGatewayDialog embedded onClose={back} />;
               if (id === "setup-connections") return <LazySetupConnectionsWizard embedded open onOpenMaintenance={() => navigate("space-cli-maintenance")} connectionsContent={setupConnectionsContent} checks={api} finish={api.finishSetup} loadOverview={api.setupOverview} openLogin={async connection => {
-                  if (!inline) { manageLoginPendingRef.current = true; setManageLoginPending(true); }
+                  manageLoginPendingRef.current = true; setManageLoginPending(true);
                   try { await openSetupConnectionLogin(connection); }
                   catch (error) { manageLoginPendingRef.current = false; setManageLoginPending(false); throw error; }
                 }} onOpenChange={open => {
-                  if (inline) { if (!open) back(); return; }
                   if (open) { manageLoginPendingRef.current = false; setIsServerActionsMenuOpen(true); setManageLoginPending(false); }
                   else if (manageLoginPendingRef.current) setIsServerActionsMenuOpen(false);
                   else back();
@@ -10388,8 +9662,9 @@ export function App() {
       content = <RoomThemeMenu currentTheme={roomTheme} mobile={false} onClose={onBack} onSelect={setRoomTheme} triggerRef={triggerRef} />;
     } else if (["server-restart", "setup-connections", "system-services"].includes(id)) {
       content = <LazyServerActionsMenu actions={serverActionCommands} mobile={false} onClose={onBack} triggerRef={triggerRef}
-        initialAction={id === "server-restart" ? null : id} renderAction={(actionId, back, navigate) => renderWorkspaceManageAction(actionId, back, navigate, true)} />;
-    } else if (["space-cli-maintenance", "cli-update-all", "publish-space-release", "codex-lb-speed-control", "cli-session-cleanup", "codex-history-purge", "user-management"].includes(id)) {
+        initialAction={id === "server-restart" ? null : id} renderAction={(actionId, back, navigate) => renderWorkspaceManageAction(actionId, back, navigate, true)}
+        renderGroupIntro={renderManageGroupIntro} />;
+    } else if (["space-cli-maintenance", "cli-update-all", "publish-space-release", "codex-lb-speed-control", "cli-session-cleanup", "codex-history-purge", "user-management", "space-gateway"].includes(id)) {
       content = renderWorkspaceManageAction(id, onBack, onNavigate, true);
     } else if (id === "memory-workspace") {
       content = <MemoryWorkspaceErrorBoundary onClose={onBack}><LazyMemoryWorkspace shellMode={shellMode}
@@ -10402,8 +9677,16 @@ export function App() {
       content = <LazyBenchmarkPage onBack={onBack} />;
     } else if (id === "room-toolbar") {
       content = <div className="workspace-rail-settings" role="group" aria-label="Room toolbar icons">
-        {DEFAULT_LOWER_RAIL_ITEMS.map(item => <label key={item.id}><input type="checkbox" checked={lowerRailVisibility.isVisible(item.id)}
-          disabled={item.hideable === false} onChange={event => event.target.checked ? lowerRailVisibility.show(item.id) : lowerRailVisibility.hide(item.id)} />{item.label}</label>)}
+        {DEFAULT_LOWER_RAIL_ITEMS.map(item => (
+          <SpaceToggle
+            key={item.id}
+            name={`rail-item-${item.id}`}
+            label={item.label}
+            checked={lowerRailVisibility.isVisible(item.id)}
+            disabled={item.hideable === false}
+            onChange={(checked) => checked ? lowerRailVisibility.show(item.id) : lowerRailVisibility.hide(item.id)}
+          />
+        ))}
       </div>;
     } else if (id === "desktop-displays") {
       content = <DesktopDisplayControls activeRoomId={activeRoom?.id} activePaneId={activePane?.id} />;
@@ -10414,22 +9697,36 @@ export function App() {
     } else if (id === "quick-links") {
       content = renderSideSurfaceContent("links", onBack, onNavigate);
     } else if (id === "sticky-note") {
-      content = <StickyNoteWindow id="workspace-sticky-note" onClose={onBack} />;
+      content = <StickyNoteWindow key={workspaceStickyItem?.id ?? "new"} id="workspace-sticky-note"
+        initialText={workspaceStickyItem?.text} itemId={workspaceStickyItem?.id}
+        onClose={() => { setWorkspaceStickyItem(null); onBack(); }} />;
     } else if (id === "clip-tool" || id === "snip-tool") {
-      content = <SnipToolOverlay isOpen onClose={onBack} roomId={activeRoom?.id} isMobile={shellMode === "mobile"}
+      content = <LazySnipToolOverlay isOpen onClose={onBack} roomId={activeRoom?.id} isMobile={shellMode === "mobile"}
         activePaneId={activePane && !activePane.isMinimized ? activePane.id : null}
-        activePaneTitle={activePane?.title || activePane?.mode} activePaneMode={activePane?.mode ?? null}
-        availablePanes={targetablePanes.map(p => ({ id: p.id, title: p.title || p.mode, mode: p.mode }))} onCapture={handleSnipCapture} />;
+        activePaneTitle={activePane ? displayPaneTitle(activePane) : null}
+        activePaneMode={activePane?.mode ?? null}
+        activePaneName={activePane?.paneName ?? null}
+        availablePanes={targetablePanes.map(p => ({
+          id: p.id,
+          title: displayPaneTitle(p),
+          mode: p.mode,
+          paneName: p.paneName ?? null
+        }))} onCapture={handleSnipCapture} />;
     } else if (id === "agents-dashboard") {
       content = <LazyAgentsDashboard userId={auth?.user?.id} open rooms={rooms} completions={paneCompletionLifecycle.panes}
-        activePanes={panes} onOpenPane={paneCardOnOpenExisting} onClose={onBack} />;
+        activePanes={panes} onOpenPane={paneCardOnOpenExisting} onClose={onBack}
+        currentRoomId={activeRoom?.id ?? selectedRoomId ?? null} selectedPaneId={selectedPaneId} />;
     } else if (id === "add-chat") {
       content = <LazyChatLauncherMenu mobile={false} onClose={onBack} onSelectChat={() => void addPane("CHAT")}
         onSelectHarness={() => void addHarnessPane()} onSelectLive={() => void addLivePane()} triggerRef={triggerRef}
         chatDisabled={!isCodexEnabled || panes.length >= 16} harnessDisabled={panes.length >= 16}
-        harnessHidden={!isHarnessEnabled} liveDisabled={panes.length >= 16} />;
+        chatHidden={isPaneHidden("chat")}
+        harnessHidden={!isHarnessEnabled || isPaneHidden("harness")}
+        liveDisabled={isPaneHidden("live") || panes.length >= 16}
+        liveHidden={isPaneHidden("live")} />;
     } else if (id === "add-cli" || id === "create") {
       content = <LazyCliLauncherMenu embedded query="" mobile={false} refreshOnOpen atPaneCap={panes.length >= 16}
+        availablePanes={Math.max(0, 16 - panes.length)}
         isCodexEnabled={isCodexEnabled} onClose={onBack} onCreate={addCliRuntimePane} onLogin={openCliRuntimeLogin}
         onOpenSettings={() => onNavigate("surface-settings")} triggerRef={triggerRef} />;
     }
@@ -10582,18 +9879,20 @@ export function App() {
             adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
             onModeChange={() => undefined} onAction={runDesktopAction}
             renderCreateTools={renderDesktopCreateTools}
+            availablePanes={Math.max(0, 16 - panes.length)}
             emptySlots={activeRoomEmptySlotsMetrics ?? undefined} />
         ) : null}
         {lowerRailVisibility.isVisible("layout") ? (
           <button
             ref={paneLayoutCollapsedButtonRef}
             type="button"
-            className="room-toolbar-visibility-button"
+            className={`room-toolbar-visibility-button${isCollapsedPaneLayoutMenuOpen ? " is-active" : ""}`}
             title="Pane layout"
             data-rail-id="layout"
             aria-label="Pane layout"
             aria-controls="pane-layout-presets-collapsed"
             aria-expanded={isCollapsedPaneLayoutMenuOpen}
+            aria-pressed={isCollapsedPaneLayoutMenuOpen}
             aria-haspopup="menu"
             onClick={() => {
               setIsThemeMenuOpen(false);
@@ -10612,10 +9911,11 @@ export function App() {
         {lowerRailVisibility.isVisible("sticky") ? (
           <button
             type="button"
-            className="room-toolbar-visibility-button room-rail-secondary"
+            className={`room-toolbar-visibility-button room-rail-secondary${stickyWindows.length > 0 ? " is-active" : ""}`}
             title="Sticky note"
             data-rail-id="sticky"
             aria-label="Sticky note"
+            aria-pressed={stickyWindows.length > 0}
             onClick={() => {
               setIsThemeMenuOpen(false);
               setIsPaneLayoutMenuOpen(false);
@@ -10633,12 +9933,13 @@ export function App() {
         {lowerRailVisibility.isVisible("keyboard") ? (
           <button
             type="button"
-            className="room-toolbar-visibility-button room-rail-secondary"
+            className={`room-toolbar-visibility-button room-rail-secondary${isOskKeyboardOpen ? " is-active" : ""}`}
             title="On-screen keyboard"
             data-rail-id="keyboard"
             aria-label="On-screen keyboard"
             aria-controls={OSK_PANEL_ID}
             aria-expanded={isOskKeyboardOpen}
+            aria-pressed={isOskKeyboardOpen}
             aria-haspopup="dialog"
             onClick={() => {
               setIsThemeMenuOpen(false);
@@ -10658,12 +9959,13 @@ export function App() {
           <button
             ref={vibeMusicButtonRef}
             type="button"
-            className="room-toolbar-visibility-button room-rail-secondary"
+            className={`room-toolbar-visibility-button room-rail-secondary${isVibeMusicOpen ? " is-active" : ""}`}
             title="Vibe music with freeCodeCamp Code Radio"
             data-rail-id="music"
             aria-label="Music"
             aria-controls={VIBE_MUSIC_PANEL_ID}
             aria-expanded={isVibeMusicOpen}
+            aria-pressed={isVibeMusicOpen}
             aria-haspopup="dialog"
             onClick={() => {
               setIsThemeMenuOpen(false);
@@ -10687,13 +9989,6 @@ export function App() {
             aria-label="Snip Tool"
             aria-pressed={isSnipToolOpen}
             onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
               setIsSnipToolOpen((current) => !current);
             }}
             disabled={!activeRoom}
@@ -10712,6 +10007,7 @@ export function App() {
             aria-controls="quick-links-popover"
             aria-haspopup="dialog"
             aria-expanded={isQuickLinksOpen}
+            aria-pressed={isQuickLinksOpen}
             onClick={() => {
               setIsThemeMenuOpen(false);
               setIsPaneLayoutMenuOpen(false);
@@ -10809,6 +10105,7 @@ export function App() {
               renderWorkspaceAction={renderWorkspaceAction} onWorkspaceDetailChange={setWorkspaceNavigationDetail} workspaceDetailActionIds={workspaceDetailActionIds}
               renderCreateTools={renderDesktopCreateTools} hiddenRailIds={lowerRailVisibility.hiddenIds}
               adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
+              availablePanes={Math.max(0, 16 - panes.length)}
               onModeChange={() => {
                 setAdminModeRequested(!isAdminMode);
                 setIsServerActionsMenuOpen(false);
@@ -10882,7 +10179,6 @@ export function App() {
   }
 
   return (
-    <CliShortcutUserContext.Provider value={auth.user?.id ?? null}>
     <AppIconProvider pack={modernIconPack}>
       <LiveSessionProvider ownerId={auth.user?.id || ""} roomId={selectedRoomId || activeRoom?.id || null} roomName={activeRoom?.name}>
       {vibeMusicPlayer}
@@ -10900,15 +10196,21 @@ export function App() {
           )}
         >
           <LazySetupConnectionsWizard
-            guided={shellMode === "desktop"}
+            guided={!setupFromWorkspace.current}
+            embedded={Boolean(workspaceSetupHost)}
+            portalTarget={workspaceSetupHost}
             connectionsContent={setupConnectionsContent}
             checks={api}
-            open={isSetupConnectionsOpen}
+            open={isSetupConnectionsOpen || Boolean(workspaceSetupHost)}
             finish={api.finishSetup}
             loadOverview={api.setupOverview}
-            onOpenChange={setIsSetupConnectionsOpen}
+            onOpenChange={open => {
+              if (!open && workspaceSetupHost) workspaceSetupBack.current?.();
+              setIsSetupConnectionsOpen(open);
+            }}
             openLogin={openSetupConnectionLogin}
             onOpenMaintenance={() => {
+              workspaceSetupBack.current?.();
               setIsSetupConnectionsOpen(false);
               adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
               openManage("space-cli-maintenance");
@@ -11116,6 +10418,7 @@ export function App() {
             suspended={!isServerActionsMenuOpen}
             initialAction={manageInitialAction}
             renderAction={renderWorkspaceManageAction}
+            renderGroupIntro={renderManageGroupIntro}
             mobile={shellMode === "mobile"}
             onClose={() => setIsServerActionsMenuOpen(false)}
             triggerRef={serverActionsButtonRef}
@@ -11223,29 +10526,21 @@ export function App() {
         </div>
       ) : null}
 
-      {isMemoryWorkspaceOpen ? (
-        <MemoryWorkspaceErrorBoundary onClose={() => setIsMemoryWorkspaceOpen(false)}>
-          <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>
-            <LazyMemoryWorkspace
-              shellMode={shellMode}
-              activeRoomId={activeRoom?.id ?? null}
-              onClose={() => setIsMemoryWorkspaceOpen(false)}
-            />
-          </RecoverableSurface>
-        </MemoryWorkspaceErrorBoundary>
-      ) : null}
       {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
       {auth.user?.role === "ADMIN" ? (
         <RecoverableSurface fallback={isAgentsDashboardOpen ? <div role="status">Loading agents dashboard…</div> : null}>
           <LazyAgentsDashboard key={auth.user.id} userId={auth.user.id} open={isAgentsDashboardOpen} rooms={rooms} completions={paneCompletionLifecycle.panes}
             activePanes={panes} onSummaryChange={setAgentsDashboardSummary}
-            onOpenPane={paneCardOnOpenExisting} onClose={() => setIsAgentsDashboardOpen(false)} />
+            onOpenPane={paneCardOnOpenExisting} onClose={() => setIsAgentsDashboardOpen(false)}
+            currentRoomId={activeRoom?.id ?? selectedRoomId ?? null} selectedPaneId={selectedPaneId} />
         </RecoverableSurface>
       ) : null}
       {auth.user && <SystemHealth key={auth.user.id} userId={auth.user.id} allowChanges={shellMode !== "desktop" || isAdminMode}
         onOpenAgentsDashboard={() => setIsAgentsDashboardOpen(true)}
         agentsSummary={agentsDashboardSummary}
-        railVisible={showResourceIndicatorRail} environment={codexEnvironmentSummary}
+        railVisible={showResourceIndicatorRail}
+        indicatorsVisible={resourceIndicatorsVisible}
+        environment={codexEnvironmentSummary}
         readOnly={auth.user.role !== "ADMIN"}
         minimizedBarToggle={auth.user.role === "ADMIN" && showMinimizedBarToggle && (isRoomToolbarHidden || isMobilePaneFocused) ? (
           <MinimizedPaneBarToggle
@@ -11262,9 +10557,15 @@ export function App() {
 
       {renderCollapsedToolbar()}
 
-      {!isMemoryWorkspaceOpen && !systemAnalyticsTab ? <section className={workspaceClassName}>
-        {showInlineSideSurface ? (
-          <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}>
+      <div className="workspace-stage">
+      <section className={workspaceClassName}
+        inert={isMemoryWorkspaceOpen || undefined}
+        aria-hidden={isMemoryWorkspaceOpen || undefined}>
+        {mountInlineSideSurface ? (
+          <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}
+            style={showInlineSideSurface ? undefined : { display: "none" }}
+            aria-hidden={showInlineSideSurface ? undefined : true}
+            inert={showInlineSideSurface ? undefined : true}>
             <div className="desktop-dock-header">
               <span><strong>{activeSideSurfaceDockTitle}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
               <div className="dock-nav-controls">
@@ -11277,7 +10578,12 @@ export function App() {
                   onClick={() => setIsDesktopSideSurfaceOpen(false)}><X aria-hidden="true" /></button>
               </div>
             </div>
-            <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
+            <DockKeepAliveHost
+              activeSurface={activeSideSurface}
+              isOpen={showInlineSideSurface}
+              renderSurface={renderSideSurfaceContent}
+              fallback={sideSurfaceLoadingFallback}
+            />
           </aside>
         ) : null}
         {showOverlaySideSurface ? (
@@ -11310,7 +10616,12 @@ export function App() {
                   </button>
                 </div>
               </div>
-              <RecoverableSurface resetKey={activeSideSurface} fallback={sideSurfaceLoadingFallback}>{sideSurfaceContent}</RecoverableSurface>
+              <DockKeepAliveHost
+                activeSurface={activeSideSurface}
+                isOpen={showOverlaySideSurface}
+                renderSurface={renderSideSurfaceContent}
+                fallback={sideSurfaceLoadingFallback}
+              />
             </aside>
           </>
         ) : null}
@@ -11383,28 +10694,29 @@ export function App() {
                       }} onTouchMove={() => {
                         if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
                       }}>{presentationRoom?.name ?? "No room"}</h2>
-                      {presentationRoom?.projectPath ? (
-                        <button
-                          type="button"
-                          className="room-project-pill"
-                          title={`Project: ${presentationRoom.projectPath} • Click to open/focus File Manager`}
-                          aria-label={`Project: ${presentationRoom.projectPath}`}
-                          onClick={async () => {
-                            const existingFilesPane = panes.find((p) => !p.isClosed && p.mode === "FILES");
-                            if (existingFilesPane) {
-                              setSelectedPaneId(existingFilesPane.id);
-                              if (presentationRoom.projectPath) {
-                                window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: presentationRoom.projectPath } }));
+                      {presentationRoom ? (() => {
+                        const effectiveProj = presentationRoom.projectPath || "/opt/spaceapp";
+                        return (
+                          <button
+                            type="button"
+                            className="room-project-pill"
+                            title={`Project: ${effectiveProj} • Click to open/focus File Manager`}
+                            aria-label={`Project: ${effectiveProj}`}
+                            onClick={async () => {
+                              const existingFilesPane = panes.find((p) => !p.isClosed && p.mode === "FILES");
+                              if (existingFilesPane) {
+                                setSelectedPaneId(existingFilesPane.id);
+                                window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: effectiveProj } }));
+                              } else {
+                                await addFilesPane(1, presentationRoom.id);
                               }
-                            } else {
-                              await addFilesPane(1, presentationRoom.id);
-                            }
-                          }}
-                        >
-                          <Folder aria-hidden="true" />
-                          <span>{presentationRoom.projectPath.split("/").filter(Boolean).pop() || presentationRoom.projectPath}</span>
-                        </button>
-                      ) : null}
+                            }}
+                          >
+                            <Folder aria-hidden="true" />
+                            <span>{effectiveProj.split("/").filter(Boolean).pop() || effectiveProj}</span>
+                          </button>
+                        );
+                      })() : null}
                     </>
                   )}
                   {roomNamePreview && shellMode === "mobile" ? (
@@ -11481,6 +10793,7 @@ export function App() {
                   hiddenRailIds={lowerRailVisibility.hiddenIds}
                   adminMode={isAdminMode}
                   canAdmin={auth?.user?.role === "ADMIN"}
+                  availablePanes={Math.max(0, 16 - panes.length)}
                   onModeChange={() => {
                     setAdminModeRequested(!isAdminMode);
                     setIsServerActionsMenuOpen(false);
@@ -11585,6 +10898,7 @@ export function App() {
                   <LazyCliLauncherMenu
                     refreshOnOpen={true}
                     atPaneCap={panes.length >= 16}
+                    availablePanes={Math.max(0, 16 - panes.length)}
                     isCodexEnabled={isCodexEnabled}
                     mobile={shellMode === "mobile"}
                     onClose={() => setIsCliLauncherOpen(false)}
@@ -11605,9 +10919,11 @@ export function App() {
                     onSelectLive={() => void addLivePane()}
                     triggerRef={chatLauncherButtonRef}
                     chatDisabled={!isCodexEnabled || panes.length >= 16}
+                    chatHidden={isPaneHidden("chat")}
                     harnessDisabled={panes.length >= 16}
-                    harnessHidden={!isHarnessEnabled}
-                    liveDisabled={panes.length >= 16}
+                    harnessHidden={!isHarnessEnabled || isPaneHidden("harness")}
+                    liveDisabled={isPaneHidden("live") || panes.length >= 16}
+                    liveHidden={isPaneHidden("live")}
                   />
                 </RecoverableSurface>
               ) : null}
@@ -11680,39 +10996,39 @@ export function App() {
                     {minimizedPanes.map((pane) => {
                       const paneRunActive =
                         paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null;
+                      const fullTitle = formatPaneFullTitle(pane);
+                      const latestTurn = pane.mode === "CHAT" ? turns.find((t) => t.paneId === pane.id) ?? null : null;
                       if (minimizedBarPreviewMode) {
                         return (
                           <MinimizedPanePreviewCard
                             key={pane.id}
                             pane={pane}
+                            icon={<PaneModeIcon pane={pane} />}
+                            title={displayPaneTitle(pane)}
+                            subtitle={minimizedPaneSubtitle(pane)}
+                            fullTitle={fullTitle}
+                            modeLabel={paneModeLabel(pane.mode)}
                             isRunning={paneRunActive}
-                            latestTurn={turns.find((t) => t.paneId === pane.id) ?? null}
+                            latestTurn={latestTurn}
                             onRestore={() => void restorePane(pane)}
                           />
                         );
                       }
                       return (
-                        <button
+                        <MinimizedPaneChip
                           key={pane.id}
-                          ref={(element) => {
+                          pane={pane}
+                          icon={<PaneModeIcon pane={pane} />}
+                          title={displayPaneTitle(pane)}
+                          fullTitle={fullTitle}
+                          isRunning={paneRunActive}
+                          latestTurn={latestTurn}
+                          buttonRef={(element) => {
                             if (element) minimizedPaneRestoreRefs.current.set(pane.id, element);
                             else minimizedPaneRestoreRefs.current.delete(pane.id);
                           }}
-                          type="button"
-                          className={paneRunActive ? "is-running" : undefined}
-                          data-category-color={pane.categoryColor ?? undefined}
-                          aria-label={`Restore pane ${displayPaneTitle(pane)}`}
-                          title={pane.title}
-                          onClick={() => void restorePane(pane)}
-                        >
-                          <PaneModeIcon pane={pane} />
-                          {paneRunActive ? (
-                            <>
-                              <Loader2 className="minimized-pane-run-indicator" aria-hidden="true" />
-                              <span className="sr-only">Agent is running</span>
-                            </>
-                          ) : null}
-                        </button>
+                          onRestore={() => void restorePane(pane)}
+                        />
                       );
                     })}
                   </div>
@@ -11725,7 +11041,7 @@ export function App() {
                       aria-pressed={minimizedBarPreviewMode}
                       onClick={toggleMinimizedBarPreviewMode}
                     >
-                      {minimizedBarPreviewMode ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                      <Eye aria-hidden="true" />
                     </button>
                     <button
                       type="button"
@@ -11735,7 +11051,7 @@ export function App() {
                       disabled={minimizeAllPending || visiblePanes.length === 0}
                       onClick={() => void minimizeAllPanes()}
                     >
-                      <Minimize2 aria-hidden="true" />
+                      <Minus aria-hidden="true" />
                     </button>
                     <button
                       type="button"
@@ -11746,7 +11062,7 @@ export function App() {
                       disabled={restoreAllPending}
                       onClick={() => void restoreAllPanes()}
                     >
-                      <LayoutDashboard aria-hidden="true" />
+                      <Grid2X2 aria-hidden="true" />
                     </button>
                   </div>
                 </section>
@@ -11756,6 +11072,7 @@ export function App() {
 
           <div
             className="room-runtime-stack"
+            data-ui-background={uiBackground}
             aria-busy={preparingRoomId ? "true" : "false"}
             data-presentation-generation={roomPresentationGenerationRef.current}
           >
@@ -11782,7 +11099,19 @@ export function App() {
           />
         ) : null}
 
-      </section> : null}
+      </section>
+      {isMemoryWorkspaceOpen ? <div className="workspace-cover">
+        <MemoryWorkspaceErrorBoundary onClose={() => setIsMemoryWorkspaceOpen(false)}>
+          <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading memory workspace…</div>}>
+            <LazyMemoryWorkspace
+              shellMode={shellMode}
+              activeRoomId={activeRoom?.id ?? null}
+              onClose={() => setIsMemoryWorkspaceOpen(false)}
+            />
+          </RecoverableSurface>
+        </MemoryWorkspaceErrorBoundary>
+      </div> : null}
+      </div>
       <QuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
       {activeUserLink && !workspaceNavigationDetail ? (
         <RecoverableSurface fallback={<div role="status">Loading dashboard…</div>}>
@@ -11814,210 +11143,9 @@ export function App() {
       </StreamingOverlayProvider>
       </LiveSessionProvider>
     </AppIconProvider>
-    </CliShortcutUserContext.Provider>
   );
 }
 
-function LoginScreen({
-  auth,
-  colorMode,
-  modern,
-  onLogin
-}: {
-  auth: AuthMe;
-  colorMode: ModernColorMode | null;
-  modern: boolean;
-  onLogin: (auth: AuthMe) => void | Promise<void>;
-}) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const authErr = params.get("authError");
-      if (authErr) {
-        setError(decodeURIComponent(authErr));
-        const newUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, newUrl);
-      }
-    } catch {
-      // Ignore
-    }
-  }, []);
-
-  function loginErrorMessage(err: unknown): string {
-    if (err instanceof SpaceApiError && err.code === "INVALID_CREDENTIALS") {
-      return "Login rejected. Use the configured operator credentials, or run 'npx --yes run-spaceapp@latest owner reset-password' in your host terminal to set a new password.";
-    }
-    return err instanceof Error ? err.message : "Login failed";
-  }
-
-  return (
-    <main
-      className={modern ? "login-shell modern-theme-page" : "login-shell"}
-      data-ui-theme={modern ? "modern" : undefined}
-      data-color-mode={modern ? colorMode ?? undefined : undefined}
-    >
-      <form
-        className="login-panel"
-        onSubmit={(event) => {
-          event.preventDefault();
-          api
-            .login(email, password)
-            .then(onLogin)
-            .catch((err: unknown) => setError(loginErrorMessage(err)));
-        }}
-      >
-        <div className="brand login-brand">
-          <Lock aria-hidden="true" />
-          <div>
-            <h1>Space</h1>
-            <span>{auth.isSetupRequired ? "Operator setup required" : "Sign in to Space"}</span>
-          </div>
-        </div>
-
-        {auth.googleAuthEnabled ? (
-          <div className="google-auth-section" style={{ display: "grid", gap: "0.75rem", margin: "0.25rem 0" }}>
-            <a
-              href="/api/auth/google/start"
-              className="button google-login-button"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "0.65rem",
-                padding: "0.6rem 1rem",
-                borderRadius: "6px",
-                background: "#ffffff",
-                color: "#1f1f1f",
-                fontWeight: 500,
-                fontSize: "0.85rem",
-                textDecoration: "none",
-                border: "1px solid #dadce0"
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-              <span>Sign in with Google</span>
-            </a>
-            <div
-              className="login-divider"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                textAlign: "center",
-                color: "var(--room-muted, #a7a59e)",
-                fontSize: "0.72rem",
-                margin: "0.2rem 0"
-              }}
-            >
-              <div style={{ flex: 1, borderBottom: "1px solid var(--room-border, #343638)" }} />
-              <span style={{ padding: "0 0.5rem" }}>or continue with email</span>
-              <div style={{ flex: 1, borderBottom: "1px solid var(--room-border, #343638)" }} />
-            </div>
-          </div>
-        ) : null}
-        <label htmlFor="operator-email">
-          Email
-          <input
-            id="operator-email"
-            name="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            type="email"
-            autoComplete="username"
-          />
-        </label>
-        <label htmlFor="operator-password">
-          Password
-          <input
-            id="operator-password"
-            name="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            type="password"
-            autoComplete="current-password"
-          />
-        </label>
-        {error ? <p className="form-error">{error}</p> : null}
-        <button type="submit">Enter</button>
-
-        <div
-          className="login-self-hosted-hint"
-          style={{
-            marginTop: "1.25rem",
-            padding: "0.75rem 0.85rem",
-            fontSize: "0.75rem",
-            lineHeight: 1.45,
-            color: "var(--room-muted, #a7a59e)",
-            border: "1px solid var(--room-border, rgba(255, 255, 255, 0.1))",
-            borderRadius: "6px",
-            background: "rgba(255, 255, 255, 0.02)",
-            textAlign: "left"
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: "0.35rem", color: "var(--room-text, #e2e8f0)" }}>
-            Self-hosted installation help:
-          </div>
-          <div style={{ marginBottom: "0.35rem" }}>
-            Forgot your operator password? Run in your host terminal:
-            <code
-              style={{
-                display: "block",
-                marginTop: "0.25rem",
-                padding: "0.25rem 0.4rem",
-                background: "rgba(0, 0, 0, 0.35)",
-                borderRadius: "4px",
-                fontFamily: "monospace",
-                fontSize: "0.72rem",
-                color: "#67e8f9",
-                wordBreak: "break-all"
-              }}
-            >
-              npx --yes run-spaceapp@latest owner reset-password
-            </code>
-          </div>
-          <div>
-            Need a clean install from scratch? Run:
-            <code
-              style={{
-                display: "block",
-                marginTop: "0.25rem",
-                padding: "0.25rem 0.4rem",
-                background: "rgba(0, 0, 0, 0.35)",
-                borderRadius: "4px",
-                fontFamily: "monospace",
-                fontSize: "0.72rem",
-                color: "#67e8f9",
-                wordBreak: "break-all"
-              }}
-            >
-              npx --yes run-spaceapp@latest factory-reset
-            </code>
-          </div>
-        </div>
-      </form>
-    </main>
-  );
-}
 
 const providerTypeOptions: CreateProviderInput["type"][] = ["CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"];
 const providerRouteProfileOptions: NonNullable<Provider["routeProfile"]>[] = [
@@ -12049,618 +11177,29 @@ const emptyProviderForm: ProviderFormState = {
   credentialRef: ""
 };
 
-function providerFormFrom(provider: Provider): ProviderFormState {
-  return {
-    id: provider.id,
-    displayName: provider.displayName,
-    type: provider.type,
-    baseUrl: provider.baseUrl ?? "",
-    routeProfile: provider.routeProfile ?? "custom",
-    backingProviderId: provider.backingProviderId ?? "",
-    credentialRef: provider.credentialRef ?? ""
-  };
-}
 
-function providerModelCount(provider: Provider, models: Model[]): number {
-  return models.filter((model) => model.providerId === provider.id || model.providerId === provider.backingProviderId).length;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
+
+function dispatchAgentPaneSettingsUpdated(paneId: string | null, session?: AgentPaneSession) {
+  window.dispatchEvent(new CustomEvent(AGENT_PANE_SETTINGS_EVENT, { detail: { paneId, session } }));
 }
 
 function providerRouteLabel(provider: Provider): string {
   return [provider.routeProfile ?? "custom", provider.backingProviderId ?? provider.type.toLowerCase()].join(" / ");
-}
-
-function providerFormPayload(form: ProviderFormState): CreateProviderInput {
-  return {
-    id: form.id.trim(),
-    displayName: form.displayName.trim(),
-    type: form.type,
-    baseUrl: form.baseUrl.trim() || null,
-    routeProfile: form.routeProfile,
-    backingProviderId: form.backingProviderId.trim() || null,
-    credentialRef: form.credentialRef.trim() || null
-  };
-}
-
-function providerUpdatePayload(form: ProviderFormState): UpdateProviderInput {
-  const payload = providerFormPayload(form);
-  return {
-    displayName: payload.displayName,
-    type: payload.type,
-    baseUrl: payload.baseUrl,
-    routeProfile: payload.routeProfile,
-    backingProviderId: payload.backingProviderId,
-    credentialRef: payload.credentialRef
-  };
-}
-
-function ProviderSettingsCard({
-  settings,
-  providers,
-  models,
-  onProviderSettingsRefresh,
-  onProvidersRefresh,
-  onModelsRefresh
-}: {
-  settings: ProviderSettings | null;
-  providers: Provider[];
-  models: Model[];
-  onProviderSettingsRefresh: (settings: ProviderSettings) => void;
-  onProvidersRefresh: (providers: Provider[]) => void;
-  onModelsRefresh: (models: Model[]) => void;
-}) {
-  const [validationResults, setValidationResults] = useState<Record<string, ProviderValidationResult>>({});
-  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
-  const [pendingProviderId, setPendingProviderId] = useState<string | null>(null);
-  const [defaultPending, setDefaultPending] = useState(false);
-  const [formOpen, setFormOpen] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [form, setForm] = useState<ProviderFormState>(emptyProviderForm);
-  const [formPending, setFormPending] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const defaultProvider = providers.find((provider) => provider.id === settings?.defaultProviderId) ?? null;
-  function openAddProvider() {
-    setEditingProvider(null);
-    setForm(emptyProviderForm);
-    setFormError(null);
-    setFormOpen(true);
-  }
-
-  function openEditProvider(provider: Provider) {
-    setEditingProvider(provider);
-    setForm(providerFormFrom(provider));
-    setFormError(null);
-    setFormOpen(true);
-  }
-
-  async function refreshProviderCatalog() {
-    const [providerPayload, modelPayload] = await Promise.all([api.providers(), api.models()]);
-    onProvidersRefresh(providerPayload.data);
-    onModelsRefresh(modelPayload.data);
-  }
-
-  async function selectDefaultProvider(providerId: string) {
-    if (!providerId || providerId === settings?.defaultProviderId) return;
-    setDefaultPending(true);
-    setSettingsError(null);
-    try {
-      const updated = await api.updateProviderSettings({ defaultProviderId: providerId });
-      onProviderSettingsRefresh(updated);
-      dispatchAgentPaneSettingsUpdated(null);
-    } catch (err) {
-      setSettingsError(err instanceof Error ? err.message : "Default provider update failed");
-    } finally {
-      setDefaultPending(false);
-    }
-  }
-
-  async function validateProvider(provider: Provider) {
-    setPendingProviderId(provider.id);
-    setValidationErrors((current) => ({ ...current, [provider.id]: "" }));
-    try {
-      const result = await api.validateProvider(provider.id);
-      setValidationResults((current) => ({ ...current, [provider.id]: result }));
-      await refreshProviderCatalog();
-      dispatchAgentPaneSettingsUpdated(null);
-    } catch (err) {
-      setValidationErrors((current) => ({
-        ...current,
-        [provider.id]: err instanceof Error ? err.message : "Validation failed"
-      }));
-    } finally {
-      setPendingProviderId(null);
-    }
-  }
-
-  async function saveProvider(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setFormPending(true);
-    setFormError(null);
-    try {
-      if (editingProvider) {
-        await api.updateProvider(editingProvider.id, providerUpdatePayload(form));
-      } else {
-        await api.createProvider(providerFormPayload(form));
-      }
-      await refreshProviderCatalog();
-      setFormOpen(false);
-      setEditingProvider(null);
-      setForm(emptyProviderForm);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Provider save failed");
-    } finally {
-      setFormPending(false);
-    }
-  }
-
-  return (
-    <section className="provider-settings-card" aria-label="Global provider settings">
-      <div className="mcp-execution-head">
-        <div>
-          <strong>Default provider</strong>
-          <span>{defaultProvider ? `${defaultProvider.displayName} / ${providerRouteLabel(defaultProvider)}` : "Provider settings loading"}</span>
-        </div>
-        <button className="compact-action" type="button" onClick={openAddProvider} title="Add provider" aria-label="Add provider">
-          <Plus aria-hidden="true" />
-          <span>Add provider</span>
-        </button>
-      </div>
-      <div className="provider-settings-grid">
-        <label className="provider-default-select">
-          <span>Provider</span>
-          <select
-            aria-label="Default provider"
-            name="global-default-provider"
-            value={settings?.defaultProviderId ?? ""}
-            onChange={(event) => void selectDefaultProvider(event.target.value)}
-            disabled={defaultPending || providers.length === 0}
-          >
-            {providers.length ? (
-              providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.displayName}
-                </option>
-              ))
-            ) : (
-              <option value="">No providers</option>
-            )}
-          </select>
-        </label>
-      </div>
-      <TaskTitleSettings />
-      {settingsError ? (
-        <div className="validation-result bad" role="alert">
-          <strong>PROVIDER_SETTINGS_ERROR</strong>
-          <small>{settingsError}</small>
-        </div>
-      ) : null}
-      <div className="provider-list" aria-label="Provider catalog">
-        {providers.map((provider) => {
-          const validation = validationResults[provider.id];
-          const validationError = validationErrors[provider.id];
-          const isPending = pendingProviderId === provider.id;
-          const isDefault = provider.id === settings?.defaultProviderId;
-          return (
-            <article key={provider.id} className={isDefault ? "provider-row selected" : "provider-row"}>
-              <div className="provider-row-main">
-                <span className={`status ${statusTone(provider.status)}`}>{provider.status}</span>
-                <strong>{provider.displayName}</strong>
-                {isDefault ? <em>Default</em> : null}
-              </div>
-              <small>{provider.statusReason ?? "Verified provider"}</small>
-              <small>
-                {providerRouteLabel(provider)} / {providerModelCount(provider, models)} models
-              </small>
-              <div className="provider-row-actions">
-                <button
-                  className="compact-action"
-                  type="button"
-                  onClick={() => validateProvider(provider)}
-                  disabled={isPending}
-                  title={`Validate ${provider.displayName}`}
-                  aria-label={`Validate ${provider.displayName}`}
-                >
-                  <ShieldCheck aria-hidden="true" />
-                  <span>{isPending ? "Checking" : "Validate"}</span>
-                </button>
-                <button
-                  className="compact-action"
-                  type="button"
-                  onClick={() => openEditProvider(provider)}
-                  disabled={provider.isBuiltIn}
-                  title={provider.isBuiltIn ? "Built-in provider metadata is fixed" : `Edit ${provider.displayName}`}
-                  aria-label={`Edit ${provider.displayName}`}
-                >
-                  <Settings2 aria-hidden="true" />
-                  <span>Edit</span>
-                </button>
-              </div>
-              {validation ? (
-                <div className="validation-result" role="status" aria-live="polite">
-                  <div>
-                    <span className={`status ${statusTone(validation.status)}`}>{validation.status}</span>
-                    <strong>{validation.code}</strong>
-                    <span>{validation.modelCount === null ? "models n/a" : `${validation.modelCount} models`}</span>
-                  </div>
-                  <small>{validation.statusReason}</small>
-                </div>
-              ) : null}
-              {validationError ? (
-                <div className="validation-result bad" role="alert">
-                  <strong>VALIDATION_ERROR</strong>
-                  <small>{validationError}</small>
-                </div>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
-      {formOpen ? (
-        <div className="provider-modal" role="dialog" aria-modal="true" aria-label={editingProvider ? "Edit provider" : "Add provider"}>
-          <form className="provider-modal-body" onSubmit={(event) => void saveProvider(event)}>
-            <div className="mcp-execution-head">
-              <div>
-                <strong>{editingProvider ? "Edit provider" : "Add provider"}</strong>
-                <span>Save metadata, then run validation from the provider list.</span>
-              </div>
-              <button
-                className="icon-action"
-                type="button"
-                onClick={() => {
-                  setFormOpen(false);
-                  setEditingProvider(null);
-                }}
-                title="Close provider form"
-                aria-label="Close provider form"
-              >
-                <X aria-hidden="true" />
-              </button>
-            </div>
-            <label>
-              <span>Provider id</span>
-              <input
-                aria-label="Provider id"
-                value={form.id}
-                onChange={(event) => setForm((current) => ({ ...current, id: event.target.value }))}
-                disabled={Boolean(editingProvider)}
-                placeholder="custom-provider"
-              />
-            </label>
-            <label>
-              <span>Display name</span>
-              <input
-                aria-label="Provider display name"
-                value={form.displayName}
-                onChange={(event) => setForm((current) => ({ ...current, displayName: event.target.value }))}
-                placeholder="Custom Provider"
-              />
-            </label>
-            <div className="provider-form-grid">
-              <label>
-                <span>Type</span>
-                <select
-                  aria-label="Provider type"
-                  value={form.type}
-                  onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as CreateProviderInput["type"] }))}
-                >
-                  {providerTypeOptions.map((type) => (
-                    <option key={type} value={type}>
-                      {readableCode(type)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Route profile</span>
-                <select
-                  aria-label="Provider route profile"
-                  value={form.routeProfile}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      routeProfile: event.target.value as NonNullable<Provider["routeProfile"]>
-                    }))
-                  }
-                >
-                  {providerRouteProfileOptions.map((profile) => (
-                    <option key={profile} value={profile}>
-                      {profile}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label>
-              <span>Base URL</span>
-              <input
-                aria-label="Provider base URL"
-                value={form.baseUrl}
-                onChange={(event) => setForm((current) => ({ ...current, baseUrl: event.target.value }))}
-                placeholder="https://example.com/v1"
-              />
-            </label>
-            <label>
-              <span>Backing provider</span>
-              <input
-                aria-label="Provider backing provider"
-                value={form.backingProviderId}
-                onChange={(event) => setForm((current) => ({ ...current, backingProviderId: event.target.value }))}
-                placeholder="codex-lb"
-              />
-            </label>
-            <label>
-              <span>Credential reference</span>
-              <input
-                aria-label="Provider credential reference"
-                value={form.credentialRef}
-                onChange={(event) => setForm((current) => ({ ...current, credentialRef: event.target.value }))}
-                placeholder="/opt/spaceapp/secrets/space-provider.key"
-              />
-            </label>
-            {formError ? (
-              <div className="validation-result bad" role="alert">
-                <strong>PROVIDER_SAVE_ERROR</strong>
-                <small>{formError}</small>
-              </div>
-            ) : null}
-            <button
-              className="compact-action primary-action"
-              type="submit"
-              disabled={formPending || !form.id.trim() || !form.displayName.trim()}
-              title={editingProvider ? "Save provider" : "Create provider"}
-              aria-label={editingProvider ? "Save provider" : "Create provider"}
-            >
-              <CheckCircle2 aria-hidden="true" />
-              <span>{formPending ? "Saving" : editingProvider ? "Save provider" : "Create provider"}</span>
-            </button>
-          </form>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function VoiceSettingsCard() {
-  const voiceInput = useVoiceInput();
-  const settings = voiceInput.settings;
-  const serverSettings = voiceInput.serverSettings;
-  const loading = voiceInput.settingsLoading;
-  const error = voiceInput.settingsError;
-
-  function updateVoiceSettings(patch: Partial<VoiceComposerSettings>) {
-    const next = { ...settings, ...patch };
-    writeVoiceComposerSettings(next);
-  }
-
-  const availableProviders: LiveAudioProviderId[] =
-    serverSettings?.providerOptions && serverSettings.providerOptions.length > 0
-      ? serverSettings.providerOptions
-      : ["google", "openai", "local", "vercel"];
-  const currentProvider = settings.provider || "google";
-  const providerDescriptor = LIVE_AUDIO_PROVIDERS[currentProvider];
-
-  const languageOptions = serverSettings?.languageOptions ?? ["auto", "el", "en"];
-  const providerModelIds = providerDescriptor?.models.map((m) => m.id);
-  const modelOptions = providerModelIds && providerModelIds.length > 0 ? providerModelIds : (serverSettings?.modelOptions ?? ["gemini-3.8-live"]);
-
-  const providerVoiceIds = providerDescriptor?.voices.map((v) => v.id);
-  const voiceOptions = providerVoiceIds && providerVoiceIds.length > 0 ? providerVoiceIds : (serverSettings?.voiceOptions ?? ["Aoede"]);
-  const statusLabel = serverSettings?.enabled ? "READY" : "DISABLED";
-  const statusToneValue = serverSettings?.enabled ? "ok" : "warn";
-
-  return (
-    <section className="provider-settings-card settings-flat-card voice-settings-card" aria-label="Voice input settings">
-      <div className="agent-settings-section-title settings-flat-heading">
-        <Mic aria-hidden="true" />
-        <span>
-          <strong>Voice input</strong>
-          <small>{serverSettings?.statusReason ?? (loading ? "Voice settings loading" : "Voice settings unavailable")}</small>
-        </span>
-        <div className="settings-flat-heading-actions">
-          <span className={`status ${statusToneValue}`}>{statusLabel}</span>
-          <SettingsActionMenu
-            label="Voice input actions"
-            disabled={loading}
-            actions={[{
-              id: "refresh",
-              label: "Refresh voice status",
-              icon: RefreshCw,
-              onSelect: () => void voiceInput.refreshServerSettings()
-            }]}
-          />
-        </div>
-      </div>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>VOICE_SETTINGS_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-      <SpaceToggle
-        className="settings-flat-row settings-flat-toggle-row voice-toggle"
-        name="voice-input-enabled"
-        label="Voice input"
-        detail={settings.enabled ? "Enabled in Chat and attached CLI panes." : "Microphone controls are hidden."}
-        checked={settings.enabled}
-        onChange={(enabled) => updateVoiceSettings({ enabled })}
-      />
-      <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Voice provider</strong><small>Live speech engine provider.</small></span>
-        <select
-          name="voice-input-provider"
-          value={currentProvider}
-          onChange={(event) => {
-            const provider = event.target.value as LiveAudioProviderId;
-            const desc = LIVE_AUDIO_PROVIDERS[provider];
-            updateVoiceSettings({
-              provider,
-              model: desc?.defaultModel || (provider === "google" ? "gemini-3.8-live" : "gpt-transcribe"),
-              voice: desc?.defaultVoice || (provider === "google" ? "Aoede" : "alloy")
-            });
-          }}
-        >
-          {availableProviders.map((p) => (
-            <option key={p} value={p}>
-              {LIVE_AUDIO_PROVIDERS[p]?.displayName || p}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Voice model</strong><small>Audio and speech model.</small></span>
-        <select name="voice-input-model" value={settings.model} onChange={(event) => updateVoiceSettings({ model: event.target.value as VoiceComposerSettings["model"] })}>
-          {modelOptions.map((model) => (
-            <option key={model} value={model}>
-              {model}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Voice</strong><small>Speech voice tone.</small></span>
-        <select name="voice-input-voice" value={settings.voice} onChange={(event) => updateVoiceSettings({ voice: event.target.value as VoiceComposerSettings["voice"] })}>
-          {voiceOptions.map((voice) => (
-            <option key={voice} value={voice}>
-              {voice.charAt(0).toUpperCase() + voice.slice(1)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Language</strong><small>Transcription language.</small></span>
-        <select name="voice-input-language" value={settings.language} onChange={(event) => updateVoiceSettings({ language: event.target.value as VoiceComposerSettings["language"] })}>
-          {languageOptions.map((language) => (
-            <option key={language} value={language}>
-              {language === "auto" ? "Auto" : language === "el" ? "Greek" : "English"}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="settings-flat-row">
-        <span className="settings-flat-row-copy"><strong>Insert mode</strong><small>How finished speech enters the prompt.</small></span>
-        <select name="voice-input-insert-mode" value={settings.insertMode} onChange={(event) => updateVoiceSettings({ insertMode: event.target.value as VoiceComposerSettings["insertMode"] })}>
-          <option value="append">Append</option>
-          <option value="replace">Replace</option>
-        </select>
-      </label>
-      <SpaceToggle
-        className="settings-flat-row settings-flat-toggle-row voice-toggle"
-        name="voice-input-prewarm"
-        label="Pre-warm connection"
-        detail="Reduce delay before the first words."
-        checked={settings.prewarm}
-        onChange={(prewarm) => updateVoiceSettings({ prewarm })}
-      />
-      <div className="voice-advanced-settings" style={{ margin: "6px 0" }}>
-        <details className="settings-flat-details" style={{ cursor: "pointer" }}>
-          <summary className="settings-flat-summary" style={{ color: "var(--room-text, #f4efe5)", fontSize: "0.78rem", padding: "4px 0" }}>
-            <strong>Live model & delegation settings</strong>
-          </summary>
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy"><strong>Opening</strong><small>Optional first words.</small></span>
-              <input
-                type="text"
-                name="voice-input-opening"
-                value={settings.opening}
-                placeholder="Optional first words..."
-                onChange={(event) => updateVoiceSettings({ opening: event.target.value })}
-              />
-            </label>
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy"><strong>Prompt</strong><small>Voice model system prompt.</small></span>
-              <input
-                type="text"
-                name="voice-input-prompt"
-                value={settings.prompt}
-                placeholder="Instructions for voice model..."
-                onChange={(event) => updateVoiceSettings({ prompt: event.target.value })}
-              />
-            </label>
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy"><strong>Delegated model</strong><small>Backend model for reasoning.</small></span>
-              <select
-                name="voice-delegated-model"
-                value={settings.delegatedModel}
-                onChange={(event) => updateVoiceSettings({ delegatedModel: event.target.value })}
-              >
-                <option value="gpt-6-astra">gpt-6-astra</option>
-                <option value="gpt-4o">gpt-4o</option>
-                <option value="gpt-4o-mini">gpt-4o-mini</option>
-              </select>
-            </label>
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy"><strong>Reasoning effort</strong><small>Delegated reasoning depth.</small></span>
-              <select
-                name="voice-reasoning-effort"
-                value={settings.delegatedReasoningEffort}
-                onChange={(event) => updateVoiceSettings({ delegatedReasoningEffort: event.target.value as VoiceComposerSettings["delegatedReasoningEffort"] })}
-              >
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-              </select>
-            </label>
-            <SpaceToggle
-              className="settings-flat-row settings-flat-toggle-row voice-toggle"
-              name="voice-delegated-web-search"
-              label="Web search"
-              detail="Allow delegated model to search the web."
-              checked={settings.delegatedWebSearch}
-              onChange={(delegatedWebSearch) => updateVoiceSettings({ delegatedWebSearch })}
-            />
-            <label className="settings-flat-row">
-              <span className="settings-flat-row-copy"><strong>Delegated prompt</strong><small>Instructions for backend model.</small></span>
-              <input
-                type="text"
-                name="voice-delegated-prompt"
-                value={settings.delegatedPrompt}
-                placeholder="Add instructions for backend model..."
-                onChange={(event) => updateVoiceSettings({ delegatedPrompt: event.target.value })}
-              />
-            </label>
-          </div>
-        </details>
-      </div>
-      <div className="voice-float-settings">
-        <div className="settings-flat-subheading">
-          <strong>Terminal controls</strong>
-          <small>Choose which controls appear in CLI panes.</small>
-        </div>
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="terminal-context-menu"
-          label="Right-click menu"
-          checked={Boolean(settings.terminalContextMenu ?? true)}
-          onChange={(terminalContextMenu) => updateVoiceSettings({ terminalContextMenu })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-voice-button"
-          label="Voice mic"
-          checked={settings.terminalVoiceButton}
-          onChange={(terminalVoiceButton) => updateVoiceSettings({ terminalVoiceButton })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-model-picker"
-          label="Model choice"
-          checked={settings.terminalModelPicker}
-          onChange={(terminalModelPicker) => updateVoiceSettings({ terminalModelPicker })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-turn-control"
-          label="Turn control"
-          checked={settings.terminalTurnControl}
-          onChange={(terminalTurnControl) => updateVoiceSettings({ terminalTurnControl })}
-        />
-      </div>
-      <p className="settings-flat-note voice-settings-help">Uses {providerDescriptor?.displayName || currentProvider} {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
-    </section>
-  );
 }
 
 function AgentSettingsDock({
@@ -12672,12 +11211,15 @@ function AgentSettingsDock({
   canManageSourceControl,
   canManageTelegram,
   currentAppearance,
+  currentBackground = "spaceapp",
   currentIconPack,
   currentUiTheme,
   isCodexEnabled,
+  isHarnessEnabled = true,
   suppressNotifications,
   providerSettings,
   providers,
+  gitPluginsActive,
   onUiThemeApply,
   onSuppressNotificationsChange,
   onProviderSettingsRefresh,
@@ -12692,13 +11234,16 @@ function AgentSettingsDock({
   canManageSourceControl: boolean;
   canManageTelegram: boolean;
   currentAppearance: ModernAppearance;
+  currentBackground?: UiBackground;
   currentIconPack: ModernIconPack;
   currentUiTheme: UiTheme;
   isCodexEnabled: boolean;
+  isHarnessEnabled?: boolean;
   suppressNotifications: boolean;
   providerSettings: ProviderSettings | null;
   providers: Provider[];
-  onUiThemeApply: (selection: { appearance: ModernAppearance; iconPack: ModernIconPack; theme: UiTheme }) => void;
+  gitPluginsActive?: boolean;
+  onUiThemeApply: (selection: { appearance: ModernAppearance; background: UiBackground; iconPack: ModernIconPack; theme: UiTheme }) => void;
   onSuppressNotificationsChange: (suppressed: boolean) => void;
   onProviderSettingsRefresh: (settings: ProviderSettings) => void;
   auth?: AuthMe | null;
@@ -12706,6 +11251,13 @@ function AgentSettingsDock({
 }) {
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
+  const [defaultWorktree, setDefaultWorktree] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem("space.worktree.defaultEnabled");
+      if (stored !== null) return stored === "true";
+    } catch {}
+    return true;
+  });
 
   const defaultProvider = providers.find((provider) => provider.id === providerSettings?.defaultProviderId) ?? null;
 
@@ -12735,6 +11287,14 @@ function AgentSettingsDock({
         </span>
       </header>
 
+      <RecoverableSurface fallback={settingsCardLoadingFallback}>
+        <LazyEnvironmentPresetCard
+          isAdmin={auth?.user?.role === "ADMIN"}
+          canManageCliRuntimes={canManageCliRuntimes}
+          userId={auth?.user?.id}
+        />
+      </RecoverableSurface>
+
       {adminMode && canManageCliRuntimes ? <div className="settings-setup-shortcut">
         <strong>Need to set up a tool?</strong>
         <p>The wizard guides you through tools and connections. You can return at any time.</p>
@@ -12742,7 +11302,7 @@ function AgentSettingsDock({
       </div> : null}
       <SettingsDisclosure title="Account & Google" description="Link or manage your Google single sign-on connection." scope="Installation" icon={Users}>
         <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <GoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
+          <LazyGoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
         </RecoverableSurface>
       </SettingsDisclosure>
 
@@ -12750,6 +11310,7 @@ function AgentSettingsDock({
       <RecoverableSurface fallback={settingsCardLoadingFallback}>
         <LazyUiThemeSettingsCard
           currentAppearance={currentAppearance}
+          currentBackground={currentBackground}
           currentIconPack={currentIconPack}
           currentTheme={currentUiTheme}
           onChange={onUiThemeApply}
@@ -12757,12 +11318,37 @@ function AgentSettingsDock({
       </RecoverableSurface>
       </SettingsDisclosure>
 
+      <SettingsDisclosure title="Docks" description="Choose which docks appear in your workspace navigation and toolbar." scope="Your account" icon={Grid2X2}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}>
+          <LazyDocksSettingsCard
+            gitPluginsActive={gitPluginsActive}
+            isAdmin={auth?.user?.role === "ADMIN"}
+          />
+        </RecoverableSurface>
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Panes" description="Choose which non-CLI panes appear in your workspace creation menu and toolbar." scope="Your account" icon={PanelsTopLeft}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}>
+          <LazyPanesSettingsCard
+            isHarnessEnabled={isHarnessEnabled}
+          />
+        </RecoverableSurface>
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Widgets" description="Choose which desktop widgets are enabled and float in your workspace." scope="Your account" icon={Sparkles}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyWidgetsSettingsCard /></RecoverableSurface>
+      </SettingsDisclosure>
+
       <SettingsDisclosure title="Date & time" description="Time zone, UTC reference, and 24-hour display format." scope="Your account" icon={Clock3}>
-        <DateTimeSettingsCard userId={auth?.user?.id} />
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDateTimeSettingsCard userId={auth?.user?.id} /></RecoverableSurface>
       </SettingsDisclosure>
 
       {canManageDiagnostics ? <SettingsDisclosure title="Diagnostics" description="Debug events and screen recording." scope="Installation" icon={Activity}>
-        <AppDiagnosticsSettingsCard canManage={canManageDiagnostics} />
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyAppDiagnosticsSettingsCard canManage={canManageDiagnostics} /></RecoverableSurface>
+      </SettingsDisclosure> : null}
+
+      {canManageDiagnostics ? <SettingsDisclosure title="Deploy queue" description="Agent changes on their way to live." scope="Installation" icon={GitMerge}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDeployQueueSettingsCard /></RecoverableSurface>
       </SettingsDisclosure> : null}
 
       {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="Choose the provider for new conversations." scope="New sessions" icon={ServerCog}>
@@ -12800,10 +11386,7 @@ function AgentSettingsDock({
           </select>
         </label>
         {providerError ? (
-          <div className="validation-result bad" role="alert">
-            <strong>PROVIDER_SETTINGS_ERROR</strong>
-            <small>{providerError}</small>
-          </div>
+          <DockNotice onDismiss={() => setProviderError(null)}>The default provider could not be changed: {providerError}</DockNotice>
         ) : null}
       </section>
 
@@ -12820,6 +11403,35 @@ function AgentSettingsDock({
       </RecoverableSurface>
       </SettingsDisclosure> : null}
 
+      <SettingsDisclosure title="Git worktrees" description="Default worktree isolation mode for CLI tools." scope="Your account" icon={GitBranch}>
+        <section className="agent-settings-card settings-flat-card cli-worktree-settings-card" aria-label="Git Worktrees default settings">
+          <div className="agent-settings-section-title settings-flat-heading">
+            <GitBranch aria-hidden="true" />
+            <span>
+              <strong>Git Worktrees</strong>
+              <small>{defaultWorktree ? "CLI tools launch in isolated Git branches by default." : "Direct project execution by default."}</small>
+            </span>
+          </div>
+          <SpaceToggle
+            className="settings-flat-row settings-flat-toggle-row default-worktree-toggle"
+            name="default-worktree-enabled-global"
+            ariaLabel="Enable isolated worktrees by default"
+            label="Isolated worktrees by default"
+            detail="Automatically isolate CLI tools (Gemini, Codex, OpenCode, Hermes) in dedicated Git worktrees for rooms with a project directory."
+            checked={defaultWorktree}
+            onChange={(checked) => {
+              setDefaultWorktree(checked);
+              try {
+                localStorage.setItem("space.worktree.defaultEnabled", String(checked));
+              } catch {}
+              if (auth?.isAuthenticated) {
+                saveUserSettingDebounced("worktreeDefaultEnabled", checked);
+              }
+            }}
+          />
+        </section>
+      </SettingsDisclosure>
+
       {canManageTelegram ? <SettingsDisclosure hidden={!adminMode} title="Telegram notifications" description="Connect Telegram and choose which updates to send." scope="Installation" icon={Bell}>
       <RecoverableSurface fallback={settingsCardLoadingFallback}>
         <LazyTelegramIntegrationCard canManage={canManageTelegram} isCodexEnabled={isCodexEnabled} />
@@ -12827,15 +11439,19 @@ function AgentSettingsDock({
       </SettingsDisclosure> : null}
 
       <SettingsDisclosure title="Plugins" description="Accounts and services your agents can act through." scope="Installation" icon={Plug}>
-        <PluginsSettingsCard />
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyPluginsSettingsCard /></RecoverableSurface>
       </SettingsDisclosure>
 
       <SettingsDisclosure title="Voice input" description="Microphone and speech preferences." scope="Your account" icon={Mic}>
-      <VoiceSettingsCard />
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><VoiceSettingsCard /></RecoverableSurface>
       </SettingsDisclosure>
 
       <SettingsDisclosure title="Keyboard autocorrection" description="Layout detection, Alt+G suggestions, audio alert, and languages." scope="Your account" icon={Keyboard}>
-        <KeyboardAutocorrectSettingsCard />
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyKeyboardAutocorrectSettingsCard /></RecoverableSurface>
+      </SettingsDisclosure>
+
+      <SettingsDisclosure title="Prompt variables" description="Custom #variable shortcuts, quick expansions, and technical context." scope="Your account" icon={Hash}>
+        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyPromptVariablesSettingsCard /></RecoverableSurface>
       </SettingsDisclosure>
 
       <SettingsDisclosure title="Notifications" description="Choose whether your account shows notices." scope="Your account" icon={Bell}>
@@ -12866,7 +11482,7 @@ function AgentSettingsDock({
         icon={ArrowUpDown}
       >
         <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <LazyConfigurationMigrationCard />
+          <LazyConfigurationMigrationCard canManageInstallation={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
         </RecoverableSurface>
       </SettingsDisclosure>
       </SettingsSections>
@@ -12874,2388 +11490,17 @@ function AgentSettingsDock({
   );
 }
 
-function BrowserDock({
-  activeRoom,
-  browserPane,
-  canOpenBrowser,
-  onOpenBrowser,
-  onBookmarks,
-  onImport,
-  onJoin
-}: {
-  activeRoom: Room | null;
-  browserPane: Pane | null;
-  canOpenBrowser: boolean;
-  onOpenBrowser: () => void;
-  onBookmarks: () => void;
-  onImport: () => void;
-  onJoin: () => void;
-}) {
-  const hasBrowserPane = Boolean(browserPane);
-  const disabledReason = activeRoom
-    ? "Room is full; close a pane before starting another browser."
-    : "Select a room before starting browser sessions.";
-  const targetTitle = browserPane ? displayPaneTitle(browserPane) : null;
-  return (
-    <div className="dock-panel browser-dock">
-      <div className="browser-dock-strip" role="group" aria-label="Browser controls">
-        <button disabled={!canOpenBrowser} title={canOpenBrowser ? "Open Chrome browser pane" : disabledReason} aria-label="Open Chrome browser" onClick={onOpenBrowser}>
-          <Chrome aria-hidden="true" />
-        </button>
-        <button
-          disabled={!hasBrowserPane}
-          title={hasBrowserPane ? `Open bookmarks in ${targetTitle}` : "Open a browser pane before using bookmarks."}
-          aria-label="Open browser bookmarks"
-          onClick={onBookmarks}
-        >
-          <Bookmark aria-hidden="true" />
-        </button>
-        <button
-          disabled={!hasBrowserPane}
-          title={hasBrowserPane ? `Import browser bookmarks JSON into ${targetTitle}` : "Open a browser pane before importing bookmarks."}
-          aria-label="Import browser bookmarks"
-          onClick={onImport}
-        >
-          <Upload aria-hidden="true" />
-        </button>
-        <button
-          disabled={!hasBrowserPane}
-          title={hasBrowserPane ? `Join ${targetTitle}` : "Open a browser pane before joining."}
-          aria-label="Join browser session"
-          onClick={onJoin}
-        >
-          <UserCheck aria-hidden="true" />
-        </button>
-      </div>
-    </div>
-  );
-}
 
-const PaneCard = memo(function PaneCard({
-  pane,
-  roomProjectPath,
-  controlPlacement,
-  agentNumber,
-  latestTurn,
-  latestCompletion,
-  hasPendingCompletion,
-  isTarget,
-  isMoveDialogOpen,
-  isVisibleInShell,
-  isFloatingYouTube = false,
-  onToggleYouTubeFloating,
-  isTerminalOutputVisible,
-  isMobilePaneFocused,
-  browserObserverOnly,
-  terminalObserverOnly,
-  uiTheme,
-  shellMode,
-  oskOpen,
-  maskSensitiveData,
-  codexTurnsEnabled,
-  codexEnvironment,
-  cliRuntimeSettings,
-  canMoveToAnotherRoom,
-  draggedPaneId,
-  dragOverPaneId,
-  dragOverPosition = "before",
-  paneReorderPending,
-  onPaneDragStart,
-  onPaneDragEnd,
-  onPaneDragOver,
-  onPaneDragLeave,
-  onPaneDrop,
-  onTarget,
-  onMove,
-  onPaneUpdated,
-  onOpenExistingPane,
-  onClose,
-  onMaximize,
-  onMinimize,
-  onMobilePaneFocusChange,
-  onGrowColumnSpan,
-  onResetColumnSpan,
-  onToggleColumnSpan,
-  onSplit,
-  isFullscreenLayout,
-  fullscreenIndex,
-  fullscreenCount,
-  onFullscreenNavigate,
-  onRestoreLayout,
-  effectiveColumnSpan,
-  rowSpan,
-  columnStart,
-  rowIndex,
-  canGrowColumnSpan,
-  canResetColumnSpan,
-  terminalFontSize,
-  hideCliFloats,
-  showSessionDebugIds,
-  cliDebugModeEnabled,
-  onCliDebugModeChange,
-  cliMemorySaveModelId,
-  cliImagePreviewLimit,
-  terminalBootstrapBarrier,
-  shouldBootstrapTerminal,
-  prefillInitialReplay,
-  shouldLoadHarness,
-  revealGeneration,
-  onTerminalBootstrapped,
-  onTerminalPrefillReadyChange,
-  onTerminalRevealReady
-}: {
-  pane: Pane;
-  roomProjectPath?: string | null;
-  controlPlacement?: {x:number;y:number;width:number;height:number};
-  agentNumber: number;
-  latestTurn: Turn | null;
-  latestCompletion: SpaceEvent | null;
-  hasPendingCompletion: boolean;
-  isTarget: boolean;
-  isMoveDialogOpen: boolean;
-  isVisibleInShell: boolean;
-  isFloatingYouTube?: boolean;
-  onToggleYouTubeFloating?: () => void;
-  isTerminalOutputVisible: boolean;
-  isMobilePaneFocused: boolean;
-  browserObserverOnly: boolean;
-  terminalObserverOnly: boolean;
-  uiTheme: UiTheme;
-  shellMode: ShellMode;
-  oskOpen: boolean;
-  maskSensitiveData: boolean;
-  codexTurnsEnabled: boolean;
-  codexEnvironment: CodexEnvironment | null;
-  cliRuntimeSettings: CliRuntimeSettingsResponse | null;
-  canMoveToAnotherRoom: boolean;
-  draggedPaneId: string | null;
-  dragOverPaneId: string | null;
-  dragOverPosition?: PaneDropPosition;
-  paneReorderPending: boolean;
-  onPaneDragStart: (event: ReactDragEvent<HTMLElement>, pane: Pane) => void;
-  onPaneDragEnd: () => void;
-  onPaneDragOver: (event: ReactDragEvent<HTMLElement>, paneId: string) => void;
-  onPaneDragLeave: (paneId: string) => void;
-  onPaneDrop: (paneId: string, position?: PaneDropPosition) => void | Promise<void>;
-  onTarget: (paneId: string) => void;
-  onMove: (pane: Pane) => void;
-  onPaneUpdated: (pane: Pane) => void;
-  onOpenExistingPane: (pane: Pane) => Promise<void>;
-  onClose: (paneId: string) => void;
-  onMaximize: (pane: Pane) => void;
-  onMinimize: (pane: Pane) => void;
-  onMobilePaneFocusChange: (focused: boolean) => void;
-  onGrowColumnSpan: (pane: Pane) => Promise<void>;
-  onResetColumnSpan: (pane: Pane) => Promise<void>;
-  onToggleColumnSpan: (pane: Pane) => Promise<void>;
-  onSplit: (pane: Pane, direction: "horizontal" | "vertical") => void;
-  isFullscreenLayout: boolean;
-  fullscreenIndex: number;
-  fullscreenCount: number;
-  onFullscreenNavigate: (direction: "previous" | "next", fromPaneId?: string) => void;
-  onRestoreLayout?: () => void;
-  effectiveColumnSpan: number;
-  rowSpan: number;
-  columnStart: number;
-  rowIndex: number;
-  canGrowColumnSpan: boolean;
-  canResetColumnSpan: boolean;
-  terminalFontSize: number;
-  hideCliFloats: boolean;
-  showSessionDebugIds: boolean;
-  cliDebugModeEnabled: boolean;
-  onCliDebugModeChange: (enabled: boolean) => void;
-  cliMemorySaveModelId: string;
-  cliImagePreviewLimit: number;
-  terminalBootstrapBarrier?: TerminalBootstrapBarrier;
-  shouldBootstrapTerminal: boolean;
-  prefillInitialReplay: boolean;
-  shouldLoadHarness: boolean;
-  revealGeneration: number;
-  onTerminalBootstrapped: (roomId: string, paneId: string) => void;
-  onTerminalPrefillReadyChange: (roomId: string, paneId: string, ready: boolean) => void;
-  onTerminalRevealReady: (roomId: string, paneId: string, generation: number) => void;
-}) {
-  const isCoarsePointer = useMemo(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-    return window.matchMedia("(pointer: coarse)").matches;
-  }, []);
-  const agentResponse = latestCompletion ? extractAgentResponseFromEvent(latestCompletion) : null;
-  const completionState = hasPendingCompletion
-    ? "pending"
-    : latestCompletion
-      ? "acknowledged"
-      : "idle";
-  const [youtubeVideoTitle, setYoutubeVideoTitle] = useState('');
-  const youtubeToolbarStorageKey = `space.youtube.toolbar.hidden.v1:${pane.id}`;
-  const [youtubeToolbarHidden, setYoutubeToolbarHidden] = useState(() => {
-    try { return localStorage.getItem(youtubeToolbarStorageKey) === 'true'; } catch { return false; }
-  });
-  const floatLayoutStorageKey = `space.youtube.float-layout.v1:${pane.id}`;
-  const [floatLayout, setFloatLayout] = useState<{ x: number; y: number; width: number; height: number }>(() => {
-    try {
-      const saved = localStorage.getItem(floatLayoutStorageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed.x === "number" && typeof parsed.y === "number" && typeof parsed.width === "number" && typeof parsed.height === "number") {
-          return parsed;
-        }
-      }
-    } catch {}
-    const defaultWidth = 380;
-    const defaultHeight = 240;
-    const x = typeof window !== "undefined" ? Math.max(16, window.innerWidth - defaultWidth - 24) : 100;
-    const y = typeof window !== "undefined" ? Math.max(16, window.innerHeight - defaultHeight - 24) : 100;
-    return { x, y, width: defaultWidth, height: defaultHeight };
-  });
-  const [isPointerActive, setIsPointerActive] = useState(false);
-  const latestFloatLayoutRef = useRef(floatLayout);
-  latestFloatLayoutRef.current = floatLayout;
 
-  const dragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    initialX: number;
-    initialY: number;
-    latestX: number;
-    latestY: number;
-  } | null>(null);
-  const resizeRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    initialX: number;
-    initialY: number;
-    initialWidth: number;
-    initialHeight: number;
-    latestX: number;
-    latestY: number;
-    latestWidth: number;
-    latestHeight: number;
-  } | null>(null);
-  const paneArticleRef = useRef<HTMLElement | null>(null);
 
-  const youtubeDodgeShiftX = useRailMenuDodge(paneArticleRef, {
-    x: floatLayout.x,
-    y: floatLayout.y,
-    active: isFloatingYouTube,
-    isDragging: isPointerActive
-  });
 
-  useEffect(() => {
-    return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-  }, []);
 
-  useEffect(() => {
-    if (!isFloatingYouTube || !paneArticleRef.current || typeof ResizeObserver === "undefined") return;
-    const el = paneArticleRef.current;
-    const ro = new ResizeObserver((entries) => {
-      if (isPointerActive) return;
-      for (const entry of entries) {
-        const target = entry.target as HTMLElement;
-        const width = target.offsetWidth || entry.contentRect.width;
-        const height = target.offsetHeight || entry.contentRect.height;
-        if (width >= 200 && height >= 140) {
-          setFloatLayout((prev) => {
-            if (Math.abs(prev.width - width) < 4 && Math.abs(prev.height - height) < 4) return prev;
-            const updated = { ...prev, width: Math.round(width), height: Math.round(height) };
-            try {
-              localStorage.setItem(floatLayoutStorageKey, JSON.stringify(updated));
-            } catch {}
-            return updated;
-          });
-        }
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [isFloatingYouTube, floatLayoutStorageKey, isPointerActive]);
 
-  const handleFloatHeaderPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("button, input, select, textarea, a")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const initialVisualX = floatLayout.x - youtubeDodgeShiftX;
-    setIsPointerActive(true);
-    if (youtubeDodgeShiftX > 0) {
-      setFloatLayout((prev) => ({ ...prev, x: initialVisualX }));
-    }
-    const current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialX: initialVisualX,
-      initialY: floatLayout.y,
-      latestX: initialVisualX,
-      latestY: floatLayout.y
-    };
-    dragRef.current = current;
 
-    if (paneArticleRef.current) {
-      paneArticleRef.current.style.transition = "none";
-      paneArticleRef.current.classList.add("is-pointer-active");
-    }
-    document.body.style.userSelect = "none";
 
-    const onHeaderMove = (ev: PointerEvent) => {
-      if (!dragRef.current || dragRef.current.pointerId !== ev.pointerId) return;
-      const ref = dragRef.current;
-      const dx = ev.clientX - ref.startX;
-      const dy = ev.clientY - ref.startY;
-      const maxX = Math.max(0, window.innerWidth - 60);
-      const maxY = Math.max(0, window.innerHeight - 40);
-      const nextX = Math.round(Math.min(maxX, Math.max(0, ref.initialX + dx)));
-      const nextY = Math.round(Math.min(maxY, Math.max(0, ref.initialY + dy)));
-      ref.latestX = nextX;
-      ref.latestY = nextY;
-      if (paneArticleRef.current) {
-        paneArticleRef.current.style.left = `${nextX}px`;
-        paneArticleRef.current.style.top = `${nextY}px`;
-      }
-    };
 
-    const onHeaderUp = (ev: PointerEvent) => {
-      if (!dragRef.current || dragRef.current.pointerId !== ev.pointerId) return;
-      window.removeEventListener("pointermove", onHeaderMove);
-      window.removeEventListener("pointerup", onHeaderUp);
-      window.removeEventListener("pointercancel", onHeaderUp);
 
-      document.body.style.userSelect = "";
 
-      const ref = dragRef.current;
-      dragRef.current = null;
-      setIsPointerActive(false);
-
-      if (paneArticleRef.current) {
-        paneArticleRef.current.classList.remove("is-pointer-active");
-        paneArticleRef.current.style.transition = "";
-      }
-
-      const updated = {
-        ...latestFloatLayoutRef.current,
-        x: ref.latestX,
-        y: ref.latestY
-      };
-      setFloatLayout(updated);
-      latestFloatLayoutRef.current = updated;
-      try {
-        localStorage.setItem(floatLayoutStorageKey, JSON.stringify(updated));
-      } catch {}
-    };
-
-    window.addEventListener("pointermove", onHeaderMove, { passive: true });
-    window.addEventListener("pointerup", onHeaderUp);
-    window.addEventListener("pointercancel", onHeaderUp);
-
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    } catch {}
-  };
-
-  const handleResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const initialVisualX = floatLayout.x - youtubeDodgeShiftX;
-    setIsPointerActive(true);
-    if (youtubeDodgeShiftX > 0) {
-      setFloatLayout((prev) => ({ ...prev, x: initialVisualX }));
-    }
-    const current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      initialX: initialVisualX,
-      initialY: floatLayout.y,
-      initialWidth: floatLayout.width,
-      initialHeight: floatLayout.height,
-      latestX: initialVisualX,
-      latestY: floatLayout.y,
-      latestWidth: floatLayout.width,
-      latestHeight: floatLayout.height
-    };
-    resizeRef.current = current;
-
-    if (paneArticleRef.current) {
-      paneArticleRef.current.style.transition = "none";
-      paneArticleRef.current.classList.add("is-pointer-active");
-    }
-    document.body.style.cursor = "nwse-resize";
-    document.body.style.userSelect = "none";
-
-    const onResizeMove = (ev: PointerEvent) => {
-      if (!resizeRef.current || resizeRef.current.pointerId !== ev.pointerId) return;
-      const ref = resizeRef.current;
-      const dw = ev.clientX - ref.startX;
-      const dh = ev.clientY - ref.startY;
-
-      const minW = 240;
-      const minH = 160;
-      const screenW = typeof window !== "undefined" ? window.innerWidth : 1920;
-      const screenH = typeof window !== "undefined" ? window.innerHeight : 1080;
-      const maxW = Math.max(minW, screenW - 16);
-      const maxH = Math.max(minH, screenH - 16);
-
-      const desiredWidth = Math.max(minW, Math.min(maxW, ref.initialWidth + dw));
-      const desiredHeight = Math.max(minH, Math.min(maxH, ref.initialHeight + dh));
-
-      const margin = 8;
-      const availRight = screenW - ref.initialX - margin;
-      const availBottom = screenH - ref.initialY - margin;
-
-      let nextX = ref.initialX;
-      let nextWidth = desiredWidth;
-      if (desiredWidth > availRight) {
-        const overflowX = desiredWidth - availRight;
-        nextX = Math.max(margin, ref.initialX - overflowX);
-        nextWidth = Math.min(screenW - nextX - margin, desiredWidth);
-      }
-
-      let nextY = ref.initialY;
-      let nextHeight = desiredHeight;
-      if (desiredHeight > availBottom) {
-        const overflowY = desiredHeight - availBottom;
-        nextY = Math.max(margin, ref.initialY - overflowY);
-        nextHeight = Math.min(screenH - nextY - margin, desiredHeight);
-      }
-
-      const finalX = Math.round(nextX);
-      const finalY = Math.round(nextY);
-      const finalW = Math.round(nextWidth);
-      const finalH = Math.round(nextHeight);
-
-      ref.latestX = finalX;
-      ref.latestY = finalY;
-      ref.latestWidth = finalW;
-      ref.latestHeight = finalH;
-
-      if (paneArticleRef.current) {
-        paneArticleRef.current.style.width = `${finalW}px`;
-        paneArticleRef.current.style.height = `${finalH}px`;
-        paneArticleRef.current.style.left = `${finalX}px`;
-        paneArticleRef.current.style.top = `${finalY}px`;
-      }
-    };
-
-    const onResizeUp = (ev: PointerEvent) => {
-      if (!resizeRef.current || resizeRef.current.pointerId !== ev.pointerId) return;
-      window.removeEventListener("pointermove", onResizeMove);
-      window.removeEventListener("pointerup", onResizeUp);
-      window.removeEventListener("pointercancel", onResizeUp);
-
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-
-      const ref = resizeRef.current;
-      resizeRef.current = null;
-      setIsPointerActive(false);
-
-      if (paneArticleRef.current) {
-        paneArticleRef.current.classList.remove("is-pointer-active");
-        paneArticleRef.current.style.transition = "";
-      }
-
-      const finalLayout = {
-        x: ref.latestX,
-        y: ref.latestY,
-        width: ref.latestWidth,
-        height: ref.latestHeight
-      };
-
-      setFloatLayout(finalLayout);
-      latestFloatLayoutRef.current = finalLayout;
-      try {
-        localStorage.setItem(floatLayoutStorageKey, JSON.stringify(finalLayout));
-      } catch {}
-    };
-
-    window.addEventListener("pointermove", onResizeMove, { passive: true });
-    window.addEventListener("pointerup", onResizeUp);
-    window.addEventListener("pointercancel", onResizeUp);
-
-    try {
-      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-    } catch {}
-  };
-  const title = pane.mode === "YOUTUBE" && youtubeVideoTitle ? youtubeVideoTitle : displayPaneTitle(pane);
-  const isTerminalPane = pane.mode === "TERMINAL";
-  const usesCompactPaneActions = isTerminalPane || pane.mode === "CHAT" || pane.mode === "HARNESS" || pane.mode === "LIVE";
-  const isRootPane = pane.terminalRuntimeId === "cli:root";
-  const maximizeLabel = isFullscreenLayout
-    ? "Restore automatic layout"
-    : shellMode === "mobile"
-      ? isMobilePaneFocused
-        ? "Restore room"
-        : "Maximize pane"
-      : pane.isMaximized
-        ? "Restore pane"
-        : "Maximize pane";
-  const showRestoreIcon = shellMode === "mobile" ? isMobilePaneFocused : pane.isMaximized;
-  const agentTone = ((agentNumber - 1) % 8) + 1;
-  const genericUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
-  const titleTextRef = useRef<HTMLElement | null>(null);
-  const titleTouchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
-  const paneHeaderRef = useRef<HTMLElement | null>(null);
-  const paneBadgeRef = useRef<HTMLDivElement | null>(null);
-  const paneFixedActionsRef = useRef<HTMLDivElement | null>(null);
-  const [genericImportPending, setGenericImportPending] = useState(false);
-  const [genericImportNotice, setGenericImportNotice] = useState<string | null>(null);
-  const [genericImportError, setGenericImportError] = useState<string | null>(null);
-  useAutoDismiss(genericImportNotice, setGenericImportNotice);
-  useAutoDismiss(genericImportError, setGenericImportError);
-  const [terminalSessionMetadata, setTerminalSessionMetadata] = useState<TerminalSessionMetadata | null>(null);
-  const [agentPaneIdentity, setAgentPaneIdentity] = useState<AgentPaneIdentity | null>(null);
-  const [cliVpnRoutingStatus, setCliVpnRoutingStatus] = useState<CliVpnRoutingStatus | null>(null);
-  const [titleDraft, setTitleDraft] = useState(pane.title);
-  const [titleEditOpen, setTitleEditOpen] = useState(false);
-  const [titleSavePending, setTitleSavePending] = useState(false);
-  const [titleGeneratePending, setTitleGeneratePending] = useState(false);
-  const [badgeMenuPosition, setBadgeMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const badgeTouchContext = useTouchContextMenu(
-    (source) => source instanceof Element ? source.closest<HTMLElement>(".pane-agent-badge") : null,
-    ({ x, y }) => {
-      if (!usesCompactPaneActions) return;
-      paneToolbar.closeMenus();
-      setBadgeMenuPosition({ x, y });
-    }
-  );
-  const [categoryColorPending, setCategoryColorPending] = useState(false);
-  const [resumeHistoryOpen, setResumeHistoryOpen] = useState(false);
-  const [resumeHistoryMode, setResumeHistoryMode] = useState<"chat" | "cli">("cli");
-  const [resumeHistoryItems, setResumeHistoryItems] = useState<TaskHistoryDialogItem[]>([]);
-  const [resumeHistoryPage, setResumeHistoryPage] = useState(0);
-  const [resumeHistoryHasMore, setResumeHistoryHasMore] = useState(false);
-  const [resumeHistoryLoading, setResumeHistoryLoading] = useState(false);
-  const [resumeHistoryLoadMorePending, setResumeHistoryLoadMorePending] = useState(false);
-  const [resumeHistoryError, setResumeHistoryError] = useState<string | null>(null);
-  const [resumeHistoryQuery, setResumeHistoryQuery] = useState("");
-  const [resumePending, setResumePending] = useState(false);
-  const [titleError, setTitleError] = useState<string | null>(null);
-  const [isHeaderActionsStacked, setIsHeaderActionsStacked] = useState(false);
-  const [modernPrimaryActionCapacity, setModernPrimaryActionCapacity] = useState<number | null>(null);
-  const [youtubeFloatFits, setYoutubeFloatFits] = useState<boolean>(true);
-  const usesGenericImport = pane.mode !== "CHAT" && pane.mode !== "TERMINAL" && pane.mode !== "YOUTUBE";
-  const sessionDebugInfo = terminalSessionMetadata ? formatTerminalSessionDebugInfo(terminalSessionMetadata) : null;
-  const vpnRoutingPresentation = isTerminalPane
-    ? paneVpnRoutingPresentation(cliVpnRoutingStatus, {
-        sessionId: terminalSessionMetadata?.sessionId ?? null,
-        runtimeId: terminalSessionMetadata?.runtimeId ?? null,
-        purpose: terminalSessionMetadata?.purpose ?? "NORMAL"
-      })
-    : pane.mode === "HARNESS"
-      ? harnessPaneVpnRoutingPresentation(cliRuntimeSettings)
-      : null;
-  const harnessStatus = pane.mode === "HARNESS" ? cliRuntimeSettings?.harness ?? null : null;
-  const paneIdentityBaseTitle = pane.mode === "HARNESS" && showSessionDebugIds
-    ? `${title} / Agent ${agentNumber} / DeepSeek Harness pane session ${pane.id} / service PID ${harnessStatus?.pid ?? "inactive"}`
-    : showSessionDebugIds && sessionDebugInfo
-      ? `${title} / Agent ${agentNumber} / ${sessionDebugInfo.title}`
-      : `${title} / Agent ${agentNumber}`;
-  const paneIdentityTitle = vpnRoutingPresentation && !maskSensitiveData
-    ? `${paneIdentityBaseTitle} / ${vpnRoutingPresentation.label} — ${vpnRoutingPresentation.title}`
-    : paneIdentityBaseTitle;
-  const terminalRuntimeId = terminalSessionMetadata?.runtimeId ?? pane.terminalRuntimeId ?? "cli:codex";
-  const codexMutationBlocked =
-    codexEnvironment?.isCodexEnabled === false &&
-    (pane.mode === "CHAT" || (isTerminalPane && terminalRuntimeId === "cli:codex"));
-  const codexDisabledReason = "Enable Codex in Settings";
-  const isDeepSeekTerminal = isTerminalPane && terminalRuntimeId === "cli:deepseek";
-  const isTerminalLoginSession = terminalSessionMetadata?.purpose === "LOGIN";
-  const canOpenCliTaskHistory = isTerminalPane && !isRootPane && !isTerminalLoginSession;
-  const [paneToolbarStorageKeys] = useState(() => {
-    const classicStorageKeys = {
-      hidden: paneToolbarHiddenStorageKey(pane.mode),
-      order: paneToolbarActionOrderStorageKey(pane.mode)
-    };
-    const storageKeys = uiTheme !== "classic"
-      ? modernPaneToolbarStorageKeys(pane.mode)
-      : classicStorageKeys;
-    if (uiTheme !== "classic") {
-      migrateModernToolbarPreference(
-        getSpaceRuntime().platform.localStorage,
-        classicStorageKeys.hidden,
-        storageKeys.hidden
-      );
-      migrateModernToolbarPreference(
-        getSpaceRuntime().platform.localStorage,
-        classicStorageKeys.order,
-        storageKeys.order
-      );
-    }
-    return storageKeys;
-  });
-  const previousVisibilityRef = useRef(isVisibleInShell);
-  const resumeHistoryRequestRef = useRef(0);
-  const paneActionsRef = useRef<HTMLDivElement | null>(null);
-  const paneOverflowTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const paneActionsPopupId = `pane-actions-${pane.id}`;
-  const paneCardStyle = useMemo(
-    () =>
-      ({
-        "--pane-column-span": String(effectiveColumnSpan),
-        ...(shellMode !== "mobile" && !isFullscreenLayout && !pane.isMaximized
-          ? {
-              gridColumn: `${columnStart} / span ${effectiveColumnSpan}`,
-              gridRow: `${rowIndex + 1} / span ${rowSpan}`
-            }
-          : null),
-        ...(isFullscreenLayout
-          ? {
-              gridColumn: "1 / -1",
-              gridRow: "1 / -1",
-              height: "100%",
-              minHeight: 0
-            }
-          : null),
-        ...(controlPlacement ? {position:"absolute",left:`${controlPlacement.x}%`,top:`${controlPlacement.y*12}px`,width:`${controlPlacement.width}%`,height:`${controlPlacement.height*12}px`,minHeight:0} : {}),
-        ...(rowSpan > 1 ? { "--pane-row-span": String(rowSpan) } : null)
-      }) as CSSProperties,
-    [effectiveColumnSpan, columnStart, rowIndex, rowSpan, shellMode, isFullscreenLayout, pane.isMaximized, controlPlacement]
-  );
-  const handleTerminalBootstrapped = useCallback(
-    (paneId: string) => onTerminalBootstrapped(pane.roomId, paneId),
-    [onTerminalBootstrapped, pane.roomId]
-  );
-  const handleTerminalPrefillReadyChange = useCallback(
-    (paneId: string, ready: boolean) => onTerminalPrefillReadyChange(pane.roomId, paneId, ready),
-    [onTerminalPrefillReadyChange, pane.roomId]
-  );
-  const handleTerminalRevealReady = useCallback(
-    (paneId: string, generation: number) => onTerminalRevealReady(pane.roomId, paneId, generation),
-    [onTerminalRevealReady, pane.roomId]
-  );
-
-  useEffect(() => {
-    recordLifecycleDebugEvent({
-      type: "component_mounted",
-      scope: "PaneCard",
-      detail: `pane=${title}`,
-      paneId: pane.id,
-      paneMode: pane.mode,
-      shellMode
-    });
-    return () => {
-      recordLifecycleDebugEvent({
-        type: "component_unmounted",
-        scope: "PaneCard",
-        detail: `pane=${title}`,
-        paneId: pane.id,
-        paneMode: pane.mode,
-        shellMode
-      });
-    };
-  }, [pane.id, pane.mode, title]);
-
-  useEffect(() => {
-    if (previousVisibilityRef.current === isVisibleInShell) return;
-    recordLifecycleDebugEvent({
-      type: "pane_visibility_changed",
-      scope: "PaneCard",
-      detail: `visible=${String(isVisibleInShell)}`,
-      paneId: pane.id,
-      paneMode: pane.mode,
-      shellMode
-    });
-    previousVisibilityRef.current = isVisibleInShell;
-  }, [isVisibleInShell, pane.id, pane.mode, shellMode]);
-
-  useEffect(() => {
-    if (!titleEditOpen) {
-      setTitleDraft(pane.title);
-    }
-  }, [pane.title, titleEditOpen]);
-
-  useEffect(() => {
-    setResumeHistoryOpen(false);
-    setResumeHistoryMode("cli");
-    setResumeHistoryItems([]);
-    setResumeHistoryPage(0);
-    setResumeHistoryHasMore(false);
-    setResumeHistoryLoading(false);
-    setResumeHistoryLoadMorePending(false);
-    setResumeHistoryError(null);
-    setResumeHistoryQuery("");
-    resumeHistoryRequestRef.current += 1;
-    setResumePending(false);
-  }, [pane.id]);
-
-  useEffect(() => {
-    if (!isTerminalPane || !terminalSessionMetadata?.sessionId) {
-      setCliVpnRoutingStatus(null);
-      return;
-    }
-    let active = true;
-    const refresh = () => {
-      void loadCliVpnRoutingStatus(true)
-        .then((status) => {
-          if (active) setCliVpnRoutingStatus(status);
-        })
-        .catch(() => undefined);
-    };
-    refresh();
-    window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    return () => {
-      active = false;
-      window.removeEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    };
-  }, [isTerminalPane, terminalSessionMetadata?.sessionId]);
-
-  useEffect(() => {
-    if (!codexMutationBlocked) return;
-    setResumeHistoryOpen(false);
-    setTitleEditOpen(false);
-  }, [codexMutationBlocked]);
-
-  useEffect(() => {
-    if (!resumeHistoryOpen) return;
-    const query = resumeHistoryQuery.trim();
-    const timeoutId = window.setTimeout(() => {
-      void loadResumeHistory(1, { query });
-    }, query ? 180 : 0);
-    return () => window.clearTimeout(timeoutId);
-  }, [resumeHistoryMode, resumeHistoryOpen, resumeHistoryQuery]);
-
-  useEffect(() => {
-    if (!titleEditOpen) return;
-    titleInputRef.current?.focus();
-    titleInputRef.current?.select();
-  }, [titleEditOpen]);
-
-  function openPaneImport() {
-    if (codexMutationBlocked) return;
-    setGenericImportNotice(null);
-    setGenericImportError(null);
-    if (pane.mode === "CHAT") {
-      dispatchAgentPaneAction(pane.id, "upload");
-      return;
-    }
-    if (pane.mode === "TERMINAL") {
-      dispatchTerminalPaneAction(pane.id, { action: "upload" });
-      return;
-    }
-    genericUploadInputRef.current?.click();
-  }
-
-  async function importGenericPaneFiles(files: File[]) {
-    if (!files.length) return;
-    setGenericImportPending(true);
-    setGenericImportNotice(null);
-    setGenericImportError(null);
-    try {
-      const uploaded = await api.uploadPaneFiles({ roomId: pane.roomId, paneId: pane.id, source: "USER_UPLOAD", files });
-      dispatchArtifactsUpdated(pane.roomId, uploaded.artifacts);
-      setGenericImportNotice(`${uploaded.artifacts.length} file${uploaded.artifacts.length === 1 ? "" : "s"} imported to ${title}.`);
-    } catch (err) {
-      setGenericImportError(err instanceof Error ? err.message : "Pane file import failed");
-    } finally {
-      setGenericImportPending(false);
-    }
-  }
-
-  function cancelTitleEdit() {
-    setTitleDraft(pane.title);
-    setTitleEditOpen(false);
-    setTitleError(null);
-  }
-
-  async function submitPaneTitle(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if ((pane.mode !== "CHAT" && !isTerminalPane) || titleSavePending || codexMutationBlocked) return;
-    const nextTitle = titleDraft.trim();
-    if (!nextTitle) {
-      setTitleDraft(pane.title);
-      setTitleError("Pane title cannot be empty.");
-      return;
-    }
-    if (nextTitle === pane.title) {
-      setTitleEditOpen(false);
-      setTitleError(null);
-      return;
-    }
-    setTitleSavePending(true);
-    setTitleError(null);
-    try {
-      const updated = await api.updatePane(pane.id, { title: nextTitle });
-      onPaneUpdated(updated);
-      setTitleDraft(updated.title);
-      setTitleEditOpen(false);
-    } catch (err) {
-      setTitleError(err instanceof Error ? err.message : "Pane title update failed");
-    } finally {
-      setTitleSavePending(false);
-    }
-  }
-
-  async function generatePaneTitle() {
-    if ((pane.mode !== "CHAT" && !isTerminalPane) || titleGeneratePending || codexMutationBlocked) return;
-    setTitleGeneratePending(true);
-    setTitleError(null);
-    try {
-      const updated = await api.generatePaneTitle(pane.id);
-      onPaneUpdated(updated);
-      setTitleDraft(updated.title);
-      setTitleEditOpen(false);
-    } catch (err) {
-      setTitleError(err instanceof Error ? err.message : "AI title generation failed");
-    } finally {
-      setTitleGeneratePending(false);
-    }
-  }
-
-  async function loadResumeHistory(page: number, options: { append?: boolean; query?: string } = {}) {
-    const setPendingState = options.append ? setResumeHistoryLoadMorePending : setResumeHistoryLoading;
-    const requestId = ++resumeHistoryRequestRef.current;
-    const query = options.query?.trim();
-    setPendingState(true);
-    if (!options.append) {
-      setResumeHistoryError(null);
-    }
-    try {
-      const history = resumeHistoryMode === "chat"
-        ? await api.codexHistory({ page, pageSize: 50, dedupeTitles: true, q: query || undefined })
-        : await api.unifiedCliTasks({ page, pageSize: 50, q: query || undefined });
-      if (requestId !== resumeHistoryRequestRef.current) return;
-      const items: TaskHistoryDialogItem[] = "threads" in history ? history.threads : history.data;
-      setResumeHistoryItems((current) => (options.append ? appendUniqueTaskHistoryItems(current, items) : items));
-      setResumeHistoryPage(page);
-      const total = "total" in history ? history.total : history.totalItems;
-      const pageSize = "pageSize" in history ? history.pageSize : history.pagination?.pageSize ?? 50;
-      const totalPages = Math.ceil(total / pageSize);
-      setResumeHistoryHasMore(page < totalPages);
-    } catch (err) {
-      if (requestId !== resumeHistoryRequestRef.current) return;
-      setResumeHistoryError(err instanceof Error ? err.message : "Task history failed to load");
-      if (!options.append) {
-        setResumeHistoryItems([]);
-        setResumeHistoryPage(0);
-        setResumeHistoryHasMore(false);
-      }
-    } finally {
-      if (requestId === resumeHistoryRequestRef.current) setPendingState(false);
-    }
-  }
-
-  function openResumeTaskHistory(mode: "chat" | "cli") {
-    if (mode === "cli") return;
-    if (
-      codexMutationBlocked ||
-      (mode === "chat" && pane.mode !== "CHAT") ||
-      resumePending
-    ) return;
-    resumeHistoryRequestRef.current += 1;
-    setResumeHistoryMode(mode);
-    setResumeHistoryQuery("");
-    setResumeHistoryItems([]);
-    setResumeHistoryPage(0);
-    setResumeHistoryHasMore(false);
-    setResumeHistoryLoading(true);
-    setResumeHistoryError(null);
-    setResumeHistoryOpen(true);
-  }
-
-  function closeResumeTaskHistory() {
-    if (resumePending) return;
-    resumeHistoryRequestRef.current += 1;
-    setResumeHistoryOpen(false);
-  }
-
-  function changeResumeHistoryQuery(query: string) {
-    resumeHistoryRequestRef.current += 1;
-    setResumeHistoryQuery(query);
-    setResumeHistoryItems([]);
-    setResumeHistoryPage(0);
-    setResumeHistoryHasMore(false);
-    setResumeHistoryLoadMorePending(false);
-    setResumeHistoryError(null);
-    setResumeHistoryLoading(true);
-  }
-
-  async function resumeTask(item: TaskHistoryDialogItem) {
-    if (codexMutationBlocked) return;
-    if (resumeHistoryMode === "chat") {
-      dispatchAgentPaneAction(pane.id, { action: "open_thread", threadId: item.id });
-      setResumeHistoryOpen(false);
-      return;
-    }
-    if (!canOpenCliTaskHistory || resumePending) return;
-    setResumePending(true);
-    setResumeHistoryError(null);
-    try {
-      if (!("taskId" in item)) throw new Error("This item is not a Space CLI task.");
-      const resumed = await api.resumeCliSession(pane.id, { taskId: item.taskId });
-      if (resumed.focusExisting) {
-        await onOpenExistingPane(resumed.pane);
-        setResumeHistoryOpen(false);
-        return;
-      }
-      onPaneUpdated(resumed.pane);
-      dispatchTerminalPaneAction(pane.id, {
-        action: "replace_session",
-        session: {
-          session: resumed.session,
-          runtime: resumed.runtime,
-          transcript: resumed.transcript,
-          websocket: resumed.websocket
-        }
-      });
-      setResumeHistoryOpen(false);
-    } catch (err) {
-      setResumeHistoryError(err instanceof Error ? err.message : "CLI resume failed");
-    } finally {
-      setResumePending(false);
-    }
-  }
-
-  function beginTitleEdit() {
-    if (codexMutationBlocked) return;
-    setTitleDraft(pane.title);
-    setTitleEditOpen(true);
-    setTitleError(null);
-  }
-
-  const canSwipeNavigate =
-    !titleEditOpen &&
-    fullscreenCount > 1 &&
-    (shellMode === "mobile" || isFullscreenLayout || isMobilePaneFocused || pane.isMaximized);
-
-  const handleTitleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
-    if (!canSwipeNavigate) return;
-    if (event.touches.length !== 1) {
-      titleTouchStartRef.current = null;
-      return;
-    }
-    const touch = event.touches[0];
-    if (!touch) {
-      titleTouchStartRef.current = null;
-      return;
-    }
-    titleTouchStartRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      time: Date.now()
-    };
-  };
-
-  const handleTitleTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
-    const start = titleTouchStartRef.current;
-    titleTouchStartRef.current = null;
-    if (!start || !canSwipeNavigate) return;
-    const touch = event.changedTouches[0];
-    if (!touch) return;
-    const deltaX = touch.clientX - start.x;
-    const deltaY = touch.clientY - start.y;
-    const elapsed = Date.now() - start.time;
-    const SWIPE_MIN_DISTANCE = 40;
-    const SWIPE_MAX_TIME = 800;
-    if (
-      elapsed <= SWIPE_MAX_TIME &&
-      Math.abs(deltaX) >= SWIPE_MIN_DISTANCE &&
-      Math.abs(deltaX) > Math.abs(deltaY) * 1.2
-    ) {
-      if (deltaX < 0) {
-        onFullscreenNavigate("next", pane.id);
-      } else {
-        onFullscreenNavigate("previous", pane.id);
-      }
-    }
-  };
-
-  const handleTitleTouchCancel = () => {
-    titleTouchStartRef.current = null;
-  };
-
-  async function applyPaneCategoryColor(color: PaneCategoryColor | null) {
-    if (color === pane.categoryColor || categoryColorPending || codexMutationBlocked) return;
-    setCategoryColorPending(true);
-    try {
-      const updated = await api.updatePane(pane.id, { categoryColor: color });
-      onPaneUpdated(updated);
-    } catch (err) {
-      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
-        detail: { message: err instanceof Error ? err.message : "Pane color update failed" }
-      }));
-    } finally {
-      setCategoryColorPending(false);
-      setBadgeMenuPosition(null);
-    }
-  }
-
-  async function copyPaneIdentityInfo() {
-    setBadgeMenuPosition(null);
-    const text = pane.mode === "CHAT"
-      ? agentPaneIdentity?.sessionId
-        ? [
-            `Space agent session ID: ${agentPaneIdentity.sessionId}`,
-            `Codex thread ID: ${agentPaneIdentity.threadId ?? "Not assigned yet"}`
-          ].join("\n")
-        : ""
-      : pane.mode === "TERMINAL" && terminalSessionMetadata
-        ? formatTerminalSessionClipboardText(terminalSessionMetadata) ?? ""
-        : pane.mode === "HARNESS"
-          ? [
-              `Harness pane session ID: ${pane.id}`,
-              `Harness service PID: ${harnessStatus?.pid ?? "inactive"}`,
-              `Harness service state: ${harnessStatus?.enabled ? "ACTIVE" : "INACTIVE"}`,
-              `Harness network mode: ${harnessStatus?.effectiveMode ?? "UNKNOWN"}`,
-              ...(vpnRoutingPresentation && !maskSensitiveData
-                ? [`Harness VPN: ${vpnRoutingPresentation.label}`, vpnRoutingPresentation.title]
-                : [])
-            ].join("\n")
-        : "";
-    if ((pane.mode === "CHAT" || pane.mode === "TERMINAL") && !text) {
-      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
-        detail: { message: `${pane.mode === "CHAT" ? "Chat" : "CLI"} session info is still loading.` }
-      }));
-      return;
-    }
-    if (!text) return;
-    try {
-      await writeClipboardText(text);
-      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
-        detail: { message: "Pane session info copied." }
-      }));
-    } catch {
-      window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_NOTICE_EVENT, {
-        detail: { message: "Pane session info copy failed." }
-      }));
-    }
-  }
-
-  let rawPaneActions: IconToolbarAction[] = [
-    ...(!isTerminalLoginSession && !isRootPane && pane.mode === "TERMINAL" ? [{
-      id: "new-task",
-      label: "New task",
-      title: "Start a new CLI task",
-      ariaLabel: `New task ${title}`,
-      icon: Plus,
-      onClick: () => dispatchTerminalPaneAction(pane.id, { action: "new_task" })
-    }] : []),
-    ...(!isTerminalLoginSession && !isDeepSeekTerminal ? [{
-      id: "import",
-      label: pane.mode === "CHAT" ? "Attach files to agent" : pane.mode === "TERMINAL" ? "Upload files to CLI" : "Import files to pane",
-      title: pane.mode === "CHAT" ? "Attach files to agent" : pane.mode === "TERMINAL" ? "Upload files to CLI" : "Import files to pane",
-      ariaLabel: `Import files ${title}`,
-      icon: Paperclip,
-      onClick: openPaneImport,
-      disabled: usesGenericImport && genericImportPending
-    }] : []),
-    ...(pane.mode === "LIVE" ? [
-      { id: "live-camera", label: "Camera", title: "Capture from camera", ariaLabel: `Camera ${title}`, icon: Camera, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "camera" } })) },
-      { id: "live-screen", label: "Share screen", title: "Share screen", ariaLabel: `Share screen ${title}`, icon: Monitor, onClick: () => window.dispatchEvent(new CustomEvent("space-live-pane-action", { detail: { paneId: pane.id, action: "screen" } })) }
-    ] : []),
-    ...(pane.mode === "CHAT"
-      ? [
-          {
-            id: "generate-title",
-            label: "Generate pane title",
-            title: "Generate pane title with AI",
-            ariaLabel: `Generate pane title with AI ${title}`,
-            icon: Sparkles,
-            onClick: () => void generatePaneTitle(),
-            disabled: titleSavePending || titleGeneratePending
-          }
-        ]
-      : []),
-    ...(pane.mode === "CHAT"
-      ? [
-          {
-            id: "plan",
-            label: "Enable Plan mode",
-            title: "Enable Plan mode",
-            ariaLabel: `Enable Plan mode ${title}`,
-            icon: ClipboardList,
-            onClick: () => dispatchAgentPaneAction(pane.id, "plan")
-          },
-          {
-            id: "resume",
-            label: "Resume task",
-            title: "Resume task",
-            ariaLabel: `Resume ${title}`,
-            icon: Send,
-            onClick: () => dispatchAgentPaneAction(pane.id, "resume")
-          },
-          {
-            id: "stop",
-            label: "Stop task",
-            title: "Stop task",
-            ariaLabel: `Stop ${title}`,
-            icon: CircleStop,
-            onClick: () => dispatchAgentPaneAction(pane.id, "interrupt")
-          },
-          {
-            id: "memory",
-            label: "Save task to memory",
-            title: "Save task to memory",
-            ariaLabel: `Save ${title} to memory`,
-            icon: Database,
-            onClick: () => dispatchAgentPaneAction(pane.id, "save_to_memory")
-          },
-          {
-            id: "copy",
-            label: "Copy Chat contents",
-            title: "Copy Chat contents",
-            ariaLabel: `Copy Chat contents ${title}`,
-            icon: Copy,
-            onClick: () => dispatchAgentPaneAction(pane.id, "copy")
-          },
-          {
-            id: "reconnect",
-            label: "Reconnect Chat",
-            title: "Reconnect Chat",
-            ariaLabel: `Reconnect Chat ${title}`,
-            icon: RefreshCw,
-            onClick: () => dispatchAgentPaneAction(pane.id, "reconnect")
-          }
-        ]
-      : pane.mode === "TERMINAL" && !isRootPane
-        ? isTerminalLoginSession
-          ? [
-              {
-                id: "cancel-login",
-                label: "Cancel CLI login",
-                title: "Cancel CLI login",
-                ariaLabel: `Cancel CLI login ${title}`,
-                icon: CircleStop,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "cancel_login" }),
-                hideable: false
-              },
-              {
-                id: "reconnect",
-                label: "Reconnect CLI login",
-                title: "Reconnect CLI login",
-                ariaLabel: `Reconnect CLI login ${title}`,
-                icon: RefreshCw,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "reconnect" }),
-                hideable: false
-              }
-            ]
-          : [
-            ...(isDeepSeekTerminal ? [] : [{
-              id: "plan",
-              label: "Enable Plan mode",
-              title: "Enable Plan mode",
-              ariaLabel: `Enable Plan mode ${title}`,
-              icon: ClipboardList,
-              onClick: () =>
-                dispatchTerminalPaneAction(
-                  pane.id,
-                  terminalPlanModeAction(terminalRuntimeId)
-                )
-            }]),
-            {
-              id: "resume",
-              label: "Resume CLI task",
-              title: "Resume CLI task",
-              ariaLabel: `Resume ${title}`,
-              icon: History,
-              onClick: () => openResumeTaskHistory("cli"),
-              ariaExpanded: resumeHistoryOpen,
-              disabled: true,
-              hideable: false
-            },
-            {
-              id: "stop",
-              label: "Stop CLI task",
-              title: "Stop CLI task",
-              ariaLabel: `Stop ${title}`,
-              icon: CircleStop,
-              onClick: () => dispatchTerminalPaneAction(
-                pane.id,
-                { action: "control_key", key: isTerminalPane && terminalRuntimeId === "cli:codex" ? "escape" : "ctrl_c" }
-              )
-            },
-            {
-              id: "memory",
-              label: "Save CLI task to memory",
-              title: "Save CLI task to memory",
-              ariaLabel: `Save ${title} to memory`,
-              icon: Database,
-              onClick: () =>
-                dispatchTerminalPaneAction(pane.id, {
-                  action: "save_to_memory",
-                  modelId: cliMemorySaveModelId,
-                  text: "save to memory",
-                  memory: {
-                    scope: "ROOM",
-                    roomId: pane.roomId,
-                    title: `CLI memory save request - ${title}`,
-                    provenance: "space-cli-memory-save"
-                  }
-                })
-            },
-            {
-              id: "copy",
-              label: "Copy CLI contents",
-              title: "Copy CLI contents",
-              ariaLabel: `Copy CLI contents ${title}`,
-              icon: Copy,
-              onClick: () => dispatchTerminalPaneAction(pane.id, { action: "copy" })
-            },
-            {
-              id: "paste",
-              label: "Paste into CLI",
-              title: "Paste clipboard text into CLI",
-              ariaLabel: `Paste into CLI ${title}`,
-              icon: Clipboard,
-              onClick: () => dispatchTerminalPaneAction(pane.id, { action: "paste" })
-            },
-            {
-              id: "reconnect",
-              label: "Reconnect CLI",
-              title: "Reconnect CLI",
-              ariaLabel: `Reconnect CLI ${title}`,
-              icon: RefreshCw,
-              onClick: () => dispatchTerminalPaneAction(pane.id, { action: "reconnect" })
-            }
-            ]
-        : pane.mode === "TERMINAL"
-          ? [
-              {
-                id: "stop",
-                label: "Stop root shell",
-                title: "Stop root shell",
-                ariaLabel: `Stop ${title}`,
-                icon: CircleStop,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "control_key", key: "escape" })
-              },
-              {
-                id: "copy",
-                label: "Copy CLI contents",
-                title: "Copy CLI contents",
-                ariaLabel: `Copy CLI contents ${title}`,
-                icon: Copy,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "copy" })
-              },
-              {
-                id: "paste",
-                label: "Paste into CLI",
-                title: "Paste clipboard text into CLI",
-                ariaLabel: `Paste into CLI ${title}`,
-                icon: Clipboard,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "paste" })
-              },
-              {
-                id: "reconnect",
-                label: "Reconnect CLI",
-                title: "Reconnect CLI",
-                ariaLabel: `Reconnect CLI ${title}`,
-                icon: RefreshCw,
-                onClick: () => dispatchTerminalPaneAction(pane.id, { action: "reconnect" })
-              }
-            ]
-          : []),
-    ...(!isTerminalLoginSession ? [{
-      id: "move",
-      label: "Move pane",
-      title: canMoveToAnotherRoom ? "Move pane to another room" : "Create another room before moving a pane",
-      ariaLabel: canMoveToAnotherRoom ? `Move ${title} to another room` : `Cannot move ${title} without another room`,
-      icon: ArrowRightLeft,
-      onClick: () => onMove(pane),
-      ariaExpanded: isMoveDialogOpen,
-      disabled: !canMoveToAnotherRoom
-    }] : []),
-    ...(pane.mode !== "TERMINAL"
-      ? [
-          {
-            id: pane.mode === "CHAT" ? "chat-target" : "target",
-            label: "Use as command target",
-            title: "Use as command target",
-            ariaLabel: `Target ${title}`,
-            icon: Crosshair,
-            onClick: () => onTarget(pane.id),
-            ariaPressed: isTarget,
-            className: "target-action"
-          }
-        ]
-      : []),
-    ...(!isTerminalLoginSession ? [{
-      id: "add",
-      label: "Add pane",
-      title: "Add pane",
-      ariaLabel: `Add pane from ${title}`,
-      icon: Columns2,
-      onClick: () => onSplit(pane, "horizontal")
-    }] : []),
-    ...(!isTerminalLoginSession && shellMode !== "mobile"
-      ? [
-          {
-            id: "grow-width",
-            label: "Grow pane width",
-            title: canGrowColumnSpan ? "Grow pane width" : "Already uses the available columns. Choose a multi-column layout to grow this pane.",
-            ariaLabel: "Grow pane width",
-            icon: MoveHorizontal,
-            onClick: () => void onGrowColumnSpan(pane),
-            disabled: !canGrowColumnSpan
-          },
-          {
-            id: "reset-width",
-            label: "Reset pane width",
-            title: canResetColumnSpan ? "Reset pane width" : "Pane width is already at its default.",
-            ariaLabel: "Reset pane width",
-            icon: Shrink,
-            onClick: () => void onResetColumnSpan(pane),
-            disabled: !canResetColumnSpan
-          }
-        ]
-      : [])
-  ];
-  if (pane.mode === "YOUTUBE") {
-    rawPaneActions = onToggleYouTubeFloating ? [
-      {
-        id: "youtube-float",
-        label: isFloatingYouTube ? "Restore pane" : "Float mini player",
-        title: isFloatingYouTube ? "Restore pane to grid" : "Float mini player",
-        ariaLabel: isFloatingYouTube ? `Restore ${title}` : `Float ${title}`,
-        icon: isFloatingYouTube ? Maximize2 : PictureInPicture2,
-        onClick: onToggleYouTubeFloating
-      }
-    ] : [];
-  }
-  if (pane.mode === "BROWSER") {
-    rawPaneActions = [
-      {
-        id: "add",
-        label: "Add pane",
-        title: "Add pane",
-        ariaLabel: `Add pane from ${title}`,
-        icon: Columns2,
-        onClick: () => onSplit(pane, "horizontal")
-      }
-    ];
-  }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES") {
-    rawPaneActions = [
-      ...(!isTerminalLoginSession ? [{
-        id: "add",
-        label: "Add pane",
-        title: "Add pane",
-        ariaLabel: `Add pane from ${title}`,
-        icon: Columns2,
-        onClick: () => onSplit(pane, "horizontal")
-      }] : []),
-      ...(!isTerminalLoginSession ? [{
-        id: "move",
-        label: "Move pane",
-        title: canMoveToAnotherRoom ? "Move pane to another room" : "Create another room before moving a pane",
-        ariaLabel: canMoveToAnotherRoom ? `Move ${title} to another room` : `Cannot move ${title} without another room`,
-        icon: ArrowRightLeft,
-        onClick: () => onMove(pane),
-        ariaExpanded: isMoveDialogOpen,
-        disabled: !canMoveToAnotherRoom
-      }] : []),
-      ...(!isTerminalLoginSession && shellMode !== "mobile" ? [
-        {
-          id: "grow-width",
-          label: "Grow pane width",
-          title: canGrowColumnSpan ? "Grow pane width" : "Already uses the available columns. Choose a multi-column layout to grow this pane.",
-          ariaLabel: "Grow pane width",
-          icon: MoveHorizontal,
-          onClick: () => void onGrowColumnSpan(pane),
-          disabled: !canGrowColumnSpan
-        },
-        {
-          id: "reset-width",
-          label: "Reset pane width",
-          title: canResetColumnSpan ? "Reset pane width" : "Pane width is already at its default.",
-          ariaLabel: "Reset pane width",
-          icon: Shrink,
-          onClick: () => void onResetColumnSpan(pane),
-          disabled: !canResetColumnSpan
-        }
-      ] : [])
-    ];
-  }
-  const codexMutationActionIds = new Set([
-    "new-task",
-    "import",
-    "generate-title",
-    "plan",
-    "resume",
-    "stop",
-    "memory",
-    "reconnect",
-    "cancel-login",
-    "add"
-  ]);
-  const paneActions: IconToolbarAction[] = rawPaneActions.map((action) =>
-    codexMutationBlocked && codexMutationActionIds.has(action.id)
-      ? { ...action, disabled: true, title: codexDisabledReason }
-      : action
-  );
-  const paneTaskCommands: PaneOverflowCommand[] = pane.mode === "CHAT"
-    ? [
-        {
-          id: "new_task",
-          label: "New task",
-          description: "Start a clean Codex thread",
-          ariaLabel: "New task",
-          icon: Plus,
-          onClick: () => dispatchAgentPaneAction(pane.id, "new_task"),
-          disabled: codexMutationBlocked,
-          title: codexMutationBlocked ? codexDisabledReason : undefined
-        },
-        {
-          id: "task_history",
-          label: "Task history",
-          description: "Open an existing Codex thread",
-          ariaLabel: "Task history",
-          icon: History,
-          onClick: () => openResumeTaskHistory("chat"),
-          disabled: resumePending || codexMutationBlocked,
-          title: codexMutationBlocked ? codexDisabledReason : undefined
-        },
-        {
-          id: "attach_folder",
-          label: "Attach folder",
-          description: "Add a folder to the next turn",
-          ariaLabel: "Attach folder",
-          icon: FolderPlus,
-          onClick: () => dispatchAgentPaneAction(pane.id, "attach_folder"),
-          disabled: codexMutationBlocked,
-          title: codexMutationBlocked ? codexDisabledReason : undefined
-        },
-        {
-          id: "manage_goal",
-          label: "Manage goal",
-          description: "Set or clear the task goal",
-          ariaLabel: "Manage goal",
-          icon: Crosshair,
-          onClick: () => dispatchAgentPaneAction(pane.id, "manage_goal"),
-          disabled: codexMutationBlocked,
-          title: codexMutationBlocked ? codexDisabledReason : undefined
-        }
-      ]
-    : [];
-  const paneToolbar = usePersistentIconToolbar({
-    actions: paneActions,
-    hiddenStorageKey: paneToolbarStorageKeys.hidden,
-    orderStorageKey: paneToolbarStorageKeys.order,
-    nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES",
-    closeOverflowOnDragStart: shellMode === "mobile"
-  });
-  const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
-  const paneToolbarMenuActions = usesCompactPaneActions ? paneToolbar.orderedActions : paneToolbar.visibleActions;
-  const paneToolbarPrimaryActionCount = uiTheme !== "classic"
-    ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
-    : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES"
-    ? []
-    : pane.mode === "YOUTUBE"
-      ? (youtubeFloatFits ? paneToolbarMenuActions : [])
-      : (uiTheme !== "classic"
-          ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
-          : paneToolbarMenuActions);
-  const paneOverflowCommands: PaneOverflowCommand[] = [
-    ...paneTaskCommands,
-    ...(pane.mode === "YOUTUBE" ? [
-      ...(onToggleYouTubeFloating ? [{
-        id: "youtube-float",
-        label: isFloatingYouTube ? "Restore pane" : "Float mini player",
-        ariaLabel: isFloatingYouTube ? "Restore pane" : "Float mini player",
-        description: isFloatingYouTube
-          ? "Restore YouTube player to grid"
-          : "Float YouTube player as a draggable, resizable mini window",
-        icon: isFloatingYouTube ? Maximize2 : PictureInPicture2,
-        onClick: onToggleYouTubeFloating
-      }] : []),
-      {
-        id: "youtube-toolbar",
-        label: youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar",
-        ariaLabel: youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar",
-        description: "Show or hide all YouTube controls without interrupting playback",
-        icon: youtubeToolbarHidden ? Eye : EyeOff,
-        onClick: () => {
-          const hidden = !youtubeToolbarHidden;
-          setYoutubeToolbarHidden(hidden);
-          try { localStorage.setItem(youtubeToolbarStorageKey, String(hidden)); } catch { /* Keep the current pane usable without storage. */ }
-        }
-      }, {
-        id: "youtube-add-pane",
-        label: "Add pane",
-        ariaLabel: `Add pane from ${title}`,
-      description: "Add a YouTube pane",
-      icon: Columns2,
-      onClick: () => onSplit(pane, "horizontal")
-    }] : []),
-    ...(uiTheme !== "classic" && shellMode !== "mobile" && !usesCompactPaneActions && pane.mode !== "YOUTUBE"
-      ? paneToolbarMenuActions.slice(paneToolbarPrimaryActionCount).map((action) => ({
-          id: `toolbar-action:${action.id}`,
-          label: action.label,
-          description: action.title,
-          ariaLabel: action.ariaLabel,
-          icon: action.icon,
-          onClick: action.onClick,
-          disabled: action.disabled
-        }))
-      : [])
-  ];
-  useLayoutEffect(() => {
-    // Retain the last measured desktop layout while hidden. Resetting it here
-    // expands the toolbar only to collapse it again on the next room reveal.
-    // The visible pass below still measures current geometry before paint.
-    if (!isVisibleInShell) return;
-    if (shellMode === "mobile") {
-      setIsHeaderActionsStacked(false);
-      setModernPrimaryActionCapacity(null);
-      return;
-    }
-    const headerElement = paneHeaderRef.current;
-    const badgeElement = paneBadgeRef.current;
-    const actionsElement = paneActionsRef.current;
-    const fixedActionsElement = paneFixedActionsRef.current;
-    if (!headerElement || !badgeElement || !actionsElement || !fixedActionsElement) {
-      setIsHeaderActionsStacked(false);
-      return;
-    }
-
-    const measureHeaderLayout = () => {
-      const headerWidth = headerElement.clientWidth;
-      if (headerWidth <= 0) {
-        // A hidden ancestor has no usable geometry. ResizeObserver will
-        // measure again when the header receives its visible dimensions.
-        return;
-      }
-
-      const headerStyles = window.getComputedStyle(headerElement);
-      const actionsStyles = window.getComputedStyle(actionsElement);
-      const fixedActionsStyles = window.getComputedStyle(fixedActionsElement);
-      const headerGap = Number.parseFloat(headerStyles.columnGap || headerStyles.gap || "") || remToPx(0.5);
-      const actionsGap = Number.parseFloat(actionsStyles.columnGap || actionsStyles.gap || "") || remToPx(0.25);
-      const fixedActionsGap = Number.parseFloat(fixedActionsStyles.columnGap || fixedActionsStyles.gap || "") || remToPx(0.25);
-      const paddingLeft = Number.parseFloat(headerStyles.paddingLeft || "") || remToPx(0.55);
-      const paddingRight = Number.parseFloat(headerStyles.paddingRight || "") || remToPx(0.55);
-      const actionButtons = Array.from(actionsElement.children).filter((node): node is HTMLButtonElement => node instanceof HTMLButtonElement);
-      const actionButtonsWidth = actionButtons.reduce((sum, button) => sum + (button.offsetWidth || remToPx(2.25)), 0);
-      const actionsInlineWidth = actionButtonsWidth + Math.max(0, actionButtons.length - 1) * actionsGap;
-      const fixedControls = Array.from(fixedActionsElement.children).filter(
-        (node): node is HTMLElement => node instanceof HTMLElement
-      );
-      const fixedControlsWidth = fixedControls.reduce(
-        (sum, control) => sum + (control.getBoundingClientRect().width || control.offsetWidth || remToPx(2.25)),
-        0
-      );
-      const fixedInlineWidth = fixedControlsWidth + Math.max(0, fixedControls.length - 1) * fixedActionsGap;
-      const badgeWidth = badgeElement.clientWidth || remToPx(2);
-      if (pane.mode === "YOUTUBE") {
-        const actionWidth = actionButtons[0]?.offsetWidth || remToPx(2.25);
-        const titleInlineWidth = titleEditOpen
-          ? remToPx(12)
-          : Math.min(
-              Math.max(measureSingleLineTitleWidth(titleTextRef.current, 8), remToPx(8)),
-              remToPx(16)
-            );
-        const fits = !paneHeaderNeedsSecondRow({
-          availableWidth: headerWidth,
-          paddingLeft,
-          paddingRight,
-          badgeWidth,
-          titleWidth: titleInlineWidth,
-          actionsWidth: actionWidth,
-          fixedWidth: fixedInlineWidth,
-          columnGap: headerGap
-        });
-        setYoutubeFloatFits(fits);
-        setIsHeaderActionsStacked(false);
-        setModernPrimaryActionCapacity(fits ? 1 : 0);
-        return;
-      }
-      if (uiTheme !== "classic") {
-        const nextCapacity = modernPanePrimaryActionCapacity({
-          availableWidth: headerWidth,
-          paddingLeft,
-          paddingRight,
-          badgeWidth,
-          titleWidth: remToPx(6),
-          fixedWidth: fixedInlineWidth,
-          columnGap: headerGap,
-          actionWidth: actionButtons[0]?.offsetWidth || remToPx(2.05),
-          actionGap: actionsGap,
-          maxActions: modernPrimaryActionLimit
-        });
-        setModernPrimaryActionCapacity((current) => current === nextCapacity ? current : nextCapacity);
-        setIsHeaderActionsStacked(false);
-        return;
-      }
-      setModernPrimaryActionCapacity(null);
-      if (!shouldMeasureToolbarLayout(uiTheme)) {
-        setIsHeaderActionsStacked(false);
-        return;
-      }
-      const titleInlineWidth = titleEditOpen
-        ? remToPx(12)
-        : Math.min(
-            Math.max(measureSingleLineTitleWidth(titleTextRef.current, 8) + (isTerminalPane ? remToPx(1.45) : 0), remToPx(8)),
-            remToPx(16)
-          );
-      setIsHeaderActionsStacked(
-        paneHeaderNeedsSecondRow({
-          availableWidth: headerWidth,
-          paddingLeft,
-          paddingRight,
-          badgeWidth,
-          titleWidth: titleInlineWidth,
-          actionsWidth: actionsInlineWidth,
-          fixedWidth: fixedInlineWidth,
-          columnGap: headerGap
-        })
-      );
-    };
-
-    measureHeaderLayout();
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measureHeaderLayout) : null;
-    resizeObserver?.observe(headerElement);
-    resizeObserver?.observe(badgeElement);
-    resizeObserver?.observe(actionsElement);
-    resizeObserver?.observe(fixedActionsElement);
-    if (titleTextRef.current) resizeObserver?.observe(titleTextRef.current);
-    window.addEventListener("resize", measureHeaderLayout);
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", measureHeaderLayout);
-    };
-  }, [
-    isTerminalPane,
-    isVisibleInShell,
-    modernPrimaryActionLimit,
-    pane.mode,
-    paneToolbarRenderedActions.length,
-    pane.title,
-    shellMode,
-    titleEditOpen,
-    uiTheme,
-    vpnRoutingPresentation?.label,
-    youtubeFloatFits
-  ]);
-  useDismissibleToolbarLayer({
-    containerRef: paneHeaderRef,
-    active: paneToolbar.isOverflowOpen || Boolean(paneToolbar.actionMenu) || Boolean(badgeMenuPosition),
-    onDismiss: () => {
-      paneToolbar.closeMenus();
-      setBadgeMenuPosition(null);
-    }
-  });
-
-  return (
-    <article
-      ref={paneArticleRef}
-      className={`${pane.isMaximized ? "pane-card is-maximized" : "pane-card"}${pane.isMinimized ? " is-minimized" : ""}${isFloatingYouTube ? " is-floating-mini-player" : ""}${isPointerActive ? " is-pointer-active" : ""}${isTarget ? " is-target" : ""}${hasPendingCompletion ? " is-completion-pending" : ""}${pane.mode === "BROWSER" ? " browser-pane-card" : ""}${pane.mode === "YOUTUBE" ? " youtube-pane-card" : ""}${pane.mode === "CHAT" ? " chat-pane-card" : ""}${isVisibleInShell ? "" : " is-shell-hidden"}${draggedPaneId === pane.id ? " is-dragging" : ""}${dragOverPaneId === pane.id && draggedPaneId !== pane.id ? ` is-drop-target is-drop-target-${dragOverPosition ?? "before"}` : ""}`}
-      data-agent-tone={agentTone}
-      data-space-pane-id={pane.id}
-      data-space-room-id={pane.roomId}
-      data-space-pane-title={pane.title}
-      data-pane-mode={pane.mode}
-      data-terminal-output-state={isTerminalOutputVisible ? "writable" : "buffering"}
-      data-cli-vpn-routing={vpnRoutingPresentation?.tone ?? "direct"}
-      data-column-span={effectiveColumnSpan}
-      data-stored-column-span={pane.columnSpan}
-      data-grid-column-start={columnStart}
-      data-grid-row-index={rowIndex}
-      data-drop-position={dragOverPaneId === pane.id && draggedPaneId !== pane.id ? (dragOverPosition ?? "before") : undefined}
-      data-completion-state={completionState}
-      data-minimized={pane.isMinimized ? "true" : "false"}
-      data-shell-visible={isVisibleInShell ? "true" : "false"}
-      aria-hidden={isVisibleInShell ? undefined : true}
-      aria-label={`${title} agent ${agentNumber}`}
-      style={isFloatingYouTube ? {
-        position: "fixed",
-        left: `${floatLayout.x}px`,
-        top: `${floatLayout.y}px`,
-        width: `${floatLayout.width}px`,
-        height: `${floatLayout.height}px`,
-        zIndex: 1200,
-        minWidth: "240px",
-        minHeight: "160px",
-        transform: youtubeDodgeShiftX > 0 ? `translateX(-${youtubeDodgeShiftX}px)` : undefined,
-        transition: isPointerActive ? "none" : "transform 0.22s cubic-bezier(0.2, 0, 0, 1)"
-      } : paneCardStyle}
-      onPointerDownCapture={() => onTarget(pane.id)}
-      onDragOver={(event) => onPaneDragOver(event, pane.id)}
-      onDragLeave={() => onPaneDragLeave(pane.id)}
-      onDrop={(event) => {
-        event.preventDefault();
-        void onPaneDrop(pane.id, dragOverPosition);
-      }}
-      onFocusCapture={(event) => {
-        if (event.target instanceof Element && event.target.classList.contains("xterm-helper-textarea")) {
-          if (event.isTrusted) onTarget(pane.id);
-          return;
-        }
-        onTarget(pane.id);
-      }}
-    >
-      {usesGenericImport ? (
-        <input
-          ref={genericUploadInputRef}
-          type="file"
-          name="pane-import-files"
-          multiple
-          accept="*/*"
-          hidden
-          onChange={(event) => {
-            const files = event.currentTarget.files ? Array.from(event.currentTarget.files) : [];
-            event.currentTarget.value = "";
-            if (files.length) void importGenericPaneFiles(files);
-          }}
-        />
-      ) : null}
-      {isFloatingYouTube ? (
-        <header
-          className="pane-card-header youtube-mini-float-header"
-          onPointerDown={handleFloatHeaderPointerDown}
-        >
-          <GripVertical className="youtube-mini-float-drag-icon" aria-hidden="true" />
-          <Youtube className="youtube-mini-float-icon" aria-hidden="true" />
-          <span className="youtube-mini-float-title" title={title}>
-            {title}
-          </span>
-          <div className="youtube-mini-float-actions">
-            <button
-              type="button"
-              className="youtube-mini-float-btn"
-              title={youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar"}
-              aria-label={youtubeToolbarHidden ? "Show YouTube toolbar" : "Hide YouTube toolbar"}
-              onClick={() => {
-                const hidden = !youtubeToolbarHidden;
-                setYoutubeToolbarHidden(hidden);
-                try { localStorage.setItem(youtubeToolbarStorageKey, String(hidden)); } catch {}
-              }}
-            >
-              {youtubeToolbarHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-            </button>
-            <button
-              type="button"
-              className="youtube-mini-float-btn"
-              title="Restore pane to grid"
-              aria-label="Restore pane to grid"
-              onClick={onToggleYouTubeFloating}
-            >
-              <Maximize2 aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="youtube-mini-float-btn"
-              title="Close mini player"
-              aria-label="Close mini player"
-              onClick={onToggleYouTubeFloating}
-            >
-              <X aria-hidden="true" />
-            </button>
-          </div>
-        </header>
-      ) : (
-        <header
-          ref={paneHeaderRef}
-          className={isHeaderActionsStacked ? "is-actions-stacked" : undefined}
-          tabIndex={-1}
-          title={title}
-          draggable={!paneReorderPending && !titleEditOpen}
-        onDragStart={(event) => {
-          const target = event.target as HTMLElement | null;
-          if (target?.closest('button, input, form, select, textarea, .pane-title-detail-content, .task-title-popover, .icon-context-menu, [role="menu"]')) {
-            return;
-          }
-          const openDetails = paneHeaderRef.current?.querySelector<HTMLDetailsElement>('details.pane-title-details[open]');
-          if (openDetails) openDetails.open = false;
-          onPaneDragStart(event, pane);
-        }}
-        onDragEnd={onPaneDragEnd}
-      >
-        <div ref={paneBadgeRef} className="pane-header-identity" {...badgeTouchContext}>
-          {isMobilePaneFocused && isTarget ? <SpaceBrand /> : (
-            <div
-              className={`pane-agent-badge${vpnRoutingPresentation ? ` has-vpn-routing is-${vpnRoutingPresentation.tone}` : ""}${draggedPaneId === pane.id ? " is-dragging" : ""}`}
-              title={paneIdentityTitle}
-              role="img"
-              aria-label={paneIdentityTitle}
-              data-category-color={pane.categoryColor ?? undefined}
-              onDoubleClick={() => void onToggleColumnSpan(pane)}
-              onContextMenu={usesCompactPaneActions ? (event) => {
-                event.preventDefault();
-                paneToolbar.closeMenus();
-                setBadgeMenuPosition({ x: event.clientX, y: event.clientY });
-              } : undefined}
-            >
-              <PaneModeIcon pane={pane} />
-              {vpnRoutingPresentation ? (
-                <span className="pane-agent-vpn-indicator" aria-hidden="true">VPN</span>
-              ) : null}
-            </div>
-          )}
-          {badgeMenuPosition ? (
-            <div
-              className="icon-context-menu"
-              role="menu"
-              aria-label={`Pane menu ${title}`}
-              style={{ left: `${badgeMenuPosition.x}px`, top: `${badgeMenuPosition.y}px` }}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => void copyPaneIdentityInfo()}
-              >
-                <Copy aria-hidden="true" />
-                Copy session info
-              </button>
-              {!isTerminalLoginSession ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={titleSavePending || titleGeneratePending || codexMutationBlocked}
-                  title={codexMutationBlocked ? codexDisabledReason : undefined}
-                  onClick={() => {
-                    setBadgeMenuPosition(null);
-                    beginTitleEdit();
-                  }}
-                >
-                  <Pencil aria-hidden="true" />
-                  Edit pane title
-                </button>
-              ) : null}
-              {!isRootPane && !isTerminalLoginSession ? (
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={titleSavePending || titleGeneratePending || codexMutationBlocked}
-                  title={codexMutationBlocked ? codexDisabledReason : undefined}
-                  onClick={() => {
-                    setBadgeMenuPosition(null);
-                    void generatePaneTitle();
-                  }}
-                >
-                  <Sparkles aria-hidden="true" />
-                  Generate pane title
-                </button>
-              ) : null}
-              <div className="icon-context-menu-separator" role="separator" />
-              <span className="icon-context-menu-label">Color</span>
-              <div className="icon-context-menu-swatches" role="group" aria-label="Pane category color">
-                {paneCategoryColors.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    className={`category-swatch ${color}${pane.categoryColor === color ? " selected" : ""}`}
-                    aria-label={`Set category color ${color}`}
-                    aria-pressed={pane.categoryColor === color}
-                    title={color}
-                    disabled={categoryColorPending}
-                    onClick={() => void applyPaneCategoryColor(color)}
-                  />
-                ))}
-                <button
-                  type="button"
-                  className={`category-swatch none${pane.categoryColor === null ? " selected" : ""}`}
-                  aria-label="Clear category color"
-                  aria-pressed={pane.categoryColor === null}
-                  title="No color"
-                  disabled={categoryColorPending}
-                  onClick={() => void applyPaneCategoryColor(null)}
-                >
-                  <X aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-        <div
-          className="pane-title-block"
-          data-swipe-nav={canSwipeNavigate ? "true" : undefined}
-          onTouchStart={handleTitleTouchStart}
-          onTouchEnd={handleTitleTouchEnd}
-          onTouchCancel={handleTitleTouchCancel}
-        >
-          <div className="pane-title-row">
-            {titleEditOpen ? (
-              <form className="pane-title-form room-title-form" onSubmit={(event) => void submitPaneTitle(event)}>
-                <input
-                  ref={titleInputRef}
-                  className="pane-title-input"
-                  aria-label="Pane title"
-                  value={titleDraft}
-                  disabled={titleSavePending || titleGeneratePending}
-                  onChange={(event) => setTitleDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      cancelTitleEdit();
-                    }
-                  }}
-                />
-                <button
-                  type="submit"
-                  className="pane-title-save"
-                  title="Save pane title"
-                  aria-label="Save pane title"
-                  disabled={titleSavePending || titleGeneratePending}
-                >
-                  <Save aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="pane-title-cancel"
-                  title="Cancel pane title"
-                  aria-label="Cancel pane title"
-                  onClick={cancelTitleEdit}
-                  disabled={titleSavePending || titleGeneratePending}
-                >
-                  <Undo2 aria-hidden="true" />
-                </button>
-              </form>
-            ) : (
-              <TaskTitleDetails pane={pane} displayTitle={title} titleRef={titleTextRef} disabled={codexMutationBlocked} onRename={beginTitleEdit} onUpdated={onPaneUpdated} />
-            )}
-          </div>
-          {titleError ? (
-            <small className="pane-title-hint" role="alert">
-              {titleError}
-            </small>
-          ) : null}
-        </div>
-        <div className="pane-actions" ref={paneActionsRef}>
-          {isFullscreenLayout && fullscreenCount > 1 && shellMode !== "mobile" ? (
-            <div className="pane-fullscreen-nav" role="group" aria-label={`Pane navigation, pane ${fullscreenIndex + 1} of ${fullscreenCount}`}>
-              <button
-                type="button"
-                className="pane-fullscreen-nav-button"
-                title="Previous pane"
-                aria-label="Previous pane"
-                disabled={fullscreenCount < 2}
-                onClick={() => onFullscreenNavigate("previous", pane.id)}
-              >
-                <ChevronLeft aria-hidden="true" />
-              </button>
-              <span className="pane-fullscreen-position" aria-live="polite">
-                {fullscreenIndex + 1} / {fullscreenCount}
-              </span>
-              <button
-                type="button"
-                className="pane-fullscreen-nav-button"
-                title="Next pane"
-                aria-label="Next pane"
-                disabled={fullscreenCount < 2}
-                onClick={() => onFullscreenNavigate("next", pane.id)}
-              >
-                <ChevronRight aria-hidden="true" />
-              </button>
-            </div>
-          ) : null}
-          {paneToolbarRenderedActions.map((action) => {
-            const ActionIcon = action.icon;
-            return (
-              <button
-                key={action.id}
-                type="button"
-                className={action.className}
-                title={action.title}
-                aria-label={action.ariaLabel}
-                aria-controls={action.ariaControls}
-                aria-expanded={action.ariaExpanded}
-                aria-haspopup={action.ariaHasPopup}
-                aria-pressed={action.ariaPressed}
-                onClick={action.onClick}
-                disabled={action.disabled}
-                onContextMenu={(event) => {
-                  if (usesCompactPaneActions || action.hideable === false) return;
-                  event.preventDefault();
-                  paneToolbar.closeMenus();
-                  paneToolbar.setActionMenu({
-                    actionId: action.id,
-                    actionLabel: action.ariaLabel,
-                    x: event.clientX,
-                    y: event.clientY
-                  });
-                }}
-                {...paneToolbar.getDragHandleProps(action)}
-              >
-                <ActionIcon aria-hidden="true" />
-              </button>
-            );
-          })}
-          {paneToolbar.actionMenu ? (
-            <div
-              className="icon-context-menu"
-              role="menu"
-              aria-label={`Action menu ${paneToolbar.actionMenu.actionLabel}`}
-              style={{ left: `${paneToolbar.actionMenu.x}px`, top: `${paneToolbar.actionMenu.y}px` }}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  if (paneToolbar.actionMenu) paneToolbar.hideAction(paneToolbar.actionMenu.actionId);
-                }}
-              >
-                Hide
-              </button>
-            </div>
-          ) : null}
-        </div>
-        <div ref={paneFixedActionsRef} className="pane-actions-fixed">
-          <div className="pane-actions-overflow">
-            <button
-              ref={paneOverflowTriggerRef}
-              type="button"
-              title={`More pane actions ${title}`}
-              aria-label={`More pane actions ${title}`}
-              aria-controls={paneActionsPopupId}
-              aria-expanded={paneToolbar.isOverflowOpen}
-              aria-haspopup={shellMode === "mobile" ? "dialog" : "menu"}
-              onClick={() => {
-                paneToolbar.setActionMenu(null);
-                paneToolbar.setIsOverflowOpen((current) => !current);
-              }}
-            >
-              <MoreHorizontal aria-hidden="true" />
-            </button>
-            {paneToolbar.isOverflowOpen ? (
-              shellMode === "mobile" ? (
-                <MobileActionSheet
-                  actionSections={pane.mode === "YOUTUBE" ? [] : undefined}
-                  commandSectionLabel={pane.mode === "YOUTUBE" ? "Quick actions" : undefined}
-                  actions={paneToolbar.orderedActions}
-                  commands={paneOverflowCommands}
-                  hiddenActionIds={paneToolbar.hiddenActionIds}
-                  label={`Pane actions ${title}`}
-                  onClose={paneToolbar.closeMenus}
-                  onHideAction={paneToolbar.hideAction}
-                  onRunCommand={(command) => {
-                    paneToolbar.setIsOverflowOpen(false);
-                    command.onClick();
-                  }}
-                  onShowAction={paneToolbar.showAction}
-                  onRunAction={(action) => {
-                    paneToolbar.setIsOverflowOpen(false);
-                    action.onClick();
-                  }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES"}
-                  popupId={paneActionsPopupId}
-                  triggerRef={paneOverflowTriggerRef}
-                />
-              ) : (
-                <DesktopActionManager
-                  actions={paneToolbar.orderedActions}
-                  commandSectionLabel={pane.mode === "YOUTUBE" || uiTheme !== "classic" ? "Quick actions" : "Task commands"}
-                  commands={paneOverflowCommands}
-                  hiddenActionIds={paneToolbar.hiddenActionIds}
-                  label={`Pane actions ${title}`}
-                  onClose={paneToolbar.closeMenus}
-                  onHideAction={paneToolbar.hideAction}
-                  onReorderAction={paneToolbar.moveAction}
-                  onRunAction={(action) => {
-                    paneToolbar.setIsOverflowOpen(false);
-                    action.onClick();
-                  }}
-                  onRunCommand={(command) => {
-                    paneToolbar.setIsOverflowOpen(false);
-                    command.onClick();
-                  }}
-                  onShowAction={(actionId) => {
-                    if (uiTheme !== "classic") {
-                      paneToolbar.showActionInPrimary(actionId, paneToolbarPrimaryActionCount);
-                    } else {
-                      paneToolbar.showAction(actionId);
-                    }
-                  }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES"}
-                  preferPaneInside={pane.mode === "CHAT"}
-                  primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
-                  popupId={paneActionsPopupId}
-                  triggerRef={paneOverflowTriggerRef}
-                />
-              )
-            ) : null}
-          </div>
-          {shellMode !== "mobile" ? <button
-            type="button"
-            className={`pane-maximize-toggle${(showRestoreIcon || isFullscreenLayout) ? " is-active" : ""}`}
-            title={maximizeLabel}
-            aria-label={maximizeLabel}
-            aria-pressed={showRestoreIcon || isFullscreenLayout}
-            onClick={() => {
-              paneToolbar.closeMenus();
-              if (isFullscreenLayout) {
-                onRestoreLayout?.();
-                return;
-              }
-              onTarget(pane.id);
-              onMaximize(pane);
-            }}
-          >
-            {isFullscreenLayout ? (
-              <Grid2X2 aria-hidden="true" />
-            ) : showRestoreIcon ? (
-              <Minimize2 aria-hidden="true" />
-            ) : (
-              <Maximize2 aria-hidden="true" />
-            )}
-          </button> : null}
-          {shellMode !== "mobile" ? (
-            <button
-              type="button"
-              title="Minimize pane"
-              aria-label={`Minimize pane ${title}`}
-              onClick={() => {
-                paneToolbar.closeMenus();
-                onMinimize(pane);
-              }}
-            >
-              <Minus aria-hidden="true" />
-            </button>
-          ) : null}
-          <button type="button" title="Close pane" aria-label="Close pane" onClick={() => onClose(pane.id)}>
-            <X aria-hidden="true" />
-          </button>
-        </div>
-      </header>
-      )}
-      <div className="pane-body">
-        {usesGenericImport && (genericImportPending || genericImportNotice || genericImportError) ? (
-          <div className={genericImportError ? "pane-import-alert bad" : "pane-import-alert"} role={genericImportError ? "alert" : "status"}>
-            <span>{genericImportError ?? (genericImportPending ? "Importing files..." : genericImportNotice)}</span>
-            {genericImportPending ? null : (
-              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => { if (genericImportError) setGenericImportError(null); else setGenericImportNotice(null); }}><X aria-hidden="true" /></button>
-            )}
-          </div>
-        ) : null}
-        {pane.mode === "CHAT" ? (
-          <RecoverableSurface fallback={agentPaneLoadingFallback}>
-            <LazyAgentPane
-              pane={pane}
-              codexEnvironment={codexEnvironment}
-              workspaceTextSize={terminalFontSize}
-              isVisible={isVisibleInShell && !pane.isMinimized}
-              onSessionIdentityChange={setAgentPaneIdentity}
-            />
-          </RecoverableSurface>
-        ) : pane.mode === "TERMINAL" ? (
-          <TerminalPane
-            pane={pane}
-            terminalFontSize={terminalFontSize}
-            bootstrapBarrier={terminalBootstrapBarrier}
-            shouldBootstrap={shouldBootstrapTerminal}
-            prefillInitialReplay={prefillInitialReplay}
-            revealGeneration={revealGeneration}
-            hideFloatingControls={hideCliFloats}
-            isTarget={isTarget}
-            isVisible={isTerminalOutputVisible}
-            fullscreenLayout={isFullscreenLayout}
-            cliDebugModeEnabled={cliDebugModeEnabled}
-            observerOnly={terminalObserverOnly}
-            maxImagePreviews={cliImagePreviewLimit}
-            onCliDebugModeChange={onCliDebugModeChange}
-            onSessionMetadataChange={setTerminalSessionMetadata}
-            onBootstrapped={handleTerminalBootstrapped}
-            onPrefillReadyChange={handleTerminalPrefillReadyChange}
-            onRevealReady={handleTerminalRevealReady}
-            oskOpen={oskOpen}
-            mobile={shellMode === "mobile" || isCoarsePointer}
-          />
-        ) : pane.mode === "BROWSER" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyBrowserPane
-              mobile={shellMode === "mobile" || isCoarsePointer}
-              isVisible={isVisibleInShell}
-              pane={pane}
-              agentNumber={agentNumber}
-              observerOnly={browserObserverOnly}
-              uiTheme={uiTheme}
-            />
-          </RecoverableSurface>
-        ) : pane.mode === "YOUTUBE" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyYouTubePane
-              onVideoTitleChange={setYoutubeVideoTitle}
-              toolbarHidden={youtubeToolbarHidden}
-              pane={pane}
-              agentNumber={agentNumber}
-              observerOnly={browserObserverOnly}
-              uiTheme={uiTheme}
-              isFloating={isFloatingYouTube}
-              onToggleFloat={onToggleYouTubeFloating}
-            />
-          </RecoverableSurface>
-        ) : pane.mode === "VNC" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyVncPane pane={pane} observerOnly={browserObserverOnly} />
-          </RecoverableSurface>
-        ) : pane.mode === "HARNESS" && shouldLoadHarness ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyHarnessPane pane={pane} workspaceTextSize={terminalFontSize} isVisible={isVisibleInShell} />
-          </RecoverableSurface>
-        ) : pane.mode === "HARNESS" ? (
-          <div className="harness-pane" data-harness-deferred="true" aria-hidden="true" />
-        ) : pane.mode === "LIVE" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyLivePane pane={pane} workspaceTextSize={terminalFontSize} mobile={shellMode === "mobile" || isCoarsePointer} />
-          </RecoverableSurface>
-        ) : pane.mode === "FILES" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
-            <LazyFilesPane pane={pane} uiTheme={uiTheme} mobile={shellMode === "mobile" || isCoarsePointer} projectPath={roomProjectPath} />
-          </RecoverableSurface>
-        ) : pane.mode === "DEMOS" ? (
-          <RecoverableSurface fallback={browserPaneLoadingFallback}>
-            <LazyDemosPane pane={pane} uiTheme={uiTheme} isVisible={isVisibleInShell} />
-          </RecoverableSurface>
-        ) : (
-          <>
-            <div className="pane-copy">
-              <span className={`pill ${pane.status.toLowerCase()}`}>{pane.status}</span>
-              <p>
-                {codexTurnsEnabled
-                  ? "Codex App Server turns are live through Temporal."
-                  : "Dummy Temporal path ready; real Codex/model turns remain gated."}
-              </p>
-            </div>
-            {latestTurn ? (
-              <div className="turn-summary conversation-preview" aria-label={`Latest turn for ${pane.title}`}>
-                <div className="turn-summary-head">
-                  <span className={`status ${statusTone(latestTurn.status)}`}>{latestTurn.status}</span>
-                  <strong>{latestTurn.id}</strong>
-                </div>
-                <div className="conversation-message user-message">
-                  <span>You</span>
-                  <p>{latestTurn.prompt ?? "Legacy prompt unavailable"}</p>
-                </div>
-                <div className="conversation-message agent-message">
-                  <span>Agent</span>
-                  <p>
-                    {agentResponse ??
-                      (latestTurn.status === "COMPLETED"
-                        ? "Agent response was not captured for this older turn."
-                        : latestTurn.status === "FAILED"
-                          ? "Turn failed before an agent response was captured."
-                          : "Waiting for agent response...")}
-                  </p>
-                </div>
-                <small>{latestTurn.workflowId ?? "No workflow id"}</small>
-              </div>
-            ) : (
-              <div className="turn-summary empty" role="status">
-                No turns yet
-              </div>
-            )}
-          </>
-        )}
-      </div>
-      {resumeHistoryOpen ? (
-        <TaskHistoryDialog
-          mode={resumeHistoryMode}
-          paneTitle={title}
-          runtimeLabel={cliRuntimeLabel(terminalRuntimeId) ?? "Space CLI"}
-          items={resumeHistoryItems}
-          loading={resumeHistoryLoading}
-          error={resumeHistoryError}
-          loadMorePending={resumeHistoryLoadMorePending}
-          hasMore={resumeHistoryHasMore}
-          query={resumeHistoryQuery}
-          onClose={closeResumeTaskHistory}
-          onSelect={(item) => void resumeTask(item)}
-          onLoadMore={() => void loadResumeHistory(resumeHistoryPage + 1, { append: true, query: resumeHistoryQuery })}
-          onQueryChange={changeResumeHistoryQuery}
-        />
-      ) : null}
-      {hasPendingCompletion && !hideCliFloats ? (
-        <span className="pane-completion-chip" role="status" aria-label={`${title} ended`}>
-          END
-        </span>
-      ) : null}
-      {isFloatingYouTube ? (
-        <div
-          className="youtube-mini-float-resize-handle"
-          onPointerDown={handleResizePointerDown}
-          title="Drag to resize mini player"
-          aria-hidden="true"
-        />
-      ) : null}
-    </article>
-  );
-});
-
-function eventTone(event: SpaceEvent) {
-  if (event.type.endsWith("_FAILED") || event.type === "PANE_CLOSED") return "bad";
-  if (
-    event.type.endsWith("_CREATED") ||
-    event.type.endsWith("_COMPLETED") ||
-    event.type.endsWith("_SAVED") ||
-    event.type.endsWith("_RECORDED") ||
-    event.type.endsWith("_DECIDED")
-  ) {
-    return "ok";
-  }
-  return "muted";
-}
-
-function formatEventIds(event: SpaceEvent) {
-  return [event.paneId, event.turnId, event.workflowId].filter(Boolean).join(" / ") || "room event";
-}
-
-function isPaneCapabilityMatrix(value: unknown): value is PaneCapabilityMatrix {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Array.isArray((value as { groups?: unknown }).groups) &&
-    typeof (value as { paneId?: unknown }).paneId === "string"
-  );
-}
-
-function capabilityStatusTone(status: string): string {
-  if (status === "VERIFIED" || status === "ENABLED") return "ok";
-  if (status === "WARN") return "warn";
-  if (status === "ERROR") return "bad";
-  return "muted";
-}
-
-function capabilityExecutionLabel(execution: string): string {
-  return execution.replace(/_/g, " ");
-}
-
-function PaneCapabilityPanel({
-  title,
-  matrix,
-  loading,
-  error
-}: {
-  title: string;
-  matrix: PaneCapabilityMatrix | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  return (
-    <section className="pane-capabilities" aria-label={`Capabilities for ${title}`}>
-      {matrix ? (
-        matrix.groups.map((group) => (
-          <div className="pane-capability-group" key={group.id} title={group.statusReason}>
-            <span className={`capability-dot ${capabilityStatusTone(group.status)}`} aria-hidden="true" />
-            <strong>{group.label}</strong>
-            <span>{group.status.toLowerCase()}</span>
-            <div>
-              {group.items.slice(0, 3).map((item) => (
-                <span className={`capability-chip ${capabilityStatusTone(item.status)}`} key={item.id} title={item.statusReason}>
-                  {capabilityExecutionLabel(item.execution)}
-                </span>
-              ))}
-            </div>
-          </div>
-        ))
-      ) : (
-        <div className="pane-capability-group is-empty">
-          <span className={`capability-dot ${error ? "warn" : "muted"}`} aria-hidden="true" />
-          <strong>Capabilities</strong>
-          <span>{loading ? "loading" : "unavailable"}</span>
-          <div>
-            <span className="capability-chip muted">{error ?? "metadata pending"}</span>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 function mergeSpaceEvents(current: SpaceEvent[], incoming: SpaceEvent | SpaceEvent[]): SpaceEvent[] {
   const next = new Map<string, SpaceEvent>();
@@ -15268,2350 +11513,32 @@ function mergeSpaceEvents(current: SpaceEvent[], incoming: SpaceEvent | SpaceEve
   return [...next.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, roomEventLimit);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
-function extractAgentResponseFromEvent(event: SpaceEvent): string | null {
-  const metadata = isRecord(event.payload.metadata) ? event.payload.metadata : null;
-  const codexAppServer = isRecord(metadata?.codexAppServer) ? metadata.codexAppServer : null;
-  const agentMessageText = codexAppServer?.agentMessageText;
-  if (typeof agentMessageText === "string" && agentMessageText.trim()) {
-    return agentMessageText.trim();
-  }
-  if (event.message && event.message !== "Codex App Server turn completed.") {
-    return event.message;
-  }
-  return null;
-}
 
-function parseStreamEvent(data: string, roomId?: string): SpaceEvent | null {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(data) as unknown;
-  } catch {
-    return null;
-  }
-  if (!isRecord(payload)) return null;
-  const type = payload.type;
-  const eventRoomId = payload.roomId;
-  if (typeof type !== "string" || !streamEventTypes.includes(type as SpaceEvent["type"])) return null;
-  if (typeof eventRoomId !== "string" || (roomId && eventRoomId !== roomId)) return null;
-  if (
-    typeof payload.id !== "string" ||
-    typeof payload.traceId !== "string" ||
-    typeof payload.message !== "string" ||
-    typeof payload.createdAt !== "string"
-  ) {
-    return null;
-  }
-  return {
-    id: payload.id,
-    roomId: eventRoomId,
-    paneId: typeof payload.paneId === "string" ? payload.paneId : null,
-    turnId: typeof payload.turnId === "string" ? payload.turnId : null,
-    workflowId: typeof payload.workflowId === "string" ? payload.workflowId : null,
-    traceId: payload.traceId,
-    type: type as SpaceEvent["type"],
-    message: payload.message,
-    payload: isRecord(payload.payload) ? payload.payload : {},
-    createdAt: payload.createdAt
-  };
-}
 
-function eventStreamStatusLabel(status: EventStreamStatus) {
-  switch (status) {
-    case "connected":
-      return "SSE stream connected";
-    case "connecting":
-      return "SSE stream connecting";
-    case "reconnecting":
-      return "SSE stream reconnecting";
-    case "unavailable":
-      return "SSE stream unavailable";
-    case "idle":
-      return "SSE stream idle";
-  }
-}
 
-function eventStreamStatusTone(status: EventStreamStatus) {
-  if (status === "connected") return "ok";
-  if (status === "unavailable") return "bad";
-  return "muted";
-}
 
-function lifecycleEventTone(event: LifecycleDebugEvent) {
-  if (event.type === "window_beforeunload" || event.type === "window_pagehide" || event.type === "component_unmounted") return "warn";
-  if (event.type === "app_boot") return "ok";
-  return "muted";
-}
 
-function EventDock({
-  activeRoom,
-  events,
-  lifecycleDebugSnapshot,
-  onLifecycleDebugClear,
-  onRefresh,
-  onLiveEvent
-}: {
-  activeRoom: Room | null;
-  events: SpaceEvent[];
-  lifecycleDebugSnapshot: LifecycleDebugSnapshot;
-  onLifecycleDebugClear: () => void;
-  onRefresh: (roomId: string) => Promise<void>;
-  onLiveEvent: (event: SpaceEvent) => void;
-}) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [streamStatus, setStreamStatus] = useState<EventStreamStatus>("idle");
-  const [streamError, setStreamError] = useState<string | null>(null);
-  const streamHadConnectedRef = useRef(false);
-  const latestEvents = useMemo(
-    () => [...events].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 25),
-    [events]
-  );
-  const latestLifecycleEvents = useMemo(
-    () => [...lifecycleDebugSnapshot.events].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 18),
-    [lifecycleDebugSnapshot.events]
-  );
 
-  useEffect(() => {
-    if (!activeRoom) {
-      streamHadConnectedRef.current = false;
-      setStreamStatus("idle");
-      setStreamError(null);
-      return;
-    }
-    if (!eventGateway.supported) {
-      setStreamStatus("unavailable");
-      setStreamError("Browser EventSource is unavailable; use durable replay refresh.");
-      return;
-    }
 
-    setStreamStatus("connecting");
-    setStreamError(null);
-    const source = eventGateway.open(api.eventStreamUrl({ roomId: activeRoom.id, replayLimit: 50 }), { withCredentials: true });
 
-    const markConnected = () => {
-      streamHadConnectedRef.current = true;
-      setStreamStatus("connected");
-      setStreamError(null);
-    };
-    const markReconnecting = () => {
-      if (streamHadConnectedRef.current) {
-        setStreamStatus("connected");
-        setStreamError(null);
-        return;
-      }
-      setStreamStatus("reconnecting");
-      setStreamError(null);
-    };
-    const handleSpaceEvent = (message: MessageEvent<string>) => {
-      const event = parseStreamEvent(message.data, activeRoom.id);
-      if (!event) {
-        setStreamError("Dropped malformed SSE payload; durable replay refresh remains authoritative.");
-        return;
-      }
-      setStreamStatus("connected");
-      setStreamError(null);
-      onLiveEvent(event);
-    };
 
-    source.onopen = markConnected;
-    source.onerror = markReconnecting;
-    source.onmessage = handleSpaceEvent;
-    source.addEventListener("ready", markConnected);
-    for (const eventType of streamEventTypes) {
-      source.addEventListener(eventType, handleSpaceEvent as EventListener);
-    }
 
-    return () => {
-      source.onopen = null;
-      source.onerror = null;
-      source.onmessage = null;
-      source.removeEventListener("ready", markConnected);
-      for (const eventType of streamEventTypes) {
-        source.removeEventListener(eventType, handleSpaceEvent as EventListener);
-      }
-      source.close();
-    };
-  }, [activeRoom, onLiveEvent]);
-
-  async function refreshEvents() {
-    if (!activeRoom) return;
-    setPending(true);
-    setError(null);
-    try {
-      await onRefresh(activeRoom.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Event replay refresh failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <div className="dock-panel event-dock">
-      <h2>Durable Event Log</h2>
-      <section className="event-source" aria-label="Lifecycle refresh debug">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Lifecycle refresh debug</strong>
-            <span>Tracks real page loads, unloads, shell switches, pane visibility, and component remounts.</span>
-          </div>
-          <button className="compact-action" onClick={onLifecycleDebugClear} title="Clear lifecycle debug" aria-label="Clear lifecycle debug">
-            <Trash2 aria-hidden="true" />
-            <span>Clear</span>
-          </button>
-        </div>
-        <div className="lifecycle-debug-grid">
-          <div className="validation-result" role="status">
-            <div>
-              <span className={`status ${lifecycleDebugSnapshot.pageLoadCount > 1 ? "warn" : "ok"}`}>{lifecycleDebugSnapshot.pageLoadCount}</span>
-              <strong>App boots</strong>
-            </div>
-            <small>Expected `1` unless the whole page actually reloaded.</small>
-          </div>
-          <div className="validation-result" role="status">
-            <div>
-              <span className={`status ${lifecycleDebugSnapshot.beforeUnloadCount > 0 ? "warn" : "ok"}`}>{lifecycleDebugSnapshot.beforeUnloadCount}</span>
-              <strong>beforeunload</strong>
-            </div>
-            <small>Non-zero means the browser attempted to leave or reload the page.</small>
-          </div>
-          <div className="validation-result" role="status">
-            <div>
-              <span className={`status ${lifecycleDebugSnapshot.pageHideCount > 0 ? "warn" : "ok"}`}>{lifecycleDebugSnapshot.pageHideCount}</span>
-              <strong>pagehide</strong>
-            </div>
-            <small>Useful to separate real navigations from React-only remounts.</small>
-          </div>
-          <div className="validation-result" role="status">
-            <div>
-              <span className="status muted">{lifecycleDebugSnapshot.shellModeChangeCount}</span>
-              <strong>Shell mode changes</strong>
-            </div>
-            <small>Mobile/tablet/desktop transitions seen by the app shell.</small>
-          </div>
-          <div className="validation-result" role="status">
-            <div>
-              <span className={`status ${lifecycleDebugSnapshot.componentUnmountCount > 0 ? "warn" : "ok"}`}>{lifecycleDebugSnapshot.componentUnmountCount}</span>
-              <strong>Component unmounts</strong>
-            </div>
-            <small>High churn here usually means pane refresh/remount, not full navigation.</small>
-          </div>
-          <div className="validation-result" role="status">
-            <div>
-              <span className={`status ${lifecycleDebugSnapshot.suspectRefreshCount > 0 ? "warn" : "ok"}`}>{lifecycleDebugSnapshot.suspectRefreshCount}</span>
-              <strong>Suspect refreshes</strong>
-            </div>
-            <small>Derived from extra app boots plus unload/navigation signals.</small>
-          </div>
-        </div>
-        {lifecycleDebugSnapshot.lastAppBoot ? (
-          <div className="validation-result" role="status" aria-live="polite">
-            <div>
-              <span className="status ok">BOOT</span>
-              <strong>Last app boot</strong>
-              <code className="raw-code">{new Date(lifecycleDebugSnapshot.lastAppBoot.at).toLocaleTimeString()}</code>
-            </div>
-            <small>{lifecycleDebugSnapshot.lastAppBoot.detail}</small>
-          </div>
-        ) : null}
-      </section>
-      <section className="event-feed" aria-label="Lifecycle debug trace">
-        {latestLifecycleEvents.length ? (
-          latestLifecycleEvents.map((event) => (
-            <article key={event.id} className="event-entry">
-              <div>
-                <span className={`status ${lifecycleEventTone(event)}`}>{event.type}</span>
-                <time dateTime={event.at}>{new Date(event.at).toLocaleTimeString()}</time>
-              </div>
-              <strong>{event.scope}</strong>
-              <small>{event.detail || "No detail"}</small>
-              <code className="raw-code">
-                {[event.shellMode, event.paneMode, event.paneId].filter(Boolean).join(" / ") || "global"}
-              </code>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No lifecycle debug events recorded yet
-          </div>
-        )}
-      </section>
-      <section className="event-source" aria-label="Event replay source">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Postgres replay source</strong>
-            <span>{activeRoom ? `${activeRoom.name} / ${events.length} persisted events` : "No room selected"}</span>
-          </div>
-          <button className="compact-action" onClick={refreshEvents} disabled={!activeRoom || pending} title="Refresh events" aria-label="Refresh events">
-            <RefreshCw aria-hidden="true" />
-            <span>{pending ? "Refreshing" : "Refresh"}</span>
-          </button>
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className="status ok">LIVE</span>
-            <strong>Durable replay active</strong>
-            <code className="raw-code">GET /api/events</code>
-          </div>
-          <small>UI cache and SSE fan-out remain secondary to persisted room events.</small>
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${eventStreamStatusTone(streamStatus)}`}>{streamStatus.toUpperCase()}</span>
-            <strong>{eventStreamStatusLabel(streamStatus)}</strong>
-            <code className="raw-code">GET /api/events/stream</code>
-          </div>
-          <small>{activeRoom ? "Live fan-out accelerates the dock; Postgres replay remains the source of truth." : "Select a room to open the event stream."}</small>
-          {streamError ? <small>{streamError}</small> : null}
-        </div>
-      </section>
-      <section className="event-feed" aria-label="Persisted room events">
-        {latestEvents.length ? (
-          latestEvents.map((event) => {
-            const payloadKeys = Object.keys(event.payload);
-            return (
-              <article key={event.id} className="event-entry">
-                <div>
-                  <span className={`status ${eventTone(event)}`}>{event.type}</span>
-                  <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleTimeString()}</time>
-                </div>
-                <strong>{event.message}</strong>
-                <small>{formatEventIds(event)}</small>
-                <code className="raw-code" title={event.traceId}>
-                  {event.traceId}
-                </code>
-                <small>{payloadKeys.length ? `payload: ${payloadKeys.join(", ")}` : "payload: empty"}</small>
-              </article>
-            );
-          })
-        ) : (
-          <div className="empty-mini" role="status">
-            No persisted events for this room
-          </div>
-        )}
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>EVENT_REPLAY_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ContextDock({
-  providers,
-  skills,
-  onSkillCreated
-}: {
-  providers: Provider[];
-  skills: Skill[];
-  onSkillCreated: (skill: Skill) => void;
-}) {
-  const [displayName, setDisplayName] = useState("");
-  const [triggerDescription, setTriggerDescription] = useState("");
-  const [body, setBody] = useState("");
-  const [allowedTools, setAllowedTools] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function proposeSkill() {
-    setPending(true);
-    setError(null);
-    try {
-      const skill = await api.createSkill({
-        displayName,
-        triggerDescription,
-        body,
-        allowedTools: allowedTools
-          .split(/[,\n]/)
-          .map((tool) => tool.trim())
-          .filter(Boolean)
-      });
-      onSkillCreated(skill);
-      setDisplayName("");
-      setTriggerDescription("");
-      setBody("");
-      setAllowedTools("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Skill proposal failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <div className="dock-panel">
-      <h2>Context</h2>
-      <section>
-        <h3>Providers</h3>
-        {providers.map((provider) => (
-          <div key={provider.id} className="dock-row">
-            <span>{provider.displayName}</span>
-            <span className={`status ${statusTone(provider.status)}`}>{provider.status}</span>
-          </div>
-        ))}
-      </section>
-      <section className="skill-form" aria-label="Propose skill">
-        <h3>Propose Skill</h3>
-        <input aria-label="Skill name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Name" />
-        <input
-          aria-label="Skill trigger"
-          value={triggerDescription}
-          onChange={(event) => setTriggerDescription(event.target.value)}
-          placeholder="Trigger"
-        />
-        <textarea aria-label="Skill body" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Body" rows={4} />
-        <input
-          aria-label="Skill tools"
-          value={allowedTools}
-          onChange={(event) => setAllowedTools(event.target.value)}
-          placeholder="Allowed tools"
-        />
-        <button
-          className="compact-action primary-action"
-          onClick={proposeSkill}
-          disabled={pending || !displayName.trim() || !triggerDescription.trim() || !body.trim()}
-          title="Propose skill"
-          aria-label="Propose skill"
-        >
-          <Plus aria-hidden="true" />
-          <span>{pending ? "Saving" : "Propose"}</span>
-        </button>
-        {error ? (
-          <div className="validation-result bad" role="alert">
-            <strong>SKILL_ERROR</strong>
-            <small>{error}</small>
-          </div>
-        ) : null}
-      </section>
-      <section className="skill-list" aria-label="Skills">
-        <h3>Skills</h3>
-        {skills.map((skill) => (
-          <article key={skill.id} className="skill-entry">
-            <div>
-              <span className={`status ${statusTone(skill.status)}`}>{skill.status}</span>
-              <strong>{skill.displayName}</strong>
-            </div>
-            <p>{skill.triggerDescription}</p>
-            <small>{skill.contentHash.slice(0, 19)}</small>
-          </article>
-        ))}
-      </section>
-    </div>
-  );
-}
-
-function ImportDock({
-  activeRoom,
-  candidates,
-  onCandidateCreated,
-  onCandidateUpdated,
-  onSkillImported
-}: {
-  activeRoom: Room | null;
-  candidates: ImportCandidate[];
-  onCandidateCreated: (candidate: ImportCandidate) => void;
-  onCandidateUpdated: (candidate: ImportCandidate) => void;
-  onSkillImported: (skill: Skill) => void;
-}) {
-  const [sourceKind, setSourceKind] = useState<ImportSourceKind>("CODEX_MEMORY");
-  const [targetKind, setTargetKind] = useState<ImportTargetKind>("MEMORY");
-  const [memoryScope, setMemoryScope] = useState<MemoryEntry["scope"]>("ROOM");
-  const [sourceRef, setSourceRef] = useState("operator-paste");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [provenance, setProvenance] = useState("explicit-import-gate");
-  const [skillTriggerDescription, setSkillTriggerDescription] = useState("");
-  const [skillVersion, setSkillVersion] = useState("0.1.0");
-  const [allowedTools, setAllowedTools] = useState("");
-  const [decisionReason, setDecisionReason] = useState("Not approved for import.");
-  const [pending, setPending] = useState(false);
-  const [decisionPendingId, setDecisionPendingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function stageCandidate() {
-    setPending(true);
-    setError(null);
-    try {
-      const candidate = await api.createImportCandidate({
-        sourceKind,
-        targetKind,
-        sourceRef,
-        roomId: targetKind === "MEMORY" && memoryScope === "ROOM" ? activeRoom?.id ?? null : null,
-        memoryScope,
-        title,
-        body,
-        provenance,
-        skillVersion,
-        skillTriggerDescription: targetKind === "SKILL" ? skillTriggerDescription : undefined,
-        allowedTools: allowedTools
-          .split(/[,\n]/)
-          .map((tool) => tool.trim())
-          .filter(Boolean)
-      });
-      onCandidateCreated(candidate);
-      setTitle("");
-      setBody("");
-      setSkillTriggerDescription("");
-      setAllowedTools("");
-      setSourceRef("operator-paste");
-      setProvenance("explicit-import-gate");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Import candidate staging failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function decide(candidate: ImportCandidate, decision: "IMPORT" | "REJECT") {
-    setDecisionPendingId(candidate.id);
-    setError(null);
-    try {
-      const result = await api.decideImportCandidate(candidate.id, {
-        decision,
-        reason: decision === "REJECT" ? decisionReason : "Approved explicit import."
-      });
-      onCandidateUpdated(result.candidate);
-      if (result.skill) onSkillImported(result.skill);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Import candidate decision failed");
-    } finally {
-      setDecisionPendingId(null);
-    }
-  }
-
-  const pendingCandidates = candidates.filter((candidate) => candidate.status === "PENDING");
-  const decidedCandidates = candidates.filter((candidate) => candidate.status !== "PENDING").slice(0, 5);
-  const stageDisabled =
-    pending ||
-    !title.trim() ||
-    !body.trim() ||
-    !sourceRef.trim() ||
-    !provenance.trim() ||
-    (targetKind === "MEMORY" && memoryScope === "ROOM" && !activeRoom) ||
-    (targetKind === "SKILL" && !skillTriggerDescription.trim());
-
-  return (
-    <div className="dock-panel import-dock">
-      <h2>Import Gate</h2>
-      <section className="import-gate-status" aria-label="Import gate status">
-        <div className="validation-result" role="status">
-          <div>
-            <span className="status ok">LIVE</span>
-            <strong>Explicit copy gate active</strong>
-          </div>
-          <small>Codex memory/skill material must be pasted or staged here, reviewed, and imported as a native Space copy.</small>
-        </div>
-      </section>
-      <section className="import-form" aria-label="Stage import candidate">
-        <div className="inline-field">
-          <select aria-label="Import source kind" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as ImportSourceKind)}>
-            <option value="CODEX_MEMORY">Codex memory</option>
-            <option value="CODEX_SKILL">Codex skill</option>
-            <option value="OPERATOR_NOTE">Operator note</option>
-            <option value="MARKDOWN">Markdown</option>
-          </select>
-          <select aria-label="Import target kind" value={targetKind} onChange={(event) => setTargetKind(event.target.value as ImportTargetKind)}>
-            <option value="MEMORY">Memory</option>
-            <option value="SKILL">Skill</option>
-          </select>
-        </div>
-        <input aria-label="Import source reference" value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} placeholder="Source reference" />
-        {targetKind === "MEMORY" ? (
-          <div className="inline-field">
-            <select aria-label="Import memory scope" value={memoryScope} onChange={(event) => setMemoryScope(event.target.value as MemoryEntry["scope"])}>
-              <option value="ROOM">Room</option>
-              <option value="PROJECT">Project</option>
-              <option value="SYSTEM">System</option>
-            </select>
-            <input
-              aria-label="Import provenance"
-              value={provenance}
-              onChange={(event) => setProvenance(event.target.value)}
-              placeholder="Provenance"
-            />
-          </div>
-        ) : (
-          <>
-            <input
-              aria-label="Import skill trigger"
-              value={skillTriggerDescription}
-              onChange={(event) => setSkillTriggerDescription(event.target.value)}
-              placeholder="Skill trigger"
-            />
-            <div className="inline-field">
-              <input aria-label="Import skill version" value={skillVersion} onChange={(event) => setSkillVersion(event.target.value)} placeholder="Version" />
-              <input aria-label="Import skill tools" value={allowedTools} onChange={(event) => setAllowedTools(event.target.value)} placeholder="Allowed tools" />
-            </div>
-          </>
-        )}
-        <input aria-label="Import title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Title" />
-        <textarea aria-label="Import body" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Copy source content here" rows={4} />
-        <button
-          className="compact-action primary-action"
-          onClick={stageCandidate}
-          disabled={stageDisabled}
-          title="Stage import candidate"
-          aria-label="Stage import candidate"
-        >
-          <Plus aria-hidden="true" />
-          <span>{pending ? "Staging" : "Stage"}</span>
-        </button>
-      </section>
-      <section className="import-decisions" aria-label="Import candidates">
-        <div className="inline-field">
-          <input
-            aria-label="Import reject reason"
-            value={decisionReason}
-            onChange={(event) => setDecisionReason(event.target.value)}
-            placeholder="Reject reason"
-          />
-        </div>
-        {pendingCandidates.length ? (
-          pendingCandidates.map((candidate) => (
-            <article key={candidate.id} className="import-entry">
-              <div>
-                <span className={`status ${statusTone(candidate.status)}`}>{candidate.status}</span>
-                <strong>{candidate.title}</strong>
-              </div>
-              <p>{candidate.body}</p>
-              <small>
-                {candidate.sourceKind} {"->"} {candidate.targetKind} / {candidate.sourceRef}
-              </small>
-              <div className="entry-actions">
-                <button
-                  className="compact-action primary-action"
-                  onClick={() => decide(candidate, "IMPORT")}
-                  disabled={decisionPendingId === candidate.id}
-                  title="Import candidate"
-                  aria-label={`Import ${candidate.title}`}
-                >
-                  <CheckCircle2 aria-hidden="true" />
-                  <span>Import</span>
-                </button>
-                <button
-                  className="compact-action"
-                  onClick={() => decide(candidate, "REJECT")}
-                  disabled={decisionPendingId === candidate.id || !decisionReason.trim()}
-                  title="Reject candidate"
-                  aria-label={`Reject ${candidate.title}`}
-                >
-                  <CircleStop aria-hidden="true" />
-                  <span>Reject</span>
-                </button>
-              </div>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No pending imports
-          </div>
-        )}
-      </section>
-      {decidedCandidates.length ? (
-        <section className="import-list" aria-label="Recent import decisions">
-          <h3>Recent Decisions</h3>
-          {decidedCandidates.map((candidate) => (
-            <article key={candidate.id} className="import-entry compact">
-              <div>
-                <span className={`status ${statusTone(candidate.status)}`}>{candidate.status}</span>
-                <strong>{candidate.title}</strong>
-              </div>
-              <small>{candidate.importedMemoryId ?? candidate.importedSkillId ?? candidate.statusReason}</small>
-            </article>
-          ))}
-        </section>
-      ) : null}
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>IMPORT_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 const swarmRoles: SwarmTaskRole[] = ["PLANNER", "WORKER", "REVIEWER"];
 const swarmTaskStatuses: SwarmTaskStatus[] = ["READY", "RUNNING", "BLOCKED", "DONE"];
 const reconcileDecisions: SwarmReconcileDecision[] = ["MERGED", "BLOCKED", "NEEDS_HUMAN"];
 
-function taskTone(status: SwarmTaskStatus) {
-  if (status === "DONE") return "ok";
-  if (status === "BLOCKED" || status === "CANCELLED") return "bad";
-  return "muted";
-}
 
-function SwarmDock({
-  activeRoom,
-  swarmState,
-  onSwarmState
-}: {
-  activeRoom: Room | null;
-  swarmState: SwarmState | null;
-  onSwarmState: (state: SwarmState) => void;
-}) {
-  const [role, setRole] = useState<SwarmTaskRole>("WORKER");
-  const [title, setTitle] = useState("");
-  const [goal, setGoal] = useState("");
-  const [assignee, setAssignee] = useState("");
-  const [lockTaskId, setLockTaskId] = useState("");
-  const [resource, setResource] = useState("/opt/spaceapp");
-  const [holder, setHolder] = useState("worker-1");
-  const [lockReason, setLockReason] = useState("Avoid concurrent writes.");
-  const [messageTaskId, setMessageTaskId] = useState("");
-  const [fromRole, setFromRole] = useState<SwarmTaskRole>("WORKER");
-  const [toRole, setToRole] = useState<SwarmTaskRole | "">("REVIEWER");
-  const [messageBody, setMessageBody] = useState("");
-  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
-  const [decision, setDecision] = useState<SwarmReconcileDecision>("MERGED");
-  const [summary, setSummary] = useState("");
-  const [nextSteps, setNextSteps] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  async function loadSwarm() {
-    if (!activeRoom) return;
-    onSwarmState(await api.swarm(activeRoom.id));
-  }
 
-  useEffect(() => {
-    void loadSwarm();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoom?.id]);
 
-  async function runSwarmAction(action: () => Promise<void>) {
-    if (!activeRoom) return;
-    setPending(true);
-    setError(null);
-    try {
-      await action();
-      await loadSwarm();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Swarm action failed");
-    } finally {
-      setPending(false);
-    }
-  }
 
-  async function createTask() {
-    await runSwarmAction(async () => {
-      if (!activeRoom || !title.trim() || !goal.trim()) return;
-      await api.createSwarmTask({
-        roomId: activeRoom.id,
-        role,
-        title,
-        goal,
-        assignee: assignee.trim() || null,
-        dependsOnTaskIds: selectedTaskIds
-      });
-      setTitle("");
-      setGoal("");
-      setAssignee("");
-    });
-  }
 
-  async function updateTask(task: SwarmTask, status: SwarmTaskStatus) {
-    await runSwarmAction(async () => {
-      await api.updateSwarmTask(task.id, {
-        status,
-        resultSummary: status === "DONE" ? "Marked done by operator control plane." : task.resultSummary
-      });
-    });
-  }
 
-  async function claimLock() {
-    await runSwarmAction(async () => {
-      if (!activeRoom || !resource.trim() || !holder.trim() || !lockReason.trim()) return;
-      await api.claimSwarmLock({
-        roomId: activeRoom.id,
-        taskId: lockTaskId || null,
-        resource,
-        holder,
-        reason: lockReason
-      });
-    });
-  }
 
-  async function releaseLock(lock: SwarmLock) {
-    await runSwarmAction(async () => {
-      await api.releaseSwarmLock(lock.id, "Released from Space Swarm dock.");
-    });
-  }
 
-  async function postMessage() {
-    await runSwarmAction(async () => {
-      if (!activeRoom || !messageBody.trim()) return;
-      await api.postSwarmMessage({
-        roomId: activeRoom.id,
-        taskId: messageTaskId || null,
-        fromRole,
-        toRole: toRole || null,
-        body: messageBody
-      });
-      setMessageBody("");
-    });
-  }
 
-  async function reconcile() {
-    await runSwarmAction(async () => {
-      if (!activeRoom || !selectedTaskIds.length || !summary.trim()) return;
-      await api.createSwarmReconcile({
-        roomId: activeRoom.id,
-        taskIds: selectedTaskIds,
-        decision,
-        summary,
-        nextSteps
-      });
-      setSummary("");
-      setNextSteps("");
-    });
-  }
-
-  function toggleTaskSelection(taskId: string) {
-    setSelectedTaskIds((current) =>
-      current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId]
-    );
-  }
-
-  const tasks = swarmState?.tasks ?? [];
-  const locks = swarmState?.locks ?? [];
-  const activeLocks = locks.filter((lock) => lock.status === "ACTIVE");
-  const messages = swarmState?.messages ?? [];
-  const reconciles = swarmState?.reconciles ?? [];
-
-  return (
-    <div className="dock-panel swarm-dock">
-      <h2>Swarm</h2>
-      <section className="swarm-status" aria-label="Swarm status">
-        <Boxes aria-hidden="true" />
-        <span>
-          <strong>Control plane active</strong>
-          <small>{swarmState?.statusReason ?? "Load a room to inspect swarm state."}</small>
-        </span>
-        <span className="status muted">{swarmState?.executionStatus ?? "DISABLED"}</span>
-      </section>
-      <section className="swarm-metrics" aria-label="Swarm metrics">
-        <Metric label="Tasks" value={String(tasks.length)} tone="muted" />
-        <Metric label="Active locks" value={String(activeLocks.length)} tone={activeLocks.length ? "bad" : "ok"} />
-      </section>
-      <section className="swarm-form" aria-label="Create swarm task">
-        <div className="inline-field">
-          <select aria-label="Swarm task role" value={role} onChange={(event) => setRole(event.target.value as SwarmTaskRole)}>
-            {swarmRoles.map((item) => (
-              <option key={item} value={item}>{readableCode(item)}</option>
-            ))}
-          </select>
-          <input aria-label="Swarm assignee" value={assignee} onChange={(event) => setAssignee(event.target.value)} placeholder="Assignee" />
-        </div>
-        <input aria-label="Swarm task title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" />
-        <textarea aria-label="Swarm task goal" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="Goal" rows={3} />
-        <button className="compact-action primary-action" onClick={createTask} disabled={pending || !activeRoom || !title.trim() || !goal.trim()} title="Create swarm task" aria-label="Create swarm task">
-          <Plus aria-hidden="true" />
-          <span>{pending ? "Working" : "Create task"}</span>
-        </button>
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>SWARM_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-      <section className="swarm-list" aria-label="Swarm tasks">
-        {tasks.length ? tasks.map((task) => (
-          <article key={task.id} className="swarm-entry">
-            <div className="swarm-entry-head">
-              <SpaceToggle
-                className="checkbox-line"
-                ariaLabel={`Select ${task.title}`}
-                label={<span className={`status ${taskTone(task.status)}`}>{readableCode(task.status)}</span>}
-                checked={selectedTaskIds.includes(task.id)}
-                onChange={() => toggleTaskSelection(task.id)}
-              />
-              <strong>{task.title}</strong>
-            </div>
-            <p>{task.goal}</p>
-            <small>{task.role} / {task.assignee ?? "unassigned"} / {task.id}</small>
-            <div className="swarm-actions" role="group" aria-label={`Update ${task.title}`}>
-              {swarmTaskStatuses.map((status) => (
-                <button key={status} className="compact-action" onClick={() => updateTask(task, status)} disabled={pending || task.status === status} title={`Mark ${readableCode(status)}`} aria-label={`Mark ${task.title} ${readableCode(status)}`}>
-                  <CheckCircle2 aria-hidden="true" />
-                  <span>{readableCode(status)}</span>
-                </button>
-              ))}
-            </div>
-          </article>
-        )) : (
-          <div className="empty-mini" role="status">No swarm tasks</div>
-        )}
-      </section>
-      <section className="swarm-form" aria-label="Claim swarm lock">
-        <div className="inline-field">
-          <select aria-label="Swarm lock task" value={lockTaskId} onChange={(event) => setLockTaskId(event.target.value)}>
-            <option value="">No task</option>
-            {tasks.map((task) => (
-              <option key={task.id} value={task.id}>{task.title}</option>
-            ))}
-          </select>
-          <input aria-label="Swarm lock holder" value={holder} onChange={(event) => setHolder(event.target.value)} placeholder="Holder" />
-        </div>
-        <input aria-label="Swarm lock resource" value={resource} onChange={(event) => setResource(event.target.value)} placeholder="/opt/spaceapp/path" />
-        <input aria-label="Swarm lock reason" value={lockReason} onChange={(event) => setLockReason(event.target.value)} placeholder="Reason" />
-        <button className="compact-action primary-action" onClick={claimLock} disabled={pending || !activeRoom || !resource.trim()} title="Claim swarm lock" aria-label="Claim swarm lock">
-          <Lock aria-hidden="true" />
-          <span>Claim lock</span>
-        </button>
-      </section>
-      <section className="swarm-list" aria-label="Swarm locks">
-        {locks.length ? locks.map((lock) => (
-          <article key={lock.id} className="swarm-entry compact">
-            <div className="swarm-entry-head">
-              <span className={`status ${lock.status === "ACTIVE" ? "bad" : "muted"}`}>{readableCode(lock.status)}</span>
-              <strong>{lock.resource}</strong>
-            </div>
-            <small>{lock.holder} / {lock.reason}</small>
-            {lock.status === "ACTIVE" ? (
-              <button className="compact-action" onClick={() => releaseLock(lock)} disabled={pending} title="Release swarm lock" aria-label={`Release ${lock.resource}`}>
-                <CircleStop aria-hidden="true" />
-                <span>Release</span>
-              </button>
-            ) : null}
-          </article>
-        )) : (
-          <div className="empty-mini" role="status">No swarm locks</div>
-        )}
-      </section>
-      <section className="swarm-form" aria-label="Post swarm message">
-        <div className="inline-field">
-          <select aria-label="Swarm message task" value={messageTaskId} onChange={(event) => setMessageTaskId(event.target.value)}>
-            <option value="">Room mailbox</option>
-            {tasks.map((task) => (
-              <option key={task.id} value={task.id}>{task.title}</option>
-            ))}
-          </select>
-          <select aria-label="Swarm message from role" value={fromRole} onChange={(event) => setFromRole(event.target.value as SwarmTaskRole)}>
-            {swarmRoles.map((item) => (
-              <option key={item} value={item}>{readableCode(item)}</option>
-            ))}
-          </select>
-        </div>
-        <select aria-label="Swarm message to role" value={toRole} onChange={(event) => setToRole(event.target.value as SwarmTaskRole | "")}>
-          <option value="">Broadcast</option>
-          {swarmRoles.map((item) => (
-            <option key={item} value={item}>{readableCode(item)}</option>
-          ))}
-        </select>
-        <textarea aria-label="Swarm message body" value={messageBody} onChange={(event) => setMessageBody(event.target.value)} placeholder="Message" rows={3} />
-        <button className="compact-action primary-action" onClick={postMessage} disabled={pending || !activeRoom || !messageBody.trim()} title="Post swarm message" aria-label="Post swarm message">
-          <Send aria-hidden="true" />
-          <span>Post message</span>
-        </button>
-      </section>
-      <section className="swarm-form" aria-label="Create swarm reconcile">
-        <select aria-label="Swarm reconcile decision" value={decision} onChange={(event) => setDecision(event.target.value as SwarmReconcileDecision)}>
-          {reconcileDecisions.map((item) => (
-            <option key={item} value={item}>{readableCode(item)}</option>
-          ))}
-        </select>
-        <input aria-label="Swarm reconcile summary" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="Summary" />
-        <textarea aria-label="Swarm reconcile next steps" value={nextSteps} onChange={(event) => setNextSteps(event.target.value)} placeholder="Next steps" rows={2} />
-        <button className="compact-action primary-action" onClick={reconcile} disabled={pending || !activeRoom || !selectedTaskIds.length || !summary.trim()} title="Create swarm reconcile" aria-label="Create swarm reconcile">
-          <GitCompare aria-hidden="true" />
-          <span>Reconcile {selectedTaskIds.length}</span>
-        </button>
-      </section>
-      <section className="swarm-list" aria-label="Swarm mailbox and reconciles">
-        {messages.slice(0, 4).map((message) => (
-          <article key={message.id} className="swarm-entry compact">
-            <div className="swarm-entry-head">
-              <span className="status muted">{message.fromRole}</span>
-              <strong>{message.toRole ?? "BROADCAST"}</strong>
-            </div>
-            <p>{message.body}</p>
-          </article>
-        ))}
-        {reconciles.slice(0, 4).map((item) => (
-          <article key={item.id} className="swarm-entry compact">
-            <div className="swarm-entry-head">
-              <span className={`status ${item.decision === "MERGED" ? "ok" : "bad"}`}>{readableCode(item.decision)}</span>
-              <strong>{item.summary}</strong>
-            </div>
-            {item.nextSteps ? <p>{item.nextSteps}</p> : null}
-            <small>{item.taskIds.length} reconciled tasks</small>
-          </article>
-        ))}
-      </section>
-    </div>
-  );
-}
-
-function OperatorProgressBanner(props: BlueprintProgressProps) {
-  const { completionPct, liveCount, progressItems, visibleCount, gatedItems, nextItem } = buildBlueprintProgressState(props);
-  const storageBlocked = props.storageReadiness ? props.storageReadiness.status !== "VERIFIED" : props.storageWarning.trim().length > 0;
-  const storageLabel = props.storageReadiness ? `Storage ${props.storageReadiness.status}` : "Storage gate";
-  const storageDetail = props.storageReadiness
-    ? `${formatBytes(props.storageReadiness.app.availableBytes)} free / root ${props.storageReadiness.root.usedPercent}% / dedicated ${
-        props.storageReadiness.dedicatedAppVolume ? "yes" : "no"
-      }`
-    : "Dedicated /opt/spaceapp volume still blocks production-heavy launch";
-  const primaryGate = gatedItems[0];
-
-  return (
-    <section className="operator-pulse" aria-label="Space build pulse">
-      <div className="pulse-main">
-        <span className="eyebrow">Live UI Marker</span>
-        <h3>Space Build Pulse</h3>
-        <p>New visible now: first-viewport progress banner for the Space Master Blueprint rollout.</p>
-      </div>
-      <div className="pulse-meter" aria-label="Blueprint live completion">
-        <strong>{completionPct}% live</strong>
-        <span>
-          {liveCount}/{progressItems.length} slices active
-        </span>
-        <div className="pulse-bar" aria-hidden="true">
-          <span style={{ width: `${completionPct}%` }} />
-        </div>
-      </div>
-      <div className="pulse-facts" aria-label="Current Space state">
-        <span>
-          <strong>{visibleCount}</strong>
-          visible surfaces
-        </span>
-        <span>
-          <strong>{primaryGate?.label ?? "No active gate"}</strong>
-          {primaryGate?.detail ?? "All required gates are currently clear"}
-        </span>
-        <span className={storageBlocked ? "pulse-warning" : ""}>
-          <strong>{storageBlocked ? storageLabel : nextItem?.label ?? "Next slice"}</strong>
-          {storageBlocked ? storageDetail : nextItem?.detail ?? "Backlog is empty"}
-        </span>
-      </div>
-    </section>
-  );
-}
-
-function BlueprintProgress(props: BlueprintProgressProps) {
-  const { progressItems, liveCount, visibleCount, latestSmokeLabel } = buildBlueprintProgressState(props);
-  const {
-    latestSmoke,
-    storageWarning
-  } = props;
-
-  return (
-    <section className="blueprint-progress" aria-label="Blueprint progress">
-      <header>
-        <div>
-          <span className="eyebrow">Master Blueprint</span>
-          <h3>Blueprint Progress</h3>
-        </div>
-        <div className="blueprint-meters" aria-label="Blueprint counters">
-          <Metric label="Visible surface" value={`${visibleCount}/${progressItems.length}`} tone="ok" />
-          <Metric label="Live slices" value={`${liveCount}/${progressItems.length}`} tone="ok" />
-          <Metric label="MCP smoke" value={latestSmokeLabel} tone={statusTone(latestSmoke?.status ?? "")} />
-        </div>
-      </header>
-      <div className="latest-slice" role="status">
-        <Sparkles aria-hidden="true" />
-        <span>
-          <strong>Latest visible slice</strong>
-          <small>This progress board stays tucked into the dock until opened.</small>
-        </span>
-      </div>
-      {storageWarning ? (
-        <div className="storage-blocker" role="status">
-          <CircleStop aria-hidden="true" />
-          <span>
-            <strong>Production storage blocker</strong>
-            <small>{storageWarning}</small>
-          </span>
-        </div>
-      ) : null}
-      <div className="blueprint-grid">
-        {progressItems.map((item) => (
-          <article key={item.label} className="blueprint-cell">
-            <span className={`status ${statusTone(item.status)}`}>{item.status}</span>
-            <strong>{item.label}</strong>
-            <small>{item.detail}</small>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ProgressDock(props: BlueprintProgressProps) {
-  return (
-    <div className="dock-panel progress-dock">
-      <BlueprintProgress {...props} />
-    </div>
-  );
-}
-
-interface RuntimeStatusProps {
-  readiness: ReadyzPayload | null;
-  mcp: McpPayload | null;
-  latestSmoke: McpDiscoverySmokeCheck | null;
-  observability: ObservabilitySnapshot | null;
-  workerReadiness: WorkerReadiness | null;
-  storageReadiness: StorageReadiness | null;
-}
-
-interface HealthDockProps extends RuntimeStatusProps {
-  providers: Provider[];
-  models: Model[];
-}
-
-function HealthDock({
-  readiness,
-  mcp,
-  latestSmoke,
-  providers,
-  models,
-  observability,
-  workerReadiness,
-  storageReadiness
-}: HealthDockProps) {
-  const dependencies = readiness?.dependencies;
-  const provider = providers[0] ?? null;
-  const verifiedModelCount = models.filter((model) => model.status === "VERIFIED").length;
-  const requestValue = observability
-    ? `${observability.totals.requestCount} req / p95 ${formatDurationMs(observability.totals.p95Ms)}`
-    : "Loading";
-  const storageDetail = storageReadiness
-    ? storageReadiness.statusReason
-    : "Storage snapshot loading";
-  const storageMeta = storageReadiness
-    ? `${formatBytes(storageReadiness.app.availableBytes)} free / root ${storageReadiness.root.usedPercent}% / dedicated ${storageReadiness.dedicatedAppVolume ? "yes" : "no"}`
-    : "Checking storage";
-  const appVersion = useAppVersion();
-  const versionDetail = appVersion?.athensTag
-    ? `${appVersion.athensTag}`
-    : appVersion?.shortCommit
-      ? `commit ${appVersion.shortCommit}${appVersion.dirty ? " · dirty" : ""}`
-      : "Version unavailable";
-  const versionValue = appVersion?.appRelease ?? "Loading";
-
-  return (
-    <div className="dock-panel health-dock">
-      <header className="settings-dock-title">
-        <Activity aria-hidden="true" />
-        <span>
-          <h2>Space Health</h2>
-          <small>Basic operating status.</small>
-        </span>
-      </header>
-      <section className="health-grid" aria-label="Space health status">
-        <HealthTile
-          icon={ServerCog}
-          label="Runtime"
-          value={dependencies ? `${dependencies.runtimeStore} / Temporal ${dependencies.temporal}` : "Loading"}
-          detail={dependencies ? `Worker ${dependencies.worker}` : "Runtime snapshot loading"}
-          tone={readiness?.ok ? "ok" : "muted"}
-        />
-        <HealthTile
-          icon={UserCheck}
-          label="Worker"
-          value={workerReadiness?.status ?? dependencies?.worker ?? "Loading"}
-          detail={workerReadiness ? `${workerReadiness.pollerCount} pollers / ${workerReadiness.taskQueue}` : "Worker snapshot loading"}
-          tone={statusTone(workerReadiness?.status ?? dependencies?.worker ?? "")}
-        />
-        <HealthTile
-          icon={ServerCog}
-          label="Provider"
-          value={provider?.displayName ?? "No provider"}
-          detail={provider ? `${provider.status} / ${verifiedModelCount}/${models.length} verified models` : "Provider catalog loading"}
-          tone={statusTone(provider?.status ?? "")}
-        />
-        <HealthTile
-          icon={HardDrive}
-          label="Storage"
-          value={storageReadiness?.status ?? "Loading"}
-          detail={storageDetail}
-          meta={storageMeta}
-          tone={statusTone(storageReadiness?.status ?? "")}
-        />
-        <HealthTile
-          icon={ShieldCheck}
-          label="MCP"
-          value={mcp?.gateway.status ?? "Loading"}
-          detail={mcp ? `${mcp.gateway.serverCount} servers / ${mcp.gateway.toolCount} tools` : "MCP snapshot loading"}
-          meta={latestSmoke?.code ? readableCode(latestSmoke.code) : "Smoke not run"}
-          tone={statusTone(mcp?.gateway.status ?? latestSmoke?.status ?? "")}
-        />
-        <HealthTile
-          icon={Activity}
-          label="Requests"
-          value={requestValue}
-          detail={observability ? `${observability.totals.errorCount} errors` : "Observability snapshot loading"}
-          tone={(observability?.totals.errorCount ?? 0) > 0 ? "bad" : observability ? "ok" : "muted"}
-        />
-        <HealthTile
-          icon={GitCompare}
-          label="Version"
-          value={versionValue}
-          detail={versionDetail}
-          meta={
-            appVersion?.updateAvailable && appVersion.githubLatest
-              ? `Update available: ${appVersion.githubLatest}`
-              : appVersion?.checkedAt
-                ? "Up to date"
-                : undefined
-          }
-          tone={appVersion?.updateAvailable ? "bad" : appVersion ? "ok" : "muted"}
-        />
-      </section>
-    </div>
-  );
-}
-
-function HealthTile({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  meta,
-  tone
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  detail: string;
-  meta?: string;
-  tone: string;
-}) {
-  return (
-    <article className="health-tile" aria-label={`${label} health`}>
-      <div className="health-tile-top">
-        <Icon aria-hidden="true" />
-        <span className={`status ${tone}`}>{value}</span>
-      </div>
-      <strong>{label}</strong>
-      <small>{detail}</small>
-      {meta ? <small className="health-tile-meta">{meta}</small> : null}
-    </article>
-  );
-}
-
-function RuntimeDock(props: RuntimeStatusProps) {
-  return (
-    <div className="dock-panel runtime-dock">
-      <RuntimeStrip {...props} />
-    </div>
-  );
-}
-
-function RuntimeStrip({
-  readiness,
-  mcp,
-  latestSmoke,
-  observability,
-  workerReadiness,
-  storageReadiness
-}: RuntimeStatusProps) {
-  const dependencies = readiness?.dependencies;
-  const latestSmokeCode = latestSmoke?.code;
-  return (
-    <section className="runtime-strip" aria-label="Runtime status">
-      <div className="runtime-item">
-        <ServerCog aria-hidden="true" />
-        <div>
-          <span>Runtime</span>
-          <strong>{dependencies ? `${dependencies.runtimeStore} / Temporal ${dependencies.temporal}` : "Loading"}</strong>
-        </div>
-      </div>
-      <div className="runtime-item">
-        <ShieldCheck aria-hidden="true" />
-        <div>
-          <span>MCP Gateway</span>
-          <strong>{mcp ? `${mcp.gateway.status} / approval ${mcp.gateway.approvalMode}` : "Loading"}</strong>
-        </div>
-      </div>
-      <div className="runtime-item">
-        <Database aria-hidden="true" />
-        <div>
-          <span>Catalog</span>
-          <strong>{mcp ? `${mcp.gateway.serverCount} servers / ${mcp.gateway.toolCount} tools` : "Loading"}</strong>
-        </div>
-      </div>
-      <div className="runtime-item">
-        <ServerCog aria-hidden="true" />
-        <div>
-          <span>Worker</span>
-          <strong>
-            {workerReadiness
-              ? `${workerReadiness.status} / ${workerReadiness.pollerCount} pollers`
-              : dependencies?.worker
-                ? dependencies.worker
-                : "Loading"}
-          </strong>
-          {workerReadiness ? <code className="raw-code">{workerReadiness.taskQueue}</code> : null}
-        </div>
-      </div>
-      <div className="runtime-item">
-        <Activity aria-hidden="true" />
-        <div>
-          <span>Observability</span>
-          <strong>{observability ? `${observability.totals.requestCount} req / p95 ${formatDurationMs(observability.totals.p95Ms)}` : "Loading"}</strong>
-        </div>
-      </div>
-      <div className="runtime-item">
-        <HardDrive aria-hidden="true" />
-        <div>
-          <span>Storage</span>
-          <strong>{storageReadiness ? `${storageReadiness.status} / ${formatBytes(storageReadiness.app.availableBytes)} free` : "Loading"}</strong>
-          {storageReadiness ? (
-            <code className="raw-code">
-              root {storageReadiness.root.usedPercent}% / dedicated {storageReadiness.dedicatedAppVolume ? "yes" : "no"}
-            </code>
-          ) : null}
-        </div>
-      </div>
-      <div className="runtime-item">
-        <CircleStop aria-hidden="true" />
-        <div>
-          <span>Latest MCP Smoke</span>
-          <strong>{latestSmokeCode ? readableCode(latestSmokeCode) : "No check yet"}</strong>
-          {latestSmokeCode ? (
-            <code className="raw-code" title={latestSmokeCode}>
-              {latestSmokeCode}
-            </code>
-          ) : null}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function formatDurationMs(value: number | null) {
-  if (value === null) return "n/a";
-  if (value < 10) return `${value.toFixed(1)}ms`;
-  return `${Math.round(value)}ms`;
-}
-
-function formatBytes(value: number) {
-  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)}GB`;
-  if (value >= 1024 * 1024) return `${Math.round(value / (1024 * 1024))}MB`;
-  if (value >= 1024) return `${Math.round(value / 1024)}KB`;
-  return `${value}B`;
-}
-
-function auditMetadataKeys(metadata: AuditEvent["metadata"]) {
-  const keys = Object.keys(metadata ?? {});
-  return keys.length ? `metadata: ${keys.slice(0, 6).join(", ")}${keys.length > 6 ? ", ..." : ""}` : "metadata: none";
-}
-
-function auditTarget(event: AuditEvent) {
-  return `${event.targetType}${event.targetId ? ` / ${event.targetId}` : ""}`;
-}
-
-function modelCapabilities(model: Model) {
-  const capabilities = [
-    model.supportsTools ? "tools" : null,
-    model.supportsVision ? "vision" : null,
-    model.supportsRealtime ? "realtime" : null,
-    model.supportsReasoning ? "reasoning" : null
-  ].filter(Boolean);
-  return capabilities.length ? capabilities.join(", ") : "no verified capabilities";
-}
-
-function AuditDock() {
-  const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function loadAudit() {
-    setPending(true);
-    setError(null);
-    try {
-      const payload = await api.audit({ pageSize: 20 });
-      setEvents(payload.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Audit load failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  useEffect(() => {
-    void loadAudit();
-  }, []);
-
-  return (
-    <div className="dock-panel event-dock">
-      <h2>Audit Trail</h2>
-      <section className="event-source" aria-label="Audit status">
-        <div>
-          <ServerCog aria-hidden="true" />
-          <span>
-            <strong>Admin audit log</strong>
-            <small>Recent operator and system actions from canonical state.</small>
-          </span>
-        </div>
-        <button className="compact-action" onClick={loadAudit} disabled={pending} title="Refresh audit trail" aria-label="Refresh audit trail">
-          <RefreshCw aria-hidden="true" />
-          <span>{pending ? "Loading" : "Refresh"}</span>
-        </button>
-      </section>
-      <section className="event-feed" aria-label="Audit events">
-        {events.length ? (
-          events.map((event) => (
-            <article key={event.id} className="event-entry">
-              <div>
-                <strong>{event.action}</strong>
-                <time dateTime={event.createdAt}>{new Date(event.createdAt).toLocaleTimeString()}</time>
-              </div>
-              <small>{auditTarget(event)}</small>
-              <code className="raw-code" title={event.traceId}>
-                {event.traceId}
-              </code>
-              <small>{auditMetadataKeys(event.metadata)}</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No audit events
-          </div>
-        )}
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>AUDIT_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function LaunchReadinessDock(props: BlueprintProgressProps) {
-  const { progressItems, completionPct, liveCount } = buildBlueprintProgressState(props);
-  const blockers = buildLaunchBlockers(props);
-  const activeBlockers = blockers.filter((blocker) => blocker.severity !== "next");
-  const hardBlockers = activeBlockers.filter((blocker) => blocker.severity === "hard");
-  const launchPct = Math.max(0, Math.round(((progressItems.length - activeBlockers.length) / progressItems.length) * 100));
-  const verifiedFoundations = progressItems.filter((item) => item.status === "LIVE").slice(0, 6);
-  const launchStatus = activeBlockers.length ? "Production launch gated" : "Production launch clear";
-  const [launchReadiness, setLaunchReadiness] = useState<LaunchReadiness | null>(null);
-  const [readinessPending, setReadinessPending] = useState(false);
-  const [readinessError, setReadinessError] = useState<string | null>(null);
-
-  async function refreshLaunchReadiness() {
-    setReadinessPending(true);
-    setReadinessError(null);
-    try {
-      setLaunchReadiness(await api.launchReadiness());
-    } catch (err) {
-      setReadinessError(err instanceof Error ? err.message : "Launch readiness load failed");
-    } finally {
-      setReadinessPending(false);
-    }
-  }
-
-  useEffect(() => {
-    void refreshLaunchReadiness();
-  }, []);
-
-  const failedGoldenRequirements = launchReadiness?.requirements.filter((item) => item.status !== "PASS") ?? [];
-  const shownGoldenRequirements = failedGoldenRequirements.length
-    ? failedGoldenRequirements
-    : launchReadiness?.requirements.slice(0, 6) ?? [];
-
-  return (
-    <div className="dock-panel launch-dock">
-      <h2>Launch Readiness</h2>
-      <section className="launch-summary" aria-label="Golden E2E readiness">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Golden E2E readiness</strong>
-            <span>{launchReadiness?.summary ?? "Canonical launch report loading from Space state."}</span>
-          </div>
-          <button
-            className="compact-action"
-            onClick={refreshLaunchReadiness}
-            disabled={readinessPending}
-            title="Refresh launch readiness"
-            aria-label="Refresh launch readiness"
-          >
-            <RefreshCw aria-hidden="true" />
-            <span>{readinessPending ? "Checking" : "Refresh"}</span>
-          </button>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Status" value={launchReadiness?.status ?? "Loading"} tone={statusTone(launchReadiness?.status ?? "")} />
-          <Metric label="Evidence" value={launchReadiness ? `${launchReadiness.passedCount}/${launchReadiness.totalCount}` : "0/0"} tone="ok" />
-          <Metric label="Golden" value={launchReadiness ? `${launchReadiness.completionPct}%` : "0%"} tone={launchReadiness?.status === "READY" ? "ok" : "muted"} />
-          <Metric label="Hard" value={String(launchReadiness?.hardBlockerCount ?? 0)} tone={(launchReadiness?.hardBlockerCount ?? 0) ? "bad" : "ok"} />
-        </div>
-        {readinessError ? (
-          <div className="validation-result bad" role="alert">
-            <strong>LAUNCH_READINESS_ERROR</strong>
-            <small>{readinessError}</small>
-          </div>
-        ) : null}
-        <div className="launch-blockers compact-list" aria-label="Golden E2E requirements">
-          {shownGoldenRequirements.length ? (
-            shownGoldenRequirements.map((requirement) => (
-              <article key={requirement.id} className={`launch-blocker ${requirement.severity === "none" ? "next" : requirement.severity}`}>
-                <div>
-                  <span className={`status ${requirement.status === "PASS" ? "ok" : launchBlockerTone(requirement.severity === "none" ? "next" : requirement.severity)}`}>
-                    {requirement.status}
-                  </span>
-                  <strong>{requirement.label}</strong>
-                </div>
-                <small>{requirement.message}</small>
-              </article>
-            ))
-          ) : (
-            <div className="empty-mini" role="status">
-              Golden readiness loading
-            </div>
-          )}
-        </div>
-      </section>
-      <section className="launch-summary" aria-label="Launch readiness summary">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>{launchStatus}</strong>
-            <span>Live Space state, fail-closed gates and production blockers from current Space endpoints.</span>
-          </div>
-          <span className={`status ${activeBlockers.length ? "bad" : "ok"}`}>{activeBlockers.length ? "GATED" : "CLEAR"}</span>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Internal live" value={`${completionPct}%`} tone="ok" />
-          <Metric label="Production gates" value={`${launchPct}%`} tone={activeBlockers.length ? "muted" : "ok"} />
-          <Metric label="Live slices" value={`${liveCount}/${progressItems.length}`} tone="ok" />
-          <Metric label="Hard blockers" value={String(hardBlockers.length)} tone={hardBlockers.length ? "bad" : "ok"} />
-        </div>
-      </section>
-
-      <section className="storage-readiness" aria-label="Storage readiness">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Storage readiness</strong>
-            <span>{props.storageReadiness?.statusReason ?? "Storage snapshot loading"}</span>
-          </div>
-          <span className={`status ${statusTone(props.storageReadiness?.status ?? "")}`}>
-            {props.storageReadiness?.status ?? "LOADING"}
-          </span>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="App free" value={formatBytes(props.storageReadiness?.app.availableBytes ?? 0)} tone={props.storageReadiness?.status === "VERIFIED" ? "ok" : "bad"} />
-          <Metric label="Root used" value={`${props.storageReadiness?.root.usedPercent ?? 0}%`} tone={(props.storageReadiness?.root.usedPercent ?? 100) < 80 ? "ok" : "bad"} />
-          <Metric label="Dedicated" value={props.storageReadiness?.dedicatedAppVolume ? "yes" : "no"} tone={props.storageReadiness?.dedicatedAppVolume ? "ok" : "bad"} />
-          <Metric label="Minimum" value={formatBytes(props.storageReadiness?.minimumRecommendedFreeBytes ?? 0)} tone="muted" />
-        </div>
-      </section>
-
-      <section className="launch-blockers" aria-label="Blocking gates">
-        <h3>Blocking Gates</h3>
-        {activeBlockers.length ? (
-          activeBlockers.map((blocker) => (
-            <article key={blocker.label} className={`launch-blocker ${blocker.severity}`}>
-              <div>
-                <span className={`status ${launchBlockerTone(blocker.severity)}`}>{blocker.severity.toUpperCase()}</span>
-                <strong>{blocker.label}</strong>
-              </div>
-              <small>{blocker.detail}</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No active production blockers
-          </div>
-        )}
-      </section>
-
-      <section className="launch-foundations" aria-label="Verified foundations">
-        <h3>Verified Foundations</h3>
-        {verifiedFoundations.map((item) => (
-          <article key={item.label} className="launch-foundation">
-            <div>
-              <CheckCircle2 aria-hidden="true" />
-              <strong>{item.label}</strong>
-            </div>
-            <small>{item.detail}</small>
-          </article>
-        ))}
-      </section>
-    </div>
-  );
-}
-
-function ObservabilityDock({
-  snapshot,
-  workerReadiness,
-  onRefresh,
-  onWorkerRefresh
-}: {
-  snapshot: ObservabilitySnapshot | null;
-  workerReadiness: WorkerReadiness | null;
-  onRefresh: (snapshot: ObservabilitySnapshot) => void;
-  onWorkerRefresh: (readiness: WorkerReadiness) => void;
-}) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function refreshSnapshot() {
-    setPending(true);
-    setError(null);
-    try {
-      onRefresh(await api.observability());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Observability refresh failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function refreshWorker() {
-    setPending(true);
-    setError(null);
-    try {
-      onWorkerRefresh(await api.worker());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Worker readiness refresh failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  const endpoints = snapshot?.endpoints.slice(0, 8) ?? [];
-
-  return (
-    <div className="dock-panel observability-dock">
-      <h2>Observability</h2>
-      <section className="observability-status" aria-label="Observability status">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Prometheus metrics live</strong>
-            <span>{snapshot ? `Generated ${new Date(snapshot.generatedAt).toLocaleTimeString()}` : "Snapshot loading"}</span>
-          </div>
-          <button className="compact-action" onClick={refreshSnapshot} disabled={pending} title="Refresh observability" aria-label="Refresh observability">
-            <RefreshCw aria-hidden="true" />
-            <span>{pending ? "Refreshing" : "Refresh"}</span>
-          </button>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Requests" value={String(snapshot?.totals.requestCount ?? 0)} tone="ok" />
-          <Metric label="Errors" value={String(snapshot?.totals.errorCount ?? 0)} tone={(snapshot?.totals.errorCount ?? 0) > 0 ? "bad" : "ok"} />
-          <Metric label="p95" value={formatDurationMs(snapshot?.totals.p95Ms ?? null)} tone="muted" />
-          <Metric label="Uptime" value={`${snapshot?.runtime.uptimeSeconds ?? 0}s`} tone="muted" />
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className="status ok">LIVE</span>
-            <strong>/metrics scrape target</strong>
-            <code className="raw-code">space_http_requests_total</code>
-          </div>
-          <small>No cookies, headers, request bodies, user ids or raw URLs are exported in metric labels.</small>
-        </div>
-      </section>
-      <section className="observability-runtime" aria-label="Process runtime">
-        <div className="mcp-metrics">
-          <Metric label="RSS" value={formatBytes(snapshot?.runtime.memory.rssBytes ?? 0)} tone="muted" />
-          <Metric label="Heap" value={formatBytes(snapshot?.runtime.memory.heapUsedBytes ?? 0)} tone="muted" />
-          <Metric label="Node" value={snapshot?.runtime.nodeVersion ?? "loading"} tone="muted" />
-          <Metric label="PID" value={String(snapshot?.runtime.pid ?? "-")} tone="muted" />
-        </div>
-      </section>
-      <section className="observability-worker" aria-label="Temporal worker readiness">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Temporal worker readiness</strong>
-            <span>{workerReadiness?.statusReason ?? "Worker snapshot loading"}</span>
-          </div>
-          <button className="compact-action" onClick={refreshWorker} disabled={pending} title="Refresh worker readiness" aria-label="Refresh worker readiness">
-            <RefreshCw aria-hidden="true" />
-            <span>{pending ? "Checking" : "Worker"}</span>
-          </button>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Status" value={workerReadiness?.status ?? "Loading"} tone={statusTone(workerReadiness?.status ?? "")} />
-          <Metric label="Workflow" value={String(workerReadiness?.workflowPollerCount ?? 0)} tone={(workerReadiness?.workflowPollerCount ?? 0) > 0 ? "ok" : "bad"} />
-          <Metric label="Activity" value={String(workerReadiness?.activityPollerCount ?? 0)} tone={(workerReadiness?.activityPollerCount ?? 0) > 0 ? "ok" : "bad"} />
-          <Metric label="Queue" value={workerReadiness?.taskQueue ?? "loading"} tone="muted" />
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(workerReadiness?.status ?? "")}`}>{workerReadiness?.status ?? "LOADING"}</span>
-            <strong>{workerReadiness ? `${workerReadiness.address} / ${workerReadiness.namespace}` : "Temporal target loading"}</strong>
-          </div>
-          <small>
-            {workerReadiness?.pollerIdentities.length
-              ? workerReadiness.pollerIdentities.join(", ")
-              : "No poller identity is currently visible for this task queue."}
-          </small>
-        </div>
-      </section>
-      <section className="observability-endpoints" aria-label="Endpoint metrics">
-        <h3>Endpoint RED</h3>
-        {endpoints.length ? (
-          endpoints.map((endpoint) => (
-            <article key={`${endpoint.method}:${endpoint.route}:${endpoint.statusClass}`} className="observability-row">
-              <div>
-                <span className={`status ${statusTone(endpoint.statusClass === "5xx" ? "ERROR" : "VERIFIED")}`}>{endpoint.statusClass}</span>
-                <strong>
-                  {endpoint.method} {endpoint.route}
-                </strong>
-              </div>
-              <small>
-                {endpoint.requestCount} requests / {endpoint.errorCount} errors / p95 {formatDurationMs(endpoint.durationMs.p95)}
-              </small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No endpoint samples yet
-          </div>
-        )}
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>OBSERVABILITY_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ToolsDock({
-  models,
-  mcp,
-  latestSmoke,
-  codexAppServer,
-  latestCodexHandshake,
-  latestCodexTurnSmoke,
-  onMcpSmoke,
-  onMcpRefresh,
-  onCodexHandshake,
-  onCodexTurnSmoke
-}: {
-  models: Model[];
-  mcp: McpPayload | null;
-  latestSmoke: McpDiscoverySmokeCheck | null;
-  codexAppServer: CodexAppServerStatus | null;
-  latestCodexHandshake: CodexAppServerHandshakeCheck | null;
-  latestCodexTurnSmoke: CodexAppServerTurnSmokeCheck | null;
-  onMcpSmoke: (smoke: McpDiscoverySmokeCheck) => void;
-  onMcpRefresh: (mcp: McpPayload) => void;
-  onCodexHandshake: (check: CodexAppServerHandshakeCheck) => void;
-  onCodexTurnSmoke: (check: CodexAppServerTurnSmokeCheck) => void;
-}) {
-  const [codexHandshakePending, setCodexHandshakePending] = useState(false);
-  const [codexTurnSmokePending, setCodexTurnSmokePending] = useState(false);
-  const [codexError, setCodexError] = useState<string | null>(null);
-  const [mcpPending, setMcpPending] = useState(false);
-  const [mcpError, setMcpError] = useState<string | null>(null);
-  const [mcpExecutionPendingToolId, setMcpExecutionPendingToolId] = useState<string | null>(null);
-  const [mcpExecutionError, setMcpExecutionError] = useState<string | null>(null);
-  const [mcpExecutionResult, setMcpExecutionResult] = useState<McpToolExecutionResult | null>(null);
-  const [mcpApprovalReason, setMcpApprovalReason] = useState("Operator approved safe read-only smoke.");
-  const latestSmokeCode = latestSmoke?.code ?? "MCP_DISCOVERY_NOT_RUN";
-  const latestCodexHandshakeCode = latestCodexHandshake?.code ?? "CODEX_HANDSHAKE_NOT_RUN";
-  const latestCodexTurnSmokeCode = latestCodexTurnSmoke?.code ?? "CODEX_TURN_SMOKE_NOT_RUN";
-  const verifiedModelCount = models.filter((model) => model.status === "VERIFIED").length;
-
-  async function runMcpSmoke() {
-    setMcpPending(true);
-    setMcpError(null);
-    try {
-      const smoke = await api.runMcpDiscoverySmoke();
-      const refreshed = await api.mcp();
-      onMcpSmoke(smoke);
-      onMcpRefresh(refreshed);
-    } catch (err) {
-      setMcpError(err instanceof Error ? err.message : "MCP discovery smoke failed");
-    } finally {
-      setMcpPending(false);
-    }
-  }
-
-  async function runCodexHandshake() {
-    setCodexHandshakePending(true);
-    setCodexError(null);
-    try {
-      const check = await api.runCodexAppServerHandshake();
-      onCodexHandshake(check);
-    } catch (err) {
-      setCodexError(err instanceof Error ? err.message : "Codex App Server handshake failed");
-    } finally {
-      setCodexHandshakePending(false);
-    }
-  }
-
-  async function runCodexTurnSmoke() {
-    setCodexTurnSmokePending(true);
-    setCodexError(null);
-    try {
-      const check = await api.runCodexAppServerTurnSmoke();
-      onCodexTurnSmoke(check);
-    } catch (err) {
-      setCodexError(err instanceof Error ? err.message : "Codex App Server turn smoke failed");
-    } finally {
-      setCodexTurnSmokePending(false);
-    }
-  }
-
-  async function runMcpExecution(toolId: string) {
-    setMcpExecutionPendingToolId(toolId);
-    setMcpExecutionError(null);
-    try {
-      const approvalReason = mcpApprovalReason.trim();
-      const result = await api.executeMcpTool({
-        toolId,
-        arguments: {},
-        approvalReason: approvalReason.length ? approvalReason : undefined
-      });
-      setMcpExecutionResult(result);
-    } catch (err) {
-      setMcpExecutionError(err instanceof Error ? err.message : "MCP execution gate failed");
-    } finally {
-      setMcpExecutionPendingToolId(null);
-    }
-  }
-
-  return (
-    <div className="dock-panel">
-      <h2>Tools</h2>
-      <section className="model-registry" aria-label="Model registry">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Model Registry</strong>
-            <span>Provider-owned models stay empty or disabled until real credential smoke and model refresh pass.</span>
-          </div>
-          <span className={`status ${verifiedModelCount > 0 ? "ok" : "muted"}`}>{verifiedModelCount} verified</span>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Catalog" value={`${models.length} models`} tone={models.length ? "ok" : "muted"} />
-          <Metric label="Verified" value={String(verifiedModelCount)} tone={verifiedModelCount ? "ok" : "muted"} />
-        </div>
-        {models.length ? (
-          <div className="model-list">
-            {models.map((model) => (
-              <article key={model.id} className="model-row">
-                <div>
-                  <span className={`status ${statusTone(model.status)}`}>{model.status}</span>
-                  <strong>{model.displayName}</strong>
-                </div>
-                <small>{model.providerId}</small>
-                <small>
-                  {model.contextWindow ? `${model.contextWindow.toLocaleString()} ctx` : "context n/a"} / {modelCapabilities(model)}
-                </small>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-mini" role="status">
-            No models loaded until a provider credential smoke passes.
-          </div>
-        )}
-      </section>
-      <section className="mcp-panel" aria-label="Codex App Server">
-        <div className="mcp-panel-header">
-          <div>
-            <strong>Codex App Server</strong>
-            <span>{codexAppServer?.statusReason ?? "Loading adapter status"}</span>
-          </div>
-          <span className={`status ${statusTone(codexAppServer?.status ?? "")}`}>{codexAppServer?.status ?? "LOADING"}</span>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Reason" value={codexAppServer?.reasonCode ?? "Loading"} tone={statusTone(codexAppServer?.status ?? "")} />
-          <Metric label="Transport" value={codexAppServer?.transport ?? "Loading"} tone="muted" />
-          <Metric label="Schemas" value={codexAppServer?.schemasGenerated ? "generated" : "missing"} tone={codexAppServer?.schemasGenerated ? "ok" : "muted"} />
-          <Metric label="Socket" value={codexAppServer?.socketPath ? "unix" : "none"} tone="muted" />
-        </div>
-        <div className="mcp-execution-plane" aria-label="Codex App Server smoke gates">
-          <div className="mcp-execution-head">
-            <div>
-              <strong>Adapter smoke gates</strong>
-              <span>No Codex process is spawned unless this adapter is explicitly enabled and verified.</span>
-            </div>
-          </div>
-          <button
-            className="compact-action"
-            onClick={runCodexHandshake}
-            disabled={codexHandshakePending}
-            title="Run Codex App Server handshake"
-            aria-label="Run Codex App Server handshake"
-          >
-            <ShieldCheck aria-hidden="true" />
-            <span>{codexHandshakePending ? "Checking" : "Handshake"}</span>
-          </button>
-          <button
-            className="compact-action"
-            onClick={runCodexTurnSmoke}
-            disabled={codexTurnSmokePending}
-            title="Run Codex App Server turn smoke"
-            aria-label="Run Codex App Server turn smoke"
-          >
-            <CheckCircle2 aria-hidden="true" />
-            <span>{codexTurnSmokePending ? "Checking" : "Turn smoke"}</span>
-          </button>
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(latestCodexHandshake?.status ?? "")}`}>{latestCodexHandshake?.status ?? "NO_CHECK"}</span>
-            <strong>{latestCodexHandshakeCode}</strong>
-            <code className="raw-code" title={latestCodexHandshake?.checkId ?? latestCodexHandshakeCode}>
-              {latestCodexHandshake?.checkId ?? latestCodexHandshakeCode}
-            </code>
-          </div>
-          <small>{latestCodexHandshake?.message ?? "Handshake smoke has not run in this view yet."}</small>
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(latestCodexTurnSmoke?.status ?? "")}`}>{latestCodexTurnSmoke?.status ?? "NO_CHECK"}</span>
-            <strong>{latestCodexTurnSmokeCode}</strong>
-            <code className="raw-code" title={latestCodexTurnSmoke?.checkId ?? latestCodexTurnSmokeCode}>
-              {latestCodexTurnSmoke?.checkId ?? latestCodexTurnSmokeCode}
-            </code>
-          </div>
-          <small>{latestCodexTurnSmoke?.message ?? "Real turn smoke remains gated until the shared Codex App Server adapter is enabled."}</small>
-        </div>
-        {codexError ? (
-          <div className="validation-result bad" role="alert">
-            <strong>CODEX_APP_SERVER_ERROR</strong>
-            <small>{codexError}</small>
-          </div>
-        ) : null}
-      </section>
-      <section className="mcp-panel" aria-label="MCP gateway">
-        <div className="mcp-panel-header">
-          <div>
-            <strong>Space MCP Gateway</strong>
-            <span>{mcp?.gateway.statusReason ?? "Loading gateway status"}</span>
-          </div>
-          <button
-            className="compact-action"
-            onClick={runMcpSmoke}
-            disabled={mcpPending}
-            title="Run MCP discovery smoke"
-            aria-label="Run MCP discovery smoke"
-          >
-            <RefreshCw aria-hidden="true" />
-            <span>{mcpPending ? "Checking" : "Smoke"}</span>
-          </button>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Gateway" value={mcp?.gateway.status ?? "Loading"} tone={statusTone(mcp?.gateway.status ?? "")} />
-          <Metric label="Approval" value={mcp?.gateway.approvalMode ?? "Loading"} tone="muted" />
-          <Metric label="Servers" value={String(mcp?.gateway.serverCount ?? 0)} tone="muted" />
-          <Metric label="Tools" value={String(mcp?.gateway.toolCount ?? 0)} tone="muted" />
-        </div>
-        <div className="mcp-execution-plane" aria-label="MCP execution gate">
-          <div className="mcp-execution-head">
-            <div>
-              <strong>Execution gate</strong>
-              <span>{mcpExecutionResult ? readableCode(mcpExecutionResult.code) : "No execution check in this view yet"}</span>
-            </div>
-            <button
-              className="compact-action"
-              onClick={() => runMcpExecution("mcp-gateway:execution-gate-smoke")}
-              disabled={mcpExecutionPendingToolId !== null}
-              title="Check MCP execution gate"
-              aria-label="Check MCP execution gate"
-            >
-              <CheckCircle2 aria-hidden="true" />
-              <span>{mcpExecutionPendingToolId === "mcp-gateway:execution-gate-smoke" ? "Checking" : "Gate"}</span>
-            </button>
-          </div>
-          <label className="field-label" htmlFor="mcp-approval-reason">
-            Approval reason
-          </label>
-          <input
-            id="mcp-approval-reason"
-            value={mcpApprovalReason}
-            onChange={(event) => setMcpApprovalReason(event.target.value)}
-            aria-label="MCP approval reason"
-          />
-          {mcpExecutionResult ? (
-            <div className="validation-result" role="status" aria-live="polite">
-              <div>
-                <span className={`status ${statusTone(mcpExecutionResult.status)}`}>{mcpExecutionResult.status}</span>
-                <strong>{readableCode(mcpExecutionResult.code)}</strong>
-                <code className="raw-code" title={mcpExecutionResult.executionId}>
-                  {mcpExecutionResult.executionId}
-                </code>
-              </div>
-              <small>
-                {mcpExecutionResult.message}
-                {mcpExecutionResult.artifact ? ` Artifact ${mcpExecutionResult.artifact.id}` : ""}
-              </small>
-            </div>
-          ) : null}
-          {mcpExecutionError ? (
-            <div className="validation-result bad" role="alert">
-              <strong>MCP_EXECUTION_ERROR</strong>
-              <small>{mcpExecutionError}</small>
-            </div>
-          ) : null}
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(latestSmoke?.status ?? "")}`}>{latestSmoke?.status ?? "NO_CHECK"}</span>
-            <strong>{readableCode(latestSmokeCode)}</strong>
-            <code className="raw-code" title={latestSmokeCode}>
-              {latestSmokeCode}
-            </code>
-          </div>
-          <small>{latestSmoke?.message ?? "Live config has not produced a discovery smoke result in this session."}</small>
-        </div>
-        {mcp?.servers.map((server) => (
-          <div key={server.id} className="dock-row mcp-row">
-            <span>{server.displayName}</span>
-            <span className={`status ${statusTone(server.status)}`}>{server.status}</span>
-          </div>
-        ))}
-        {mcp?.tools.length ? (
-          <div className="tool-list">
-            {mcp.tools.map((tool) => (
-              <div key={tool.id} className="tool-row">
-                <strong>{tool.name}</strong>
-                <span>{tool.riskLevel}</span>
-                <span>{tool.approvalRequired ? "approval" : "allowlisted"}</span>
-                <button
-                  className="icon-action"
-                  onClick={() => runMcpExecution(tool.id)}
-                  disabled={mcpExecutionPendingToolId !== null}
-                  title={`Execute ${tool.name}`}
-                  aria-label={`Execute ${tool.name}`}
-                >
-                  <CheckCircle2 aria-hidden="true" />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {mcpError ? (
-          <div className="validation-result bad" role="alert">
-            <strong>MCP_SMOKE_ERROR</strong>
-            <small>{mcpError}</small>
-          </div>
-        ) : null}
-      </section>
-    </div>
-  );
-}
-
-function MemoryDock({
-  activeRoom,
-  latestSmoke,
-  vectorReadiness,
-  onSmoke
-}: {
-  activeRoom: Room | null;
-  latestSmoke: MemoryEmbeddingSmokeCheck | null;
-  vectorReadiness: MemoryVectorReadiness | null;
-  onSmoke: (smoke: MemoryEmbeddingSmokeCheck) => void;
-}) {
-  const [entries, setEntries] = useState<MemoryEntry[]>([]);
-  const [embeddingSmoke, setEmbeddingSmoke] = useState<MemoryEmbeddingSmokeCheck | null>(latestSmoke);
-  const [query, setQuery] = useState("");
-  const [searchMode, setSearchMode] = useState<MemorySearchMode>("keyword");
-  const [searchStatus, setSearchStatus] = useState<MemorySearchStatus | null>(null);
-  const [scope, setScope] = useState<MemoryEntry["scope"]>("ROOM");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [provenance, setProvenance] = useState("operator");
-  const [pending, setPending] = useState(false);
-  const [smokePending, setSmokePending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setEmbeddingSmoke(latestSmoke);
-  }, [latestSmoke]);
-
-  async function loadMemory(nextQuery = query, nextMode = searchMode) {
-    setError(null);
-    if (scope === "ROOM" && !activeRoom) {
-      setEntries([]);
-      setSearchStatus(fallbackMemorySearchStatus(nextMode));
-      return;
-    }
-    try {
-      const payload = await api.memory({
-        roomId: scope === "ROOM" ? activeRoom?.id ?? undefined : undefined,
-        q: nextQuery || undefined,
-        scope,
-        searchMode: nextMode
-      });
-      setEntries(payload.data);
-      setSearchStatus(payload.search);
-    } catch (err) {
-      setEntries([]);
-      setSearchStatus(fallbackMemorySearchStatus(nextMode));
-      setError(err instanceof Error ? err.message : "Memory load failed");
-    }
-  }
-
-  useEffect(() => {
-    void loadMemory();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoom?.id, scope, searchMode]);
-
-  async function saveMemory() {
-    setPending(true);
-    setError(null);
-    try {
-      const saved = await api.createMemory({
-        scope,
-        roomId: scope === "ROOM" ? activeRoom?.id ?? null : null,
-        title,
-        body,
-        provenance
-      });
-      setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
-      setTitle("");
-      setBody("");
-      setProvenance("operator");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Memory save failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function runEmbeddingSmoke() {
-    setSmokePending(true);
-    setError(null);
-    try {
-      const smoke = await api.runMemoryEmbeddingSmoke();
-      setEmbeddingSmoke(smoke);
-      onSmoke(smoke);
-      await loadMemory();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Embedding smoke failed");
-    } finally {
-      setSmokePending(false);
-    }
-  }
-
-  const currentSearchStatus = searchStatus ?? fallbackMemorySearchStatus(searchMode);
-  const semanticEmbeddingsReady = currentSearchStatus.semantic.status === "VERIFIED";
-  const embeddingSmokeCode = embeddingSmoke?.code ?? "EMBEDDING_SMOKE_NOT_RUN";
-  const embeddingRemediation = embeddingSmokeRemediation(embeddingSmoke);
-
-  return (
-    <div className="dock-panel memory-dock">
-      <h2>Memory</h2>
-      <section className="memory-search-plane" aria-label="Memory search status">
-        <div>
-          <Search aria-hidden="true" />
-          <span>
-            <strong>Keyword search active</strong>
-            <small>{currentSearchStatus.keyword.statusReason}</small>
-          </span>
-          <em className={`status ${statusTone(currentSearchStatus.keyword.status)}`}>
-            {currentSearchStatus.keyword.status}
-          </em>
-        </div>
-        <div>
-          <Database aria-hidden="true" />
-          <span>
-            <strong>{semanticEmbeddingsReady ? "Semantic embeddings active" : "Semantic embeddings disabled"}</strong>
-            <small>{currentSearchStatus.semantic.statusReason}</small>
-          </span>
-          <em className={`status ${statusTone(currentSearchStatus.semantic.status)}`}>
-            {currentSearchStatus.semantic.status}
-          </em>
-        </div>
-      </section>
-      <section className="embedding-smoke-panel" aria-label="Memory vector readiness">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Vector readiness</strong>
-            <span>{vectorReadiness ? readableCode(vectorReadiness.code) : "Vector readiness pending"}</span>
-          </div>
-          <em className={`status ${statusTone(vectorReadiness?.status ?? "")}`}>
-            {vectorReadiness?.status ?? "PENDING"}
-          </em>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="pgvector" value={vectorReadiness?.extensionVersion ?? "none"} tone={vectorReadiness?.extensionInstalled ? "ok" : "muted"} />
-          <Metric label="Column" value={vectorReadiness?.embeddingColumnReady ? "ready" : "missing"} tone={vectorReadiness?.embeddingColumnReady ? "ok" : "muted"} />
-          <Metric label="Index" value={vectorReadiness?.vectorIndexReady ? "HNSW" : "missing"} tone={vectorReadiness?.vectorIndexReady ? "ok" : "muted"} />
-          <Metric
-            label="Dims"
-            value={`${vectorReadiness?.embeddingDimensions ?? "?"}/${vectorReadiness?.expectedDimensions ?? 1536}`}
-            tone={vectorReadiness?.embeddingDimensions === vectorReadiness?.expectedDimensions ? "ok" : "muted"}
-          />
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(vectorReadiness?.status ?? "")}`}>{vectorReadiness?.status ?? "PENDING"}</span>
-            <strong>{vectorReadiness ? readableCode(vectorReadiness.code) : "Vector Readiness Pending"}</strong>
-            <code className="raw-code" title={vectorReadiness?.code ?? "VECTOR_READINESS_PENDING"}>
-              {vectorReadiness?.code ?? "VECTOR_READINESS_PENDING"}
-            </code>
-          </div>
-          <small>{vectorReadiness?.message ?? "Vector storage readiness has not been checked yet."}</small>
-        </div>
-      </section>
-      <section className="embedding-smoke-panel" aria-label="Memory embedding smoke">
-        <div className="mcp-execution-head">
-          <div>
-            <strong>Embedding smoke gate</strong>
-            <span>{embeddingSmoke ? readableCode(embeddingSmoke.code) : "No embedding smoke check yet"}</span>
-          </div>
-          <button
-            className="compact-action"
-            onClick={runEmbeddingSmoke}
-            disabled={smokePending}
-            title="Run embedding smoke"
-            aria-label="Run embedding smoke"
-          >
-            <RefreshCw aria-hidden="true" />
-            <span>{smokePending ? "Checking" : "Smoke"}</span>
-          </button>
-        </div>
-        <div className="mcp-metrics">
-          <Metric label="Smoke" value={embeddingSmoke?.status ?? "NO_CHECK"} tone={statusTone(embeddingSmoke?.status ?? "")} />
-          <Metric
-            label="Provider smoke"
-            value={embeddingSmoke?.embeddingProviderReady ? "passed" : "gated"}
-            tone={embeddingSmoke?.embeddingProviderReady ? "ok" : "muted"}
-          />
-          <Metric label="Provider" value={embeddingSmoke?.provider ?? "none"} tone="muted" />
-          <Metric label="Model" value={embeddingSmoke?.model ?? "none"} tone="muted" />
-          <Metric label="Dims" value={String(embeddingSmoke?.dimensions ?? 1536)} tone="muted" />
-        </div>
-        <div className="validation-result" role="status" aria-live="polite">
-          <div>
-            <span className={`status ${statusTone(embeddingSmoke?.status ?? "")}`}>{embeddingSmoke?.status ?? "NO_CHECK"}</span>
-            <strong>{readableCode(embeddingSmokeCode)}</strong>
-            <code className="raw-code" title={embeddingSmokeCode}>
-              {embeddingSmokeCode}
-            </code>
-          </div>
-          <small>{embeddingSmoke?.message ?? "Semantic memory stays disabled until pgvector and an embedding provider pass smoke."}</small>
-          <small>OpenAI or Codex-LB provider smoke is available after dedicated key configuration.</small>
-          {embeddingRemediation ? <small>{embeddingRemediation}</small> : null}
-          {embeddingSmoke?.checkId ? <small>{embeddingSmoke.checkId}</small> : null}
-        </div>
-      </section>
-      <section className="memory-controls" aria-label="Memory search">
-        <div className="search-mode-toggle" role="group" aria-label="Memory search mode">
-          <button
-            className={searchMode === "keyword" ? "selected" : ""}
-            type="button"
-            aria-pressed={searchMode === "keyword"}
-            onClick={() => setSearchMode("keyword")}
-          >
-            Keyword
-          </button>
-          <button
-            className={searchMode === "semantic" ? "selected" : ""}
-            type="button"
-            aria-pressed={searchMode === "semantic"}
-            onClick={() => setSearchMode("semantic")}
-          >
-            Semantic
-          </button>
-        </div>
-        <div className="inline-field">
-          <input
-            aria-label="Search memory"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search memory"
-          />
-          <button className="compact-action" onClick={() => loadMemory()} title="Search memory" aria-label="Search memory">
-            <RefreshCw aria-hidden="true" />
-            <span>Search</span>
-          </button>
-        </div>
-      </section>
-      <section className="memory-form" aria-label="Save memory">
-        <div className="inline-field">
-          <select aria-label="Memory scope" value={scope} onChange={(event) => setScope(event.target.value as MemoryEntry["scope"])}>
-            <option value="ROOM">Room</option>
-            <option value="PROJECT">Project</option>
-            <option value="SYSTEM">System</option>
-          </select>
-          <input
-            aria-label="Memory provenance"
-            value={provenance}
-            onChange={(event) => setProvenance(event.target.value)}
-            placeholder="Provenance"
-          />
-        </div>
-        <input aria-label="Memory title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Title" />
-        <textarea aria-label="Memory body" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Body" rows={4} />
-        <button
-          className="compact-action primary-action"
-          onClick={saveMemory}
-          disabled={pending || !title.trim() || !body.trim() || !provenance.trim() || (scope === "ROOM" && !activeRoom)}
-          title="Save memory"
-          aria-label="Save memory"
-        >
-          <Plus aria-hidden="true" />
-          <span>{pending ? "Saving" : "Save"}</span>
-        </button>
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>MEMORY_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-      <section className="memory-list" aria-label="Memory entries">
-        {entries.length ? (
-          entries.map((entry) => (
-            <article key={entry.id} className="memory-entry">
-              <div>
-                <span className="status muted">{entry.scope}</span>
-                <strong>{entry.title}</strong>
-              </div>
-              <p>{entry.body}</p>
-              <small>{entry.provenance}</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No memory entries
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function parseEvidenceIds(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\s,]+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-function appendEvidenceId(value: string, artifactId: string): string {
-  return [...parseEvidenceIds(value), artifactId].filter((item, index, items) => items.indexOf(item) === index).join("\n");
-}
-
-function parseArtifactMetadata(value: string): Record<string, string> {
-  return Object.fromEntries(
-    value
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const separator = line.indexOf("=");
-        if (separator === -1) return [line.slice(0, 120), "true"];
-        return [line.slice(0, separator).trim().slice(0, 120), line.slice(separator + 1).trim()];
-      })
-      .filter(([key]) => Boolean(key))
-  );
-}
 
 const artifactKinds: Artifact["kind"][] = [
   "SCREENSHOT",
@@ -17627,566 +11554,7 @@ const artifactKinds: Artifact["kind"][] = [
 
 const browserEvidenceViewports: BrowserEvidenceViewport[] = ["mobile", "tablet", "desktop", "wide", "ultrawide"];
 
-function decisionTone(decision: ReviewDecision["decision"]) {
-  if (decision === "SHIP") return "ok";
-  if (decision === "BLOCK") return "bad";
-  return "muted";
-}
+
 
 const reviewCheckStatuses: ReviewCheck["status"][] = ["PASS", "WARN", "FAIL", "SKIPPED", "RUNNING"];
 const reviewDiffStatuses: ReviewDiffSummary["status"][] = ["MODIFIED", "ADDED", "DELETED", "RENAMED"];
-
-function reviewCheckTone(status: ReviewCheck["status"]) {
-  if (status === "PASS") return "ok";
-  if (status === "FAIL") return "bad";
-  return "muted";
-}
-
-function reviewGateTone(status: ReviewRoomState["gateStatus"]) {
-  if (status === "PASS") return "ok";
-  if (status === "FAIL") return "bad";
-  return "muted";
-}
-
-function ReviewDock({ activeRoom }: { activeRoom: Room | null }) {
-  const [decisions, setDecisions] = useState<ReviewDecision[]>([]);
-  const [checks, setChecks] = useState<ReviewCheck[]>([]);
-  const [diffs, setDiffs] = useState<ReviewDiffSummary[]>([]);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const [gateStatus, setGateStatus] = useState<ReviewRoomState["gateStatus"]>("EMPTY");
-  const [gateReason, setGateReason] = useState("No review checks have been recorded for this room.");
-  const [decision, setDecision] = useState<ReviewDecision["decision"]>("BLOCK");
-  const [summary, setSummary] = useState("");
-  const [rollbackNote, setRollbackNote] = useState("");
-  const [evidenceIds, setEvidenceIds] = useState("");
-  const [checkName, setCheckName] = useState("npm test");
-  const [checkStatus, setCheckStatus] = useState<ReviewCheck["status"]>("PASS");
-  const [checkCommand, setCheckCommand] = useState("npm test");
-  const [checkSummary, setCheckSummary] = useState("");
-  const [checkArtifactIds, setCheckArtifactIds] = useState("");
-  const [checkMetadata, setCheckMetadata] = useState("source=operator");
-  const [diffTitle, setDiffTitle] = useState("");
-  const [diffFilePath, setDiffFilePath] = useState("");
-  const [diffStatus, setDiffStatus] = useState<ReviewDiffSummary["status"]>("MODIFIED");
-  const [diffAdditions, setDiffAdditions] = useState("0");
-  const [diffDeletions, setDiffDeletions] = useState("0");
-  const [diffPatchArtifactId, setDiffPatchArtifactId] = useState("");
-  const [diffSummary, setDiffSummary] = useState("");
-  const [artifactKind, setArtifactKind] = useState<Artifact["kind"]>("SCREENSHOT");
-  const [artifactMimeType, setArtifactMimeType] = useState("image/png");
-  const [artifactStorageUri, setArtifactStorageUri] = useState("");
-  const [artifactSha256, setArtifactSha256] = useState("");
-  const [artifactByteSize, setArtifactByteSize] = useState("0");
-  const [artifactMetadata, setArtifactMetadata] = useState("source=operator");
-  const [browserViewport, setBrowserViewport] = useState<BrowserEvidenceViewport>("desktop");
-  const [pending, setPending] = useState(false);
-  const [artifactPending, setArtifactPending] = useState(false);
-  const [checkPending, setCheckPending] = useState(false);
-  const [diffPending, setDiffPending] = useState(false);
-  const [browserEvidencePending, setBrowserEvidencePending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function loadReviewState() {
-    setError(null);
-    if (!activeRoom) {
-      setDecisions([]);
-      setChecks([]);
-      setDiffs([]);
-      setArtifacts([]);
-      setGateStatus("EMPTY");
-      setGateReason("No room selected.");
-      return;
-    }
-    try {
-      const state = await api.reviewState({ roomId: activeRoom.id });
-      setDecisions(state.decisions);
-      setChecks(state.checks);
-      setDiffs(state.diffs);
-      setArtifacts(state.artifacts);
-      setGateStatus(state.gateStatus);
-      setGateReason(state.statusReason);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review load failed");
-    }
-  }
-
-  useEffect(() => {
-    void loadReviewState();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoom?.id]);
-
-  async function saveArtifact() {
-    if (!activeRoom) return;
-    setArtifactPending(true);
-    setError(null);
-    try {
-      const saved = await api.createArtifact({
-        roomId: activeRoom.id,
-        kind: artifactKind,
-        mimeType: artifactMimeType,
-        storageUri: artifactStorageUri,
-        sha256: artifactSha256,
-        byteSize: Number(artifactByteSize || 0),
-        metadata: parseArtifactMetadata(artifactMetadata)
-      });
-      setArtifacts((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-      setEvidenceIds((current) => appendEvidenceId(current, saved.id));
-      setArtifactStorageUri("");
-      setArtifactSha256("");
-      setArtifactByteSize("0");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Artifact registration failed");
-    } finally {
-      setArtifactPending(false);
-    }
-  }
-
-  async function captureBrowserEvidence() {
-    if (!activeRoom) return;
-    setBrowserEvidencePending(true);
-    setError(null);
-    try {
-      const capture = await api.captureBrowserEvidence({
-        roomId: activeRoom.id,
-        viewport: browserViewport
-      });
-      setArtifacts((current) => [
-        ...capture.artifacts,
-        ...current.filter((item) => !capture.artifacts.some((artifact) => artifact.id === item.id))
-      ]);
-      setEvidenceIds((current) => capture.artifacts.reduce((value, artifact) => appendEvidenceId(value, artifact.id), current));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser evidence capture failed");
-    } finally {
-      setBrowserEvidencePending(false);
-    }
-  }
-
-  async function saveReview() {
-    if (!activeRoom) return;
-    setPending(true);
-    setError(null);
-    try {
-      const saved = await api.createReview({
-        roomId: activeRoom.id,
-        decision,
-        summary,
-        rollbackNote,
-        evidenceArtifactIds: parseEvidenceIds(evidenceIds)
-      });
-      setDecisions((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-      setSummary("");
-      setRollbackNote("");
-      setEvidenceIds("");
-      await loadReviewState();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review decision failed");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function saveCheck() {
-    if (!activeRoom) return;
-    setCheckPending(true);
-    setError(null);
-    try {
-      const saved = await api.createReviewCheck({
-        roomId: activeRoom.id,
-        reviewDecisionId: decisions[0]?.id ?? null,
-        name: checkName,
-        status: checkStatus,
-        command: checkCommand.trim() || null,
-        summary: checkSummary,
-        artifactIds: parseEvidenceIds(checkArtifactIds),
-        metadata: parseArtifactMetadata(checkMetadata)
-      });
-      setChecks((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-      setCheckSummary("");
-      setCheckArtifactIds("");
-      await loadReviewState();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review check failed");
-    } finally {
-      setCheckPending(false);
-    }
-  }
-
-  async function saveDiff() {
-    if (!activeRoom) return;
-    setDiffPending(true);
-    setError(null);
-    try {
-      const saved = await api.createReviewDiff({
-        roomId: activeRoom.id,
-        reviewDecisionId: decisions[0]?.id ?? null,
-        title: diffTitle,
-        filePath: diffFilePath,
-        status: diffStatus,
-        additions: Number(diffAdditions || 0),
-        deletions: Number(diffDeletions || 0),
-        patchArtifactId: diffPatchArtifactId.trim() || null,
-        summary: diffSummary
-      });
-      setDiffs((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-      setDiffTitle("");
-      setDiffFilePath("");
-      setDiffAdditions("0");
-      setDiffDeletions("0");
-      setDiffPatchArtifactId("");
-      setDiffSummary("");
-      await loadReviewState();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review diff failed");
-    } finally {
-      setDiffPending(false);
-    }
-  }
-
-  const canSaveArtifact =
-    Boolean(activeRoom) &&
-    artifactStorageUri.trim().length > 0 &&
-    /^[a-f0-9]{64}$/.test(artifactSha256.trim()) &&
-    Number.isFinite(Number(artifactByteSize)) &&
-    Number(artifactByteSize) >= 0;
-  const canSaveCheck = Boolean(activeRoom) && checkName.trim().length > 0 && checkSummary.trim().length > 0;
-  const canSaveDiff = Boolean(activeRoom) && diffTitle.trim().length > 0 && diffFilePath.trim().length > 0;
-
-  return (
-    <div className="dock-panel review-dock">
-      <h2>Review</h2>
-      <section className="review-gate" aria-label="Review gate status">
-        <CheckCircle2 aria-hidden="true" />
-        <span>
-          <strong>Ship/block gate active</strong>
-          <small>Operator decisions are persisted, audited, and room-scoped.</small>
-        </span>
-      </section>
-      <section className="review-aggregation" aria-label="Review aggregation status">
-        <div>
-          <span className={`status ${reviewGateTone(gateStatus)}`}>{readableCode(gateStatus)}</span>
-          <strong>Checks and diffs ledger</strong>
-          <small>{gateReason}</small>
-        </div>
-        <div className="review-aggregation-grid">
-          <Metric label="Checks" value={String(checks.length)} tone={checks.some((item) => item.status === "FAIL") ? "bad" : checks.length ? "ok" : "muted"} />
-          <Metric label="Diffs" value={String(diffs.length)} tone={diffs.length ? "ok" : "muted"} />
-        </div>
-      </section>
-      <section className="browser-evidence-panel" aria-label="Browser evidence smoke">
-        <div>
-          <Eye aria-hidden="true" />
-          <span>
-            <strong>Browser evidence smoke</strong>
-            <small>Internal Space capture creates screenshot, DOM, console and network artifacts.</small>
-          </span>
-        </div>
-        <div className="inline-field">
-          <select
-            aria-label="Browser evidence viewport"
-            value={browserViewport}
-            onChange={(event) => setBrowserViewport(event.target.value as BrowserEvidenceViewport)}
-          >
-            {browserEvidenceViewports.map((viewport) => (
-              <option key={viewport} value={viewport}>
-                {readableCode(viewport)}
-              </option>
-            ))}
-          </select>
-          <button
-            className="compact-action primary-action"
-            onClick={captureBrowserEvidence}
-            disabled={!activeRoom || browserEvidencePending}
-            title="Capture browser evidence"
-            aria-label="Capture browser evidence"
-          >
-            <Eye aria-hidden="true" />
-            <span>{browserEvidencePending ? "Capturing" : "Capture"}</span>
-          </button>
-        </div>
-      </section>
-      <section className="artifact-form" aria-label="Register evidence artifact">
-        <div className="inline-field">
-          <select aria-label="Artifact kind" value={artifactKind} onChange={(event) => setArtifactKind(event.target.value as Artifact["kind"])}>
-            {artifactKinds.map((kind) => (
-              <option key={kind} value={kind}>
-                {readableCode(kind)}
-              </option>
-            ))}
-          </select>
-          <input
-            aria-label="Artifact MIME type"
-            value={artifactMimeType}
-            onChange={(event) => setArtifactMimeType(event.target.value)}
-            placeholder="image/png"
-          />
-        </div>
-        <input
-          aria-label="Artifact storage URI"
-          value={artifactStorageUri}
-          onChange={(event) => setArtifactStorageUri(event.target.value)}
-          placeholder="cas://sha256/..."
-        />
-        <div className="inline-field">
-          <input
-            aria-label="Artifact SHA256"
-            value={artifactSha256}
-            onChange={(event) => setArtifactSha256(event.target.value)}
-            placeholder="64 hex sha256"
-          />
-          <input
-            aria-label="Artifact byte size"
-            value={artifactByteSize}
-            onChange={(event) => setArtifactByteSize(event.target.value)}
-            inputMode="numeric"
-            placeholder="0"
-          />
-        </div>
-        <textarea
-          aria-label="Artifact metadata"
-          value={artifactMetadata}
-          onChange={(event) => setArtifactMetadata(event.target.value)}
-          placeholder="viewport=1440x900"
-          rows={2}
-        />
-        <button
-          className="compact-action primary-action"
-          onClick={saveArtifact}
-          disabled={artifactPending || !canSaveArtifact}
-          title="Register evidence artifact"
-          aria-label="Register evidence artifact"
-        >
-          <Plus aria-hidden="true" />
-          <span>{artifactPending ? "Registering" : "Register artifact"}</span>
-        </button>
-      </section>
-      <section className="artifact-list" aria-label="Evidence artifacts">
-        {artifacts.length ? (
-          artifacts.map((artifact) => (
-            <article key={artifact.id} className="artifact-entry">
-              <div>
-                <span className="status ok">{readableCode(artifact.kind)}</span>
-                <strong>{artifact.id}</strong>
-              </div>
-              <small>{artifact.storageUri}</small>
-              <div className="artifact-entry-footer">
-                <small>{artifact.byteSize.toLocaleString()} bytes</small>
-                <button
-                  className="compact-action"
-                  onClick={() => setEvidenceIds((current) => appendEvidenceId(current, artifact.id))}
-                  title="Use artifact in review"
-                  aria-label={`Use ${artifact.id} in review`}
-                >
-                  <Plus aria-hidden="true" />
-                  <span>Use</span>
-                </button>
-              </div>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No evidence artifacts
-          </div>
-        )}
-      </section>
-      <section className="review-form" aria-label="Record review check">
-        <div className="inline-field">
-          <select aria-label="Review check status" value={checkStatus} onChange={(event) => setCheckStatus(event.target.value as ReviewCheck["status"])}>
-            {reviewCheckStatuses.map((status) => (
-              <option key={status} value={status}>
-                {readableCode(status)}
-              </option>
-            ))}
-          </select>
-          <input aria-label="Review check name" value={checkName} onChange={(event) => setCheckName(event.target.value)} placeholder="npm test" />
-        </div>
-        <input aria-label="Review check command" value={checkCommand} onChange={(event) => setCheckCommand(event.target.value)} placeholder="npm test" />
-        <textarea
-          aria-label="Review check summary"
-          value={checkSummary}
-          onChange={(event) => setCheckSummary(event.target.value)}
-          placeholder="Check summary"
-          rows={2}
-        />
-        <input
-          aria-label="Review check artifact IDs"
-          value={checkArtifactIds}
-          onChange={(event) => setCheckArtifactIds(event.target.value)}
-          placeholder="artifact:id values"
-        />
-        <textarea
-          aria-label="Review check metadata"
-          value={checkMetadata}
-          onChange={(event) => setCheckMetadata(event.target.value)}
-          placeholder="suite=unit"
-          rows={2}
-        />
-        <button
-          className="compact-action primary-action"
-          onClick={saveCheck}
-          disabled={checkPending || !canSaveCheck}
-          title="Record review check"
-          aria-label="Record review check"
-        >
-          <CheckCircle2 aria-hidden="true" />
-          <span>{checkPending ? "Recording" : "Record check"}</span>
-        </button>
-      </section>
-      <section className="review-list" aria-label="Review checks">
-        {checks.length ? (
-          checks.slice(0, 6).map((item) => (
-            <article key={item.id} className="review-entry">
-              <div>
-                <span className={`status ${reviewCheckTone(item.status)}`}>{readableCode(item.status)}</span>
-                <strong>{item.name}</strong>
-              </div>
-              <p>{item.summary}</p>
-              <small>{item.artifactIds.length} artifacts / {item.command ?? "no command"}</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No review checks
-          </div>
-        )}
-      </section>
-      <section className="review-form" aria-label="Record review diff">
-        <div className="inline-field">
-          <select aria-label="Review diff status" value={diffStatus} onChange={(event) => setDiffStatus(event.target.value as ReviewDiffSummary["status"])}>
-            {reviewDiffStatuses.map((status) => (
-              <option key={status} value={status}>
-                {readableCode(status)}
-              </option>
-            ))}
-          </select>
-          <input aria-label="Review diff title" value={diffTitle} onChange={(event) => setDiffTitle(event.target.value)} placeholder="UI changes" />
-        </div>
-        <input aria-label="Review diff file path" value={diffFilePath} onChange={(event) => setDiffFilePath(event.target.value)} placeholder="apps/web/src/App.tsx" />
-        <div className="inline-field">
-          <input aria-label="Review diff additions" value={diffAdditions} onChange={(event) => setDiffAdditions(event.target.value)} inputMode="numeric" placeholder="0" />
-          <input aria-label="Review diff deletions" value={diffDeletions} onChange={(event) => setDiffDeletions(event.target.value)} inputMode="numeric" placeholder="0" />
-        </div>
-        <input
-          aria-label="Review diff patch artifact ID"
-          value={diffPatchArtifactId}
-          onChange={(event) => setDiffPatchArtifactId(event.target.value)}
-          placeholder="artifact:patch"
-        />
-        <textarea
-          aria-label="Review diff summary"
-          value={diffSummary}
-          onChange={(event) => setDiffSummary(event.target.value)}
-          placeholder="Diff summary"
-          rows={2}
-        />
-        <button
-          className="compact-action primary-action"
-          onClick={saveDiff}
-          disabled={diffPending || !canSaveDiff}
-          title="Record review diff"
-          aria-label="Record review diff"
-        >
-          <GitCompare aria-hidden="true" />
-          <span>{diffPending ? "Recording" : "Record diff"}</span>
-        </button>
-      </section>
-      <section className="review-list" aria-label="Review diffs">
-        {diffs.length ? (
-          diffs.slice(0, 6).map((item) => (
-            <article key={item.id} className="review-entry">
-              <div>
-                <span className="status muted">{readableCode(item.status)}</span>
-                <strong>{item.title}</strong>
-              </div>
-              <p>{item.filePath}</p>
-              <small>+{item.additions.toLocaleString()} / -{item.deletions.toLocaleString()} / {item.patchArtifactId ?? "no patch artifact"}</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No review diffs
-          </div>
-        )}
-      </section>
-      <section className="review-form" aria-label="Create review decision">
-        <select aria-label="Review decision" value={decision} onChange={(event) => setDecision(event.target.value as ReviewDecision["decision"])}>
-          <option value="BLOCK">Block</option>
-          <option value="NEEDS_HUMAN">Needs human</option>
-          <option value="SHIP">Ship</option>
-        </select>
-        <textarea
-          aria-label="Review summary"
-          value={summary}
-          onChange={(event) => setSummary(event.target.value)}
-          placeholder="Summary"
-          rows={3}
-        />
-        <input
-          aria-label="Evidence artifact IDs"
-          value={evidenceIds}
-          onChange={(event) => setEvidenceIds(event.target.value)}
-          placeholder="artifact:id values"
-        />
-        <textarea
-          aria-label="Rollback note"
-          value={rollbackNote}
-          onChange={(event) => setRollbackNote(event.target.value)}
-          placeholder="Rollback note"
-          rows={2}
-        />
-        <button
-          className="compact-action primary-action"
-          onClick={saveReview}
-          disabled={pending || !activeRoom || !summary.trim()}
-          title="Record review decision"
-          aria-label="Record review decision"
-        >
-          <Plus aria-hidden="true" />
-          <span>{pending ? "Recording" : "Record"}</span>
-        </button>
-      </section>
-      {error ? (
-        <div className="validation-result bad" role="alert">
-          <strong>REVIEW_ERROR</strong>
-          <small>{error}</small>
-        </div>
-      ) : null}
-      <section className="review-list" aria-label="Review decisions">
-        {decisions.length ? (
-          decisions.map((item) => (
-            <article key={item.id} className="review-entry">
-              <div>
-                <span className={`status ${decisionTone(item.decision)}`}>{readableCode(item.decision)}</span>
-                <strong>{item.summary}</strong>
-              </div>
-              {item.rollbackNote ? <p>{item.rollbackNote}</p> : null}
-              <small>{item.evidenceArtifactIds.length} evidence artifacts</small>
-            </article>
-          ))
-        ) : (
-          <div className="empty-mini" role="status">
-            No review decisions
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: string; tone: string }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong className={`status ${tone}`}>{value}</strong>
-    </div>
-  );
-}
-
-function DockPanel({ title, text }: { title: string; text: string }) {
-  return (
-    <div className="dock-panel">
-      <h2>{title}</h2>
-      <p>{text}</p>
-    </div>
-  );
-}

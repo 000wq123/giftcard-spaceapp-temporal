@@ -1,4 +1,10 @@
-import { TelegramApiError, TelegramBotApiClient, TelegramSecretStore, type TelegramIntegrationRecord } from "./telegram.js";
+import {
+  TelegramApiError,
+  TelegramBotApiClient,
+  TelegramIntegrationError,
+  TelegramSecretStore,
+  type TelegramIntegrationRecord
+} from "./telegram.js";
 
 export type TelegramOutboxSourceType = "CHAT" | "ROOM_AGENT" | "TERMINAL" | "TEST";
 export type TelegramOutboxStatus = "PENDING" | "SENDING" | "RETRY" | "DELIVERED" | "CANCELLED" | "FAILED";
@@ -50,6 +56,8 @@ export interface TelegramOutboxPersistence {
     availableAt: string;
     safeErrorCode: string;
     now: string;
+    /** False refunds the claim's attempt (rate limits, held batches, partial progress). */
+    countAttempt?: boolean;
   }): Promise<void>;
   failDelivery(input: {
     deliveryId: string;
@@ -120,21 +128,68 @@ export interface TelegramDeliveryWorkerOptions {
   now?: () => Date;
   maxAttempts?: number;
   log?: (record: TelegramDeliveryLog) => void;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+// Filesystem errors worth retrying; anything else (ENOENT, EACCES, invalid reference) needs the operator.
+const TRANSIENT_CREDENTIAL_READ_ERRORS = new Set(["EAGAIN", "EBUSY", "EINTR", "EIO", "EMFILE", "ENFILE", "ETIMEDOUT"]);
+const PROGRESS_WRITE_ATTEMPTS = 3;
+
+function isTransientCredentialReadError(error: unknown): boolean {
+  return error instanceof Error && TRANSIENT_CREDENTIAL_READ_ERRORS.has((error as NodeJS.ErrnoException).code ?? "");
+}
+
+/** A part reached Telegram but its progress could not be stored, so it must not be resent from here. */
+class TelegramDeliveryProgressError extends Error {
+  constructor(readonly code: "TELEGRAM_DELIVERY_LOCK_LOST" | "TELEGRAM_PROGRESS_UNRECORDED") {
+    super(code);
+  }
 }
 
 export class TelegramDeliveryWorker {
   private readonly clientFactory: (botToken: string) => Pick<TelegramBotApiClient, "sendMessage">;
   private readonly now: () => Date;
   private readonly maxAttempts: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly options: TelegramDeliveryWorkerOptions) {
     this.clientFactory = options.clientFactory ?? ((botToken) => new TelegramBotApiClient(botToken));
     this.now = options.now ?? (() => new Date());
     this.maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 5, 10));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   private log(delivery: TelegramOutboxRecord, status: TelegramDeliveryLog["status"], safeErrorCode: string | null) {
     this.options.log?.({ deliveryId: delivery.deliveryId, status, attempt: delivery.attemptCount, safeErrorCode });
+  }
+
+  private async fail(delivery: TelegramOutboxRecord, safeErrorCode: string): Promise<void> {
+    await this.options.persistence.failDelivery({
+      deliveryId: delivery.deliveryId,
+      workerId: this.options.workerId,
+      safeErrorCode,
+      now: this.now().toISOString()
+    });
+    this.log(delivery, "FAILED", safeErrorCode);
+  }
+
+  private backoffMs(delivery: TelegramOutboxRecord): number {
+    return Math.min(5 * 60_000, 5_000 * 2 ** Math.max(0, delivery.attemptCount - 1));
+  }
+
+  private async recordProgress(input: Parameters<TelegramOutboxPersistence["recordDeliveryProgress"]>[0]): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.options.persistence.recordDeliveryProgress(input);
+        return;
+      } catch (error) {
+        if (error instanceof TelegramIntegrationError && error.code === "TELEGRAM_DELIVERY_LOCK_LOST") {
+          throw new TelegramDeliveryProgressError("TELEGRAM_DELIVERY_LOCK_LOST");
+        }
+        if (attempt >= PROGRESS_WRITE_ATTEMPTS) throw new TelegramDeliveryProgressError("TELEGRAM_PROGRESS_UNRECORDED");
+        await this.sleep(250 * attempt);
+      }
+    }
   }
 
   async runOnce(limit = 10): Promise<{ claimed: number; delivered: number; retried: number; failed: number; cancelled: number }> {
@@ -146,9 +201,24 @@ export class TelegramDeliveryWorker {
       staleBefore: new Date(now.getTime() - 5 * 60_000).toISOString()
     });
     const summary = { claimed: deliveries.length, delivered: 0, retried: 0, failed: 0, cancelled: 0 };
+    let rateLimitedUntil: string | null = null;
 
     for (const delivery of deliveries) {
       const deliveryNow = this.now();
+      if (rateLimitedUntil) {
+        // Telegram rate limits the whole chat: hold the rest of the batch without spending attempts.
+        await this.options.persistence.retryDelivery({
+          deliveryId: delivery.deliveryId,
+          workerId: this.options.workerId,
+          availableAt: rateLimitedUntil,
+          safeErrorCode: "TELEGRAM_RATE_LIMITED",
+          now: deliveryNow.toISOString(),
+          countAttempt: false
+        });
+        this.log(delivery, "RETRY", "TELEGRAM_RATE_LIMITED");
+        summary.retried += 1;
+        continue;
+      }
       const integration = await this.options.persistence.getIntegration();
       if (
         !integration.isEnabled ||
@@ -166,25 +236,43 @@ export class TelegramDeliveryWorker {
       try {
         const botToken = await this.options.secrets.read(integration.secretVersion);
         client = this.clientFactory(botToken);
-      } catch {
+      } catch (error) {
+        if (isTransientCredentialReadError(error) && delivery.attemptCount < this.maxAttempts) {
+          // A flaky read must not disable the integration; retry with the usual backoff.
+          const safeErrorCode = "TELEGRAM_CREDENTIAL_READ_FAILED";
+          await this.options.persistence.retryDelivery({
+            deliveryId: delivery.deliveryId,
+            workerId: this.options.workerId,
+            availableAt: new Date(this.now().getTime() + this.backoffMs(delivery)).toISOString(),
+            safeErrorCode,
+            now: this.now().toISOString()
+          });
+          this.log(delivery, "RETRY", safeErrorCode);
+          summary.retried += 1;
+          continue;
+        }
         const safeErrorCode = "TELEGRAM_CREDENTIAL_UNAVAILABLE";
-        await this.options.persistence.failDelivery({
-          deliveryId: delivery.deliveryId,
-          workerId: this.options.workerId,
-          safeErrorCode,
-          now: this.now().toISOString()
-        });
+        await this.fail(delivery, safeErrorCode);
         await this.options.persistence.markError(safeErrorCode, this.now().toISOString());
-        this.log(delivery, "FAILED", safeErrorCode);
         summary.failed += 1;
         continue;
       }
+      let parts: string[];
       try {
-        const parts = formatTelegramCompletionParts(delivery);
+        parts = formatTelegramCompletionParts(delivery);
+      } catch {
+        // Formatting is deterministic, so retrying cannot help.
+        await this.fail(delivery, "TELEGRAM_MESSAGE_UNFORMATTABLE");
+        summary.failed += 1;
+        continue;
+      }
+      let sentParts = 0;
+      try {
         for (let partIndex = delivery.nextPartIndex; partIndex < parts.length; partIndex += 1) {
           await client.sendMessage(integration.chatId, parts[partIndex]!);
+          sentParts += 1;
           const delivered = partIndex === parts.length - 1;
-          await this.options.persistence.recordDeliveryProgress({
+          await this.recordProgress({
             deliveryId: delivery.deliveryId,
             workerId: this.options.workerId,
             nextPartIndex: partIndex + 1,
@@ -195,41 +283,45 @@ export class TelegramDeliveryWorker {
         this.log(delivery, "DELIVERED", null);
         summary.delivered += 1;
       } catch (error) {
+        if (error instanceof TelegramDeliveryProgressError) {
+          // Retrying here would resend a part Telegram already accepted. The row keeps its lock until
+          // stale recovery (or the worker that took it over) resumes from the stored progress.
+          this.log(delivery, "RETRY", error.code);
+          summary.retried += 1;
+          continue;
+        }
         const telegramError = error instanceof TelegramApiError
           ? error
           : new TelegramApiError("TELEGRAM_NETWORK_ERROR", 502);
         if (telegramError.permanent) {
-          await this.options.persistence.failDelivery({
-            deliveryId: delivery.deliveryId,
-            workerId: this.options.workerId,
-            safeErrorCode: telegramError.code,
-            now: this.now().toISOString()
-          });
-          await this.options.persistence.markError(telegramError.code, this.now().toISOString());
-          this.log(delivery, "FAILED", telegramError.code);
+          await this.fail(delivery, telegramError.code);
+          // A rejected message fails only itself; auth and chat errors disable the integration.
+          if (telegramError.code !== "TELEGRAM_BAD_REQUEST") {
+            await this.options.persistence.markError(telegramError.code, this.now().toISOString());
+          }
           summary.failed += 1;
           continue;
         }
-        if (delivery.attemptCount >= this.maxAttempts) {
-          await this.options.persistence.failDelivery({
-            deliveryId: delivery.deliveryId,
-            workerId: this.options.workerId,
-            safeErrorCode: telegramError.code,
-            now: this.now().toISOString()
-          });
-          this.log(delivery, "FAILED", telegramError.code);
+        const rateLimited = telegramError.code === "TELEGRAM_RATE_LIMITED" && Boolean(telegramError.retryAfterSeconds);
+        // Rate limits and attempts that delivered parts are progress, not failures, so the cap ignores them.
+        const countAttempt = !rateLimited && sentParts === 0;
+        if (countAttempt && delivery.attemptCount >= this.maxAttempts) {
+          await this.fail(delivery, telegramError.code);
           summary.failed += 1;
           continue;
         }
         const delayMs = telegramError.retryAfterSeconds
           ? telegramError.retryAfterSeconds * 1_000
-          : Math.min(5 * 60_000, 5_000 * 2 ** Math.max(0, delivery.attemptCount - 1));
+          : this.backoffMs(delivery);
+        const availableAt = new Date(this.now().getTime() + delayMs).toISOString();
+        if (rateLimited) rateLimitedUntil = availableAt;
         await this.options.persistence.retryDelivery({
           deliveryId: delivery.deliveryId,
           workerId: this.options.workerId,
-          availableAt: new Date(this.now().getTime() + delayMs).toISOString(),
+          availableAt,
           safeErrorCode: telegramError.code,
-          now: this.now().toISOString()
+          now: this.now().toISOString(),
+          countAttempt
         });
         this.log(delivery, "RETRY", telegramError.code);
         summary.retried += 1;

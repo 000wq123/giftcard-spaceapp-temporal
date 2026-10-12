@@ -551,15 +551,17 @@ export class PostgresTelegramPersistence implements TelegramPersistence, Telegra
     availableAt: string;
     safeErrorCode: string;
     now: string;
+    countAttempt?: boolean;
   }): Promise<void> {
     await this.pool.query(
       `
         UPDATE telegram_notification_outbox
         SET status = 'RETRY', available_at = $3, locked_at = NULL, locked_by = NULL,
-            safe_error_code = $4, updated_at = $5
+            safe_error_code = $4, updated_at = $5,
+            attempt_count = CASE WHEN $6 THEN attempt_count ELSE GREATEST(attempt_count - 1, 0) END
         WHERE delivery_id = $1 AND status = 'SENDING' AND locked_by = $2
       `,
-      [input.deliveryId, input.workerId, input.availableAt, input.safeErrorCode, input.now]
+      [input.deliveryId, input.workerId, input.availableAt, input.safeErrorCode, input.now, input.countAttempt !== false]
     );
   }
 

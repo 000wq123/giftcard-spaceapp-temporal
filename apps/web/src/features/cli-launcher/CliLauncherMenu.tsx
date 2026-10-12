@@ -23,6 +23,7 @@ import {
 } from "../../cli-runtime-visibility-events.js";
 import { CLI_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
 export { CLI_LAUNCHER_MENU_ID } from "../toolbar-menu-ids.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 
 const VIEWPORT_MARGIN = 8;
 const ANCHOR_GAP = 8;
@@ -39,6 +40,7 @@ interface CliLauncherMenuProps {
   embedded?: boolean;
   query?: string;
   atPaneCap?: boolean;
+  availablePanes?: number;
   isCodexEnabled?: boolean;
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
   mobile: boolean;
@@ -68,6 +70,7 @@ export function CliLauncherMenu({
   embedded = false,
   query = "",
   atPaneCap = false,
+  availablePanes,
   isCodexEnabled = true,
   loadRuntimes = loadDefaultCliRuntimes,
   mobile,
@@ -84,10 +87,26 @@ export function CliLauncherMenu({
   const popupRef = useRef<HTMLElement | null>(null);
   const closeIntentRef = useRef<"dismissal" | "activation">("dismissal");
   const requestSequenceRef = useRef(0);
-  const [internalCount, setInternalCount] = useState(1);
+  const isAtPaneCap = Boolean(atPaneCap || (availablePanes !== undefined && availablePanes <= 0));
+  const maxAllowedPanes = availablePanes !== undefined
+    ? Math.min(6, Math.max(0, availablePanes))
+    : (isAtPaneCap ? 0 : 6);
+  const minAllowedPanes = maxAllowedPanes === 0 ? 0 : 1;
+  const [internalCount, setInternalCount] = useState(() => (maxAllowedPanes > 0 ? 1 : 0));
   const currentCount = paneCount ?? internalCount;
   const setCount = onPaneCountChange ?? setInternalCount;
+  const effectiveCount = maxAllowedPanes === 0
+    ? 0
+    : Math.min(maxAllowedPanes, Math.max(minAllowedPanes, currentCount));
   const stepperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (maxAllowedPanes === 0 && currentCount !== 0) {
+      setCount(0);
+    } else if (maxAllowedPanes > 0 && (currentCount > maxAllowedPanes || currentCount < minAllowedPanes)) {
+      setCount(Math.min(maxAllowedPanes, Math.max(minAllowedPanes, currentCount)));
+    }
+  }, [currentCount, maxAllowedPanes, minAllowedPanes, setCount]);
 
   useEffect(() => {
     const el = stepperRef.current;
@@ -95,15 +114,16 @@ export function CliLauncherMenu({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (maxAllowedPanes <= minAllowedPanes) return;
       if (e.deltaY < 0) {
-        setCount((c) => Math.min(6, (typeof c === "number" ? c : 1) + 1));
+        setCount((c) => Math.min(maxAllowedPanes, (typeof c === "number" ? c : 1) + 1));
       } else if (e.deltaY > 0) {
-        setCount((c) => Math.max(1, (typeof c === "number" ? c : 1) - 1));
+        setCount((c) => Math.max(minAllowedPanes, (typeof c === "number" ? c : 1) - 1));
       }
     };
     el.addEventListener("wheel", onWheel, { passive: false, capture: true });
     return () => el.removeEventListener("wheel", onWheel, { capture: true });
-  }, [setCount]);
+  }, [setCount, maxAllowedPanes, minAllowedPanes]);
 
   const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
   const runtimeSnapshotAvailableRef = useRef(initialRuntimeSnapshot !== null);
@@ -231,6 +251,7 @@ export function CliLauncherMenu({
   useEffect(() => {
     if (mobile || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (popupRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       if (creatingRuntimeId || isDraggingCliRef.current) return;
@@ -266,10 +287,10 @@ export function CliLauncherMenu({
     setPendingAction(authAction ? "LOGIN" : "CREATE");
     setCreationError(null);
     try {
-      await (authAction ? onLogin(runtime) : currentCount > 1 ? onCreate(runtime, currentCount) : onCreate(runtime));
+      await (authAction ? onLogin(runtime) : effectiveCount > 1 ? onCreate(runtime, effectiveCount) : onCreate(runtime));
       setCreatingRuntimeId(null);
       setPendingAction(null);
-      setCount(1);
+      setCount(maxAllowedPanes > 0 ? 1 : 0);
       closeIntentRef.current = "activation";
       onClose();
     } catch (error) {
@@ -441,7 +462,7 @@ export function CliLauncherMenu({
         const launchable = isCliRuntimeTerminalLaunchable(runtime);
         const authAction = canStartAgentRuntimeLogin(runtime);
         const codexBlocked = runtime.id === "cli:codex" && !isCodexEnabled;
-        const paneCapBlocked = atPaneCap && !authAction;
+        const paneCapBlocked = isAtPaneCap && !authAction;
         const unavailable = codexBlocked || paneCapBlocked || (!launchable && !authAction);
         const statusLabel = codexBlocked
           ? "OFF"
@@ -544,39 +565,56 @@ export function CliLauncherMenu({
             ref={stepperRef}
             className="cli-launcher-count-stepper"
             role="spinbutton"
-            aria-valuenow={currentCount}
-            aria-valuemin={1}
-            aria-valuemax={6}
+            aria-valuenow={effectiveCount}
+            aria-valuemin={minAllowedPanes}
+            aria-valuemax={maxAllowedPanes}
             aria-label="Panes count to open"
+            title={
+              maxAllowedPanes === 0
+                ? "Room is full (0 available panes)"
+                : availablePanes !== undefined
+                  ? availablePanes === 1
+                    ? "Panes to open (1 available in room)"
+                    : `Panes to open (1-${maxAllowedPanes}, ${availablePanes} available in room)`
+                  : `Panes to open (1-${maxAllowedPanes}, scroll wheel to adjust)`
+            }
           >
             <button
               type="button"
               className="cli-count-btn cli-count-btn-minus"
               aria-label="Decrease pane count"
               title="Decrease pane count"
-              disabled={currentCount <= 1 || Boolean(creatingRuntimeId)}
+              disabled={effectiveCount <= minAllowedPanes || Boolean(creatingRuntimeId)}
               onClick={(e) => {
                 e.stopPropagation();
-                setCount((c) => Math.max(1, (typeof c === "number" ? c : 1) - 1));
+                setCount((c) => Math.max(minAllowedPanes, (typeof c === "number" ? c : 1) - 1));
               }}
             >
               <Minus aria-hidden="true" />
             </button>
             <span
               className="cli-count-value"
-              title="Panes to open (1-6, scroll wheel to adjust)"
+              title={
+                maxAllowedPanes === 0
+                  ? "Room is full (0 available panes)"
+                  : availablePanes !== undefined
+                    ? availablePanes === 1
+                      ? "Panes to open (1 available in room)"
+                      : `Panes to open (1-${maxAllowedPanes}, ${availablePanes} available in room)`
+                    : `Panes to open (1-${maxAllowedPanes}, scroll wheel to adjust)`
+              }
             >
-              {currentCount}
+              {effectiveCount}
             </span>
             <button
               type="button"
               className="cli-count-btn cli-count-btn-plus"
               aria-label="Increase pane count"
               title="Increase pane count"
-              disabled={currentCount >= 6 || Boolean(creatingRuntimeId)}
+              disabled={effectiveCount >= maxAllowedPanes || Boolean(creatingRuntimeId)}
               onClick={(e) => {
                 e.stopPropagation();
-                setCount((c) => Math.min(6, (typeof c === "number" ? c : 1) + 1));
+                setCount((c) => Math.min(maxAllowedPanes, (typeof c === "number" ? c : 1) + 1));
               }}
             >
               <Plus aria-hidden="true" />

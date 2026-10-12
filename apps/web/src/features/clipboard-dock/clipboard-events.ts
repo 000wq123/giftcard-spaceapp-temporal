@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { ClipboardOperatorSource } from "@space/contracts";
+import type { ClipboardItem, ClipboardOperatorSource } from "@space/contracts";
 import { clipboardTextMaxCharacters } from "@space/contracts";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
@@ -76,6 +76,8 @@ export async function captureClipboardText(input: {
   text: string;
   source: ClipboardOperatorSource;
   title?: string | null;
+  minimumModel?: string | null;
+  minimumReasoning?: ClipboardItem["minimumReasoning"];
   roomId?: string | null;
   paneId?: string | null;
   paneTitle?: string | null;
@@ -91,6 +93,8 @@ export async function captureClipboardText(input: {
       text: input.text,
       source: input.source,
       ...(input.title ? { title: input.title } : {}),
+      ...(input.minimumModel ? { minimumModel: input.minimumModel } : {}),
+      ...(input.minimumReasoning ? { minimumReasoning: input.minimumReasoning } : {}),
       ...(input.roomId !== undefined ? { roomId: input.roomId } : {}),
       ...(input.paneId !== undefined ? { paneId: input.paneId } : {}),
       ...(input.paneTitle !== undefined ? { paneTitle: input.paneTitle } : {})

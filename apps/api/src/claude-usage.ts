@@ -1,0 +1,184 @@
+import { lstat, readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+// Runs inside the claude-vscode-parity wrapper as the CLI owner. It reads one account
+// profile's OAuth sign-in, asks Anthropic for the plan usage that Claude Code's /usage
+// shows, and prints only percentages and reset times. Tokens never leave this process.
+// It never refreshes a token: rotating it here could sign out a running Claude pane, and
+// every running pane already renews its own sign-in before it expires.
+export const CLAUDE_USAGE_CONFIG_ROOT = "/var/lib/spaceapp-user/.codex/space-claude";
+export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const claudeUsageProfileIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+const tokenExpirySkewMs = 60_000;
+const usageRequestTimeoutMs = 8_000;
+
+export type ClaudeProfileUsageStatus = "CONNECTED" | "NOT_CONNECTED" | "EXPIRED" | "API_KEY" | "ERROR";
+
+export interface ClaudeProfileUsage {
+  status: ClaudeProfileUsageStatus;
+  email: string | null;
+  plan: string | null;
+  fiveHourUsedPercent: number | null;
+  fiveHourResetAt: string | null;
+  weeklyUsedPercent: number | null;
+  weeklyResetAt: string | null;
+  weeklyScope: string | null;
+}
+
+export interface ClaudeUsageWindows {
+  fiveHourUsedPercent: number | null;
+  fiveHourResetAt: string | null;
+  weeklyUsedPercent: number | null;
+  weeklyResetAt: string | null;
+  weeklyScope: string | null;
+}
+
+export interface ReadClaudeProfileUsageOptions {
+  configRoot?: string;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function percent(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.min(Math.max(Math.round(value * 10) / 10, 0), 100);
+}
+
+function isoTime(value: unknown): string | null {
+  const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function label(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 60) : null;
+}
+
+export function claudeProfileDir(profileId: string, configRoot = CLAUDE_USAGE_CONFIG_ROOT): string {
+  return profileId === "main" ? configRoot : join(configRoot, "profiles", profileId);
+}
+
+// Prefers the documented windows; team plans report weekly limits only as scoped entries
+// in `limits`, so the tightest weekly entry is the one that blocks the account first.
+export function parseClaudeOAuthUsage(data: unknown): ClaudeUsageWindows {
+  const body = record(data);
+  const limits = Array.isArray(body.limits) ? body.limits.map(record) : [];
+  const fiveHour = record(body.five_hour);
+  const session = limits.find((limit) => limit.group === "session" || limit.kind === "session");
+  const sevenDay = record(body.seven_day);
+  let weeklyUsedPercent = percent(sevenDay.utilization);
+  let weeklyResetAt = isoTime(sevenDay.resets_at);
+  let weeklyScope: string | null = null;
+  if (weeklyUsedPercent === null) {
+    const weekly = limits
+      .filter((limit) => limit.group === "weekly" && percent(limit.percent) !== null)
+      .sort((left, right) => (percent(right.percent) ?? 0) - (percent(left.percent) ?? 0))[0];
+    if (weekly) {
+      weeklyUsedPercent = percent(weekly.percent);
+      weeklyResetAt = isoTime(weekly.resets_at);
+      weeklyScope = label(record(record(weekly.scope).model).display_name);
+    }
+  }
+  return {
+    fiveHourUsedPercent: percent(fiveHour.utilization) ?? percent(session?.percent),
+    fiveHourResetAt: isoTime(fiveHour.resets_at) ?? isoTime(session?.resets_at),
+    weeklyUsedPercent,
+    weeklyResetAt,
+    weeklyScope
+  };
+}
+
+export function claudePlanLabel(subscriptionType: unknown, rateLimitTier: unknown): string | null {
+  const plan = label(subscriptionType);
+  const tier = typeof rateLimitTier === "string" ? /max_(\d+)x/i.exec(rateLimitTier)?.[1] : undefined;
+  const name = plan ? `${plan[0]!.toUpperCase()}${plan.slice(1)}` : null;
+  if (name && tier) return `${name} · Max ${tier}x`;
+  return name ?? (tier ? `Max ${tier}x` : null);
+}
+
+async function regularFile(path: string): Promise<boolean> {
+  try {
+    const stats = await lstat(path);
+    return stats.isFile() && stats.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function readJson(path: string): Promise<Record<string, unknown> | null> {
+  if (!(await regularFile(path))) return null;
+  try {
+    return record(JSON.parse(await readFile(path, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+interface ClaudeSignIn {
+  accessToken: string | null;
+  expiresAt: number | null;
+  plan: string | null;
+}
+
+async function readSignIn(profileDir: string): Promise<ClaudeSignIn | null> {
+  const credentials = await readJson(join(profileDir, ".credentials.json"));
+  if (!credentials) return null;
+  const oauth = record(credentials.claudeAiOauth);
+  return {
+    accessToken: typeof oauth.accessToken === "string" && oauth.accessToken ? oauth.accessToken : null,
+    expiresAt: typeof oauth.expiresAt === "number" && Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
+    plan: claudePlanLabel(oauth.subscriptionType, oauth.rateLimitTier)
+  };
+}
+
+export async function readClaudeProfileUsage(
+  profileId: string,
+  options: ReadClaudeProfileUsageOptions = {}
+): Promise<ClaudeProfileUsage> {
+  if (!claudeUsageProfileIdPattern.test(profileId)) throw new Error("Invalid Claude account profile.");
+  const configRoot = options.configRoot ?? CLAUDE_USAGE_CONFIG_ROOT;
+  const fetchImpl = options.fetchImpl ?? ((url, init) => fetch(url, init));
+  const now = options.now ?? (() => new Date());
+  const profileDir = claudeProfileDir(profileId, configRoot);
+  const state = await readJson(join(profileDir, ".claude.json"));
+  const emailValue = record(state?.oauthAccount).emailAddress;
+  const email = typeof emailValue === "string" && emailValue.includes("@") ? emailValue : null;
+  const empty = {
+    email,
+    plan: null,
+    fiveHourUsedPercent: null,
+    fiveHourResetAt: null,
+    weeklyUsedPercent: null,
+    weeklyResetAt: null,
+    weeklyScope: null
+  };
+
+  const signIn = await readSignIn(profileDir);
+  if (!signIn?.accessToken) {
+    return { ...empty, status: (await regularFile(join(profileDir, "credentials", "api-key"))) ? "API_KEY" : "NOT_CONNECTED" };
+  }
+  const plan = signIn.plan;
+  if (signIn.expiresAt !== null && signIn.expiresAt <= now().getTime() + tokenExpirySkewMs) {
+    return { ...empty, plan, status: "EXPIRED" };
+  }
+
+  try {
+    const response = await fetchImpl(CLAUDE_OAUTH_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${signIn.accessToken}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json"
+      },
+      signal: AbortSignal.timeout(usageRequestTimeoutMs)
+    });
+    if (response.status === 401) return { ...empty, plan, status: "EXPIRED" };
+    if (!response.ok) return { ...empty, plan, status: "ERROR" };
+    return { ...empty, plan, ...parseClaudeOAuthUsage(await response.json()), status: "CONNECTED" };
+  } catch {
+    return { ...empty, plan, status: "ERROR" };
+  }
+}

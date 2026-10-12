@@ -1,3 +1,5 @@
+import { resolvePaneByName } from "@space/contracts";
+
 export interface LivePaneGroupScope { userId?: string; liveSessionId?: string }
 const groups = new Map<string, string[]>();
 const keyFor = (roomId: string, scope: LivePaneGroupScope) => scope.userId && scope.liveSessionId
@@ -16,7 +18,8 @@ export function resolveLivePaneTargets(
   roomId: string, panes: any[], args: Record<string, any>, scope: LivePaneGroupScope,
   promptOnly: boolean, livePaneId?: string
 ): string[] {
-  const explicit = args.paneIds !== undefined || args.paneId !== undefined;
+  const explicitNames = args.paneNames !== undefined || args.paneName !== undefined;
+  const explicit = args.paneIds !== undefined || args.paneId !== undefined || explicitNames;
   if (args.targetGroup !== undefined && args.targetGroup !== "lastOpened") throw Error("Unknown targetGroup.");
   if (args.targetGroup && (explicit || args.all || args.cliType || args.filter || args.unusedOnly))
     throw Error("targetGroup cannot be combined with another selection.");
@@ -32,8 +35,32 @@ export function resolveLivePaneTargets(
     ids = remembered;
   } else if (explicit) {
     if (args.paneIds !== undefined && !Array.isArray(args.paneIds)) throw Error("paneIds must be an array.");
-    ids = [...(args.paneIds ?? []), ...(args.paneId !== undefined ? [args.paneId] : [])];
-    if (!ids.length) throw Error("No explicit pane IDs were provided.");
+    if (args.paneNames !== undefined && !Array.isArray(args.paneNames)) throw Error("paneNames must be an array.");
+    let idsFromNames: string[] = [];
+    if (explicitNames) {
+      const names = [
+        ...(Array.isArray(args.paneNames) ? args.paneNames : args.paneNames ? [args.paneNames] : []),
+        ...(args.paneName ? [args.paneName] : [])
+      ];
+      for (const name of names) {
+        const found = resolvePaneByName(panes, String(name));
+        if (!found) {
+          throw Error(`Unknown or unavailable target pane name: "${name}". Nothing was submitted.`);
+        }
+        idsFromNames.push(found.id);
+      }
+    }
+    const explicitIds = [...(args.paneIds ?? []), ...(args.paneId !== undefined ? [args.paneId] : [])];
+    if (explicitIds.length > 0 && idsFromNames.length > 0) {
+      const idSet = new Set(explicitIds);
+      const nameIdSet = new Set(idsFromNames);
+      const overlap = [...idSet].filter((id) => nameIdSet.has(id));
+      if (!overlap.length) throw Error("Target paneIds and paneNames conflict.");
+      ids = overlap;
+    } else {
+      ids = explicitIds.length > 0 ? explicitIds : idsFromNames;
+    }
+    if (!ids.length) throw Error("No explicit pane IDs or pane names were provided.");
   } else {
     if (!args.all && !args.cliType) throw Error("Select paneIds, targetGroup, cliType, or all:true.");
     ids = panes.filter(p => !p.isClosed && p.id !== livePaneId && p.mode !== "LIVE" &&
@@ -48,13 +75,19 @@ export function resolveLivePaneTargets(
   return [...new Set(ids as string[])];
 }
 
-export function livePromptPaneReceipts(paneIds: string[], receipt: any) {
+export function livePromptPaneReceipts(paneIds: string[], receipt: any, panes?: any[]) {
   return paneIds.map(paneId => {
+    const pane = panes?.find(p => p.id === paneId);
     const result = receipt?.results?.find((entry: any) => entry.paneId === paneId);
     const evidence = result?.evidence?.result ?? result?.evidence;
-    return { paneId, submission: result?.status === "COMPLETED" ? "ACCEPTED" : result?.status ?? "PENDING",
+    return {
+      paneId,
+      paneName: pane?.paneName ?? null,
+      submission: result?.status === "COMPLETED" ? "ACCEPTED" : result?.status ?? "PENDING",
       detail: result?.detail ?? "Waiting for the executor receipt.",
       nativeTaskRef: evidence?.turnId ?? evidence?.nativeTaskRef ?? null,
-      watchId: evidence?.watchId ?? null, taskCompleted: false };
+      watchId: evidence?.watchId ?? null,
+      taskCompleted: false
+    };
   });
 }

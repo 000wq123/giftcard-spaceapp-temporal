@@ -19,9 +19,10 @@ describe("vnc-proxy", () => {
     expect(() => assertSafeVncTarget("127.0.0.1")).not.toThrow();
   });
 
-  it("rejects public, link-local, and malformed targets", () => {
+  it("rejects public, link-local, documentation, and malformed targets", () => {
     expect(() => assertSafeVncTarget("8.8.8.8")).toThrow(/private network/);
     expect(() => assertSafeVncTarget("169.254.1.1")).toThrow(/private network/);
+    expect(() => assertSafeVncTarget("192.0.2.20")).toThrow(/private network/);
     expect(() => assertSafeVncTarget("::1")).toThrow(/IPv4/);
     expect(() => assertSafeVncTarget("spaceapp.example")).toThrow(/IPv4/);
     expect(() => assertSafeVncTarget("192.0.2.20:5900")).toThrow(/IPv4/);

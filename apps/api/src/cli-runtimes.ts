@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { basename, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import type { FastifyInstance } from "fastify";
 import {
   agentRuntimeRegistrySchema,
   agentRuntimeSchema,
@@ -12,7 +13,9 @@ import {
 } from "@space/contracts";
 import { nowIso } from "@space/runtime";
 import type { SpaceApiConfig } from "./config.js";
-import { cliRuntimeDescriptors, type CliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
+import { cliRuntimeDescriptors, findCliRuntimeDescriptor, type CliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
+import { describeCliAdapter } from "./cli-run-lifecycle-adapters.js";
+import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
 
 const execFileAsync = promisify(execFile);
 const credentialStatusTimeoutMs = 5_000;
@@ -70,9 +73,10 @@ export function isCliRuntimeTerminalLaunchable(
 }
 
 export function isCliRuntimeLoginLaunchable(
-  runtime: Pick<AgentRuntime, "adapterStatus" | "detectedCommandPath">
+  runtime: Pick<AgentRuntime, "id" | "adapterStatus" | "detectedCommandPath">
 ): boolean {
-  return runtime.adapterStatus === "ENABLED" && Boolean(runtime.detectedCommandPath);
+  return runtime.adapterStatus === "ENABLED" && Boolean(runtime.detectedCommandPath) &&
+    findCliRuntimeDescriptor(runtime.id)?.loginAction === "login";
 }
 
 function webChatRuntime(config: SpaceApiConfig, checkedAt: string): AgentRuntime {
@@ -166,6 +170,7 @@ export function activeCliSessionObserverRuntime(
   if (!descriptor) return null;
   return agentRuntimeSchema.parse({
     id: descriptor.id,
+    cliAdapter: describeCliAdapter(descriptor.id),
     providerId: descriptor.providerId,
     providerName: descriptor.providerName,
     agentId: descriptor.key,
@@ -204,7 +209,20 @@ async function detectCommand(commandPath: string, commandName: string): Promise<
   }
 }
 
-type CliCredentialStatus = "READY" | "READY_QUOTA_EXHAUSTED";
+export type CliCredentialStatus = "READY" | "READY_QUOTA_EXHAUSTED";
+export type CliCredentialStatusReader = (commandPath: string) => Promise<CliCredentialStatus | null>;
+
+/**
+ * Each `credential-status` probe goes through sudo and can start the provider
+ * CLI itself, so verified credentials are re-probed at most every five
+ * minutes (in the background, serving the last result meanwhile). Missing or
+ * failed probes are retried sooner so a login made outside Space shows up
+ * within a minute. Login completion and setup verification invalidate the
+ * registry, which drops every cached status before the next discovery.
+ */
+export const CLI_CREDENTIAL_STATUS_FRESH_MS = 5 * 60_000;
+export const CLI_CREDENTIAL_STATUS_MISSING_FRESH_MS = 60_000;
+export const CLI_CREDENTIAL_STATUS_MAX_AGE_MS = 30 * 60_000;
 
 async function readCredentialStatus(commandPath: string): Promise<CliCredentialStatus | null> {
   try {
@@ -296,7 +314,8 @@ export async function smokeCliRuntimeCredential(runtime: AgentRuntime): Promise<
 async function cliRuntime(
   config: SpaceApiConfig,
   definition: CliRuntimeDescriptor,
-  checkedAt: string
+  checkedAt: string,
+  readStatus: CliCredentialStatusReader
 ): Promise<AgentRuntime> {
   const commandName = config.cliRuntimeCommands[definition.key];
   const commandRoot = config.cliCommandPath;
@@ -311,7 +330,7 @@ async function cliRuntime(
       : "DISABLED";
   const credentialsNotManagedBySpace = definition.authMode === "NONE";
   const observedCredentialStatus = adapterEnabled && !staticallyVerified && definition.authMode !== "MANAGED" && !credentialsNotManagedBySpace
-    ? await readCredentialStatus(detectedCommandPath as string)
+    ? await readStatus(detectedCommandPath as string)
     : null;
   const dynamicCredentialStatus = observedCredentialStatus;
   const credentialVerified = credentialsNotManagedBySpace || staticallyVerified || dynamicCredentialStatus !== null;
@@ -348,6 +367,7 @@ async function cliRuntime(
 
   return agentRuntimeSchema.parse({
     id: definition.id,
+    cliAdapter: describeCliAdapter(definition.id),
     providerId: definition.providerId,
     providerName: definition.providerName,
     agentId: definition.key,
@@ -371,9 +391,15 @@ async function cliRuntime(
   });
 }
 
-export async function discoverAgentRuntimes(config: SpaceApiConfig): Promise<AgentRuntimeRegistry> {
+export async function discoverAgentRuntimes(
+  config: SpaceApiConfig,
+  options: { readCredentialStatus?: CliCredentialStatusReader } = {}
+): Promise<AgentRuntimeRegistry> {
   const checkedAt = nowIso();
-  const cliRuntimes = await Promise.all(cliRuntimeDescriptors.map((definition) => cliRuntime(config, definition, checkedAt)));
+  const readStatus = options.readCredentialStatus ?? readCredentialStatus;
+  const cliRuntimes = await Promise.all(cliRuntimeDescriptors.map((definition) =>
+    cliRuntime(config, definition, checkedAt, readStatus)
+  ));
   return agentRuntimeRegistrySchema.parse({
     data: [webChatRuntime(config, checkedAt), ...cliRuntimes, rootRuntime(config, checkedAt)],
     checkedAt
@@ -382,7 +408,7 @@ export async function discoverAgentRuntimes(config: SpaceApiConfig): Promise<Age
 
 export function createAgentRuntimeRegistryCache(
   discover: () => Promise<AgentRuntimeRegistry>,
-  options: { ttlMs?: number; now?: () => number } = {}
+  options: { ttlMs?: number; now?: () => number; onInvalidate?: () => void } = {}
 ): {
   read: () => Promise<AgentRuntimeRegistry>;
   readStaleWhileRefreshing: () => Promise<AgentRuntimeRegistry>;
@@ -420,12 +446,63 @@ export function createAgentRuntimeRegistryCache(
     },
     invalidate() {
       revision += 1;
+      options.onInvalidate?.();
       // Fresh catalog callers must reload, while an existing CLI attachment
       // can still use the last validated descriptors during that refresh.
       if (cached) cached.expiresAtMs = Number.NEGATIVE_INFINITY;
       inFlight = null;
     }
   };
+}
+
+export function createCliCredentialStatusCache(
+  options: { probe?: CliCredentialStatusReader; now?: () => number } = {}
+): { read: CliCredentialStatusReader; invalidate: () => void } {
+  const probe = options.probe ?? readCredentialStatus;
+  const cache = createStaleWhileRevalidateCache<CliCredentialStatus | null>({
+    freshMs: (status) => (status ? CLI_CREDENTIAL_STATUS_FRESH_MS : CLI_CREDENTIAL_STATUS_MISSING_FRESH_MS),
+    maxAgeMs: CLI_CREDENTIAL_STATUS_MAX_AGE_MS,
+    maxEntries: 64,
+    now: options.now
+  });
+  return {
+    read: (commandPath) => cache.get(commandPath, () => probe(commandPath)),
+    invalidate: () => cache.invalidate()
+  };
+}
+
+/** Runtime registry whose invalidation also drops cached credential probes. */
+export function createCliRuntimeRegistryCache(
+  config: SpaceApiConfig,
+  options: { ttlMs?: number; now?: () => number; probeCredentialStatus?: CliCredentialStatusReader } = {}
+): ReturnType<typeof createAgentRuntimeRegistryCache> {
+  const credentials = createCliCredentialStatusCache({ probe: options.probeCredentialStatus, now: options.now });
+  return createAgentRuntimeRegistryCache(
+    () => discoverAgentRuntimes(config, { readCredentialStatus: credentials.read }),
+    { ttlMs: options.ttlMs, now: options.now, onInvalidate: credentials.invalidate }
+  );
+}
+
+// Route patterns whose successful or failed mutations can change CLI
+// credentials, installed binaries or runtime settings.
+const cliRuntimeCacheInvalidatingRoutePrefixes = [
+  "/api/cli/runtime-settings/",
+  "/api/cli/runtimes/:runtimeId/account-profiles",
+  "/api/cli/providers",
+  "/api/admin/cli-maintenance/"
+] as const;
+
+export function invalidatesCliRuntimeCache(method: string, routeUrl: string | undefined): boolean {
+  if (!routeUrl || method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  return cliRuntimeCacheInvalidatingRoutePrefixes.some((prefix) => routeUrl.startsWith(prefix));
+}
+
+/** Invalidates before the response is sent, so a follow-up read sees fresh state. */
+export function registerCliRuntimeCacheInvalidation(app: FastifyInstance, invalidate: () => void): void {
+  app.addHook("onSend", (request, _reply, payload, done) => {
+    if (invalidatesCliRuntimeCache(request.method, request.routeOptions.url)) invalidate();
+    done(null, payload);
+  });
 }
 
 export function findRuntime(registry: AgentRuntimeRegistry, runtimeId: string): AgentRuntime | null {

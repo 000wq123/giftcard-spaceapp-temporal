@@ -5,6 +5,8 @@ import {
   type PaneType, type RoomPaneBatchItem, type RoomPaneCommand
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import type { WorktreeService } from "./worktrees/worktree-service.js";
+import { T3_WORKTREE_REPOSITORY } from "./t3code/worktree-workspace.js";
 
 export interface SkippedPaneType { typeId: string; label: string; reason: string }
 
@@ -21,6 +23,7 @@ export function createRoomPaneCommands(options: {
   enabledRuntimeIds(): Promise<string[]>;
   harnessAvailable(): Promise<boolean>;
   checkGeminiQuota?(): Promise<{ allowed: boolean; reason?: string }>;
+  worktreeService?: WorktreeService;
 }) {
   async function catalog(opts?: { needGemini?: boolean; needHarness?: boolean }): Promise<RoomPaneCatalogEntry[]> {
     const needGemini = opts?.needGemini ?? true;
@@ -60,19 +63,50 @@ export function createRoomPaneCommands(options: {
     } catch {
       // Default to /etc if room not found
     }
-    return items.map(item => {
+    // Validate the complete catalog selection before provisioning anything.
+    const result: CreatePaneInput[] = items.map(item => {
       const entry = entries.find(({ definition }) => definition.mode === item.mode &&
         (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId));
       if (!entry) throw new SpaceConflictError("Pane type is not in the room command catalog.");
       if (!entry.available) throw new SpaceConflictError(`${entry.definition.label}: ${entry.reason}`);
-      // Leave account, model and reasoning unset so the normal launcher resolves current defaults.
-      return { roomId, title: item.mode === "TERMINAL"
-        ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
+
+      return {
+        roomId,
+        title: item.mode === "TERMINAL"
+          ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
         mode: item.mode,
         ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
-        ...(item.mode === "FILES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
-        ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {}) };
+        ...(item.mode === "FILES" || item.mode === "DATABASES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
+        ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {})
+      };
     });
+    // Checkout dominates large cold batches. Keep disk/process pressure bounded
+    // while assigning completed worktrees to their original pane positions.
+    let nextIndex = 0;
+    await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+      for (;;) {
+        const index = nextIndex++;
+        const item = items[index];
+        if (!item) return;
+        if ((item.mode !== "TERMINAL" && item.mode !== "T3CODE") || !item.useWorktree || !options.worktreeService) continue;
+        const repoPath = roomCwd && roomCwd !== "/etc" ? roomCwd : "/opt/spaceapp";
+        // T3 Code can write only the Space repository; other projects keep its pane-owned project.
+        if (item.mode === "T3CODE" && repoPath.replace(/\/+$/, "") !== T3_WORKTREE_REPOSITORY) continue;
+        try {
+          const wt = await options.worktreeService.createWorktree({
+            repoPath,
+            roomId,
+            branchName: item.mode === "TERMINAL" ? item.worktreeBranch : undefined,
+            baseBranch: "main",
+            linkModules: true
+          });
+          result[index]!.cwd = wt.worktreePath;
+        } catch {
+          // Preserve the existing room-directory fallback when checkout fails.
+        }
+      }
+    }));
+    return result;
   }
 
   async function execute(roomId: string, actorId: string, raw: RoomPaneCommand, traceId: string) {

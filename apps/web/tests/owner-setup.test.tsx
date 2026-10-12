@@ -18,7 +18,40 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
-describe("first-owner setup", () => {
+// LiveSpaceApp renders the whole app shell and lazy-loads views such as
+// Setup & connections. After the claim, that view took about 1 s on an idle
+// run and longer on a loaded contributor machine (2026-10-11), which is above
+// Testing Library's 1 s default wait, so these tests wait explicitly.
+const APP_VIEW_WAIT = { timeout: 30_000 };
+
+describe("first-owner setup", { timeout: 60_000 }, () => {
+  it("hydrates the server image preview limit without writing a local default back", async () => {
+    window.localStorage.setItem("space.cliUpload.maxImagePreviews", "8");
+    const writes: unknown[] = [];
+    let roomsRequested = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/auth/me") return jsonResponse({
+        user: { id: "user:owner", email: "owner@example.com", role: "ADMIN" },
+        isAuthenticated: true, isSetupRequired: false, settings: { cliImagePreviewLimit: 3 }
+      });
+      if (url === "/api/auth/csrf") return jsonResponse({ csrfToken: "test-only", headerName: "x-space-csrf-token" });
+      if (url === "/api/user-settings") {
+        writes.push(JSON.parse(String(init?.body)));
+        return jsonResponse({});
+      }
+      if (url.startsWith("/api/rooms")) {
+        roomsRequested = true;
+        return new Promise<Response>(() => undefined);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    render(<LiveSpaceApp />);
+    await waitFor(() => expect(roomsRequested).toBe(true));
+    expect(window.localStorage.getItem("space.cliUpload.maxImagePreviews")).toBe("3");
+    expect(writes.filter(value => Object.hasOwn(value as object, "cliImagePreviewLimit"))).toEqual([]);
+  });
+
   it("loads setup status and shows owner setup instead of operator login", async () => {
     const requests: string[] = [];
     vi.stubGlobal(
@@ -286,7 +319,7 @@ describe("first-owner setup", () => {
     );
 
     render(<LiveSpaceApp />);
-    await screen.findByRole("heading", { name: "Create your Space owner" });
+    await screen.findByRole("heading", { name: "Create your Space owner" }, APP_VIEW_WAIT);
 
     fireEvent.change(screen.getByLabelText("One-time setup token"), {
       target: { value: setupToken }
@@ -304,8 +337,8 @@ describe("first-owner setup", () => {
 
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: "Create your Space owner" })).toBeNull();
-    });
-    expect(await screen.findByRole("heading", { name: "Setup & connections" })).toBeTruthy();
+    }, APP_VIEW_WAIT);
+    expect(await screen.findByRole("heading", { name: "Setup & connections" }, APP_VIEW_WAIT)).toBeTruthy();
     const claim = requests.find((request) => request.url === "/api/setup/claim");
     expect(claim?.init?.method).toBe("POST");
     expect(JSON.parse(String(claim?.init?.body))).toEqual({

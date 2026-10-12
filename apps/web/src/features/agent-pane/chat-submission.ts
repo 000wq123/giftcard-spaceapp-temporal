@@ -3,6 +3,8 @@ import type { Artifact } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 
 export interface ChatSubmission {
+  sessionId?: string;
+  dotId?: string;
   acceptance?: import("@space/contracts").TaskAcceptance;
   clientRequestId: string;
   content: string;
@@ -23,7 +25,8 @@ export function readChatSubmission(paneId: string): ChatSubmission | null {
     const request = agentPaneSendMessageInputSchema.parse({ ...parsed,
       selectedModelConfigId: parsed.selectedModelConfigId ?? undefined, artifactIds: attachments.map((a: Artifact) => a.id) });
     if (!request.clientRequestId) return null;
-    return { clientRequestId: request.clientRequestId, content: request.content,
+    return { ...(request.sessionId ? { sessionId: request.sessionId } : {}), ...(request.dotId ? { dotId: request.dotId } : {}),
+      clientRequestId: request.clientRequestId, content: request.content,
       selectedModelConfigId: request.selectedModelConfigId ?? null, selectedToolIds: request.selectedToolIds ?? [], attachments,
       ...(request.acceptance ? { acceptance: request.acceptance } : {}) };
   } catch { return null; }

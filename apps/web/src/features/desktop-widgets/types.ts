@@ -1,4 +1,10 @@
-export type DesktopWidgetId = "clock" | "countdown-timer" | "pushup-reminder" | "spaceapp-promo" | "ai-quota" | "streaming-metrics";
+export type DesktopWidgetId =
+  | "clock"
+  | "countdown-timer"
+  | "pushup-reminder"
+  | "spaceapp-promo"
+  | "ai-quota"
+  | "streaming-metrics";
 
 export interface DesktopWidgetState {
   id: DesktopWidgetId;
@@ -23,7 +29,12 @@ export interface CountdownTimerWidgetConfig {
   isCompleted: boolean;
 }
 
+export type ReminderType = "pushups" | "tokens";
+
 export interface PushupReminderWidgetConfig {
+  reminderType?: ReminderType;
+  tokenProvider?: "all" | "gemini" | "codex";
+  proOnly?: boolean;
   intervalMinutes: number;
   targetReps: number;
   totalRepsToday: number;
@@ -31,6 +42,8 @@ export interface PushupReminderWidgetConfig {
   remainingSeconds: number;
   isRunning: boolean;
   isAlertActive: boolean;
+  alertReason?: "pushups" | "tokens";
+  soundEnabled?: boolean;
   lastActiveDate: string; // YYYY-MM-DD
 }
 
@@ -41,10 +54,18 @@ export interface SpaceAppPromoWidgetConfig {
   url: string;
 }
 
+export type AiQuotaTab = "all" | "codex" | "antigravity" | "claude" | "api";
+export type AiQuotaAlertProvider = "all" | "codex" | "gemini" | "claude";
+
 export interface AiQuotaWidgetConfig {
-  activeTab: "all" | "antigravity" | "codex" | "api";
-  windowMode: "5h" | "weekly";
+  activeTab: AiQuotaTab;
+  availabilityFilter?: "all" | "available" | "soon" | "exhausted";
+  showAllAccounts?: boolean;
   autoRefresh: boolean;
   refreshIntervalSeconds: number;
-  miniCycleIntervalSeconds?: number;
+  // Reset alerts, formerly the separate AI Token Reminder widget.
+  alertsEnabled?: boolean;
+  alertProvider?: AiQuotaAlertProvider;
+  proOnly?: boolean;
+  soundEnabled?: boolean;
 }

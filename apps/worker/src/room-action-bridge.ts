@@ -10,6 +10,7 @@ import {
   type SpaceAgentRoomActionEnvelope,
   type SpaceRoomToolId
 } from "@space/contracts";
+import { childTraceparent } from "./activity-observability.js";
 import type { SpaceAgentRoomActionBridgeRequest } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import { cancellationSignal } from "@temporalio/activity";
@@ -373,9 +374,12 @@ export async function executeRoomActionBridge(input: {
   let response: Pick<Response, "ok" | "status" | "json">;
   try {
     const url = `${input.config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/agent/room-actions`;
-    const headers = {
+    const traceparent = childTraceparent(input.turnInput.traceparent);
+    const headers: Record<string, string> = {
       "content-type": "application/json",
-      "x-space-internal-token": input.config.internalApiToken
+      "x-space-internal-token": input.config.internalApiToken,
+      // The internal API request joins the originating request's W3C trace.
+      ...(traceparent ? { traceparent } : {})
     };
     const body = JSON.stringify(requestBody);
     response = input.fetchImpl

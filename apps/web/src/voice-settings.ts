@@ -9,6 +9,7 @@ import {
   type VoiceTranscriptionModel
 } from "@space/contracts";
 import { getSpaceRuntime } from "./runtime/SpaceRuntime.js";
+import { normalizeHiddenCliShortcuts } from "./features/osk-keyboard/cli-shortcuts.js";
 import { api } from "./api.js";
 
 export const VOICE_SETTINGS_STORAGE_KEY = "space.voiceTranscription.settings";
@@ -34,7 +35,11 @@ export interface VoiceComposerSettings {
   terminalVoiceButton: boolean;
   terminalModelPicker: boolean;
   terminalTurnControl: boolean;
+  terminalShortcutsButton: boolean;
+  terminalVariablesButton: boolean;
+  terminalPlansButton: boolean;
   terminalContextMenu?: boolean;
+  terminalHiddenShortcuts: string[];
 }
 
 export const defaultVoiceComposerSettings: VoiceComposerSettings = {
@@ -55,7 +60,11 @@ export const defaultVoiceComposerSettings: VoiceComposerSettings = {
   terminalVoiceButton: true,
   terminalModelPicker: true,
   terminalTurnControl: true,
-  terminalContextMenu: true
+  terminalShortcutsButton: true,
+  terminalVariablesButton: true,
+  terminalPlansButton: true,
+  terminalContextMenu: true,
+  terminalHiddenShortcuts: []
 };
 
 const voiceModels = new Set<string>(voiceTranscriptionModelSchema.options);
@@ -101,7 +110,11 @@ export function readVoiceComposerSettings(options?: { strict?: boolean }): Voice
         ? booleanSetting(parsed.terminalModelPicker, defaultVoiceComposerSettings.terminalModelPicker)
         : true,
       terminalTurnControl: booleanSetting(parsed.terminalTurnControl, defaultVoiceComposerSettings.terminalTurnControl),
-      terminalContextMenu: booleanSetting(parsed.terminalContextMenu, defaultVoiceComposerSettings.terminalContextMenu ?? true)
+      terminalShortcutsButton: booleanSetting(parsed.terminalShortcutsButton, defaultVoiceComposerSettings.terminalShortcutsButton),
+      terminalVariablesButton: booleanSetting(parsed.terminalVariablesButton, defaultVoiceComposerSettings.terminalVariablesButton),
+      terminalPlansButton: booleanSetting(parsed.terminalPlansButton, defaultVoiceComposerSettings.terminalPlansButton),
+      terminalContextMenu: booleanSetting(parsed.terminalContextMenu, defaultVoiceComposerSettings.terminalContextMenu ?? true),
+      terminalHiddenShortcuts: normalizeHiddenCliShortcuts(parsed.terminalHiddenShortcuts)
     };
   } catch (error) {
     if (options?.strict) throw error;
@@ -140,7 +153,11 @@ export function writeVoiceComposerSettings(settings: VoiceComposerSettings) {
     terminalVoiceButton: settings.terminalVoiceButton,
     terminalModelPicker: settings.terminalModelPicker,
     terminalTurnControl: settings.terminalTurnControl,
-    terminalContextMenu: booleanSetting(settings.terminalContextMenu, defaultVoiceComposerSettings.terminalContextMenu ?? true)
+    terminalShortcutsButton: settings.terminalShortcutsButton,
+    terminalVariablesButton: settings.terminalVariablesButton,
+    terminalPlansButton: settings.terminalPlansButton,
+    terminalContextMenu: booleanSetting(settings.terminalContextMenu, defaultVoiceComposerSettings.terminalContextMenu ?? true),
+    terminalHiddenShortcuts: normalizeHiddenCliShortcuts(settings.terminalHiddenShortcuts)
   };
   getSpaceRuntime().platform.localStorage.setItem(VOICE_SETTINGS_STORAGE_KEY, JSON.stringify({ ...persisted, terminalControlsVersion: 2 }));
   window.dispatchEvent(new CustomEvent(VOICE_SETTINGS_UPDATED_EVENT, { detail: persisted }));

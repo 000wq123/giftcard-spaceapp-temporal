@@ -73,12 +73,13 @@ if (!existsSync(repoRoot) || !existsSync(resolve(repoRoot, ".git"))) {
 const branch = git(["branch", "--show-current"]) || "(detached)";
 const worktreePath = git(["rev-parse", "--show-toplevel"]);
 
-if (preflight && branch === "main" && process.env.SPACE_HYGIENE_ALLOW_MAIN !== "1") {
-  fail("Refusing implementation preflight on main without SPACE_HYGIENE_ALLOW_MAIN=1.");
-}
-
-if (preflight && worktreePath === "/opt/spaceapp" && branch === "main" && process.env.SPACE_HYGIENE_ALLOW_MAIN !== "1") {
-  fail("Refusing implementation work directly in /opt/spaceapp main.");
+// Delivery (2026-10-11, supersedes the 2026-09-24 direct-to-main rule): agents
+// commit in their own worktree, on any branch, and submit it to the merge queue,
+// which integrates on live main. Only the live checkout itself must stay on main.
+const liveRoot = process.env.SPACE_HYGIENE_LIVE_ROOT || "/opt/spaceapp";
+const liveCheckout = Boolean(worktreePath) && resolve(worktreePath) === resolve(liveRoot);
+if (preflight && liveCheckout && branch !== "main") {
+  fail("The live checkout must stay on main; deliver from your own worktree through the merge queue (space-queue submit).");
 }
 
 const stagedFiles = gitLines(["diff", "--cached", "--name-only"]);
@@ -92,8 +93,8 @@ if (stagedArtifacts.length) {
 }
 
 const entries = statusEntries();
-if (worktreePath === "/opt/spaceapp" && branch === "main" && entries.length > 0 && process.env.SPACE_HYGIENE_ALLOW_LIVE_DIRTY !== "1") {
-  fail("Live /opt/spaceapp main must stay clean; move WIP to an isolated worktree or rescue branch before continuing.", entries.map((entry) => `${entry.code} ${entry.path}`));
+if (liveCheckout && branch === "main" && entries.length > 0 && process.env.SPACE_HYGIENE_ALLOW_LIVE_DIRTY !== "1") {
+  fail("Live /opt/spaceapp main must be clean before delivery; commit only authorized task changes on main.", entries.map((entry) => `${entry.code} ${entry.path}`));
 }
 
 const untracked = entries.filter((entry) => entry.code === "??").map((entry) => entry.path);

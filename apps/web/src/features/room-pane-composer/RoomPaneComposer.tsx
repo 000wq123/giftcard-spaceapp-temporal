@@ -68,6 +68,8 @@ export interface RoomPaneComposerProps {
   onApply: (roomId: string, input: CreateRoomPanesRequest) => Promise<void>;
   onOpenSettings?: () => void;
   room: Room | null;
+  isWorktreeEnabled?: boolean;
+  defaultCollapsed?: boolean;
 }
 
 export function RoomPaneComposer({
@@ -76,7 +78,9 @@ export function RoomPaneComposer({
   loadRuntimes = loadDefaultRuntimes,
   onApply,
   onOpenSettings,
-  room
+  room,
+  isWorktreeEnabled = false,
+  defaultCollapsed
 }: RoomPaneComposerProps) {
   const requestSequenceRef = useRef(0);
   const [initialRuntimeSnapshot] = useState(() => api.cliRuntimesSnapshot());
@@ -95,6 +99,7 @@ export function RoomPaneComposer({
   const [applyError, setApplyError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => {
+    if (defaultCollapsed !== undefined) return defaultCollapsed;
     try { return getSpaceRuntime().platform.localStorage.getItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY) !== "false"; }
     catch { return true; }
   });
@@ -106,10 +111,18 @@ export function RoomPaneComposer({
   useAutoDismiss(applyError, setApplyError);
   useAutoDismiss(notice, setNotice);
 
+  const previousRoomIdRef = useRef(room?.id);
   useEffect(() => {
     setApplyError(null);
     setNotice(null);
-  }, [room?.id]);
+    if (previousRoomIdRef.current !== room?.id) {
+      previousRoomIdRef.current = room?.id;
+      if (defaultCollapsed !== undefined) {
+        setCollapsed(defaultCollapsed);
+        setCounts(emptyCounts());
+      }
+    }
+  }, [room?.id, defaultCollapsed]);
 
   const refreshRuntimes = useCallback(async () => {
     const sequence = requestSequenceRef.current + 1;
@@ -242,7 +255,11 @@ export function RoomPaneComposer({
     const panes: CreateRoomPanesRequest["panes"] = [];
     for (const { id } of runtimeDefinitions) {
       for (let index = 0; index < counts[id]; index += 1) {
-        panes.push({ mode: "TERMINAL", terminalRuntimeId: id });
+        panes.push({
+          mode: "TERMINAL",
+          terminalRuntimeId: id,
+          ...(isWorktreeEnabled ? { useWorktree: true } : {})
+        });
       }
     }
     for (let index = 0; index < counts.harness; index += 1) panes.push({ mode: "HARNESS" });
@@ -271,6 +288,18 @@ export function RoomPaneComposer({
     applyLabel = `Add ${assigned} ${assigned === 1 ? "pane" : "panes"}${room ? ` to ${room.name}` : ""}`;
   }
 
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    if (defaultCollapsed === undefined) {
+      try {
+        getSpaceRuntime().platform.localStorage.setItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY, String(next));
+      } catch {
+        /* Keep usable */
+      }
+    }
+  };
+
   return (
     <form
       className="room-pane-composer"
@@ -279,10 +308,16 @@ export function RoomPaneComposer({
       aria-labelledby="room-pane-composer-title"
     >
       <div className="room-pane-composer-heading">
-        <div className="room-pane-composer-heading-copy">
+        <div
+          className="room-pane-composer-heading-copy"
+          role="button"
+          tabIndex={0}
+          style={{ cursor: "pointer" }}
+          onClick={toggleCollapsed}
+        >
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
-          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected{mobile ? "" : ` · ${availableSlots} slots available`}</small> : null}
+          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected · Click to expand</small> : null}
         </div>
         <div className="room-pane-composer-heading-actions">
           {!collapsed ? (
@@ -303,11 +338,7 @@ export function RoomPaneComposer({
             aria-expanded={!collapsed}
             aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
             title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-            onClick={() => {
-              const next = !collapsed;
-              setCollapsed(next);
-              try { getSpaceRuntime().platform.localStorage.setItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY, String(next)); } catch { /* Keep the toggle usable when storage is unavailable. */ }
-            }}
+            onClick={toggleCollapsed}
           >
             <ChevronRight aria-hidden="true" />
           </button>

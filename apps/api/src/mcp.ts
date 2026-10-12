@@ -137,7 +137,7 @@ function assertSafeArgs(args: readonly string[]): string[] {
   });
 }
 
-function findEnabledServerConfig(config: SpaceApiConfig, serverId: string): NonNullable<SpaceApiConfig["mcpServerConfigs"]>[number] {
+function findEnabledServerConfig(config: Pick<SpaceApiConfig, "mcpServerConfigs">, serverId: string): NonNullable<SpaceApiConfig["mcpServerConfigs"]>[number] {
   const serverConfig = (config.mcpServerConfigs ?? []).find((item) => item.id === serverId && item.enabled);
   if (!serverConfig) {
     throw new McpToolExecutionError("Enabled MCP server config was not found.");
@@ -519,7 +519,7 @@ export async function discoverMcpCatalog(
 }
 
 export async function executeMcpTool(
-  config: SpaceApiConfig,
+  config: Pick<SpaceApiConfig, "version" | "mcpServerConfigs" | "mcpToolExecutionTimeoutMs">,
   context: McpToolExecutionContext,
   input: CreateMcpToolExecutionInput,
   options: ExecuteMcpToolOptions

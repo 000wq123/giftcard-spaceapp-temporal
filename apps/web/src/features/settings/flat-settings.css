@@ -221,9 +221,7 @@
 
 .settings-flat-card .validation-result,
 .settings-flat-card .source-control-feedback,
-.settings-flat-card .telegram-feedback,
-.settings-flat-card .cli-runtime-settings-error,
-.settings-flat-card .cli-runtime-settings-feedback {
+.settings-flat-card .telegram-feedback {
   margin-top: 0.45rem;
 }
 
@@ -289,6 +287,12 @@
 .cli-gemini-accounts-card.settings-flat-card {
   gap: 0;
   padding: 0.55rem 0.65rem;
+}
+
+.settings-disclosure-content > .cli-runtime-settings-card.settings-flat-card,
+.settings-disclosure-content > .cli-vpn-settings-card.settings-flat-card,
+.settings-disclosure-content > .cli-gemini-accounts-card.settings-flat-card {
+  padding: 0.2rem 0;
 }
 
 .cli-runtime-settings-card .cli-runtime-settings-title > span > strong {
@@ -384,19 +388,118 @@
 
 .settings-flat-card .cli-runtime-settings-list {
   gap: 0;
-  border-top: 1px solid var(--room-border, #303437);
+  border-top: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+}
+
+.cli-runtime-settings-columns {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.45rem 0.28rem;
+  font-size: 0.62rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--room-muted, #a2a7ad);
+  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 60%, transparent);
+  user-select: none;
+}
+
+.cli-runtime-settings-columns-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.05rem;
+  padding-right: 0.25rem;
+}
+
+.cli-runtime-settings-columns-actions > span {
+  font-size: 0.6rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--room-muted, #a2a7ad);
 }
 
 .settings-flat-card .cli-runtime-settings-row {
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 70%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--room-border, #303437) 60%, transparent);
   border-radius: 0;
   background: transparent;
-  padding: 0.38rem 0;
+  padding: 0.38rem 0.45rem;
+  transition: background-color 120ms ease;
+}
+
+.settings-flat-card .cli-runtime-settings-row:hover:not(.is-disabled) {
+  background: color-mix(in srgb, var(--room-surface-soft, #202425) 45%, transparent);
 }
 
 .settings-flat-card .cli-runtime-settings-row.is-disabled {
-  background: color-mix(in srgb, var(--room-danger, #df6d68) 5%, transparent);
+  background: transparent;
+  opacity: 0.62;
+}
+
+.settings-flat-card .cli-runtime-settings-row.is-disabled .cli-runtime-settings-name strong {
+  color: var(--room-muted, #a7a59e);
+}
+
+.settings-flat-card .cli-runtime-settings-name strong {
+  font-size: 0.78rem;
+  font-weight: 550;
+}
+
+.settings-flat-card .cli-runtime-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.settings-flat-card .cli-runtime-restart-button {
+  inline-size: 1.45rem;
+  block-size: 1.45rem;
+  min-inline-size: 1.45rem;
+  min-height: 1.45rem;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--room-border, #303437) 80%, transparent);
+  background: color-mix(in srgb, var(--room-surface, #141617) 70%, transparent);
+  color: var(--room-muted, #a7a59e);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.settings-flat-card .cli-runtime-restart-button:hover:not(:disabled) {
+  border-color: var(--room-accent, #6db7aa);
+  color: var(--room-text, #f4efe5);
+  background: color-mix(in srgb, var(--room-accent, #6db7aa) 15%, transparent);
+}
+
+.settings-flat-card .cli-runtime-restart-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-flat-card .cli-runtime-restart-button svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.settings-flat-card .cli-runtime-vpn-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.settings-flat-card .cli-runtime-vpn-label {
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
 }
 
 .settings-dock-title.settings-flat-dock-title {
@@ -455,4 +558,21 @@
   .settings-flat-card .settings-flat-control {
     width: 100%;
   }
+}
+
+.cli-provider-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.cli-provider-badge {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 500;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: var(--room-surface-soft, rgba(255, 255, 255, 0.08));
+  color: var(--room-muted, #a7a59e);
+  line-height: 1.2;
 }

@@ -243,6 +243,9 @@ export async function requestOpenRouterDoctrine(options: {
   system: string;
   prompt: string;
   timeoutMs?: number;
+  maxTokens?: number;
+  title?: string;
+  signal?: AbortSignal;
   deps?: OpenRouterDeps;
 }): Promise<string | null> {
   const resolved = resolveDeps(options.deps);
@@ -251,6 +254,8 @@ export async function requestOpenRouterDoctrine(options: {
   const controller = new AbortController();
   // Budget mirrors the scheduled verifier (scripts/verify-openrouter-models.mjs).
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 20000);
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
   try {
     const res = await resolved.fetchImpl(`${resolved.baseUrl}/chat/completions`, {
       method: "POST",
@@ -258,7 +263,7 @@ export async function requestOpenRouterDoctrine(options: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
         "http-referer": "http://127.0.0.1:4911",
-        "x-title": "Space Asteroids AI Benchmark",
+        "x-title": options.title ?? "Space Asteroids AI Benchmark",
       },
       signal: controller.signal,
       body: JSON.stringify({
@@ -269,7 +274,7 @@ export async function requestOpenRouterDoctrine(options: {
         ],
         temperature: 0.2,
         // Reasoning models spend most of the budget on reasoning tokens first.
-        max_tokens: 1500,
+        max_tokens: options.maxTokens ?? 1500,
       }),
     });
     if (!res.ok) return null;
@@ -280,5 +285,6 @@ export async function requestOpenRouterDoctrine(options: {
     return null;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
   }
 }

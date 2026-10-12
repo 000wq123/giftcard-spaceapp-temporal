@@ -34,7 +34,14 @@ export class MockServices {
   private roomMessages = new Map<string, any[]>();
   private playback = new Map<string, any>();
 
-  constructor(private readonly fixture: () => DemoFixture) {}
+  constructor(private readonly fixture: () => DemoFixture) {
+    if (fixture().rooms.some(room => room.id === "room:showcase-remote")) {
+      this.roomMessages.set("room:demo-launch", [
+        { id: "room_message:showcase-user", role: "user", content: "Help me organize this room for a project review.", status: "COMPLETED", createdAt: now() },
+        { id: "room_message:showcase-agent", role: "assistant", content: "Keep the coding agents together in Build. Use Research for sources, Create for demos and voice, and Remote for desktop access. Your notes and outputs are available in the workspace docks.", status: "COMPLETED", createdAt: now() }
+      ]);
+    }
+  }
   snapshot() { return { sequence: this.sequence, selection: this.selection, run: this.run, messages: this.messages, files: [...this.files], sessions: this.sessions, models: [...this.modelSettings],
     liveItems: this.liveItems, epochs: this.epochs, browsers: [...this.browserStates], bookmarks: [...this.bookmarks], roomMessages: [...this.roomMessages], playback: [...this.playback] }; }
   restore(value: any) {
@@ -142,7 +149,7 @@ export class MockServices {
         if (method === "sendRoomAgentMessage") messages = [...messages, { id: this.id("room_message"), role: "user", content: String(args[1]), status: "COMPLETED", createdAt: now() }, { id: this.id("room_message"), role: "assistant", content: "Your request is recorded in this local demo. Use Create and Workspace to explore the available tools.", status: "COMPLETED", createdAt: now() }];
         if (method === "clearRoomAgentTranscript") messages = [];
         this.roomMessages.set(roomId, messages);
-        value = { roomId, paneId: null, sessionId: `room_agent:demo:${roomId}`, threadId: `thread:demo:${roomId}`, status: "IDLE", statusReason: "Local demo conversation", modelId: "gpt-6.1-sol", reasoningEffort: "high", messages, activeMission: null, queuedMissionCount: 0, currentPaneId: null, activePaneIds: [], progress: { totalSteps: 0, completedSteps: 0, runningSteps: 0, queuedSteps: 0, blockedSteps: 0, peakConcurrency: 0, elapsedMs: 0 }, capabilities: { canSend: true, canPause: false, canResume: false, canStop: false, canClear: true } }; break;
+        value = { roomId, paneId: null, sessionId: `room_agent:demo:${roomId}`, threadId: `thread:demo:${roomId}`, status: "IDLE", statusReason: "Local demo conversation", modelId: "gpt-6.1-sol", reasoningEffort: "high", messages, ...(this.fixture().rooms.some(room => room.id === "room:showcase-remote") ? { roomInventory: { totalPanes: this.fixture().panes.filter(pane => pane.roomId === roomId).length, pendingPlans: 0, pausedPlans: 0, runningPlans: 0 } } : {}), activeMission: null, queuedMissionCount: 0, currentPaneId: null, activePaneIds: this.fixture().rooms.some(room => room.id === "room:showcase-remote") ? this.fixture().panes.filter(pane => pane.roomId === roomId).map(pane => pane.id) : [], progress: { totalSteps: 0, completedSteps: 0, runningSteps: 0, queuedSteps: 0, blockedSteps: 0, peakConcurrency: 0, elapsedMs: 0 }, capabilities: { canSend: true, canPause: false, canResume: false, canStop: false, canClear: true } }; break;
       }
       case "sharedChatMessages": value = { data: this.messages, nextCursor: null }; break;
       case "sendSharedChatMessage": {

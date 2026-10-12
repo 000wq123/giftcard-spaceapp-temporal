@@ -10,7 +10,7 @@ import {
 } from "react";
 import type { VoiceTranscriptionSettings } from "@space/contracts";
 import { api } from "../../api.js";
-import { openVoiceRealtimeSession, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
+import { openVoiceRealtimeSession, supportsDeferredVoiceCapture, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
 import {
   VOICE_SETTINGS_UPDATED_EVENT,
   readVoiceComposerSettings,
@@ -37,7 +37,12 @@ interface VoiceInputContextValue {
   error: string | null;
   start: (target: VoiceInputTarget) => Promise<void>;
   stop: (ownerId: string) => void;
-  cancel: (ownerId?: string) => void;
+  // A reason is reported back to the owner when the cancel interrupts an active recording.
+  cancel: (ownerId?: string, reason?: string) => void;
+  // When the current recording started (ms since epoch), for an elapsed/remaining clock.
+  recordingStartedAt: number | null;
+  cancelNotice: { ownerId: string; message: string } | null;
+  clearCancelNotice: () => void;
   clearError: (ownerId: string) => void;
   prewarm: () => void;
   ensureServerSettings: () => Promise<void>;
@@ -62,6 +67,10 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<VoiceInputStatus>("idle");
   const [preview, setPreview] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<{ ownerId: string; message: string } | null>(null);
+  const statusRef = useRef<VoiceInputStatus>(status);
+  statusRef.current = status;
   const sessionRef = useRef<VoiceRealtimeSessionHandle | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const serverSettingsRequestRef = useRef<Promise<VoiceTranscriptionSettings> | null>(null);
@@ -101,10 +110,15 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     setOwnerId(null);
     setStatus("idle");
     setPreview("");
+    setRecordingStartedAt(null);
   }, []);
 
-  const cancel = useCallback((requestedOwnerId?: string) => {
+  const cancel = useCallback((requestedOwnerId?: string, reason?: string) => {
     if (requestedOwnerId && ownerRef.current !== requestedOwnerId) return;
+    const interruptedOwner = ownerRef.current;
+    if (reason && interruptedOwner && (statusRef.current === "connecting" || statusRef.current === "recording")) {
+      setCancelNotice({ ownerId: interruptedOwner, message: reason });
+    }
     generationRef.current += 1;
     closeActiveSession();
     warmClaimRef.current = null;
@@ -114,12 +128,17 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
 
   const failWarm = useCallback((message: string) => {
     const claim = warmClaimRef.current;
-    if (!claim || claim.generation !== generationRef.current || ownerRef.current !== claim.target.id) return;
+    if (!claim) {
+      // An unclaimed warm connection failed; drop it so the next start opens a fresh one.
+      closeWarmSession();
+      return;
+    }
+    if (claim.generation !== generationRef.current || ownerRef.current !== claim.target.id) return;
     closeActiveSession();
     setStatus("idle");
     setError(message);
     claim.target.onError?.(message);
-  }, [closeActiveSession]);
+  }, [closeActiveSession, closeWarmSession]);
 
   const warmCallbacks = useMemo(() => ({
     onTranscriptDelta: (text: string) => {
@@ -148,14 +167,19 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     onError: failWarm
   }), [closeActiveSession, failWarm, reset]);
 
+  // Hover or focus only connects; the microphone opens when the recording is claimed by an explicit start.
   const prewarm = useCallback(() => {
     if (!settings.prewarm || !serverSettings?.enabled) return;
     if (sessionRef.current || warmSessionRef.current || warmPromiseRef.current) return;
     if (Date.now() < prewarmCooldownRef.current) return;
+    const model = settings.model || serverSettings.defaultModel;
+    if (!supportsDeferredVoiceCapture({ provider: settings.provider, model })) return;
+    // No recording is active here, so any earlier claim is stale and must not adopt this connection's errors.
+    warmClaimRef.current = null;
     const promise = openVoiceRealtimeSession(
       {
         provider: settings.provider,
-        model: settings.model || serverSettings.defaultModel,
+        model,
         voice: settings.voice || serverSettings.defaultVoice,
         language: settings.language,
         delay: serverSettings.defaultDelay,
@@ -167,7 +191,8 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
         delegatedWebSearch: settings.delegatedWebSearch,
         delegatedPrompt: settings.delegatedPrompt
       },
-      warmCallbacks
+      warmCallbacks,
+      { deferCapture: true }
     ).then((handle) => {
       warmPromiseRef.current = null;
       warmSessionRef.current = handle;
@@ -181,7 +206,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     warmPromiseRef.current = promise;
   }, [closeWarmSession, serverSettings, settings, warmCallbacks]);
 
-  const claimWarmSession = useCallback((
+  const claimWarmSession = useCallback(async (
     handle: VoiceRealtimeSessionHandle,
     target: VoiceInputTarget,
     generation: number
@@ -193,14 +218,22 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     warmSessionRef.current = null;
     warmClaimRef.current = { target, generation };
     sessionRef.current = handle;
+    try {
+      await handle.startCapture();
+    } catch (captureError) {
+      failWarm(errorMessage(captureError, "Microphone permission was not granted."));
+      return;
+    }
+    if (generationRef.current !== generation || ownerRef.current !== target.id) return;
     setStatus("recording");
+    setRecordingStartedAt(Date.now());
     stopTimerRef.current = window.setTimeout(() => {
       if (generationRef.current !== generation || ownerRef.current !== target.id) return;
       setStatus("transcribing");
       handle.commit();
       clearStopTimer();
     }, serverSettings?.maxDurationMs ?? 60_000);
-  }, [clearStopTimer, serverSettings]);
+  }, [clearStopTimer, failWarm, serverSettings]);
 
   const loadServerSettings = useCallback(async (force = false) => {
     setSettingsLoading(true);
@@ -236,7 +269,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") cancel();
+      if (document.visibilityState === "hidden") cancel(undefined, "Voice input stopped because the tab was hidden.");
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -292,13 +325,13 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
       const handle = await warmPromise;
       warmPromiseRef.current = null;
       if (handle) {
-        claimWarmSession(handle, target, generation);
+        await claimWarmSession(handle, target, generation);
         return;
       }
     } else if (warmSessionRef.current) {
       const handle = warmSessionRef.current;
       warmSessionRef.current = null;
-      claimWarmSession(handle, target, generation);
+      await claimWarmSession(handle, target, generation);
       return;
     }
 
@@ -349,6 +382,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
       }
       sessionRef.current = handle;
       setStatus("recording");
+      setRecordingStartedAt(Date.now());
       stopTimerRef.current = window.setTimeout(() => {
         if (generationRef.current !== generation || ownerRef.current !== target.id) return;
         setStatus("transcribing");
@@ -388,8 +422,11 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     clearError,
     prewarm,
     ensureServerSettings,
-    refreshServerSettings: () => loadServerSettings(true)
-  }), [cancel, clearError, ensureServerSettings, error, loadServerSettings, ownerId, prewarm, preview, serverSettings, settings, settingsError, settingsLoading, start, status, stop]);
+    refreshServerSettings: () => loadServerSettings(true),
+    recordingStartedAt,
+    cancelNotice,
+    clearCancelNotice: () => setCancelNotice(null)
+  }), [cancel, cancelNotice, clearError, ensureServerSettings, error, loadServerSettings, ownerId, prewarm, preview, recordingStartedAt, serverSettings, settings, settingsError, settingsLoading, start, status, stop]);
 
   return <VoiceInputContext.Provider value={value}>{children}</VoiceInputContext.Provider>;
 }

@@ -1,5 +1,6 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
 import { railPopoverPosition } from "../rail-popover.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { createPortal } from "react-dom";
 import {
   useEffect,
@@ -120,6 +121,7 @@ export function WorkspaceTextSizePicker({
   useEffect(() => {
     if (!open || embedded) return;
     function handleOutsidePointer(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (pickerRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
       onClose();
@@ -191,7 +193,7 @@ export function WorkspaceTextSizePicker({
       tabIndex={0}
       style={embedded ? undefined : { left: `${position.left}px`, top: `${position.top}px` }}
       onBlur={(event) => {
-        if (embedded) return;
+        if (embedded || shouldPreserveForSnipTool(event)) return;
         const nextFocus = event.relatedTarget as Node | null;
         if (nextFocus && (event.currentTarget.contains(nextFocus) || anchorRef.current?.contains(nextFocus))) return;
         onClose();

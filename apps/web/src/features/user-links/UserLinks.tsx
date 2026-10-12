@@ -1,5 +1,5 @@
-import { ExternalLink, Link as LinkIcon, Music2, Pencil, Plus, Search, Star, Trash2, X } from "../ui-theme/app-icons.js";
-import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { ExternalLink, Link as LinkIcon, Music2, Pencil, Plus, Star, Trash2, X } from "../ui-theme/app-icons.js";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
 import type { UserLink, UserLinkCategory, UserLinkOpenMode } from "@space/contracts";
 import { api } from "../../api.js";
 import { resolveExternalResource } from "../../runtime/SpaceRuntime.js";
@@ -7,17 +7,40 @@ import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { useRailPopover } from "../rail-popover.js";
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+import {
+  DockButton,
+  DockChips,
+  DockFullscreenButton,
+  DockIconButton,
+  DockNotice,
+  DockSearch,
+  DockState,
+  DockToolbar,
+  useDockConfirm,
+  useDockFullscreen
+} from "../dock-kit/DockKit.js";
+import "./user-links.css";
 
 export const USER_LINKS_UPDATED_EVENT = "space:user-links-updated";
 const STORAGE_KEY_SELECTED_CATEGORY = "space:user-links-selected-category";
 const pageSize = 10;
+const SEARCH_DEBOUNCE_MS = 300;
+
+type CategoryFilter = UserLinkCategory | "ALL";
 
 const categoryLabels: Record<UserLinkCategory, string> = {
   GENERAL: "General",
   MUSIC_LIBRARY: "Music library"
 };
 
-function getSavedCategory(): UserLinkCategory | "ALL" {
+const categoryFilters: Array<{ id: CategoryFilter; label: string }> = [
+  { id: "ALL", label: "All" },
+  { id: "GENERAL", label: "General" },
+  { id: "MUSIC_LIBRARY", label: "Music library" }
+];
+
+function getSavedCategory(): CategoryFilter {
   try {
     const saved = localStorage.getItem(STORAGE_KEY_SELECTED_CATEGORY);
     if (saved === "GENERAL" || saved === "MUSIC_LIBRARY" || saved === "ALL") {
@@ -31,88 +54,156 @@ function notifyLinksUpdated() {
   window.dispatchEvent(new Event(USER_LINKS_UPDATED_EVENT));
 }
 
-export function LinkFavicon({ link }: { link: UserLink }) {
-  const embedded = useWorkspaceSurface();
+function withScheme(url: string): string {
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function isPlainHttp(url: string): boolean {
+  return /^http:\/\//i.test(url.trim());
+}
+
+function isYouTubeLink(url: string): boolean {
+  try {
+    const host = new URL(withScheme(url)).hostname.replace(/^www\./, "");
+    return host === "youtube.com" || host === "m.youtube.com" || host === "youtu.be";
+  } catch {
+    return false;
+  }
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function isGenericTitle(title: string, url: string): boolean {
+  const trimmed = title.trim();
+  return !trimmed || trimmed === url || trimmed === "- YouTube" || trimmed.toLowerCase() === "youtube" || trimmed === "Link";
+}
+
+function withoutYouTubeSuffix(title: string): string {
+  return title.endsWith(" - YouTube") ? title.slice(0, -" - YouTube".length).trim() : title;
+}
+
+/** YouTube pages often hide their real title from the server; oEmbed still has it. */
+async function readYouTubeTitle(url: string): Promise<string> {
+  if (!url.includes("youtube.com") && !url.includes("youtu.be")) return "";
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+    if (!response.ok) return "";
+    const data = (await response.json()) as { title?: string };
+    return data?.title?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function ExternalLinkFavicon({ source }: { source: string | null }) {
   const [failed, setFailed] = useState(false);
-  const source = resolveExternalResource(`${new URL(link.url).origin}/favicon.ico`);
-  useEffect(() => setFailed(false), [link.url]);
-  // Workspace navigation uses local icons and does not contact bookmarked sites.
-  if (embedded) return link.category === "MUSIC_LIBRARY" ? <Music2 aria-hidden="true" /> : <LinkIcon aria-hidden="true" />;
   if (!source || failed) return <LinkIcon aria-hidden="true" />;
   return <img src={source} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />;
 }
 
-type LinkDraft = { title: string; url: string; description: string; openMode: UserLinkOpenMode; category: UserLinkCategory; isQuick: boolean };
-const emptyDraft: LinkDraft = { title: "", url: "", description: "", openMode: "EMBEDDED", category: "GENERAL", isQuick: false };
+export function LinkFavicon({ link }: { link: UserLink }) {
+  const embedded = useWorkspaceSurface();
+  // Workspace navigation uses local icons and does not contact bookmarked sites.
+  if (embedded) return link.category === "MUSIC_LIBRARY" ? <Music2 aria-hidden="true" /> : <LinkIcon aria-hidden="true" />;
+  const source = resolveExternalResource(`${new URL(link.url).origin}/favicon.ico`);
+  // A new URL gets a fresh attempt; no mount effect can erase an early load error.
+  return <ExternalLinkFavicon key={link.url} source={source} />;
+}
+
+type LinkDraft = { title: string; url: string; openMode: UserLinkOpenMode; category: UserLinkCategory; isQuick: boolean };
+const emptyDraft: LinkDraft = { title: "", url: "", openMode: "EMBEDDED", category: "GENERAL", isQuick: false };
 
 export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
+  const { confirm, confirmDialog } = useDockConfirm();
+  const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [links, setLinks] = useState<UserLink[]>([]);
   const [query, setQuery] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState<UserLinkCategory | "ALL">(getSavedCategory);
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>(getSavedCategory);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<UserLink | "new" | null>(null);
   const [draft, setDraft] = useState<LinkDraft>(emptyDraft);
+  const [embedBlockedUrl, setEmbedBlockedUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [inspecting, setInspecting] = useState(false);
-  const panelRef = useRef<HTMLElement | null>(null);
+  const editorRef = useRef<HTMLFormElement | null>(null);
   const inspectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInspectedUrlRef = useRef<string>("");
+  const loadRequestRef = useRef(0);
+  // Until the user picks how a link opens, the site check suggests it.
+  const openModeChosenRef = useRef(false);
+  const openModeLabelId = useId();
 
-  useAutoDismiss(error, setError);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => () => {
+    if (inspectTimeoutRef.current) clearTimeout(inspectTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     if (!editing) return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    if (typeof panel.scrollTo === "function") {
-      panel.scrollTo({ top: 0, behavior: "smooth" });
-    } else {
-      panel.scrollTop = 0;
-    }
+    editorRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [editing]);
 
-  async function load(nextPage = 1, append = false, category = selectedCategory) {
-    setLoading(true);
-    setError(null);
+  const load = useCallback(async (nextPage = 1, append = false) => {
+    const requestId = ++loadRequestRef.current;
+    if (append) setLoadingMore(true);
     try {
+      // The server filters by search and link type; the list shows its result as is.
       const result = await api.links({
-        q: query || undefined,
-        category: category === "ALL" ? undefined : category,
+        q: debouncedQuery.trim() || undefined,
+        category: selectedCategory === "ALL" ? undefined : selectedCategory,
         page: nextPage,
         pageSize
       });
+      if (requestId !== loadRequestRef.current) return;
       setLinks((current) => append ? [...current, ...result.data] : result.data);
       setPage(nextPage);
       setTotal(result.pagination.totalItems);
+      setLoadError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Links could not be loaded.");
+      if (requestId !== loadRequestRef.current) return;
+      setLoadError(reason instanceof Error && reason.message ? reason.message : "Links could not be loaded.");
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) {
+        setHasLoaded(true);
+        setLoadingMore(false);
+      }
     }
-  }
+  }, [debouncedQuery, selectedCategory]);
 
   useEffect(() => {
-    void load(1, false, selectedCategory);
-  }, []);
+    void load(1, false);
+  }, [load]);
 
-  function handleCategoryChange(category: UserLinkCategory | "ALL") {
+  function handleCategoryChange(category: CategoryFilter) {
     setSelectedCategory(category);
     try {
       localStorage.setItem(STORAGE_KEY_SELECTED_CATEGORY, category);
     } catch {}
-    void load(1, false, category);
   }
 
   async function inspectUrl(targetUrl: string, currentCategory: UserLinkCategory) {
-    let normalized = targetUrl.trim();
-    if (!normalized) return;
-    if (!/^https?:\/\//i.test(normalized) && !normalized.includes(".")) return;
-    if (!/^https?:\/\//i.test(normalized)) {
-      normalized = `https://${normalized}`;
-    }
+    const trimmed = targetUrl.trim();
+    if (!trimmed) return;
+    if (!/^https?:\/\//i.test(trimmed) && !trimmed.includes(".")) return;
+    const normalized = withScheme(trimmed);
     if (normalized === lastInspectedUrlRef.current) return;
     lastInspectedUrlRef.current = normalized;
 
@@ -123,57 +214,25 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
       if (detectedTitle === "- YouTube" || detectedTitle.toLowerCase() === "youtube" || detectedTitle === "-") {
         detectedTitle = "";
       }
-      if (!detectedTitle && (normalized.includes("youtube.com") || normalized.includes("youtu.be"))) {
-        try {
-          const ytRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(normalized)}&format=json`);
-          if (ytRes.ok) {
-            const ytData = (await ytRes.json()) as { title?: string };
-            if (ytData?.title) detectedTitle = ytData.title.trim();
-          }
-        } catch {}
-      }
-      if (detectedTitle.endsWith(" - YouTube")) {
-        detectedTitle = detectedTitle.slice(0, -" - YouTube".length).trim();
-      }
+      if (!detectedTitle) detectedTitle = await readYouTubeTitle(normalized);
+      detectedTitle = withoutYouTubeSuffix(detectedTitle);
+      const blocked = currentCategory === "GENERAL" && info.openMode === "NEW_TAB";
+      setEmbedBlockedUrl(blocked ? normalized : null);
 
       setDraft((current) => {
-        const isGenericTitle =
-          !current.title.trim() ||
-          current.title === current.url ||
-          current.title === "- YouTube" ||
-          current.title.toLowerCase() === "youtube" ||
-          current.title === "Link";
-        const newTitle = isGenericTitle ? (detectedTitle || info.title) : current.title;
-        const newOpenMode = currentCategory === "GENERAL" ? info.openMode : (currentCategory === "MUSIC_LIBRARY" ? "EMBEDDED" : current.openMode);
-        return {
-          ...current,
-          url: normalized,
-          title: newTitle,
-          openMode: newOpenMode
-        };
+        // The user kept typing; the next check handles the new address.
+        if (current.url.trim() !== trimmed && current.url.trim() !== normalized) return current;
+        const title = isGenericTitle(current.title, current.url) ? (detectedTitle || info.title) : current.title;
+        const openMode = currentCategory === "MUSIC_LIBRARY"
+          ? "EMBEDDED"
+          : blocked ? "NEW_TAB" : openModeChosenRef.current ? current.openMode : info.openMode;
+        return { ...current, url: normalized, title, openMode };
       });
     } catch {
-      let clientTitle = "";
-      if (normalized.includes("youtube.com") || normalized.includes("youtu.be")) {
-        try {
-          const ytRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(normalized)}&format=json`);
-          if (ytRes.ok) {
-            const ytData = (await ytRes.json()) as { title?: string };
-            if (ytData?.title) clientTitle = ytData.title.trim();
-          }
-        } catch {}
-      }
-      if (clientTitle.endsWith(" - YouTube")) {
-        clientTitle = clientTitle.slice(0, -" - YouTube".length).trim();
-      }
+      const clientTitle = withoutYouTubeSuffix(await readYouTubeTitle(normalized));
       setDraft((current) => {
-        const isGenericTitle =
-          !current.title.trim() ||
-          current.title === current.url ||
-          current.title === "- YouTube" ||
-          current.title.toLowerCase() === "youtube" ||
-          current.title === "Link";
-        if (isGenericTitle) {
+        if (current.url.trim() !== trimmed && current.url.trim() !== normalized) return current;
+        if (isGenericTitle(current.title, current.url)) {
           try {
             return { ...current, url: normalized, title: clientTitle || new URL(normalized).hostname };
           } catch {}
@@ -189,12 +248,13 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     setDraft((current) => ({
       ...current,
       url: rawUrl,
-      openMode: /^http:\/\//i.test(rawUrl) ? "NEW_TAB" : current.openMode
+      openMode: isPlainHttp(rawUrl) ? "NEW_TAB" : current.openMode
     }));
 
     if (inspectTimeoutRef.current) clearTimeout(inspectTimeoutRef.current);
+    const category = draft.category;
     inspectTimeoutRef.current = setTimeout(() => {
-      void inspectUrl(rawUrl, draft.category);
+      void inspectUrl(rawUrl, category);
     }, 400);
   }
 
@@ -205,10 +265,19 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     }
   }
 
+  function closeEditor() {
+    if (inspectTimeoutRef.current) clearTimeout(inspectTimeoutRef.current);
+    setEditing(null);
+    setInspecting(false);
+  }
+
   function startAdd() {
     lastInspectedUrlRef.current = "";
     const category: UserLinkCategory = selectedCategory === "MUSIC_LIBRARY" ? "MUSIC_LIBRARY" : "GENERAL";
     setDraft({ ...emptyDraft, category });
+    openModeChosenRef.current = false;
+    setEmbedBlockedUrl(null);
+    setNotice(null);
     setEditing("new");
   }
 
@@ -217,34 +286,49 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
     setDraft({
       title: link.title,
       url: link.url,
-      description: link.description || "",
       openMode: link.openMode,
       category: link.category,
       isQuick: link.isQuick
     });
+    openModeChosenRef.current = true;
+    setEmbedBlockedUrl(null);
+    setNotice(null);
     setEditing(link);
+  }
+
+  const draftUrl = draft.url.trim() ? withScheme(draft.url) : "";
+  const draftIsHttp = isPlainHttp(draft.url);
+  const draftIsYouTube = Boolean(draftUrl) && isYouTubeLink(draftUrl);
+  const draftEmbedBlocked = Boolean(draftUrl) && embedBlockedUrl === draftUrl;
+  const forcedNewTab = draft.category === "GENERAL" && (draftIsHttp || draftEmbedBlocked);
+  const effectiveOpenMode: UserLinkOpenMode = draft.category === "MUSIC_LIBRARY" ? "EMBEDDED" : forcedNewTab ? "NEW_TAB" : draft.openMode;
+
+  function chooseOpenMode(openMode: UserLinkOpenMode) {
+    openModeChosenRef.current = true;
+    setDraft((current) => ({ ...current, openMode }));
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!editing || !draft.url.trim()) return;
+    if (inspectTimeoutRef.current) clearTimeout(inspectTimeoutRef.current);
     setSaving(true);
     setError(null);
     try {
       let finalTitle = draft.title.trim();
-      let finalUrl = draft.url.trim();
-      if (!/^https?:\/\//i.test(finalUrl)) {
-        finalUrl = `https://${finalUrl}`;
-      }
-      let finalOpenMode = draft.category === "MUSIC_LIBRARY" ? "EMBEDDED" : draft.openMode;
+      const finalUrl = withScheme(draft.url);
+      let finalOpenMode: UserLinkOpenMode = draft.category === "MUSIC_LIBRARY" ? "EMBEDDED" : isPlainHttp(finalUrl) ? "NEW_TAB" : effectiveOpenMode;
 
-      const isGeneric = !finalTitle || finalTitle === "- YouTube" || finalTitle.toLowerCase() === "youtube" || finalTitle === "Link";
+      const isGeneric = isGenericTitle(finalTitle, finalUrl);
       if (isGeneric || (draft.category === "GENERAL" && editing === "new")) {
         try {
           const info = await api.inspectLink(finalUrl);
           if (isGeneric && info.title && info.title !== "- YouTube" && info.title.toLowerCase() !== "youtube") {
             finalTitle = info.title;
           }
-          if (draft.category === "GENERAL") finalOpenMode = info.openMode;
+          // A site that refuses to be shown inside Space always opens in a new tab;
+          // otherwise the user's choice wins over the suggestion.
+          if (draft.category === "GENERAL" && (info.openMode === "NEW_TAB" || !openModeChosenRef.current)) finalOpenMode = info.openMode;
         } catch {
           if (isGeneric) {
             try { finalTitle = new URL(finalUrl).hostname; } catch { finalTitle = "Link"; }
@@ -252,22 +336,28 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
         }
       }
 
+      // The API accepts plain HTTP links only when they open in a new tab.
+      if (isPlainHttp(finalUrl)) finalOpenMode = "NEW_TAB";
+
       const payload = {
         title: finalTitle || "Link",
         url: finalUrl,
-        description: "",
         openMode: finalOpenMode,
         category: draft.category,
         isQuick: draft.isQuick
       };
 
-      if (editing === "new") await api.createLink(payload);
-      else if (editing) await api.updateLink(editing.id, payload);
-      setEditing(null);
+      // The form does not edit descriptions, so an edit leaves the saved one untouched.
+      if (editing === "new") await api.createLink({ ...payload, description: "" });
+      else await api.updateLink(editing.id, payload);
+      closeEditor();
+      if (selectedCategory !== "ALL" && selectedCategory !== draft.category) {
+        setNotice(`Saved to ${categoryLabels[draft.category]}. Choose All or ${categoryLabels[draft.category]} to see it.`);
+      }
       notifyLinksUpdated();
-      await load(1, false, selectedCategory);
+      await load(1, false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Link could not be saved.");
+      setError(reason instanceof Error && reason.message ? reason.message : "The link could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -281,140 +371,185 @@ export function LinksPanel({ onOpen }: { onOpen: (link: UserLink) => void }) {
       notifyLinksUpdated();
     } catch (reason) {
       setLinks((current) => current.map((item) => item.id === link.id ? { ...item, isQuick: link.isQuick } : item));
-      setError(reason instanceof Error ? reason.message : "Quick Link could not be updated.");
+      setError(reason instanceof Error && reason.message ? reason.message : "Quick Links could not be updated.");
     }
   }
 
   async function remove(link: UserLink) {
-    if (!window.confirm(`Delete ${link.title}?`)) return;
+    if (!await confirm({ title: "Delete this link?", message: `"${link.title}" will be removed from your links.`, confirmLabel: "Delete" })) return;
     try {
       await api.deleteLink(link.id);
+      if (editing !== "new" && editing?.id === link.id) closeEditor();
       notifyLinksUpdated();
-      await load(1, false, selectedCategory);
+      await load(1, false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Link could not be deleted.");
+      setError(reason instanceof Error && reason.message ? reason.message : "The link could not be deleted.");
     }
   }
 
-  return <section ref={panelRef} className="links-panel side-surface-panel" aria-label="Links library">
-    <form className="links-search" onSubmit={(event) => { event.preventDefault(); void load(1, false, selectedCategory); }}>
-      <Search aria-hidden="true" />
-      <input aria-label="Search links" placeholder="Search links" value={query} onChange={(event) => setQuery(event.target.value)} />
-      <button type="submit">Search</button>
-    </form>
+  const isSearching = Boolean(debouncedQuery.trim());
+  const formLabel = editing === "new" ? "Add link" : "Edit link";
 
-    <div className="links-category-tabs" role="tablist" aria-label="Link type filter">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selectedCategory === "ALL"}
-        className={`links-category-tab ${selectedCategory === "ALL" ? "is-active" : ""}`}
-        onClick={() => handleCategoryChange("ALL")}
-      >
-        All
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selectedCategory === "GENERAL"}
-        className={`links-category-tab ${selectedCategory === "GENERAL" ? "is-active" : ""}`}
-        onClick={() => handleCategoryChange("GENERAL")}
-      >
-        General
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selectedCategory === "MUSIC_LIBRARY"}
-        className={`links-category-tab ${selectedCategory === "MUSIC_LIBRARY" ? "is-active" : ""}`}
-        onClick={() => handleCategoryChange("MUSIC_LIBRARY")}
-      >
-        <Music2 aria-hidden="true" /> Music library
-      </button>
-    </div>
+  function emptyState() {
+    if (!hasLoaded) return <DockState kind="loading" title="Loading links…" />;
+    if (loadError) {
+      return <DockState kind="error" title="Links could not be loaded" detail={loadError} action={{ label: "Try again", onClick: () => void load(1, false) }} />;
+    }
+    if (isSearching) {
+      return <DockState kind="empty" icon={LinkIcon} title="No links match this search." detail="Try other words, or choose All to search every link." />;
+    }
+    if (selectedCategory !== "ALL") {
+      return <DockState kind="empty" icon={selectedCategory === "MUSIC_LIBRARY" ? Music2 : LinkIcon}
+        title={`No ${categoryLabels[selectedCategory].toLowerCase()} links yet`}
+        detail="Add one, or choose All to see every link." />;
+    }
+    return <DockState kind="empty" icon={LinkIcon} title="No links yet"
+      detail="Save the sites you use often. Star a link to show it in Quick Links."
+      action={{ label: "Add your first link", icon: Plus, onClick: startAdd }} />;
+  }
 
-    <button className="links-add" type="button" onClick={startAdd}><Plus aria-hidden="true" /> Add link</button>
-    {error ? (
-      <p className="links-error" role="alert"><span>{error}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}><X aria-hidden="true" /></button></p>
-    ) : null}
-    {editing ? <form className="link-form" aria-label={editing === "new" ? "Add link" : "Edit link"} onSubmit={submit}>
-      <header><strong>{editing === "new" ? "Add link" : "Edit link"}</strong><button type="button" aria-label="Close link form" onClick={() => setEditing(null)}><X aria-hidden="true" /></button></header>
-      <label>URL
-        <input
-          required
-          type="text"
-          maxLength={2048}
-          placeholder="https://example.com"
-          value={draft.url}
-          onChange={(event) => handleUrlChange(event.target.value)}
-          onBlur={handleUrlBlur}
-          autoFocus
-        />
-      </label>
-      <label className="link-title-label">
-        <span>Title {inspecting ? <small className="link-inspecting-hint">(Detecting site…)</small> : null}</span>
-        <input
-          maxLength={160}
-          placeholder={inspecting ? "Reading title from site…" : "Auto-detected from site"}
-          value={draft.title}
-          onChange={(event) => setDraft({ ...draft, title: event.target.value })}
-        />
-      </label>
-      {editing !== "new" ? (
-        <label>Link type
-          <select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value as UserLinkCategory })}>
-            {(Object.keys(categoryLabels) as UserLinkCategory[]).map((category) => (
-              <option key={category} value={category}>{categoryLabels[category]}</option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      {draft.category !== "MUSIC_LIBRARY" ? (
-        <fieldset><legend>Open link</legend>
-          <label><input type="radio" name="open-mode" checked={draft.openMode === "EMBEDDED"} disabled={/^http:\/\//i.test(draft.url)} onChange={() => setDraft({ ...draft, openMode: "EMBEDDED" })} /> Open in Space modal</label>
-          <label><input type="radio" name="open-mode" checked={draft.openMode === "NEW_TAB"} onChange={() => setDraft({ ...draft, openMode: "NEW_TAB" })} /> Open in new tab</label>
-        </fieldset>
-      ) : null}
-      <SpaceToggle className="link-check" label="Add to Quick Links" checked={draft.isQuick} onChange={(isQuick) => setDraft({ ...draft, isQuick })} />
-      <button type="submit" disabled={saving || inspecting}>{saving ? "Saving…" : inspecting ? "Reading site…" : "Save link"}</button>
-    </form> : null}
-    {(() => {
-      const filteredLinks = selectedCategory === "ALL"
-        ? links
-        : links.filter((link) => (link.category || "GENERAL") === selectedCategory);
-      return <>
-        {!loading && filteredLinks.length === 0 ? (
-          <p className="links-empty">No {selectedCategory === "ALL" ? "" : `${categoryLabels[selectedCategory].toLowerCase()} `}links found. Add a link or change your filter.</p>
-        ) : null}
-        <div className="links-list">
-          {filteredLinks.map((link) => <article className="link-card" key={link.id}>
-            <button className="link-main" type="button" onClick={() => onOpen(link)} aria-label={`Open ${link.title}`}>
-              <span className="link-favicon"><LinkFavicon link={link} /></span>
-              <strong className="link-title" title={link.title}>{link.title}</strong>
-            </button>
-            <div className="link-actions">
-              <button
-                type="button"
-                className={`link-quick-toggle ${link.isQuick ? "selected is-quick" : ""}`}
-                aria-label={`${link.isQuick ? "Remove" : "Add"} ${link.title} ${link.isQuick ? "from" : "to"} Quick Links`}
-                title={link.isQuick ? "Remove from Quick Links" : "Add to Quick Links"}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  void toggleQuick(link);
-                }}
-              >
-                <Star aria-hidden="true" fill={link.isQuick ? "currentColor" : "none"} />
-              </button>
-              <button type="button" aria-label={`Edit ${link.title}`} onClick={() => startEdit(link)}><Pencil aria-hidden="true" /></button>
-              <button type="button" aria-label={`Delete ${link.title}`} onClick={() => void remove(link)}><Trash2 aria-hidden="true" /></button>
-            </div>
-          </article>)}
+  return <section className="links-panel side-surface-panel" aria-label="Links library">
+    <div className={`links-dock-shell dock-kit-shell${isFullscreen ? " is-fullscreen" : ""}`}>
+      <div className="links-dock dock-kit-dock">
+        <DockToolbar
+          title={isFullscreen ? "Links" : undefined}
+          summary={hasLoaded ? <><strong>{total.toLocaleString()}</strong> {isSearching ? "matching " : ""}link{total === 1 ? "" : "s"}{selectedCategory !== "ALL" ? ` · ${categoryLabels[selectedCategory]}` : ""}</> : null}
+        >
+          <DockIconButton label="Add link" icon={Plus} tone="primary" aria-expanded={editing === "new"} onClick={startAdd} />
+          <DockFullscreenButton name="links" active={isFullscreen} onToggle={() => setIsFullscreen((value) => !value)} />
+        </DockToolbar>
+
+        <div className="dock-kit-controls">
+          <DockSearch name="links-search" label="Search links" value={query} onChange={setQuery} />
+          <DockChips label="Filter by link type" options={categoryFilters} value={selectedCategory} onChange={handleCategoryChange} />
         </div>
-      </>;
-    })()}
-    {loading ? <p role="status">Loading links…</p> : null}
-    {!loading && links.length < total ? <button type="button" onClick={() => void load(page + 1, true, selectedCategory)}>Load more</button> : null}
+
+        {editing ? (
+          <form ref={editorRef} className="links-editor dock-kit-editor" aria-label={formLabel} onSubmit={submit}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.stopPropagation();
+              closeEditor();
+            }}>
+            <strong className="dock-kit-section-title">{formLabel}</strong>
+            <label className="links-field">
+              <span className="links-field-label">URL</span>
+              <input
+                className="dock-kit-field"
+                required
+                type="text"
+                inputMode="url"
+                maxLength={2048}
+                placeholder="https://example.com"
+                value={draft.url}
+                onChange={(event) => handleUrlChange(event.target.value)}
+                onBlur={handleUrlBlur}
+                autoFocus
+              />
+            </label>
+            <label className="links-field">
+              <span className="links-field-label">Title</span>
+              <input
+                className="dock-kit-field"
+                maxLength={160}
+                placeholder={inspecting ? "Reading title from site…" : "Auto-detected from site"}
+                value={draft.title}
+                onChange={(event) => {
+                  const title = event.target.value;
+                  setDraft((current) => ({ ...current, title }));
+                }}
+              />
+            </label>
+            {inspecting ? <small className="links-field-hint" role="status">Reading the page title…</small> : null}
+            <label className="links-field">
+              <span className="links-field-label">Link type</span>
+              <select className="dock-kit-select" value={draft.category}
+                onChange={(event) => {
+                  const category = event.target.value as UserLinkCategory;
+                  setDraft((current) => ({ ...current, category }));
+                }}>
+                {(Object.keys(categoryLabels) as UserLinkCategory[]).map((category) => (
+                  <option key={category} value={category}>{categoryLabels[category]}</option>
+                ))}
+              </select>
+            </label>
+            {draft.category === "MUSIC_LIBRARY" ? (
+              <small className="links-field-hint">Music links always play inside Space.</small>
+            ) : draftIsYouTube ? (
+              <small className="links-field-hint">YouTube links play in a YouTube pane inside Space.</small>
+            ) : (
+              <div className="links-field">
+                <span className="links-field-label" id={openModeLabelId}>Opens in</span>
+                <div className="dock-kit-chips" role="group" aria-labelledby={openModeLabelId}>
+                  <button type="button" className="dock-kit-chip" aria-pressed={effectiveOpenMode === "EMBEDDED"} disabled={forcedNewTab}
+                    onClick={() => chooseOpenMode("EMBEDDED")}>Inside Space</button>
+                  <button type="button" className="dock-kit-chip" aria-pressed={effectiveOpenMode === "NEW_TAB"}
+                    onClick={() => chooseOpenMode("NEW_TAB")}>New browser tab</button>
+                </div>
+                {draftIsHttp ? (
+                  <small className="links-field-hint">Plain HTTP pages cannot be shown inside Space, so this link opens in a new browser tab.</small>
+                ) : draftEmbedBlocked ? (
+                  <small className="links-field-hint">This site does not allow being shown inside Space, so it opens in a new browser tab.</small>
+                ) : null}
+              </div>
+            )}
+            <SpaceToggle className="links-quick-switch" label="Add to Quick Links" checked={draft.isQuick} onChange={(isQuick) => setDraft((current) => ({ ...current, isQuick }))} />
+            <div className="dock-kit-editor-footer">
+              <DockButton tone="ghost" onClick={closeEditor}>Cancel</DockButton>
+              <DockButton type="submit" tone="primary" busy={saving} disabled={saving || inspecting || !draft.url.trim()}>Save link</DockButton>
+            </div>
+          </form>
+        ) : null}
+
+        {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+        {notice ? <DockNotice tone="success" onDismiss={() => setNotice(null)}>{notice}</DockNotice> : null}
+        {loadError && links.length ? <DockNotice onDismiss={() => setLoadError(null)}>{loadError}</DockNotice> : null}
+
+        {!links.length ? emptyState() : null}
+
+        <div className="links-list dock-kit-list" role="list" aria-label="Saved links" hidden={!links.length}>
+          {links.map((link) => {
+            const youTube = isYouTubeLink(link.url);
+            return <article className="links-item dock-kit-card" role="listitem" key={link.id}>
+              <button className="links-item-open" type="button" onClick={() => onOpen(link)} aria-label={`Open ${link.title}`} title={link.url}>
+                <span className="link-favicon"><LinkFavicon link={link} /></span>
+                <span className="links-item-text">
+                  <span className="dock-kit-card-title">{link.title}</span>
+                  <span className="dock-kit-meta">
+                    <span className="dock-kit-meta-text">{hostnameOf(link.url)}</span>
+                    {link.category === "MUSIC_LIBRARY" ? <span className="dock-kit-badge is-accent">Music</span> : null}
+                    {youTube && link.category !== "MUSIC_LIBRARY" ? <span className="dock-kit-badge">YouTube</span> : null}
+                    {!youTube && link.openMode === "NEW_TAB" ? <span className="dock-kit-badge">New tab</span> : null}
+                  </span>
+                </span>
+              </button>
+              <div className="dock-kit-card-actions">
+                <DockIconButton
+                  className="links-star"
+                  icon={Star}
+                  aria-pressed={link.isQuick}
+                  label={`${link.isQuick ? "Remove" : "Add"} ${link.title} ${link.isQuick ? "from" : "to"} Quick Links`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void toggleQuick(link);
+                  }}
+                />
+                <DockIconButton label={`Edit ${link.title}`} icon={Pencil} onClick={() => startEdit(link)} />
+                <DockIconButton label={`Delete ${link.title}`} icon={Trash2} tone="danger" onClick={() => void remove(link)} />
+              </div>
+            </article>;
+          })}
+        </div>
+
+        {links.length < total && links.length ? (
+          <DockButton className="links-load-more" busy={loadingMore} disabled={loadingMore} onClick={() => void load(page + 1, true)}>
+            Load more
+          </DockButton>
+        ) : null}
+      </div>
+    </div>
+    {confirmDialog}
   </section>;
 }
 
@@ -561,6 +696,7 @@ export function QuickLinksPopover({
 
     const dismiss = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     const handleOutside = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (ref.current?.contains(target)) return;
       if (triggerRef?.current?.contains(target)) return;
@@ -580,7 +716,7 @@ export function QuickLinksPopover({
     <section
       ref={ref}
       id="quick-links-popover"
-      className="quick-links-popover toolbar-floating-menu"
+      className="quick-links-popover toolbar-floating-menu dock-kit-scope"
       role="dialog"
       aria-label="Quick Links"
     >
@@ -590,16 +726,10 @@ export function QuickLinksPopover({
           <X aria-hidden="true" />
         </button>
       </header>
-      {error ? (
-        <p role="alert">
-          <span>{error}</span>
-          <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setError(null)}>
-            <X aria-hidden="true" />
-          </button>
-        </p>
-      ) : null}
+      {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
       {!loading && links.length === 0 ? (
-        <p className="links-empty">No Quick Links yet. Star links in Manage Links to add them here.</p>
+        <DockState kind="empty" icon={Star} className="quick-links-empty" title="No Quick Links yet"
+          detail="Star links in Manage Links to add them here." />
       ) : null}
       <div className="quick-links-list">
         {links.map((link) => (
@@ -618,10 +748,9 @@ export function QuickLinksPopover({
         ))}
       </div>
       {links.length < total ? (
-        <button type="button" onClick={() => void load(page + 1, true, true)}>Load more</button>
+        <DockButton busy={loading} disabled={loading} onClick={() => void load(page + 1, true, true)}>Load more</DockButton>
       ) : null}
-      <button
-        type="button"
+      <DockButton
         className="quick-links-manage"
         onClick={() => {
           onManage();
@@ -629,7 +758,7 @@ export function QuickLinksPopover({
         }}
       >
         Manage Links
-      </button>
+      </DockButton>
     </section>
   );
 }

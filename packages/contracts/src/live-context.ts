@@ -9,6 +9,7 @@ export interface LiveRoomContext {
   activitySummary?: { totalAgentPanes: number; running: number; idle: number; waitingForInput: number; stopped: number; unknown: number };
   panes: Array<{
     id: string;
+    paneName?: string | null;
     title: string;
     mode: string;
     runtimeId: string | null;

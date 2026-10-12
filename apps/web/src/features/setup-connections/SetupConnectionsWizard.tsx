@@ -11,6 +11,7 @@ import "./setup-connections.css";
 
 interface SetupConnectionsWizardProps {
   embedded?: boolean;
+  portalTarget?: HTMLElement | null;
   guided?: boolean;
   connectionsContent?: ReactNode;
   checks: SetupConnectionChecksClient;
@@ -35,6 +36,7 @@ function formatElapsed(totalSeconds: number): string {
 export function SetupConnectionsWizard({
   guided = false,
   embedded = false,
+  portalTarget,
   connectionsContent,
   checks,
   open,
@@ -254,7 +256,7 @@ export function SetupConnectionsWizard({
           <h3>{summary.functional ? "You can start working" : "Continue when you are ready"}</h3>
           <p>{summary.functional} of {summary.total} tools are ready to launch. {summary.needsSetup} still need setup.</p>
           <p>Open Rooms to choose or create a workspace, then use Create to add a CLI, Chat, or Browser pane.</p>
-          <p>You can reopen this wizard from Help → Setup wizard. Optional connections can be added later.</p>
+          <p>You can reopen this wizard from the room toolbar → Setup wizard. Optional connections can be added later.</p>
         </div> : null}
 
         <footer className="setup-connections-footer">
@@ -275,5 +277,5 @@ export function SetupConnectionsWizard({
       </section>
     </div>
   );
-  return embedded ? content : createPortal(content, document.body);
+  return portalTarget ? createPortal(content, portalTarget) : embedded ? content : createPortal(content, document.body);
 }

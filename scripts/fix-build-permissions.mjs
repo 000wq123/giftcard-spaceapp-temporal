@@ -13,6 +13,7 @@ const targets = [
   "packages/codex-app-server/dist",
   "packages/runtime/dist",
   "packages/db/dist",
+  "packages/gateway/dist",
   "packages/db/migrations"
 ];
 
@@ -32,3 +33,4 @@ async function normalize(path) {
 }
 
 await Promise.all(targets.map((target) => normalize(resolve(root, target))));
+await chmod(resolve(root, "var/worktrees"), 0o2775).catch(() => {});

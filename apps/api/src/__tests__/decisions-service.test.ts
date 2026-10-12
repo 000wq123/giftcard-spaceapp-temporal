@@ -375,6 +375,49 @@ describe("decisions service optional fallback", () => {
     expect(ranked.ranked[0]?.id).toBe("mem:2");
     expect(ranked.ranked[0]?.score).toBe(1.0);
   });
+
+  it("decides tactical movement with fallback and model response", async () => {
+    // 1. Fallback mode
+    const fallbackService = createDecisionsService({
+      tokenFile: "/tmp/non-existent-token",
+      readFileImpl: async () => { throw new Error("no token"); }
+    });
+    const fallbackOutcome = await fallbackService.decideTacticalMovement({ rocks: 8, hostiles: 0 });
+    expect(fallbackOutcome.available).toBe(false);
+    expect(fallbackOutcome.source).toBe("fallback");
+    expect(fallbackOutcome.targetPreference).toBe("rocks");
+    expect(fallbackOutcome.combatStyle).toBe("defensive");
+
+    // 2. Model mode
+    const modelService = createDecisionsService({
+      tokenFile: "/mock/token",
+      readFileImpl: async () => "mock-token",
+      fetch: ((async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: "typesafe/jev-1.13",
+          answers: {
+            target_preference: { type: "choice", choice: "threat" },
+            combat_style: { type: "choice", choice: "blitz" },
+            aggression: { type: "score", score: 3 },
+            mobility: { type: "score", score: 2 },
+            precision: { type: "score", score: 2 },
+            lead_aiming: { type: "score", score: 2 }
+          }
+        })
+      })) as unknown) as typeof fetch
+    });
+
+    const modelOutcome = await modelService.decideTacticalMovement({ rocks: 2, hostiles: 3 });
+    expect(modelOutcome.available).toBe(true);
+    expect(modelOutcome.source).toBe("model");
+    expect(modelOutcome.targetPreference).toBe("threat");
+    expect(modelOutcome.combatStyle).toBe("blitz");
+    expect(modelOutcome.aggression).toBe(0.95);
+    expect(modelOutcome.tactic).toBe("JEV: High-speed blitz assault");
+  });
 });
+
 
 

@@ -1,16 +1,17 @@
 import {
+  Bot,
+  Brain,
   CheckCircle2,
   Clipboard,
   Copy,
+  FileInput,
   GripVertical,
-  Maximize2,
-  Minimize2,
   Pin,
   Plus,
   Trash2,
   X
 } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardItem, ClipboardSource } from "@space/contracts";
 import { clipboardTextMaxCharacters } from "@space/contracts";
 import { api } from "../../api.js";
@@ -27,6 +28,24 @@ import {
   formatAppDateTime,
   DATE_TIME_SETTINGS_UPDATED_EVENT
 } from "../date-time-settings/date-time-settings.js";
+import { useIsDockActive } from "../docks/dock-active-context.js";
+import { isSameModel, resolveStepModel } from "../terminal-pane/plan-model-resolver.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import {
+  DockButton,
+  DockChips,
+  DockFullscreenButton,
+  DockIconButton,
+  DockNotice,
+  DockSearch,
+  DockState,
+  DockToolbar,
+  useDockConfirm,
+  useDockFullscreen
+} from "../dock-kit/DockKit.js";
+
+let cachedClipboardItems: ClipboardItem[] | null = null;
+let cachedClipboardTotal = 0;
 
 interface ClipboardDockProps {
   canInsert: boolean;
@@ -42,16 +61,23 @@ export const CLIPBOARD_SOURCE_FILTER_STORAGE_KEY = "space.clipboard.last-source-
 
 const sourceFilters: Array<{ id: SourceFilter; label: string }> = [
   { id: "ALL", label: "All" },
-  { id: "COPY", label: "Copy" },
-  { id: "PASTE", label: "Paste" },
+  { id: "COPY", label: "Copied" },
+  { id: "PASTE", label: "Pasted" },
   { id: "NOTES", label: "Notes" },
   { id: "PLANS", label: "Plans" }
 ];
 
-function sourceLabel(source: ClipboardSource): string {
-  if (source === "MANUAL_NOTE") return "NOTE";
-  if (source === "PLAN") return "PLAN";
-  return source.replace("_", " ");
+const sourceLabels: Record<ClipboardSource, string> = {
+  COPY: "Copied",
+  PASTE: "Pasted",
+  MANUAL_NOTE: "Note",
+  AGENT_NOTE: "Agent note",
+  PLAN: "Plan"
+};
+
+function planStatusLabel(status: string): string {
+  const words = status.toLowerCase().split("_");
+  return words.map((word, index) => index === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word).join(" ");
 }
 
 function timeLabel(value: string): string {
@@ -71,8 +97,11 @@ function readStoredSourceFilter(storage: Storage): SourceFilter {
 
 export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStickyNote, onClose }: ClipboardDockProps) {
   const runtime = getSpaceRuntime();
-  const [items, setItems] = useState<ClipboardItem[]>([]);
-  const [totalItems, setTotalItems] = useState(0);
+  const isDockActive = useIsDockActive();
+  const { confirm, confirmDialog } = useDockConfirm();
+  const [items, setItems] = useState<ClipboardItem[]>(() => cachedClipboardItems ?? []);
+  const [totalItems, setTotalItems] = useState(() => cachedClipboardTotal);
+  const [hasLoaded, setHasLoaded] = useState(() => cachedClipboardItems !== null);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>(() => {
     try {
@@ -82,14 +111,17 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     }
   });
   const [showCompleted, setShowCompleted] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useDockFullscreen();
   const [isAdding, setIsAdding] = useState(false);
   const [manualText, setManualText] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const noteCharacters = clipboardCharacterCount(manualText);
+  const noteTooLong = noteCharacters > clipboardTextMaxCharacters;
+  const isFiltered = Boolean(search.trim()) || sourceFilter !== "ALL";
+  const insertTarget = activePaneLabel ?? "active pane";
 
   const handleOpenStickyNote = useCallback((item?: ClipboardItem | null) => {
     if (onOpenStickyNote) {
@@ -110,7 +142,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const handleClose = useCallback(() => {
     setIsFullscreen(false);
     onClose?.();
-  }, [onClose]);
+  }, [onClose, setIsFullscreen]);
 
   useEffect(() => {
     try {
@@ -121,44 +153,74 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   }, [runtime.platform.localStorage, sourceFilter]);
 
   const loadItems = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    const base = {
+      ...(search.trim() ? { q: search.trim() } : {}),
+      includeCompleted: showCompleted,
+      page: 1,
+      pageSize: 100
+    };
     try {
-      const payload = await api.clipboardItems({
-        ...(search.trim() ? { q: search.trim() } : {}),
-        ...(sourceFilter === "COPY" || sourceFilter === "PASTE" || sourceFilter === "PLANS"
-          ? { source: sourceFilter === "PLANS" ? "PLAN" : sourceFilter }
-          : {}),
-        includeCompleted: showCompleted,
-        page: 1,
-        pageSize: 100
-      });
-      const visible = sourceFilter === "NOTES"
-        ? payload.data.filter((item) => item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE")
-        : payload.data;
+      let visible: ClipboardItem[];
+      let total: number;
+      if (sourceFilter === "NOTES") {
+        // Notes are manual and agent notes; ask the server for each so the count covers every note.
+        const [manual, agent] = await Promise.all([
+          api.clipboardItems({ ...base, source: "MANUAL_NOTE" }),
+          api.clipboardItems({ ...base, source: "AGENT_NOTE" })
+        ]);
+        visible = [...manual.data, ...agent.data]
+          .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt))
+          .slice(0, 100);
+        total = manual.pagination.totalItems + agent.pagination.totalItems;
+      } else {
+        const payload = await api.clipboardItems({
+          ...base,
+          ...(sourceFilter === "COPY" || sourceFilter === "PASTE" || sourceFilter === "PLANS"
+            ? { source: sourceFilter === "PLANS" ? "PLAN" : sourceFilter }
+            : {})
+        });
+        visible = payload.data;
+        total = payload.pagination.totalItems;
+      }
       setItems(visible);
-      setTotalItems(sourceFilter === "NOTES" ? visible.length : payload.pagination.totalItems);
+      setTotalItems(total);
+      setLoadError(null);
+      if (!search.trim() && sourceFilter === "ALL" && !showCompleted) {
+        cachedClipboardItems = visible;
+        cachedClipboardTotal = total;
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Clipboard history could not be loaded.");
+      setLoadError(err instanceof Error ? err.message : "Clipboard history could not be loaded.");
     } finally {
-      setLoading(false);
+      setHasLoaded(true);
     }
   }, [search, sourceFilter, showCompleted]);
 
+  const initialLoadRef = useRef(true);
   useEffect(() => {
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false;
+      void loadItems();
+      return;
+    }
     const timer = window.setTimeout(() => void loadItems(), 150);
     return () => window.clearTimeout(timer);
   }, [loadItems]);
 
   useEffect(() => {
     const refresh = () => void loadItems();
-    const poll = window.setInterval(refresh, 5_000);
     window.addEventListener(SPACE_CLIPBOARD_UPDATED_EVENT, refresh);
     return () => {
-      window.clearInterval(poll);
       window.removeEventListener(SPACE_CLIPBOARD_UPDATED_EVENT, refresh);
     };
   }, [loadItems]);
+
+  useEffect(() => {
+    if (!isDockActive) return;
+    const refresh = () => void loadItems();
+    const poll = window.setInterval(refresh, 5_000);
+    return () => window.clearInterval(poll);
+  }, [isDockActive, loadItems]);
 
   const [, setDateTimeTick] = useState(0);
   useEffect(() => {
@@ -166,20 +228,6 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     window.addEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
     return () => window.removeEventListener(DATE_TIME_SETTINGS_UPDATED_EVENT, handleSettingsUpdate);
   }, []);
-
-  useEffect(() => {
-    if (!isFullscreen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setIsFullscreen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isFullscreen]);
-
-  const summary = useMemo(
-    () => `${totalItems} text clip${totalItems === 1 ? "" : "s"} and plan${totalItems === 1 ? "" : "s"} · Private · Space-wide · 100 max`,
-    [totalItems]
-  );
 
   async function copyItem(item: ClipboardItem) {
     try {
@@ -191,6 +239,8 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
         text: item.text,
         source: item.source === "AGENT_NOTE" ? "COPY" : item.source,
         title: item.source === "PLAN" ? (item.title ?? undefined) : undefined,
+        minimumModel: item.source === "PLAN" ? (item.minimumModel ?? undefined) : undefined,
+        minimumReasoning: item.source === "PLAN" ? (item.minimumReasoning ?? undefined) : undefined,
         roomId: item.roomId,
         paneId: item.paneId,
         paneTitle: item.paneTitle
@@ -200,12 +250,16 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
     }
   }
 
+  function closeEditor() {
+    setManualText("");
+    setIsAdding(false);
+  }
+
   async function saveManualNote() {
-    if (!manualText.trim() || noteCharacters > clipboardTextMaxCharacters) return;
+    if (!manualText.trim() || noteTooLong) return;
     try {
       await api.createClipboardItem({ text: manualText, source: "MANUAL_NOTE" });
-      setManualText("");
-      setIsAdding(false);
+      closeEditor();
       notifyClipboardUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "The note could not be saved.");
@@ -213,6 +267,8 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   }
 
   async function deleteItem(item: ClipboardItem) {
+    const kind = item.source === "PLAN" ? "plan" : item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE" ? "note" : "clip";
+    if (!await confirm({ title: `Delete this ${kind}?`, message: "It will be removed from your clipboard history.", confirmLabel: "Delete" })) return;
     try {
       await api.deleteClipboardItem(item.id);
       notifyClipboardUpdated();
@@ -231,7 +287,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   }
 
   async function clearAll() {
-    if (!window.confirm("Clear all clipboard history for your account?")) return;
+    if (!await confirm({ title: "Clear all clipboard history?", message: "Every clip, note and plan will be removed. This cannot be undone.", confirmLabel: "Clear all" })) return;
     try {
       await api.clearClipboardItems();
       notifyClipboardUpdated();
@@ -242,135 +298,149 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
 
   return (
     <section
-      className={`clipboard-dock-shell${isFullscreen ? " is-fullscreen" : ""}`}
+      className={`clipboard-dock-shell dock-kit-shell${isFullscreen ? " is-fullscreen" : ""}`}
       aria-label="Clipboard history"
       data-space-clipboard-capture="off"
     >
-      <div className="clipboard-dock">
-        <header className="clipboard-dock-head">
-          <h2><Clipboard aria-hidden="true" /> Clipboard</h2>
-          <div className="clipboard-dock-actions">
-            <button className="icon-action" onClick={() => setIsAdding(true)} aria-label="Add clipboard note" aria-expanded={isAdding}>
-              <Plus aria-hidden="true" />
-            </button>
-            <button className="icon-action" onClick={() => void clearAll()}
-              aria-label="Clear all clipboard items"><Trash2 aria-hidden="true" /></button>
-            <button
-              className={`icon-action dock-fullscreen-toggle${isFullscreen ? " is-active" : ""}`}
-              onClick={() => setIsFullscreen((value) => !value)}
-              aria-label={isFullscreen ? "Close clipboard fullscreen" : "Open clipboard fullscreen"}
-              title={isFullscreen ? "Close clipboard fullscreen" : "Open clipboard fullscreen"}
-              aria-pressed={isFullscreen}
-            >
-              {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-            </button>
-            {isFullscreen ? (
-              <button
-                className="icon-action clipboard-dock-close"
-                onClick={handleClose}
-                aria-label="Close clipboard"
-                title="Close clipboard"
-              >
-                <X aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
-        </header>
+      <div className="clipboard-dock dock-kit-dock">
+        <DockToolbar
+          title={isFullscreen ? "Clipboard" : undefined}
+          summary={<><strong>{totalItems.toLocaleString()}</strong> item{totalItems === 1 ? "" : "s"} · private to you</>}
+        >
+          <DockIconButton label="Add clipboard note" icon={Plus} tone="primary" aria-expanded={isAdding} onClick={() => setIsAdding(true)} />
+          <DockIconButton label="Clear all clipboard items" icon={Trash2} tone="danger" disabled={!totalItems} onClick={() => void clearAll()} />
+          <DockFullscreenButton name="clipboard" active={isFullscreen} onToggle={() => setIsFullscreen((value) => !value)} />
+          {isFullscreen ? <DockIconButton label="Close clipboard" icon={X} className="clipboard-dock-close" onClick={handleClose} /> : null}
+        </DockToolbar>
 
-        <p className="clipboard-summary">{summary}</p>
-        <div className="clipboard-controls">
-          <input type="search" name="clipboard-search" aria-label="Search clips" placeholder="Search clips…" value={search}
-            onChange={(event) => setSearch(event.currentTarget.value)} />
-          <div className="clipboard-filters" aria-label="Clipboard sources">
-            {sourceFilters.map((filter) => (
-              <button key={filter.id} className={sourceFilter === filter.id ? "active" : ""}
-                aria-pressed={sourceFilter === filter.id} onClick={() => setSourceFilter(filter.id)}>
-                {filter.label}
-              </button>
-            ))}
-            <button className={showCompleted ? "active" : ""} aria-pressed={showCompleted}
-              onClick={() => setShowCompleted((value) => !value)} aria-label="Show completed plans">
-              Completed
-            </button>
-          </div>
+        <div className="dock-kit-controls">
+          <DockSearch name="clipboard-search" label="Search clips" value={search} onChange={setSearch} />
+          <DockChips label="Clipboard sources" options={sourceFilters} value={sourceFilter} onChange={setSourceFilter} />
+          {sourceFilter === "ALL" || sourceFilter === "PLANS" ? (
+            <SpaceToggle className="clipboard-completed-toggle" label="Show completed plans" checked={showCompleted} onChange={setShowCompleted} />
+          ) : null}
         </div>
 
         {isAdding ? (
-          <div className="clipboard-note-editor">
-            <textarea autoFocus aria-label="Manual clipboard note" value={manualText}
+          <div className="dock-kit-editor">
+            <textarea className="dock-kit-field" autoFocus aria-label="Manual clipboard note" placeholder="Write a note…" value={manualText}
               onChange={(event) => setManualText(event.currentTarget.value)} maxLength={clipboardTextMaxCharacters + 1} />
-            <div>
-              <span className={noteCharacters > clipboardTextMaxCharacters ? "bad" : ""}>
+            <div className="dock-kit-editor-footer">
+              <span className={`dock-kit-counter${noteTooLong ? " is-over" : ""}`}>
                 {noteCharacters.toLocaleString()} / {clipboardTextMaxCharacters.toLocaleString()}
               </span>
-              <button onClick={() => { setManualText(""); setIsAdding(false); }} aria-label="Cancel note"><X aria-hidden="true" /> Cancel</button>
-              <button onClick={() => void saveManualNote()} disabled={!manualText.trim() || noteCharacters > clipboardTextMaxCharacters}
-                aria-label="Save note">Save</button>
+              <DockButton tone="ghost" onClick={closeEditor} aria-label="Cancel note">Cancel</DockButton>
+              <DockButton tone="primary" onClick={() => void saveManualNote()} disabled={!manualText.trim() || noteTooLong}
+                aria-label="Save note">Save</DockButton>
             </div>
           </div>
         ) : null}
 
-        {error ? <div className="banner bad">{error}</div> : null}
-        <div className="clipboard-list" role="list" aria-label="Clipboard items">
+        {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
+        {loadError && items.length ? <DockNotice onDismiss={() => setLoadError(null)}>{loadError}</DockNotice> : null}
+
+        {!items.length ? (
+          !hasLoaded ? (
+            <DockState kind="loading" title="Loading clipboard…" />
+          ) : loadError ? (
+            <DockState kind="error" title="Clipboard history could not be loaded" detail={loadError} action={{ label: "Try again", onClick: () => void loadItems() }} />
+          ) : isFiltered || showCompleted ? (
+            <DockState kind="empty" icon={Clipboard} title="No clipboard items match this view." detail="Change the search or the filter." />
+          ) : (
+            <DockState kind="empty" icon={Clipboard} title="Your clipboard is empty"
+              detail="Text you copy or paste in Space, notes and agent plans appear here."
+              action={{ label: "Write a note", icon: Plus, onClick: () => setIsAdding(true) }} />
+          )
+        ) : null}
+
+        <div className="clipboard-list dock-kit-list" role="list" aria-label="Clipboard items" hidden={!items.length}>
           {items.map((item) => {
             const expanded = expandedIds.has(item.id);
             const isLong = item.characterCount > 360;
+            const isPlan = item.source === "PLAN";
+            const isNote = item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE";
+            const planStatus = item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED");
+            const planProgress = item.progressPercentage ?? (item.isCompleted ? 100 : 0);
             return (
               <article
-                className={`clipboard-card${item.source === "PLAN" ? " is-plan" : ""}${item.isCompleted ? " is-completed" : ""}`}
+                className={`clipboard-card dock-kit-card${isPlan ? " is-plan is-accent" : ""}${item.isCompleted ? " is-completed is-muted" : ""}`}
                 role="listitem"
                 key={item.id}
                 onDoubleClick={(event) => {
                   const target = event.target as HTMLElement;
-                  if (target.closest(".clipboard-card-actions") || target.closest(".clipboard-expand")) return;
+                  if (target.closest(".dock-kit-card-actions") || target.closest(".clipboard-expand")) return;
                   toggleExpanded(item.id);
                 }}
               >
-                <div className="clipboard-card-meta">
-                  <strong className={item.source === "PLAN" ? "clipboard-source-plan" : undefined}>{sourceLabel(item.source)}</strong>
-                  {item.isCompleted ? <small className="clipboard-status-completed">Completed</small> : null}
-                  <span>{item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
-                  {item.occurrenceCount > 1 ? <small>Used {item.occurrenceCount} times</small> : null}
+                <div className="dock-kit-meta">
+                  <span className={`dock-kit-badge${isPlan ? " is-accent clipboard-source-plan" : ""}`}>{sourceLabels[item.source]}</span>
+                  {item.isCompleted ? <span className="dock-kit-badge is-success clipboard-status-completed">Completed</span> : null}
+                  <span className="dock-kit-meta-text">{item.paneTitle ?? "Space"} · {timeLabel(item.lastUsedAt)}</span>
+                  {item.occurrenceCount > 1 ? <span className="dock-kit-badge">Used {item.occurrenceCount}×</span> : null}
                 </div>
-                {item.title ? <div className="clipboard-card-title">{item.title}</div> : null}
-                {item.source === "PLAN" ? (
+                {item.title ? <div className="dock-kit-card-title">{item.title}</div> : null}
+                {isPlan ? (
                   <div className="clipboard-plan-progress-container">
                     <div className="clipboard-plan-progress-header">
-                      <span className={`clipboard-plan-status-badge is-${(item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED")).toLowerCase()}`}>
-                        {(item.executionStatus ?? (item.isCompleted ? "COMPLETED" : "PLANNED")).replace("_", " ")}
+                      <span className={`clipboard-plan-status-badge is-${planStatus.toLowerCase()}`}>
+                        {planStatusLabel(planStatus)}
                       </span>
-                      <span className="clipboard-plan-pct">
-                        {item.progressPercentage ?? (item.isCompleted ? 100 : 0)}%
-                      </span>
+                      <span className="clipboard-plan-pct">{planProgress}%</span>
+                      {item.minimumModel ? (
+                        <span className="clipboard-plan-min-model" title={`Minimum capable model: ${item.minimumModel}${item.minimumReasoning ? `; Recommended reasoning: ${item.minimumReasoning}` : ""}`}>
+                          <Brain aria-hidden="true" /> {item.minimumModel}{item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}
+                        </span>
+                      ) : null}
                       {item.activeAgent ? (
-                        <span className="clipboard-plan-agent" title={`Current Agent: ${item.activeAgent}`}>
-                          🤖 {item.activeAgent}
+                        <span className="clipboard-plan-agent" title={`Current agent: ${item.activeAgent}`}>
+                          <Bot aria-hidden="true" /> {item.activeAgent}
                         </span>
                       ) : null}
                     </div>
-                    <div className="clipboard-plan-progress-bar">
+                    <div className="clipboard-plan-progress-bar" role="progressbar" aria-label="Plan progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={planProgress}>
                       <div
-                        className={`clipboard-plan-progress-fill${item.isCompleted || (item.progressPercentage ?? 0) === 100 ? " is-completed" : ""}`}
-                        style={{ width: `${item.progressPercentage ?? (item.isCompleted ? 100 : 0)}%` }}
+                        className={`clipboard-plan-progress-fill${item.isCompleted || planProgress === 100 ? " is-completed" : ""}`}
+                        style={{ width: `${planProgress}%` }}
                       />
                     </div>
                     {item.steps && item.steps.length > 0 ? (
                       <div className="clipboard-plan-steps-list">
-                        {item.steps.map((step) => (
-                          <div className={`clipboard-plan-step-item is-${step.status.toLowerCase()}`} key={step.id}>
-                            <span className={`clipboard-plan-step-bullet is-${step.status.toLowerCase()}`} />
-                            <span className="clipboard-plan-step-title">{step.title}</span>
-                            {step.progress > 0 && step.status !== "COMPLETED" ? (
-                              <span className="clipboard-plan-step-pct">{step.progress}%</span>
-                            ) : null}
-                            {step.agent ? <small className="clipboard-plan-step-agent">({step.agent})</small> : null}
-                          </div>
-                        ))}
+                        {item.steps.map((step) => {
+                          const stepModel = resolveStepModel(step, item);
+                          const isAgentSameAsModel = isSameModel(step.agent, stepModel);
+                          const showModelTag = Boolean(
+                            stepModel &&
+                              (!step.agent ||
+                                step.agent.toLowerCase().includes("unavailable") ||
+                                !isAgentSameAsModel)
+                          );
+
+                          return (
+                            <div className={`clipboard-plan-step-item is-${step.status.toLowerCase()}`} key={step.id}>
+                              <span className={`clipboard-plan-step-bullet is-${step.status.toLowerCase()}`} />
+                              <span className="clipboard-plan-step-title">{step.title}</span>
+                              {step.progress > 0 && step.status !== "COMPLETED" ? (
+                                <span className="clipboard-plan-step-pct">{step.progress}%</span>
+                              ) : null}
+                              {showModelTag && stepModel ? (
+                                <span className="clipboard-plan-step-model" title={`Designated model: ${stepModel}`}>
+                                  <Brain aria-hidden="true" /> {stepModel}
+                                </span>
+                              ) : null}
+                              {step.agent ? (
+                                <small className="clipboard-plan-step-agent" title={`Assigned agent: ${step.agent}`}>
+                                  ({step.agent})
+                                </small>
+                              ) : null}
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : null}
                   </div>
                 ) : null}
                 <button
+                  type="button"
                   className={`clipboard-card-text${expanded ? " expanded" : ""}`}
                   onClick={() => void copyItem(item)}
                   onDoubleClick={(event) => {
@@ -386,44 +456,39 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                   <span className="clipboard-copied" role="status">{runtime.kind === "demo" ? DEMO_LOCAL_REPLY : "Copied"}</span>
                 ) : null}
                 {isLong || expanded ? (
-                  <button className="clipboard-expand" onClick={() => toggleExpanded(item.id)}>
+                  <DockButton tone="ghost" className="clipboard-expand" onClick={() => toggleExpanded(item.id)}>
                     {expanded ? "Collapse" : "Expand"}
-                  </button>
+                  </DockButton>
                 ) : null}
-                <div className="clipboard-card-actions">
-                  <button draggable onDragStart={(event) => {
+                <div className="dock-kit-card-actions">
+                  <DockIconButton label="Drag clip" icon={GripVertical} className="clipboard-drag-handle" draggable onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = "copy";
                     event.dataTransfer.setData("text/plain", item.text);
                     event.dataTransfer.setData(SPACE_CLIPBOARD_ITEM_MIME, item.id);
                     if (item.title) event.dataTransfer.setData(SPACE_CLIPBOARD_ITEM_TITLE_MIME, item.title);
-                  }} aria-label="Drag clip"><GripVertical aria-hidden="true" /> Drag</button>
-                  {item.source === "PLAN" ? (
-                    <button className={item.isCompleted ? "is-completed" : ""} onClick={() => void toggleCompleted(item)}
-                      aria-label={item.isCompleted ? "Mark plan not completed" : "Mark plan completed"}>
-                      <CheckCircle2 aria-hidden="true" /> {item.isCompleted ? "Completed" : "Complete"}
-                    </button>
+                  }} />
+                  {isPlan ? (
+                    <DockButton icon={CheckCircle2} className={item.isCompleted ? "is-completed" : undefined} onClick={() => void toggleCompleted(item)}
+                      aria-label={item.isCompleted ? "Mark plan not completed" : "Mark plan completed"}
+                      title={item.isCompleted ? "Mark plan not completed" : "Mark plan completed"}>
+                      {item.isCompleted ? "Completed" : "Complete"}
+                    </DockButton>
                   ) : null}
-                  <button disabled={!canInsert} onClick={() => onInsert(item)}
-                    aria-label={`Insert into ${activePaneLabel ?? "active pane"}`}><Copy aria-hidden="true" /> Insert</button>
-                  <button onClick={() => void copyItem(item)} aria-label="Copy clip"><Copy aria-hidden="true" /></button>
-                  {(item.source === "MANUAL_NOTE" || item.source === "AGENT_NOTE") ? (
-                    <button
-                      className="clipboard-pin-btn"
-                      onClick={() => handleOpenStickyNote(item)}
-                      aria-label="Open note in floating sticky note"
-                      title="Open note in floating sticky note"
-                    >
-                      <Pin aria-hidden="true" />
-                    </button>
+                  <DockButton icon={FileInput} disabled={!canInsert} onClick={() => onInsert(item)}
+                    aria-label={`Insert into ${insertTarget}`}
+                    title={canInsert ? `Insert into ${insertTarget}` : "Select a CLI or chat pane to insert"}>Insert</DockButton>
+                  <DockIconButton label="Copy clip" icon={Copy} onClick={() => void copyItem(item)} />
+                  {isNote ? (
+                    <DockIconButton label="Open note in floating sticky note" icon={Pin} className="clipboard-pin-btn" onClick={() => handleOpenStickyNote(item)} />
                   ) : null}
-                  <button onClick={() => void deleteItem(item)} aria-label="Delete clip"><Trash2 aria-hidden="true" /></button>
+                  <DockIconButton label="Delete clip" icon={Trash2} tone="danger" onClick={() => void deleteItem(item)} />
                 </div>
               </article>
             );
           })}
-          {!loading && !items.length ? <div className="empty-state" role="status">No clipboard items match this view.</div> : null}
         </div>
       </div>
+      {confirmDialog}
     </section>
   );
 }

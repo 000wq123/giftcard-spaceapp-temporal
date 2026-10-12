@@ -28,7 +28,13 @@
 .memory-atlas-brand > svg { width: 21px; height: 21px; color: #8cddf2; }
 .memory-atlas-brand h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.6px; color: #eaf3fb; }
 .memory-atlas-brand > span { font: 9px ui-monospace, monospace; letter-spacing: 3px; color: #7f9bb0; padding-left: 8px; border-left: 1px solid #30404e; }
-#memory-atlas .memory-workspace-search { display: block; }
+.memory-workspace-controls-bar { display: flex; align-items: center; gap: 12px; justify-content: center; min-width: 0; }
+.memory-workspace-mode-selector { display: inline-flex; align-items: center; background: #101923; border: 1px solid #263340; border-radius: 10px; padding: 3px; gap: 3px; flex-shrink: 0; }
+.memory-mode-pill { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 0; color: #8da4b8; font-size: 12px; font-weight: 550; padding: 5px 13px; border-radius: 7px; cursor: pointer; transition: all 0.15s ease; }
+.memory-mode-pill:hover { color: #e2f0fb; background: #162432; }
+.memory-mode-pill.is-active { background: #183e54; color: #72d4fc; }
+.memory-mode-pill svg { width: 14px; height: 14px; }
+#memory-atlas .memory-workspace-search { display: block; flex: 1; min-width: 0; }
 #memory-atlas .memory-search-input { min-height: 40px; padding: 0 12px; background: #101923; border: 1px solid #263340; border-radius: 10px; }
 #memory-atlas .memory-search-input:focus-within { border-color: #76cce3; box-shadow: 0 0 0 3px #6bc1eb12; }
 #memory-atlas .memory-search-input input { color: #e5f0fa; font-size: 12px; outline: none; }
@@ -74,7 +80,14 @@
 .memory-atlas-insight > p { margin: 2px 0 10px; font-size: 13px; color: #b8ccdc; }
 .memory-atlas-insight > small { font-size: 10px; color: #7d98ad; line-height: 1.7; }
 .memory-atlas-spectrum { margin-top: 18px; width: 100%; height: 2px; background: linear-gradient(90deg, #6dbdff, #ed80bc, #9a90ff, #62ddc1, transparent); }
-.memory-atlas-detail { position: absolute; top: 18px; bottom: 58px; right: 18px; width: min(400px, 38%); z-index: 4; }
+.memory-atlas-detail { position: absolute; top: 18px; bottom: 18px; right: 18px; width: min(440px, 42%); z-index: 20; animation: detailPanelSlideIn 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes detailPanelSlideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+#memory-atlas[data-workspace-mode="calendar"] .memory-atlas-detail { top: 0; bottom: 0; right: 0; width: min(460px, 45vw); z-index: 20; }
+#memory-atlas[data-workspace-mode="calendar"] .memory-node-detail { border-radius: 0; border-top: none; border-right: none; border-bottom: none; border-left: 1px solid #233b52; box-shadow: -12px 0 50px rgba(0, 0, 0, 0.7); }
+.memory-node-detail-header-actions { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.memory-node-detail-back { display: inline-flex; align-items: center; gap: 6px; background: #142535; border: 1px solid #2b4055; border-radius: 6px; color: #a8c7d9; font-size: 11px; font-weight: 550; padding: 5px 10px; cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
+.memory-node-detail-back:hover { background: #1c344a; border-color: #426788; color: #e0f2fe; }
+.memory-node-detail-back svg { width: 13px; height: 13px; }
 #memory-atlas .memory-node-detail { height: 100%; padding: 26px 23px; border-radius: 16px; border-color: #2d4357; background: #0c1623f5; box-shadow: 0 20px 80px #0006; overflow: auto; scrollbar-width: thin; }
 #memory-atlas .memory-node-detail > h3 { font-size: 22px; color: #e2eef8; font-weight: 550; line-height: 1.4; margin: 22px 0 14px; overflow-wrap: anywhere; }
 #memory-atlas .memory-node-detail-close { color: #a8c7d9; background: #142535; border-color: #2b4055; }

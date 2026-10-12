@@ -1,0 +1,199 @@
+/* Room Agent dock on the shared dock kit: toolbar, goal card, transcript,
+   mission report, task controls and composer. Colors come from the --dock-*
+   tokens so Classic, Modern, light and dark follow the active theme. */
+
+.room-agent-dock .room-agent-head .dock-kit-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.room-agent-dock .room-agent-status.dock-kit-badge {
+  flex: 0 0 auto;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  text-transform: none;
+}
+
+.room-agent-dock .room-agent-status.dock-kit-badge::before {
+  content: "";
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.room-agent-dock .room-agent-room-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--dock-muted);
+  font-size: var(--dock-font-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Goal card */
+.room-agent-dock .room-agent-goal-card {
+  gap: 0.5rem;
+}
+
+.room-agent-dock .room-agent-goal-text {
+  max-height: 5rem;
+  margin: 0;
+  overflow-y: auto;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.room-agent-dock .room-agent-goal-stats .dock-kit-badge {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Transcript */
+.room-agent-dock .room-agent-transcript .room-agent-message {
+  border-color: var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+
+.room-agent-dock .room-agent-transcript .room-agent-message.is-user {
+  border-color: color-mix(in srgb, var(--dock-accent) 45%, var(--dock-border));
+  background: var(--dock-accent-soft);
+}
+
+.room-agent-dock .room-agent-transcript .room-agent-message.is-thinking {
+  border-style: dashed;
+  background: transparent;
+}
+
+.room-agent-dock .room-agent-transcript .room-agent-message header {
+  color: var(--dock-muted);
+}
+
+.room-agent-dock .room-agent-transcript .room-agent-message header strong,
+.room-agent-dock .room-agent-transcript .room-agent-message p {
+  color: var(--dock-text);
+}
+
+.room-agent-dock .room-agent-transcript .room-agent-message p.room-agent-thinking {
+  color: var(--dock-muted);
+}
+
+/* Empty state with suggestion chips */
+.room-agent-dock .room-agent-start {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.room-agent-dock .room-agent-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.room-agent-dock .room-agent-suggestions .dock-kit-chip {
+  min-height: 2.25rem;
+  padding: 0 0.85rem;
+  border-radius: 999px;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+}
+
+/* Mission report */
+.room-agent-dock .room-agent-report .dock-kit-meta {
+  justify-content: space-between;
+}
+
+.room-agent-dock .room-agent-report-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.45rem 0.85rem;
+  margin: 0;
+}
+
+.room-agent-dock .room-agent-report-stats > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.room-agent-dock .room-agent-report-stats dt {
+  color: var(--dock-muted);
+  font-size: 0.7rem;
+}
+
+.room-agent-dock .room-agent-report-stats dd {
+  margin: 0;
+  color: var(--dock-text);
+  font-size: var(--dock-font-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* Task controls */
+.room-agent-dock .room-agent-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.room-agent-dock .room-agent-stop-button:not(:disabled) svg {
+  color: var(--dock-danger);
+}
+
+/* Notices */
+.room-agent-dock .room-agent-error.dock-kit-notice,
+.room-agent-dock .room-agent-voice-status.dock-kit-notice,
+.room-agent-dock .room-agent-pending.dock-kit-notice {
+  max-height: 6rem;
+  margin: 0;
+  overflow-y: auto;
+  padding: 0.5rem 0.4rem 0.5rem 0.65rem;
+  border-radius: var(--dock-radius-sm);
+  font-size: var(--dock-font-sm);
+}
+
+.room-agent-dock .room-agent-voice-status.dock-kit-notice {
+  border-color: var(--dock-accent);
+  background: var(--dock-accent-soft);
+  color: var(--dock-text);
+}
+
+/* Composer */
+.room-agent-dock .room-agent-composer {
+  border-color: var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+}
+
+.room-agent-dock .room-agent-composer:focus-within {
+  border-color: var(--dock-accent);
+}
+
+.room-agent-dock .room-agent-composer textarea {
+  color: var(--dock-text);
+}
+
+.room-agent-dock .room-agent-composer textarea::placeholder {
+  color: var(--dock-muted);
+}
+
+.room-agent-dock .room-agent-composer-hint {
+  color: var(--dock-muted);
+}
+
+/* The send button keeps a 40px target for touch and the browser proof. */
+.room-agent-dock .room-agent-composer-actions .room-agent-submit {
+  min-height: 2.5rem;
+  margin-left: auto;
+  padding: 0 0.95rem;
+  border-radius: var(--dock-radius-sm);
+  font-size: var(--dock-font-sm);
+}

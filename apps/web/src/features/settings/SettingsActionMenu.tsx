@@ -8,6 +8,7 @@ import {
   type KeyboardEvent
 } from "react";
 import { MoreHorizontal, type LucideIcon } from "../ui-theme/app-icons.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import "./flat-settings.css";
 
 export interface SettingsActionMenuItem {
@@ -87,6 +88,7 @@ export function SettingsActionMenu({
     if (!open) return;
     const frame = window.requestAnimationFrame(() => enabledItems(menuRef.current)[0]?.focus());
     function closeOnOutsidePointer(event: PointerEvent) {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target as Node;
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       setOpen(false);

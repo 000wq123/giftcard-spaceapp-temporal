@@ -3,6 +3,8 @@ import { z } from "zod";
 // Optional Jev decisions contract. Nothing here is required for MCP control
 // to work: when no token is configured, callers receive available:false and
 // continue with existing chat/CLI paths.
+export * from "./decisions.js";
+
 
 export const JEV_MODEL_ID = "typesafe/jev-1.13";
 export const JEV_DECISIONS_PATH = "/api/alpha/decisions";

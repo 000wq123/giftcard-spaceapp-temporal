@@ -47,7 +47,8 @@ describe("Room Project Path & CWD auto-propagation", () => {
       name: "Test Room",
       initialPaneCount: 0
     });
-    expect(room.projectPath).toBeNull();
+    // New rooms default to the Space checkout (eda97abab6).
+    expect(room.projectPath).toBe("/opt/spaceapp");
 
     const updated = store.updateRoom(room.id, {
       name: "Updated Room",
@@ -82,12 +83,15 @@ describe("Room Project Path & CWD auto-propagation", () => {
     expect(resolved[0]?.cwd).toBe("/var/lib/spaceapp-user/agent-workspace/active/my-project");
   });
 
-  it("falls back to /etc if room has no projectPath", async () => {
+  it("uses the /opt/spaceapp default when a room has no projectPath", async () => {
     const store = new InMemorySpaceStore();
-    const room = store.createRoom({
+    const created = store.createRoom({
       name: "Default Room",
       initialPaneCount: 0
     });
+    // A cleared path reads back as the Space checkout (eda97abab6), so terminal
+    // panes start there rather than in /etc.
+    const room = store.updateRoom(created.id, { name: created.name, projectPath: null });
 
     const commands = createRoomPaneCommands({ ...(mockOptions as any), store });
     const resolved = await commands.resolve(room.id, [
@@ -95,6 +99,6 @@ describe("Room Project Path & CWD auto-propagation", () => {
     ]);
 
     expect(resolved).toHaveLength(1);
-    expect(resolved[0]?.cwd).toBe("/etc");
+    expect(resolved[0]?.cwd).toBe("/opt/spaceapp");
   });
 });

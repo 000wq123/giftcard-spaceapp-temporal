@@ -14,7 +14,7 @@ import {
   FileCode,
   Copy,
   Check,
-} from "lucide-react";
+} from "../ui-theme/app-icons.js";
 import { api } from "../../api.js";
 import type { FileItem, DiskStats } from "@space/contracts";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";

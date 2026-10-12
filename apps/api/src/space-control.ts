@@ -6,15 +6,17 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, controlScheduleSchema, controlWatchSchema, controlToolSchemas, controlToolDescriptions, controlResourceOperations, controlInspectSections, SPACE_CONTROL_VERSION, cliToggleRuntimeIds,
   controlActionCatalog, controlInspectSectionCatalog, controlSecurityPolicy, controlUnavailableResources, controlVoicePreferencePatchSchema,
+  resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName,
   type ControlAction, type ControlExecute, type ControlInspect, type ControlLayout, type ControlOperation, type ControlResult, type ControlTarget,
   type ControlSchedule, type ControlWatch, type Pane, type AuthUser, type Event } from "@space/contracts";
 import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
-import { resolveControlSettingsAction } from "./space-control-settings.js";
+import { resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
 
-export interface ControlActor {id:string; role:AuthUser["role"]}
+/** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
+export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
 export interface ControlClientCommand {id:string; actorId:string; roomId:string; action:ControlAction; expiresAt:number; clientId:string; createdAt?:number; result?:{ok:boolean;evidence:Record<string,unknown>}}
 function required<T>(value:T|undefined|null,message:string):T {if(value===undefined||value===null)throw new SpaceConflictError(message);return value;}
 function hash(value:unknown){return createHash("sha256").update(JSON.stringify(value)).digest("hex");}
@@ -62,6 +64,7 @@ export function assertSecurityPolicy(spec: ControlAction): void {
 }
 export function createSpaceControl(options:{store:SpaceStore;repository:ControlRepository;controller:RoomPaneController;
   phase?: 1 | 2;
+  /** @deprecated Disconnected transient actions stay pending until an authenticated client is available. */
   queueDisconnected?: boolean;
   publish(roomId:string):Promise<void>;
   publishEvent?: (event: Event) => void;
@@ -76,9 +79,31 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   captureScreenshot?(actor:ControlActor,roomId:string,options?:{format?:string;quality?:number;maxWidth?:number;maxHeight?:number;query?:string}):Promise<Record<string,unknown>>;
   describePaneTypes?(roomId?:string):Promise<{types:Array<{typeId:string;label:string;kind:string;countsKey:string;available:boolean;reason?:string}>;roomCap:number|null}>;
   decisionsService?: DecisionsService;
+  pluginsService?: any;
 }) {
- const {store,repository,controller}=options;
- const phase = options.phase ?? 1;
+ const {store,controller}=options;
+ // Watch, schedule and operation records are only written through this
+ // wrapper, so an idle control loop can wake on the next 1 s tick after any
+ // new or changed work instead of polling the table every second.
+ const workKinds=new Set<ControlRecord["kind"]>(["watch","schedule","operation"]);
+ let workSignal=0;
+ const repository:ControlRepository={
+  get:(kind,actorId,key)=>options.repository.get(kind,actorId,key),
+  list:(kind,actorId,roomId)=>options.repository.list(kind,actorId,roomId),
+  async write(record,expectedVersion){
+   try{return await options.repository.write(record,expectedVersion);}
+   finally{if(workKinds.has(record.kind))workSignal+=1;}
+  },
+  withLock:(key,work,timeoutMs)=>options.repository.withLock(key,work,timeoutMs),
+  dispose:()=>options.repository.dispose()
+ };
+ type ActiveListing={listActive?(kind:ControlRecord["kind"],statuses:readonly string[]):Promise<ControlRecord[]>};
+ /** Status-filtered in SQL when the repository supports it; the tick re-checks status after parsing either way. */
+ const listActiveRecords=(kind:ControlRecord["kind"],statuses:readonly string[])=>{
+  const source=options.repository as ControlRepository&ActiveListing;
+  return source.listActive?source.listActive(kind,statuses):source.list(kind,null);
+ };
+ const phase = options.phase ?? 2;
  const supportsRuntime = (p: Pane) => supportsControlRuntime(p, phase);
  const assertRuntime = (p: Pane) => assertControlRuntime(p, phase);
  const active=new Map<string,Promise<void>>();
@@ -92,17 +117,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     return await repository.withLock(`room:${roomId}`,async()=>{
      const scope={roomId,held:true};
      try{return await roomContext.run(scope,work);}finally{scope.held=false;}
-    }, 15000);
+    }, 30000);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes("timed out") || msg.includes("freeze")) {
       let panes: Pane[] = [];
       try { panes = await store.listPanes(roomId, true); } catch {}
-      for (const pane of panes) {
-        if (!pane.isClosed) {
-          await controller.interrupt(pane, makeSpaceId("trace")).catch(() => {});
-        }
-      }
       const alertEvent: Event = {
         id: makeSpaceId("event"),
         roomId,
@@ -111,19 +131,18 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         workflowId: null,
         traceId: makeSpaceId("trace"),
         type: "ROOM_WATCHDOG_ALERT",
-        message: `Room watchdog detected lock timeout on room "${roomId}". Interrupted active processes to prevent room freeze.`,
+        message: `Room watchdog detected lock timeout on room "${roomId}". Aborted blocked mutation to prevent room freeze.`,
         payload: {
-          kind: "ROOM_LOCK_TIMEOUT_AUTO_KILL",
+          kind: "ROOM_LOCK_TIMEOUT_ABORT",
           roomId,
-          interruptedPaneCount: panes.length,
           error: msg,
-          killedAt: nowIso()
+          abortedAt: nowIso()
         },
         createdAt: nowIso()
       };
       try { await store.recordRoomEvent(alertEvent); } catch {}
       options.publishEvent?.(alertEvent);
-      throw new SpaceConflictError(`Room watchdog prevented freeze on room "${roomId}": lock timed out and active tasks were interrupted.`);
+      throw new SpaceConflictError(`Room watchdog prevented freeze on room "${roomId}": lock timed out.`);
     }
     throw error;
   }
@@ -177,7 +196,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    await writeValue("pane_state","shared",pane.id,pane.roomId,{stoppedAt:nowIso()},old?.version??0);
   });
  }
- async function state(roomId:string){
+ async function fetchRoomState(roomId:string){
   const [room,panes,saved]=await Promise.all([activeRoom(roomId),store.listPanes(roomId,true),layoutRecord(roomId)]);
   const entries=await Promise.all(panes.map(async pane=>{
      if (pane.isClosed) {
@@ -226,7 +245,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     let hasUserInput = false;
     if (cli?.sessionId) {
       try {
-        const chunks = await store.listPaneCliTranscriptChunks(cli.sessionId, 100);
+        const chunks = await store.listPaneCliTranscriptChunks(cli.sessionId, 10);
         hasUserInput = Array.isArray(chunks) && chunks.some((c: any) => c.stream === "stdin");
       } catch {
         hasUserInput = false;
@@ -242,7 +261,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     const mediaTitle = (extraState?.mediaTitle as string | undefined) ?? null;
     const mediaVideoId = (extraState?.mediaVideoId as string | undefined) ?? null;
 
-    return {id:pane.id,title:pane.title,titleSource:pane.titleSource,mode:pane.mode,runtimeId:pane.terminalRuntimeId??pane.providerId,order:pane.order,columnSpan:pane.columnSpan,
+    return {id:pane.id,title:pane.title,titleSource:pane.titleSource,paneName:pane.paneName??null,mode:pane.mode,runtimeId:pane.terminalRuntimeId??pane.providerId,order:pane.order,columnSpan:pane.columnSpan,
      categoryColor: pane.categoryColor ?? null,
      ...(mediaTitle ? { mediaTitle } : {}),
      ...(mediaVideoId ? { mediaVideoId } : {}),
@@ -261,13 +280,52 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      hasUserInput,
      isUnused};
   }));
-  return {version:SPACE_CONTROL_VERSION,room,panes:entries,layout:saved?.value??null,
-   revision:hash([room.updatedAt,entries,saved?.version??0]),checkedAt:nowIso()};
+   return {version:SPACE_CONTROL_VERSION,room,panes:entries,layout:saved?.value??null,
+    revision:hash([room.updatedAt,entries,saved?.version??0]),checkedAt:nowIso()};
+ }
+ type RoomStateResult = Awaited<ReturnType<typeof fetchRoomState>>;
+ const roomStateCache = new Map<string, { expires: number; data: RoomStateResult }>();
+ function invalidateRoomControlState(roomId?: string): void {
+   if (roomId) roomStateCache.delete(roomId);
+   else roomStateCache.clear();
+ }
+ async function state(roomId:string, forceFresh = false): Promise<RoomStateResult>{
+  if (!forceFresh) {
+    const cached = roomStateCache.get(roomId);
+    if (cached && cached.expires > Date.now()) {
+      return cached.data;
+    }
+  }
+  const result = await fetchRoomState(roomId);
+  roomStateCache.set(roomId, { expires: Date.now() + 2500, data: result });
+  return result;
  }
  async function select(roomId:string,target:ControlTarget){
   const panes=await store.listPanes(roomId,true);
   if(target.paneIds && target.paneIds.some(id=>!panes.some(p=>p.id===id)))throw new SpaceConflictError("A selected pane is not in this room.");
-  const selected=panes.filter(p=>(!target.paneIds||target.paneIds.includes(p.id))&&(!target.runtimeId||p.terminalRuntimeId===target.runtimeId)&&
+  let targetIdsFromNames: string[] | undefined;
+  if(target.paneNames && target.paneNames.length > 0){
+   targetIdsFromNames = [];
+   for(const rawName of target.paneNames){
+    const found = resolvePaneByName(panes, rawName);
+    if(!found){
+     throw new SpaceConflictError(`A selected pane name is not in this room: ${rawName}`);
+    }
+    targetIdsFromNames.push(found.id);
+   }
+   if(target.paneIds && target.paneIds.length > 0){
+    const idSet = new Set(target.paneIds);
+    const nameIdSet = new Set(targetIdsFromNames);
+    const hasOverlap = [...idSet].some(id => nameIdSet.has(id));
+    if(!hasOverlap){
+     throw new SpaceConflictError("Target paneIds and paneNames conflict.");
+    }
+   }
+  }
+  const effectivePaneIds = target.paneIds && targetIdsFromNames
+   ? target.paneIds.filter(id => targetIdsFromNames!.includes(id))
+   : target.paneIds ?? targetIdsFromNames;
+  const selected=panes.filter(p=>(!effectivePaneIds||effectivePaneIds.includes(p.id))&&(!target.runtimeId||p.terminalRuntimeId===target.runtimeId)&&
    (target.state==="ALL"||target.state==="CLOSED"?target.state==="ALL"||p.isClosed:!p.isClosed));
   if(target.state!=="STOPPED"&&target.state!=="RUNNING")return selected;
   return (await Promise.all(selected.map(async p=>({p,s:await controller.inspect(p)})))).filter(({s})=>target.state==="RUNNING"?s.state==="RUNNING":["EXITED","ERROR","IDLE","WAITING_FOR_INPUT"].includes(s.state)).map(({p})=>p);
@@ -339,17 +397,17 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       ? selectedPanes
       : [...selectedPanes].sort((a, b) => (a.isClosed === b.isClosed ? 0 : a.isClosed ? 1 : -1));
     return Promise.all(panes.slice(normalizedInput.offset, normalizedInput.offset + normalizedInput.limit).map(async pane => {
-     if (!supportsRuntime(pane)) return { paneId: pane.id, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "CLI adapter deferred to phase two." };
-     if (!["TERMINAL", "CHAT"].includes(pane.mode)) return { paneId: pane.id, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "Native content adapter is unavailable for this pane type." };
+     if (!supportsRuntime(pane)) return { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "CLI adapter deferred to phase two." };
+     if (!["TERMINAL", "CHAT"].includes(pane.mode)) return { paneId: pane.id, paneName: pane.paneName ?? null, title: pane.title, mode: pane.mode, closed: pane.isClosed, supported: false, reason: "Native content adapter is unavailable for this pane type." };
       try {
         const observation = await Promise.race([
           controller.inspect(pane),
           new Promise<any>((_, reject) => setTimeout(() => reject(new Error("Pane inspection timed out after 2500ms")), 2500))
         ]);
-        if (normalizedInput.section === "MODELS") { const { text, ...metadata } = observation; return { closed: pane.isClosed, ...metadata }; }
-        return { closed: pane.isClosed, ...observation };
+        if (normalizedInput.section === "MODELS") { const { text, ...metadata } = observation; return { closed: pane.isClosed, paneName: pane.paneName ?? null, ...metadata }; }
+        return { closed: pane.isClosed, paneName: pane.paneName ?? null, ...observation };
       }
-      catch (error) { return { paneId: pane.id, closed: pane.isClosed, state: "UNKNOWN", reason: message(error) }; }
+      catch (error) { return { paneId: pane.id, paneName: pane.paneName ?? null, closed: pane.isClosed, state: "UNKNOWN", reason: message(error) }; }
     }));
    }
    if (options.inspectExtra) {
@@ -396,11 +454,6 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(current.length>1)throw new SpaceConflictError("Multiple active clients; focus one Space tab to target its controls.");
   if(current.length===0){
     if(action.kind==="pane"&&action.operation==="visual_audit")return {status:"UNKNOWN" as const,detail:"No eligible client is available for a visual audit.",evidence:{availability:"UNAVAILABLE",reason:"NO_CLIENT"}};
-    if (options.queueDisconnected) {
-      const command: ControlClientCommand = { id: makeSpaceId("control_client"), actorId: actor.id, roomId, action, clientId: "", expiresAt: Date.now() + 60000 };
-      clientCommands.set(command.id, command);
-      return { status: "COMPLETED" as const, detail: "Command queued for disconnected client.", evidence: { queued: true, commandId: command.id, roomId } };
-    }
     return {status:"PENDING" as const,detail:"Waiting for an authenticated Space client to reconnect; no browser command was queued.",evidence:{waitingForClient:true,roomId}};
   }
   if(action.kind==="pane"&&action.operation==="visual_audit"&&[...clientCommands.values()].some(c=>c.clientId===current[0]![0]&&c.action.kind==="pane"&&c.action.operation==="visual_audit"&&!c.result&&c.expiresAt>Date.now()))throw new SpaceConflictError("A visual audit is already pending for this client.");
@@ -465,14 +518,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     if (spec.operation === "settings.voice") spec = { ...spec, input: controlVoicePreferencePatchSchema.parse(spec.input) };
     if (spec.operation === "ui.theme" || spec.operation === "ui.scale" || spec.operation === "settings.appearance") {
       const input = spec.input as Record<string, unknown>;
-      if (spec.operation === "ui.theme" && (typeof input.theme !== "string" || !["classic", "modern", "codex"].includes(input.theme))) {
-        throw new SpaceConflictError("Theme must be classic, modern, or codex.");
+      if (spec.operation === "ui.theme" && (typeof input.theme !== "string" || !ALLOWED_APPEARANCE_THEMES.includes(input.theme as any))) {
+        throw new SpaceConflictError(`Theme must be one of: ${ALLOWED_APPEARANCE_THEMES.join(", ")}.`);
       }
       if (spec.operation === "ui.scale" && (typeof input.zoomLevel !== "number" || input.zoomLevel < 50 || input.zoomLevel > 200)) {
         throw new SpaceConflictError("UI scale must be between 50 and 200 percent.");
       }
       if (spec.operation === "settings.appearance") {
-        if (input.theme !== undefined && (typeof input.theme !== "string" || !["classic", "modern", "codex"].includes(input.theme))) throw new SpaceConflictError("Theme must be classic, modern, or codex.");
+        if (input.theme !== undefined && (typeof input.theme !== "string" || !ALLOWED_APPEARANCE_THEMES.includes(input.theme as any))) {
+          throw new SpaceConflictError(`Theme must be one of: ${ALLOWED_APPEARANCE_THEMES.join(", ")}.`);
+        }
         if (input.zoomLevel !== undefined && (typeof input.zoomLevel !== "number" || input.zoomLevel < 50 || input.zoomLevel > 200)) throw new SpaceConflictError("UI zoom must be between 50 and 200 percent.");
         if (input.terminalFontSize !== undefined && (typeof input.terminalFontSize !== "number" || input.terminalFontSize < 8 || input.terminalFontSize > 32)) throw new SpaceConflictError("Terminal font size must be between 8 and 32 pixels.");
         if (input.theme === undefined && input.zoomLevel === undefined && input.terminalFontSize === undefined) throw new SpaceConflictError("Appearance change requires theme, zoomLevel, or terminalFontSize.");
@@ -515,9 +570,26 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       const available = [...clients.values()].filter(c => c.actorId === actor.id && c.roomId === roomId && c.lastSeen > Date.now() - 2500);
       if (available.length !== 1) throw new SpaceConflictError("Exactly one active Space client is required.");
     }
+    if (spec.kind === "resource" && spec.operation === "settings.plugins") {
+      controlPluginActionSchema.parse(spec.input);
+      return [{ index, status: "COMPLETED", detail: "Plugin settings schema and adapter preflight validated without mutations.", evidence: {
+        dryRun: true, simulated: true, schemaValidated: true, adapterValidated: true, operation: spec.operation, input: spec.input
+      } }];
+    }
+    if (spec.kind === "resource" && spec.operation === "settings.rollback") {
+      controlRollbackSchema.parse(spec.input);
+      return [{ index, status: "COMPLETED", detail: "Settings rollback schema and adapter preflight validated without mutations.", evidence: {
+        dryRun: true, simulated: true, schemaValidated: true, adapterValidated: true, operation: spec.operation, input: spec.input
+      } }];
+    }
     if (spec.kind === "resource" && ["ui.theme", "ui.scale", "settings.appearance"].includes(spec.operation)) {
       const available = [...clients.entries()].filter(([, c]) => c.actorId === actor.id && c.roomId === roomId && c.lastSeen > Date.now() - 2500);
-      if (available.length !== 1) throw new SpaceConflictError("Exactly one active Space client is required for appearance preflight.");
+      if (available.length !== 1) {
+        return [{ index, status: "COMPLETED", detail: "Appearance schema and adapter preflight validated without mutations.", evidence: {
+          dryRun: true, simulated: true, schemaValidated: true, adapterValidated: true,
+          adapter: "BROWSER_APPEARANCE", operation: spec.operation, input: spec.input
+        } }];
+      }
       return [{ index, status: "COMPLETED", detail: "Appearance schema and focused-client adapter preflight validated without mutations.", evidence: {
         dryRun: true, simulated: true, schemaValidated: true, adapterValidated: true,
         adapter: "BROWSER_APPEARANCE", clientId: available[0]![0], operation: spec.operation
@@ -560,6 +632,47 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     return [{ index, ...confirmation, detail: "Voice composer preferences persisted and verified in the selected Space tab. Existing Live audio sessions were not reconfigured." }];
   }
 
+  if (spec.kind === "resource" && spec.operation === "settings.plugins") {
+    if (options.integration) {
+      try {
+        const direct = await options.integration(actor, roomId, spec);
+        if (direct !== undefined && direct !== null) {
+          const outcome = direct as { status?: string; isError?: boolean; ok?: boolean } | null;
+          if (!outcome?.isError && outcome?.ok !== false) return done(direct);
+        }
+      } catch {}
+    }
+    const outcome = await executeControlPluginAction({
+      actor,
+      roomId,
+      input: spec.input as Record<string, unknown>,
+      repository,
+      pluginsService: options.pluginsService
+    });
+    return [{ index, ...outcome }];
+  }
+
+  if (spec.kind === "resource" && spec.operation === "settings.rollback") {
+    if (options.integration) {
+      try {
+        const direct = await options.integration(actor, roomId, spec);
+        if (direct !== undefined && direct !== null) {
+          const outcome = direct as { status?: string; isError?: boolean; ok?: boolean } | null;
+          if (!outcome?.isError && outcome?.ok !== false) return done(direct);
+        }
+      } catch {}
+    }
+    const outcome = await restoreControlSettingsSnapshot({
+      actor,
+      roomId,
+      input: spec.input as Record<string, unknown>,
+      repository,
+      store,
+      pluginsService: options.pluginsService
+    });
+    return [{ index, ...outcome }];
+  }
+
   if (spec.kind === "resource" && ["ui.theme", "ui.scale", "settings.appearance"].includes(spec.operation)) {
     if (options.integration) {
       try {
@@ -572,19 +685,26 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         }
       } catch {}
     }
-    const confirmation = await clientAction(actor, roomId, spec);
-    if (confirmation.status !== "COMPLETED") return [{ index, ...confirmation }];
-    const observed = confirmation.evidence as Record<string, unknown>;
-    const preferences = observed.preferences as Record<string, unknown> | undefined;
-    if (observed.adapter !== "BROWSER_APPEARANCE" || observed.persisted !== true || observed.applied !== true || !preferences) {
-      return [{ index, status: "UNKNOWN", detail: "The client did not provide matching persisted appearance preferences. Inspect before retrying.", evidence: observed }];
-    }
-    return [{ index, ...confirmation, detail: "Appearance preferences persisted and verified in the selected Space tab." }];
+    const outcome = await executeControlAppearanceAction({
+      actor,
+      roomId,
+      input: spec.input as Record<string, unknown>,
+      repository,
+      clientAction: async (act, rId, ac) => clientAction(act, rId, ac)
+    });
+    return [{ index, ...outcome }];
   }
 
   if(spec.kind==="room"){
    if(spec.operation==="rename"){const result=await store.updateRoom(roomId,{name:required(spec.name,"Room name is required.")},traceId);await options.publish(roomId);return done(result);}
-   if(spec.operation==="create")return done(await store.createRoom({name:required(spec.name,"Room name is required."),initialPaneCount:0},traceId));
+   if(spec.operation==="create"){
+     const existingRooms = await store.listRooms(actor.id ?? null);
+     if (existingRooms.length >= MAX_ROOMS) {
+       throw new SpaceConflictError(`Maximum room limit of ${MAX_ROOMS} rooms reached.`);
+     }
+     const roomName = spec.name?.trim() || pickNextAvailableRoomName(existingRooms.map((r) => r.name));
+     return done(await store.createRoom({name: roomName, initialPaneCount: 0}, traceId, actor.id ?? null));
+   }
    if(spec.operation==="activate")await activeRoom(required(spec.targetRoomId,"Target room ID is required."));
    return [{index,...await clientAction(actor,roomId,spec)}];
   }
@@ -594,7 +714,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    return [{index,...await clientAction(actor,roomId,spec)}];
   }
   if(spec.kind==="clipboard"){
-   if(spec.operation==="save")return done(await store.upsertClipboardItem({ownerUserId:actor.id,text:required(spec.text,"Clipboard text is required."),source:spec.source,...(spec.title?{title:spec.title}:{})}));
+   if(spec.operation==="save")return done(await store.upsertClipboardItem({ownerUserId:actor.id,text:required(spec.text,"Clipboard text is required."),source:spec.source,...(spec.title?{title:spec.title}:{}),...(spec.minimumModel?{minimumModel:spec.minimumModel}:{}),...(spec.minimumReasoning?{minimumReasoning:spec.minimumReasoning}:{})}));
    if(spec.operation==="complete")return done(await store.setClipboardItemCompleted(actor.id,required(spec.id,"Clipboard ID is required."),required(spec.completed,"Completion value is required.")));
    const isConfirmed = Boolean(spec.confirm === true || spec.confirmed === true);
    if(!isConfirmed) throw new SpaceConflictError("Destructive clipboard delete requires explicit confirmation (confirm: true).");
@@ -782,8 +902,10 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
          try{await controller.start(pane,traceId);}catch{}
         }
         const deadline=Date.now()+3500;
+        let retryCount = 0;
         while(Date.now()<deadline){
-         await new Promise(r=>setTimeout(r,250));
+         await new Promise(r=>setTimeout(r,Math.min(150, 40 + retryCount * 20)));
+         retryCount++;
          readyObserved=await controller.inspect(pane,{fresh:true});
          if(readyObserved.state==="IDLE"||readyObserved.state==="WAITING_FOR_INPUT")break;
         }
@@ -846,7 +968,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      }catch(error){const msg=message(error);return {index,paneId,status:"FAILED" as const,detail:msg,error:msg,evidence:{}};}
    })));
   }
-  await options.publish(roomId);return results;
+  await options.publish(roomId);
+  invalidateRoomControlState(roomId);
+  return results;
  }
  async function operation(actor:ControlActor,roomId:string,id:string){const record=required(await repository.get("operation",actor.id,id),"Operation not found.");if(record.roomId!==roomId)throw new SpaceConflictError("Operation belongs to another room.");return controlOperationSchema.parse(record.value);}
  async function execute(actor:ControlActor,raw:ControlExecute,waitForCompletion=false){
@@ -854,7 +978,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
   if(actor.role!=="ADMIN"&&actor.role!=="USER")throw new SpaceConflictError("Space control requires an authorized user role.");
   const key=hash([command.roomId,command.requestId]),payloadHash=hash(command),previous=await repository.get("operation",actor.id,key);
   if(previous){const value=controlOperationSchema.parse(previous.value);if(value.payloadHash!==payloadHash)throw new SpaceConflictError("Request ID was reused with a different payload.");return value;}
-  const initial:ControlOperation={id:key,actorId:actor.id,roomId:command.roomId,requestId:command.requestId,payloadHash,status:"RUNNING",createdAt:nowIso(),updatedAt:nowIso(),results:[],cancelRequested:false,command,nextIndex:0};
+  const initial:ControlOperation={...(actor.dotId?{dotId:actor.dotId}:{}),id:key,actorId:actor.id,roomId:command.roomId,requestId:command.requestId,payloadHash,status:"RUNNING",createdAt:nowIso(),updatedAt:nowIso(),results:[],cancelRequested:false,command,nextIndex:0};
   if(!await repository.write({kind:"operation",actorId:actor.id,key,roomId:command.roomId,version:1,value:initial},0))return execute(actor,raw,waitForCompletion);
   return drive(actor,command,key,waitForCompletion);
  }
@@ -956,6 +1080,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      const value=controlOperationSchema.parse(raw);
      if(value.status==="RUNNING"){value.status=outcome(value);value.updatedAt=nowIso();}return value;
     });
+    invalidateRoomControlState(command.roomId);
    }catch(error){
     await updateRecord("operation",actor.id,key,raw=>{
      const value=controlOperationSchema.parse(raw);
@@ -1037,7 +1162,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    }
    actions.push({...spec,target:{paneIds:panes.map(p=>p.id),state:"ALL"}} as ControlAction);
   }
-  const value=controlScheduleSchema.parse({id:makeSpaceId("control_schedule"),actorId:actor.id,roomId,dueAt,
+  const value=controlScheduleSchema.parse({...(actor.dotId?{dotId:actor.dotId}:{}),id:makeSpaceId("control_schedule"),actorId:actor.id,roomId,dueAt,
    command:{...input,actions,expectedRevision:undefined},status:"SCHEDULED",condition,parentOperationId,expectedTasks,expectedModels,stopVersions,createdAt:nowIso()});
   value.command.requestId=`schedule:${value.id}`;
   await writeValue("schedule",actor.id,value.id,roomId,value,0);return value;
@@ -1359,22 +1484,34 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    });
   }
 
+ const activeWatchStatuses:readonly string[]=["PENDING","RUNNING","VERIFYING"];
+ const activeScheduleStatuses:readonly string[]=["SCHEDULED","RUNNING"];
+ const activeOperationStatuses:readonly string[]=["RUNNING"];
+ // Idle state of the 1 s timer: set when a complete tick found no active
+ // record and no work was written since it started. The timer then skips the
+ // three listings until the next work write (within 1 s) or the recheck.
+ const idleRecheckMs=10_000;
+ let idle:{since:number;signal:number}|null=null;
  let ticking=false;
  async function tick(){
   if(ticking)return;ticking=true;
+  const signal=workSignal;let found=0,completed=false;
   try{
-   for(const record of await repository.list("watch",null)){
+   for(const record of await listActiveRecords("watch",activeWatchStatuses)){
     const val=controlWatchSchema.parse(record.value);
-    if(["PENDING","RUNNING","VERIFYING"].includes(val.status)){
+    if(activeWatchStatuses.includes(val.status)){
+     found+=1;
      const fresh=await repository.get("watch",record.actorId,record.key);if(fresh)await advanceWatch(fresh);
     }
    }
-   for(const record of await repository.list("schedule",null)){
-    if(!["SCHEDULED","RUNNING"].includes(controlScheduleSchema.parse(record.value).status))continue;
+   for(const record of await listActiveRecords("schedule",activeScheduleStatuses)){
+    if(!activeScheduleStatuses.includes(controlScheduleSchema.parse(record.value).status))continue;
+    found+=1;
     const fresh=await repository.get("schedule",record.actorId,record.key);if(fresh)await advanceSchedule(fresh);
    }
-   for(const record of await repository.list("operation",null)){
-    const value=controlOperationSchema.parse(record.value);if(value.status!=="RUNNING")continue;
+   for(const record of await listActiveRecords("operation",activeOperationStatuses)){
+    const value=controlOperationSchema.parse(record.value);if(!activeOperationStatuses.includes(value.status))continue;
+    found+=1;
     if(!value.results.some(r=>r.status==="PENDING")){
      if(value.command&&!active.has(value.id)&&options.resolveActor)await drive(await options.resolveActor(value.actorId),value.command,value.id);
      continue;
@@ -1390,7 +1527,16 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
      const current=controlOperationSchema.parse(raw);current.results=current.results.map(r=>resolved.get(String(r.evidence.scheduleId))??r);current.status=outcome(current);current.updatedAt=nowIso();return current;
     });
    }
-  }finally{ticking=false;}
+   completed=true;
+  }finally{
+   ticking=false;
+   // A failed tick is retried on the next second, exactly as before.
+   idle=completed&&found===0?{since:Date.now(),signal}:null;
+  }
+ }
+ async function timerTick(){
+  if(idle&&idle.signal===workSignal&&Date.now()-idle.since<idleRecheckMs)return;
+  await tick();
  }
   async function screenshot(actor:ControlActor,roomId:string,params:{format?:"jpeg"|"png"|"webp";quality?:number;maxWidth?:number;maxHeight?:number;query?:string}){
    const spec:ControlAction={kind:"screenshot",operation:"capture",target:"APP",format:params.format??"jpeg",quality:params.quality??80,maxWidth:params.maxWidth,maxHeight:params.maxHeight};
@@ -1693,6 +1839,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       { name: "space_inspect_room", category: "voice", description: "Inspect room capacity, open panes, distinct types, and unused panes." },
       { name: "space_open_panes", category: "voice", description: "Open any available pane types (CLI, demos, browser, youtube, files, etc.), bulk fill, or distinct types." },
       { name: "space_send_prompt", category: "voice", description: "Send prompts, questions, stories or tasks to one, multiple, or all open CLI panes." },
+      { name: "space_ask_dot", category: "voice", description: "Hand a request to one of the user's Dots, answer its Goal's question or steer its Goal." },
+      { name: "space_dot_status", category: "voice", description: "Hear what one of the user's Dots is doing: last answer, Goal and pending approvals." },
       { name: "space_set_pane_model", category: "voice", description: "Change AI model or reasoning effort on CLI terminal panes." },
       { name: "space_run_cli_shortcut", category: "voice", description: "Execute common CLI shortcuts (continue, memory, plan, build, deploy, etc.)." },
       { name: "space_sort_panes", category: "voice", description: "Sort panes by title, runtime, or activity." },
@@ -1786,6 +1934,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
 
   return {
     state,
+    invalidateRoomState: invalidateRoomControlState,
     inspect,
     execute,
     screenshot,
@@ -1805,7 +1954,10 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     acknowledge,
     layout: async (roomId: string) => (await layoutRecord(roomId))?.value ?? null,
     capabilities: getCapabilities,
-    async start() { await recover(); timer = setInterval(() => void tick().catch(() => {}), 1000); timer.unref(); },
+    async start() { await recover(); timer = setInterval(() => void timerTick().catch(() => {}), 1000); timer.unref(); },
     async close() { if (timer) clearInterval(timer); await Promise.allSettled(active.values()); await repository.dispose(); }
   };
 }
+
+export type SpaceControl = ReturnType<typeof createSpaceControl>;
+

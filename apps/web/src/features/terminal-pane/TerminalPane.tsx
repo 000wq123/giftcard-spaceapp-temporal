@@ -1,24 +1,51 @@
+import { useManagedPlanExecution } from "./use-managed-plan-execution.js";
+import { routePaneModelSwitch, routePanePlanSelection, usesManagedPlanExecution, isFinishedExecution, type ManagedStageScope } from "./managed-plan-client.js";
+import { holdTerminalReconnectFrame } from "./terminal-reconnect-frame.js";
+import {
+  nextTerminalControlReplayBudget,
+  terminalControlDenialReplay,
+  type RecordedTerminalControlMutation,
+  type TerminalControlReplayBudget
+} from "./terminal-control-recovery.js";
+import { formatPlanAttachment } from "./plan-attachment.js";
 import { loadCliPhotoHistory, type TerminalUploadPreview } from "./cli-photo-history.js";
-import { returnCliToBuildMode } from "./cli-build-mode.js";
+import { cliBuildModeState, returnCliToBuildMode } from "./cli-build-mode.js";
+import type { TerminalActionAvailability } from "./terminal-action-availability.js";
 import { submitCliShortcut } from "./submit-cli-shortcut.js";
-import { CliShortcutsMenu } from "./CliShortcutsMenu.js";
+import { CliShortcutsMenu, cliTranscriptCommand } from "./CliShortcutsMenu.js";
 import { CliPlansMenu } from "./CliPlansMenu.js";
-import { resolveCliModeShortcut, OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
-import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, Github, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, Trash2, X } from "../ui-theme/app-icons.js";
+import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
+import { cliShortcutCommandsForRuntime, resolveCliModeShortcut, OSK_CLI_COMMANDS, OSK_ESC_COMMAND, OSK_ENTER_COMMAND, type OskCliCommand } from "../osk-keyboard/cli-shortcuts.js";
+import { ArrowUp, BrainCircuit, ChevronLeft, ChevronRight, Clipboard, Copy, File as FileIcon, Github, Hash, Images, Keyboard, Loader2, Maximize2, Square, Terminal as TerminalIcon, Trash2, X } from "../ui-theme/app-icons.js";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { detectKeyboardLayoutMismatch, toggleKeyboardLayout, type LayoutMismatchDetection } from "../agent-pane/greek-layout-converter.js";
+import { createTerminalResizeTrace } from "./terminal-resize-trace.js";
 import {
   isComposerLayoutIconVisible,
   isComposerSuggestionBarVisible,
   playLayoutSuggestionBeep,
   useKeyboardAutocorrectSettings
 } from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
+import { PromptVariableAutocomplete } from "../prompt-variables/PromptVariableAutocomplete.js";
+import { PromptVariablesMenu } from "../prompt-variables/PromptVariablesMenu.js";
+import {
+  expandPromptVariables,
+  filterPromptVariables,
+  findActiveVariableToken,
+  usePromptVariables,
+  type PromptVariableToken
+} from "../prompt-variables/prompt-variables-store.js";
+import type { PromptVariable } from "@space/contracts";
 import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
+import { ClaudeIcon } from "../ui-theme/ClaudeIcon.js";
+import { CliAccountPicker } from "../cli-accounts/CliAccountPicker.js";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import type { IDisposable, Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 import {
+  CLI_PANE_TYPES,
+  cliTurnInterruptKey,
   paneCliUploadMaxCount,
   paneCliSessionResponseSchema,
   paneCliWebSocketServerMessageSchema,
@@ -43,7 +70,8 @@ import {
 import {
   createTerminalGeometryCoordinator,
   fitTerminalForInitialAttach,
-  type InitialTerminalGeometry
+  type InitialTerminalGeometry,
+  type TerminalRefitOptions
 } from "./terminal-geometry-coordinator.js";
 import {
   createTerminalInputTokenizer,
@@ -76,6 +104,7 @@ import { publishPaneRunLifecycle } from "../../pane-run-lifecycle-events.js";
 import {
   SPACE_CLIPBOARD_ITEM_MIME,
   SPACE_CLIPBOARD_ITEM_TITLE_MIME,
+  SPACE_CLIPBOARD_UPDATED_EVENT,
   captureClipboardEventText,
   captureClipboardText,
   writeClipboardText
@@ -92,6 +121,7 @@ import {
 import { takeCliResumeIntent } from "./cli-resume-intent.js";
 import { useVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
+import { formatRecordingClock, previewTail, useRecordingElapsed } from "../voice-input/recording-clock.js";
 import type { VoiceInsertMode } from "../../voice-settings.js";
 import {
   registerTerminalPreviewGetter,
@@ -103,6 +133,8 @@ import {
 } from "./terminal-preview-service.js";
 
 export { isNonMutatingTerminalProtocolResponse };
+
+import { reasoningEffortBadge, reasoningEffortLabel } from "../codex-model-picker/reasoning-effort.js";
 
 const LazyCodexModelPicker = lazy(() =>
   import("../codex-model-picker/CodexModelPicker.js").then((module) => ({ default: module.CodexModelPicker }))
@@ -160,6 +192,9 @@ interface TerminalPaneProps {
   onPrefillReadyChange?: (paneId: string, ready: boolean) => void;
   revealGeneration?: number;
   onRevealReady?: (paneId: string, generation: number) => void;
+  onWorkingStateChange?: (workingState: { isWorking: boolean; screenWorkingMs?: number | null }) => void;
+  /** Live state the pane actions menu needs to disable items that cannot work right now. */
+  onActionAvailabilityChange?: (availability: TerminalActionAvailability) => void;
 }
 
 export interface TerminalBootstrapBarrier {
@@ -319,8 +354,13 @@ const DEFAULT_CLI_RUNTIME_ID = "cli:codex";
 const ROOT_CLI_RUNTIME_ID = "cli:root";
 const CLAUDE_CLI_RUNTIME_ID = "cli:claude";
 const OPENCODE_CLI_RUNTIME_ID = "cli:opencode";
+const GEMINI_CLI_RUNTIME_ID = "cli:gemini";
 const isCliModelSettingsRuntime = (runtimeId: string | null | undefined): boolean =>
   runtimeId === DEFAULT_CLI_RUNTIME_ID || runtimeId === OPENCODE_CLI_RUNTIME_ID;
+const isTurnCapableRuntime = (runtimeId: string | null | undefined): boolean =>
+  runtimeId === DEFAULT_CLI_RUNTIME_ID ||
+  runtimeId === OPENCODE_CLI_RUNTIME_ID ||
+  runtimeId === GEMINI_CLI_RUNTIME_ID;
 const isModelPickerRuntime = (runtimeId: string | null | undefined): boolean =>
   Boolean(runtimeId?.startsWith("cli:") && runtimeId !== ROOT_CLI_RUNTIME_ID);
 const isRunCapableCliSession = (
@@ -329,9 +369,11 @@ const isRunCapableCliSession = (
 type NativePlanRuntimeId = "cli:gemini" | "cli:qwen" | "cli:omp";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
+const TERMINAL_CONTROL_REPLAY_NOTICE = "Terminal control lease expired. Re-sending your last input.";
 const GEMINI_ACCOUNT_PROFILE_STORAGE_KEY = "space.gemini.lastAccountProfileId";
 const HIDDEN_INPUT_ECHO_TTL_MS = 5_000;
 const PASTE_INPUT_GUARD_MS = 2_500;
+const TURN_STOP_SETTLE_MS = 1_000;
 const CLIPBOARD_FAILURE_OUTPUT_PATTERN =
   /Failed to paste image:|clipboard unavailable: Unknown error while interacting with the clipboard:|X11 server connection timed out because it was unreachable/i;
 const CLIPBOARD_FAILURE_REPORT_WINDOW_MS = 20_000;
@@ -412,6 +454,22 @@ function writeLastCursorAccountProfileId(profileId: string): void {
   }
 }
 
+function readLastClaudeAccountProfileId(): string {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem("space.cli.claude.account-profile") || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function writeLastClaudeAccountProfileId(profileId: string): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem("space.cli.claude.account-profile", profileId);
+  } catch {
+    void 0;
+  }
+}
+
 type TerminalModules = {
   Terminal: typeof import("@xterm/xterm").Terminal;
   FitAddon: typeof import("@xterm/addon-fit").FitAddon;
@@ -434,6 +492,9 @@ function loadTerminalModules(): Promise<TerminalModules> {
 }
 
 type TerminalConnectionStatus = "idle" | "connecting" | "attached" | "reconnecting" | "closed";
+const TERMINAL_SCREEN_ACTIVITY_WINDOW_MS = 2_500;
+// Long enough for the double Ctrl+C exit window of Gemini, Qwen and similar CLIs to lapse.
+const STOP_COOLDOWN_MS = 3_000;
 type TerminalConnectionAlert = { message: string; tone: "warn" | "good" | "bad" };
 type ActiveCliTurn = { marker: string; status: Extract<PaneCliTurnActivityStatus, "PENDING" | "RUNNING"> };
 type StoredActiveCliTurn = ActiveCliTurn & { sessionId: string };
@@ -458,7 +519,7 @@ const initialTerminalControlSnapshot: TerminalControlSnapshot = {
 };
 
 type TerminalPaneActionDetail =
-  | { paneId: string; action: "upload" | "reconnect" | "copy" | "paste" | "focus" | "cancel_login" | "new_task" }
+  | { paneId: string; action: "upload" | "reconnect" | "copy" | "paste" | "paste_file" | "focus" | "cancel_login" | "new_task" }
   | { paneId: string; action: "attach_clip_image"; file: File }
   | { paneId: string; action: "insert_text"; text: string }
   | { paneId: string; action: "keyboard_input"; text: string }
@@ -468,6 +529,8 @@ type TerminalPaneActionDetail =
   | { paneId: string; action: "start_task_item"; objective: string }
   | { paneId: string; action: "execute_plan"; plan: ClipboardItem }
   | { paneId: string; action: "ensure_plan_mode" }
+  | { paneId: string; action: "enable_plan_mode" }
+  | { paneId: string; action: "stop_task" }
   | { paneId: string; action: "enter_native_plan_mode"; runtimeId: NativePlanRuntimeId }
   | { paneId: string; action: "control_key"; key: "ctrl_c" | "shift_tab" | "escape" }
   | { paneId: string; action: "replace_session"; session: PaneCliSessionResponse }
@@ -766,9 +829,37 @@ function cliControlDenialTelemetryReason(code: string): CliTerminalClientEventIn
 
 export function isRetryableCliReconnectError(error: unknown): boolean {
   if (error instanceof SpaceApiError) {
-    return error.status === 0 || error.status === 429 || error.status >= 500;
+    return (
+      error.status === 0 ||
+      error.status === 429 ||
+      error.status >= 500 ||
+      error.code === "REQUEST_TIMEOUT" ||
+      error.code === "UPSTREAM_UNAVAILABLE" ||
+      error.code === "CLI_SOCKET_ERROR"
+    );
   }
-  return error instanceof TypeError;
+  if (error instanceof TypeError) return true;
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    return error.name === "AbortError" || error.name === "TimeoutError" || error.name === "NetworkError";
+  }
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes("fetch") ||
+      msg.includes("network") ||
+      msg.includes("timeout") ||
+      msg.includes("timed out") ||
+      msg.includes("upstream") ||
+      msg.includes("502") ||
+      msg.includes("503") ||
+      msg.includes("504") ||
+      msg.includes("econnrefused") ||
+      msg.includes("econnreset") ||
+      msg.includes("epipe") ||
+      msg.includes("html error page")
+    );
+  }
+  return false;
 }
 
 export function buildTerminalCliSessionRequest(
@@ -823,11 +914,28 @@ export function createTerminalReconnectCoordinator() {
     },
     runSessionRequest<T>(request: () => Promise<T>): Promise<T> {
       if (sessionRequestFlight) return sessionRequestFlight as Promise<T>;
-      const flight = request().finally(() => {
+      let flightTimeout: ReturnType<typeof setTimeout> | null = null;
+      const flight = Promise.race([
+        request(),
+        new Promise<never>((_, reject) => {
+          flightTimeout = setTimeout(() => {
+            reject(
+              new SpaceApiError("Terminal session request flight timed out", {
+                code: "REQUEST_TIMEOUT",
+                status: 0
+              })
+            );
+          }, 10_000);
+        })
+      ]).finally(() => {
+        if (flightTimeout !== null) clearTimeout(flightTimeout);
         if (sessionRequestFlight === flight) sessionRequestFlight = null;
       });
       sessionRequestFlight = flight;
       return flight;
+    },
+    clearSessionRequestFlight(): void {
+      sessionRequestFlight = null;
     }
   };
 }
@@ -905,9 +1013,12 @@ function isTerminalPaneAction(detail: unknown): detail is TerminalPaneActionDeta
     maybeDetail.action === "reconnect" ||
     maybeDetail.action === "copy" ||
     maybeDetail.action === "paste" ||
+    maybeDetail.action === "paste_file" ||
     maybeDetail.action === "focus" ||
     maybeDetail.action === "cancel_login" ||
     maybeDetail.action === "ensure_plan_mode" ||
+    maybeDetail.action === "enable_plan_mode" ||
+    maybeDetail.action === "stop_task" ||
     maybeDetail.action === "new_task"
   ) return true;
   if (maybeDetail.action === "attach_clip_image") {
@@ -1038,28 +1149,38 @@ function containsCliUploadPath(text: string): boolean {
 export const CLI_UPLOAD_WRAPPED_PATH_PATTERN =
   /(?<![ \t\r\n])(?:[ \t\r\n]|\x1b\[[0-9;?]*[ -/]*[@-~])*['"]?(?:\/srv\/space\/var\/artifacts)?\/cli-uploads\/(?:[a-zA-Z0-9_.\/-]|\x1b\[[0-9;?]*[ -/]*[@-~]|[\r\n][ \t]*|(?<![ \t\r\n])[ \t]+(?=[\r\n]))+\.[a-zA-Z0-9]{1,10}['"]?[ \t]*/gi;
 
-export function isUploadPathCutoff(text: string): number {
-  const marker = "/cli-uploads/";
-  const index = text.lastIndexOf(marker);
-  if (index === -1) {
-    const fullPrefix = "/opt/spaceapp/var/artifacts/cli-uploads/";
-    for (let len = Math.min(text.length, fullPrefix.length); len >= 8; len -= 1) {
-      if (text.endsWith(fullPrefix.slice(0, len))) return text.length - len;
-    }
-    return -1;
-  }
-  const after = text.slice(index);
-  if (/\.[a-zA-Z0-9]{1,10}(?:[\s'"]|$)/.test(after)) return -1;
-  let start = index;
-  const fullPrefix = "/opt/spaceapp/var/artifacts";
-  if (start >= fullPrefix.length && text.slice(start - fullPrefix.length, start) === fullPrefix) {
-    start -= fullPrefix.length;
-  }
-  let lineStart = Math.max(text.lastIndexOf("\n", start), text.lastIndexOf("\r", start));
-  if (lineStart > 0 && text[lineStart] === "\n" && text[lineStart - 1] === "\r") {
-    lineStart -= 1;
-  }
-  return lineStart >= 0 ? lineStart : start;
+const CLI_UPLOAD_PATH_SEPARATOR_PATTERN = /(\x1b\[[0-9;?]*[ -/]*[@-~]|[ \t\r\n])/;
+const CLI_UPLOAD_PATH_START_PATTERN = /(?=\/srv\/space\/var\/artifacts\/cli-uploads\/)|(?<!\/srv\/space\/var\/artifacts)(?=\/cli-uploads\/)/;
+
+function uploadPathLabel(pathText: string): string {
+  if (!pathText.includes("/cli-uploads/")) return " ".repeat(pathText.length);
+  const fileName = pathText.replace(/['"]/g, "").split("/").pop() ?? "";
+  const originalName = fileName.replace(/^upload_[A-Za-z0-9_-]{12}-/, "") || fileName;
+  return `[upload: ${originalName}]`.slice(0, pathText.length).padEnd(pathText.length, " ");
+}
+
+function maskUploadPathMatch(match: string): string {
+  const parts = match.split(CLI_UPLOAD_PATH_SEPARATOR_PATTERN);
+  let pathText = "";
+  for (let index = 0; index < parts.length; index += 2) pathText += parts[index];
+  const label = pathText.split(CLI_UPLOAD_PATH_START_PATTERN).map(uploadPathLabel).join("");
+  let offset = 0;
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;
+    const masked = label.slice(offset, offset + part.length);
+    offset += part.length;
+    return masked;
+  }).join("");
+}
+
+/**
+ * Mirror of the pane host's in-place upload path mask. Bytes are never
+ * removed: TUIs such as Claude Code redraw with relative cursor moves, so a
+ * dropped newline, escape sequence or cell blanks or scrambles later frames.
+ */
+export function maskUploadPaths(text: string): string {
+  if (!text.includes("/cli-uploads/")) return text;
+  return text.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, maskUploadPathMatch);
 }
 
 export function hiddenEchoCandidates(data: string): string[] {
@@ -1122,7 +1243,21 @@ export function scrollXtermByTouchLines(terminal: XtermTerminal | null, lines: n
   return true;
 }
 
-function clearTerminalViewportEvidence(host: HTMLElement | null): void {
+export function checkHasScrollbackContent(buffer: XtermTerminal["buffer"]["active"], baseY: number): boolean {
+  if (baseY <= 0) return false;
+  if (typeof buffer?.getLine !== "function") return true;
+  const checkLimit = Math.max(0, baseY - 50);
+  for (let y = baseY - 1; y >= checkLimit; y--) {
+    const line = buffer.getLine(y);
+    if (line && typeof line.translateToString === "function" && line.translateToString(true).trim().length > 0) {
+      return true;
+    }
+  }
+  if (baseY > 50) return true;
+  return false;
+}
+
+export function clearTerminalViewportEvidence(host: HTMLElement | null): void {
   if (!host) return;
   delete host.dataset.terminalViewportY;
   delete host.dataset.terminalBaseY;
@@ -1131,9 +1266,10 @@ function clearTerminalViewportEvidence(host: HTMLElement | null): void {
   delete host.dataset.terminalAtBottom;
   delete host.dataset.terminalCursorInViewport;
   delete host.dataset.terminalOutputParsed;
+  delete host.dataset.terminalHasScrollback;
 }
 
-function syncTerminalViewportEvidence(
+export function syncTerminalViewportEvidence(
   host: HTMLElement | null,
   terminal: XtermTerminal | null
 ): void {
@@ -1157,15 +1293,24 @@ function syncTerminalViewportEvidence(
     return;
   }
   const cursorAbsoluteY = baseY + cursorY;
-  host.dataset.terminalViewportY = String(viewportY);
-  host.dataset.terminalBaseY = String(baseY);
-  host.dataset.terminalCursorY = String(cursorY);
-  host.dataset.terminalCursorAbsoluteY = String(cursorAbsoluteY);
-  host.dataset.terminalAtBottom = String(viewportY === baseY);
-  host.dataset.terminalCursorInViewport = String(
-    cursorAbsoluteY >= viewportY &&
-    cursorAbsoluteY < viewportY + terminal.rows
-  );
+  const hasScrollback =
+    baseY > 0 &&
+    (viewportY < baseY || checkHasScrollbackContent(buffer, baseY));
+  // Reassigning an unchanged data attribute still emits a DOM mutation and can
+  // invalidate descendant styles (notably the scrollbar). Warm reveals and
+  // output callbacks often report the same viewport several times per frame.
+  const evidence = {
+    terminalViewportY: String(viewportY),
+    terminalBaseY: String(baseY),
+    terminalCursorY: String(cursorY),
+    terminalCursorAbsoluteY: String(cursorAbsoluteY),
+    terminalAtBottom: String(viewportY === baseY),
+    terminalCursorInViewport: String(cursorAbsoluteY >= viewportY && cursorAbsoluteY < viewportY + terminal.rows),
+    terminalHasScrollback: String(hasScrollback)
+  };
+  for (const [key, value] of Object.entries(evidence)) {
+    if (host.dataset[key] !== value) host.dataset[key] = value;
+  }
 }
 
 function isPasteShortcutEvent(event: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "defaultPrevented" | "key" | "metaKey" | "shiftKey">): boolean {
@@ -1186,15 +1331,13 @@ export function terminalControlKeySequence(key: "ctrl_c" | "shift_tab" | "escape
 }
 
 /**
- * Interrupt key for the floating turn-control button per CLI runtime. Codex is
- * the only TUI that pauses its running turn on ESC; every other CLI runtime
- * (Hermes, Claude, Gemini, Qwen, Kimi, Grok, DeepSeek, Cursor, Copilot,
- * Autohand, …) cancels its running turn on Ctrl-C (0x03).
+ * Interrupt key for the floating turn-control button per CLI runtime. Codex,
+ * Claude Code, Oh My Pi and Droid interrupt their running turn on ESC; Claude
+ * treats a second Ctrl-C on an idle prompt as exit and Oh My Pi uses Ctrl-C to
+ * clear, so they must not get 0x03. The other CLIs cancel on Ctrl-C (0x03).
  */
 export function floatingTurnPauseSequence(runtimeId: string | null | undefined): string {
-  return runtimeId === DEFAULT_CLI_RUNTIME_ID
-    ? terminalControlKeySequence("escape")
-    : terminalControlKeySequence("ctrl_c");
+  return terminalControlKeySequence(cliTurnInterruptKey(runtimeId));
 }
 
 const FLOATING_STOP_LABELS: Readonly<Record<string, string>> = {
@@ -1214,7 +1357,9 @@ const FLOATING_STOP_LABELS: Readonly<Record<string, string>> = {
 
 /** Accessible stop label for the floating turn-control button per CLI runtime. */
 export function floatingTurnControlStopLabel(runtimeId: string | null | undefined): string {
-  return (runtimeId && FLOATING_STOP_LABELS[runtimeId]) ?? "Stop CLI";
+  if (!runtimeId) return "Stop CLI";
+  const catalogLabel = CLI_PANE_TYPES.find((type) => type.id === runtimeId)?.shortLabel;
+  return FLOATING_STOP_LABELS[runtimeId] ?? (catalogLabel ? `Stop ${catalogLabel}` : "Stop CLI");
 }
 
 export function reasonixShortcutSequence(
@@ -1378,6 +1523,77 @@ function terminalCurrentScreenText(terminal: XtermTerminal): string {
   return terminalBufferText(buffer, firstLine, lastLine);
 }
 
+// Claude Code status: a spinner line "✻ Razzmatazzing… (12s · thinking with xhigh effort)" while a turn
+// runs, and a permission footer that gains "esc to interrupt" (truncated to "esc to …" in narrow panes).
+// Finished turns read "✻ Baked for 35s · done 10:01 AM", which must not count as running.
+const CLAUDE_SPINNER_LINE_PATTERN = /^\s*[✢✳✶✻✽*·]\s+[A-Z][\w-]*…(?:\s+\(\s*((?:\d+h\s*)?(?:\d+m\s*)?\d+s)\b[^\n]*)?\s*$/m;
+const CLAUDE_FOOTER_LINE_PATTERN = /\(shift\+tab to cycle\)|\? for shortcuts|← for agents/i;
+const CLAUDE_FOOTER_INTERRUPT_PATTERN = /esc to (?:interrupt|…)/i;
+
+function claudeScreenRunningState(screenText: string): boolean | null {
+  if (CLAUDE_SPINNER_LINE_PATTERN.test(screenText)) return true;
+  const footer = screenText.split(/\r?\n/).filter((line) => line.trim()).slice(-4);
+  if (!footer.some((line) => CLAUDE_FOOTER_LINE_PATTERN.test(line))) return null;
+  return footer.some((line) => CLAUDE_FOOTER_INTERRUPT_PATTERN.test(line));
+}
+
+// The bottom of the screen holds the CLI's input box. TUIs wrap it with real line breaks, so
+// labels are matched with whitespace removed.
+function visibleTerminalPromptText(terminal: XtermTerminal | null): string {
+  if (!terminal) return "";
+  return terminalCurrentScreenText(terminal).split("\n").slice(-12).join("").replace(/\s+/g, "");
+}
+
+export function isTerminalScreenRunningText(screenText: string, runtimeId?: string | null): boolean {
+  if (!screenText) return false;
+  if (runtimeId === CLAUDE_CLI_RUNTIME_ID) {
+    const claudeRunning = claudeScreenRunningState(screenText);
+    if (claudeRunning !== null) return claudeRunning;
+  }
+  const hasIdlePrompt = /(?:ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|type (?:your )?message|send a message)/i.test(screenText);
+  if (hasIdlePrompt) return false;
+  const cleanScreen = screenText.replace(/waiting for background terminal[^\n]*(?:esc(?:ape)? to interrupt|\/ps to view|\/stop to close)[^\n]*/gi, "");
+  return (
+    /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|\bthinking\b|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[(·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process|test|script|build)[.…]?/i.test(cleanScreen) ||
+    /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(cleanScreen)
+  );
+}
+
+function parseDurationStringToMs(timeStr: string): number {
+  let totalMs = 0;
+  const hVal = /(\d+(?:\.\d+)?)\s*h/i.exec(timeStr)?.[1];
+  const mVal = /(\d+(?:\.\d+)?)\s*m/i.exec(timeStr)?.[1];
+  const sVal = /(\d+(?:\.\d+)?)\s*s/i.exec(timeStr)?.[1];
+  if (hVal) totalMs += parseFloat(hVal) * 3600 * 1000;
+  if (mVal) totalMs += parseFloat(mVal) * 60 * 1000;
+  if (sVal) totalMs += parseFloat(sVal) * 1000;
+  return Math.round(totalMs);
+}
+
+export function extractTerminalScreenWorkingTimeMs(screenText: string, runtimeId?: string | null): number | null {
+  if (!screenText) return null;
+  if (runtimeId === CLAUDE_CLI_RUNTIME_ID) {
+    // The spinner also carries "thought for Ns", which is only the thinking part of the turn.
+    const claudeElapsed = CLAUDE_SPINNER_LINE_PATTERN.exec(screenText)?.[1];
+    const ms = claudeElapsed ? parseDurationStringToMs(claudeElapsed) : 0;
+    return ms > 0 ? ms : null;
+  }
+  const match = /(?:working|waiting for background terminal)\s*\(\s*([0-9hms\s]+?)(?:[•·,]|\s+esc|\))/i.exec(screenText);
+  if (match?.[1]) {
+    const ms = parseDurationStringToMs(match[1]);
+    if (ms > 0) return ms;
+  }
+  const thoughtMatches = Array.from(screenText.matchAll(/(?:thought\s+for|thinking\s*(?:for|\())\s*([0-9hms\s.]+?)(?:[•·,]|\s*\([^\n)]*\)|\s*tokens|\)|\n|$)/gi));
+  if (thoughtMatches.length > 0) {
+    const lastThought = thoughtMatches[thoughtMatches.length - 1];
+    if (lastThought?.[1]) {
+      const ms = parseDurationStringToMs(lastThought[1]);
+      if (ms > 0) return ms;
+    }
+  }
+  return null;
+}
+
 type ClaudePermissionMode = "default mode" | "accept edits on" | "plan mode on" | "bypass permissions on" | "auto mode on";
 const CLAUDE_PLAN_MODE_SHIFT_TABS: Record<ClaudePermissionMode, number> = {
   "default mode": 2,
@@ -1424,12 +1640,13 @@ export function shouldRefocusTerminalAfterInput(data: string): boolean {
     data !== "\u001b[O";
 }
 
-function nextTerminalPromptDraft(
+export function nextTerminalPromptDraft(
   draft: TerminalPromptDraftState,
   data: string
 ): TerminalPromptDraftState | null {
   const characters = Array.from(draft.text);
   let cursor = Math.max(0, Math.min(draft.cursor, characters.length));
+  let inBracketedPaste = false;
 
   for (let index = 0; index < data.length; index += 1) {
     const character = data[index] ?? "";
@@ -1471,7 +1688,11 @@ function nextTerminalPromptDraft(
           if (cursor < characters.length) characters.splice(cursor, 1);
           break;
         case BRACKETED_PASTE_START:
+          inBracketedPaste = true;
+          break;
         case BRACKETED_PASTE_END:
+          inBracketedPaste = false;
+          break;
         case "\u001b[I":
         case "\u001b[O":
           break;
@@ -1481,9 +1702,14 @@ function nextTerminalPromptDraft(
       index += sequence[0].length - 1;
       continue;
     }
-    if (character === "\r" || character === "\n" || character === "\u0015") {
+    if (!inBracketedPaste && (character === "\r" || character === "\n" || character === "\u0015")) {
       characters.splice(0);
       cursor = 0;
+      continue;
+    }
+    if (inBracketedPaste && (character === "\r" || character === "\n")) {
+      characters.splice(cursor, 0, "\n");
+      cursor += 1;
       continue;
     }
     if (character === "\b" || character === "\u007f") {
@@ -1509,6 +1735,24 @@ function nextTerminalPromptDraft(
     index += printable.length - 1;
   }
   return { text: characters.join(""), cursor };
+}
+
+export interface ResolveTerminalPasteModeOptions {
+  isLoginPurpose: boolean;
+  hasNewlines: boolean;
+  lineCount: number;
+  charCount: number;
+  bracketedPasteSupported: boolean;
+}
+
+export function resolveTerminalPasteMode(options: ResolveTerminalPasteModeOptions): "raw" | "bracketed" | "file" {
+  if (options.isLoginPurpose) return "raw";
+  if (!options.hasNewlines) return "raw";
+  const isLarge = options.lineCount > 30 || options.charCount > 4000;
+  if (!isLarge && options.bracketedPasteSupported) {
+    return "bracketed";
+  }
+  return "file";
 }
 
 function createCliTurnMarker(): string {
@@ -1573,7 +1817,7 @@ export function terminalPendingInputAdmission(
   return queue.length < maxEntries && queue.queuedBytes + dataLength <= maxBytes;
 }
 
-export function TerminalPane({
+export const TerminalPane = memo(function TerminalPane({
   pane,
   terminalFontSize,
   bootstrapBarrier,
@@ -1592,6 +1836,8 @@ export function TerminalPane({
   onPrefillReadyChange,
   revealGeneration = 0,
   onRevealReady,
+  onWorkingStateChange,
+  onActionAvailabilityChange,
   oskOpen = false,
   mobile = false
 }: TerminalPaneProps) {
@@ -1601,9 +1847,6 @@ export function TerminalPane({
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
   const [geminiAccountProfiles, setGeminiAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(readLastGeminiAccountProfileId);
-  const [geminiAccountMenuOpen, setGeminiAccountMenuOpen] = useState(false);
-  const geminiAccountPickerRef = useRef<HTMLDivElement | null>(null);
-  const geminiAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const [uploadPreviewsOpen, setUploadPreviewsOpen] = useState(false);
   const [uploadPreviewPage, setUploadPreviewPage] = useState(0);
   const [photoHistoryError, setPhotoHistoryError] = useState(false);
@@ -1644,6 +1887,7 @@ export function TerminalPane({
   const [terminalPrefillReady, setTerminalPrefillReady] = useState(!prefillInitialReplay);
   const [connectionAlert, setConnectionAlert] = useState<TerminalConnectionAlert | null>(null);
   const [terminalPromptDraft, setTerminalPromptDraft] = useState("");
+  const terminalPromptDraftDebounceTimerRef = useRef<number | null>(null);
   const [terminalLayoutSuggestion, setTerminalLayoutSuggestion] = useState<LayoutMismatchDetection | null>(null);
   const dismissedTerminalLayoutTextRef = useRef<string | null>(null);
   const { settings: autocorrectSettings } = useKeyboardAutocorrectSettings();
@@ -1678,6 +1922,107 @@ export function TerminalPane({
     prevTerminalLayoutSuggestionRef.current = Boolean(terminalLayoutSuggestion);
   }, [terminalLayoutSuggestion, autocorrectSettings.enabled, autocorrectSettings.soundEnabled]);
 
+  const { variables: promptVariables, settings: promptVariablesSettings } = usePromptVariables();
+  const [variablesManagerOpen, setVariablesManagerOpen] = useState(false);
+  const [variablesManagerInitialName, setVariablesManagerInitialName] = useState("");
+  const [selectedVariableIndex, setSelectedVariableIndex] = useState(0);
+  const [dismissedVariableToken, setDismissedVariableToken] = useState<string | null>(null);
+  const customKeyEventHandlerRef = useRef<((event: KeyboardEvent) => boolean) | null>(null);
+  // Declared before activeVariableToken: the memo below reads .current during render.
+  const terminalPromptDraftRef = useRef<TerminalPromptDraftState>({ text: "", cursor: 0 });
+
+  const rawVariableToken: PromptVariableToken | null = useMemo(() => {
+    if (!promptVariablesSettings.enabled) return null;
+    const draft = terminalPromptDraftRef.current;
+    const textBeforeCursor = draft.text.slice(0, draft.cursor);
+    return findActiveVariableToken(textBeforeCursor);
+  }, [terminalPromptDraft, promptVariablesSettings.enabled]);
+
+  useEffect(() => {
+    if (!rawVariableToken || rawVariableToken.token !== dismissedVariableToken) {
+      if (dismissedVariableToken) {
+        setDismissedVariableToken(null);
+      }
+    }
+    if (!rawVariableToken) {
+      setSelectedVariableIndex(0);
+    }
+  }, [rawVariableToken, dismissedVariableToken]);
+
+  const activeVariableToken: PromptVariableToken | null = useMemo(() => {
+    if (!rawVariableToken) return null;
+    if (dismissedVariableToken && dismissedVariableToken === rawVariableToken.token) return null;
+    return rawVariableToken;
+  }, [rawVariableToken, dismissedVariableToken]);
+
+  const filteredVariables = useMemo(() => {
+    if (!activeVariableToken) return [];
+    return filterPromptVariables(promptVariables, activeVariableToken.query);
+  }, [promptVariables, activeVariableToken]);
+  // The list can shrink while typing; never point past its end.
+  const highlightedVariableIndex = Math.min(selectedVariableIndex, Math.max(0, filteredVariables.length - 1));
+  // A bare '#' only picks a variable on Enter after the operator moved through the list with the arrows.
+  const variableListNavigatedTokenRef = useRef<string | null>(null);
+
+  const handleSelectPromptVariable = useCallback((variable: PromptVariable) => {
+    const activeToken = activeVariableToken;
+    if (!activeToken) return;
+    const tokenLen = activeToken.token.length;
+    const backspaces = "\u007f".repeat(tokenLen);
+    sendTerminalInput(`${backspaces}#${variable.name} `, "prompt variable selection", "visible", true);
+    variableListNavigatedTokenRef.current = null;
+    setSelectedVariableIndex(0);
+    setDismissedVariableToken(activeToken.token);
+    focusTerminal();
+  }, [activeVariableToken]);
+
+  useEffect(() => {
+    customKeyEventHandlerRef.current = (event: KeyboardEvent) => {
+      if (!activeVariableToken || !promptVariablesSettings.enabled) return true;
+      if (event.type !== "keydown") return true;
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        variableListNavigatedTokenRef.current = activeVariableToken.token;
+        setSelectedVariableIndex((prev) => (Math.min(prev, Math.max(0, filteredVariables.length - 1)) + 1) % Math.max(1, filteredVariables.length));
+        return false;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        variableListNavigatedTokenRef.current = activeVariableToken.token;
+        setSelectedVariableIndex((prev) => (Math.min(prev, Math.max(0, filteredVariables.length - 1)) - 1 + Math.max(1, filteredVariables.length)) % Math.max(1, filteredVariables.length));
+        return false;
+      }
+      if (
+        event.key === "Enter" &&
+        !activeVariableToken.query &&
+        variableListNavigatedTokenRef.current !== activeVariableToken.token
+      ) {
+        return true;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (filteredVariables.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          const picked = filteredVariables[highlightedVariableIndex] ?? filteredVariables[0];
+          if (picked) {
+            handleSelectPromptVariable(picked);
+          }
+          return false;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setDismissedVariableToken(activeVariableToken.token);
+        return false;
+      }
+      return true;
+    };
+  });
+
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const voiceInputRef = useRef(voiceInput);
@@ -1686,6 +2031,7 @@ export function TerminalPane({
   useEffect(() => {
     if (!contextMenu) return;
     const handlePointerDown = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       if (event.target instanceof Node && !contextMenuRef.current?.contains(event.target)) {
         setContextMenu(null);
       }
@@ -1712,6 +2058,7 @@ export function TerminalPane({
   useEffect(() => {
     if (!photoContextMenu) return;
     const handlePointerDown = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       if (event.target instanceof Node && !photoContextMenuRef.current?.contains(event.target)) {
         setPhotoContextMenu(null);
       }
@@ -1739,6 +2086,114 @@ export function TerminalPane({
   const fallbackRunRef = useRef<{ runKey: string } | null>(null);
   const [fallbackRunActive, setFallbackRunActive] = useState(false);
   const fallbackRunIdleTimerRef = useRef<number | null>(null);
+  const [terminalScreenRunning, setTerminalScreenRunning] = useState(false);
+  const [terminalScreenWorkingMs, setTerminalScreenWorkingMs] = useState<number | null>(null);
+  const [terminalPlanMode, setTerminalPlanMode] = useState<TerminalActionAvailability["planMode"]>(null);
+  const [promptSeenSessionId, setPromptSeenSessionId] = useState<string | null>(null);
+  // A working CLI keeps redrawing (spinner, timer); an idle one is still. Screen changes in the last
+  // few seconds back up the turn heuristics so Stop is not withheld from a turn they miss.
+  const [terminalScreenActive, setTerminalScreenActive] = useState(false);
+  const lastScannedScreenTextRef = useRef<string | null>(null);
+  const terminalScreenActiveTimerRef = useRef<number | null>(null);
+  const [stopCooldown, setStopCooldown] = useState(false);
+  const stopCooldownTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (terminalScreenActiveTimerRef.current !== null) window.clearTimeout(terminalScreenActiveTimerRef.current);
+    if (stopCooldownTimerRef.current !== null) window.clearTimeout(stopCooldownTimerRef.current);
+  }, []);
+  const terminalScreenRunningRef = useRef(false);
+  terminalScreenRunningRef.current = terminalScreenRunning;
+
+  const checkTerminalScreenRunning = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const screenText = terminalCurrentScreenText(terminal);
+    const runtimeId = sessionResponseRef.current?.session.runtimeId ?? null;
+    const isRunning = isTerminalScreenRunningText(screenText, runtimeId);
+    const screenWorkingMs = extractTerminalScreenWorkingTimeMs(screenText, runtimeId);
+    if (lastScannedScreenTextRef.current !== null && screenText !== lastScannedScreenTextRef.current) {
+      setTerminalScreenActive(true);
+      if (terminalScreenActiveTimerRef.current !== null) window.clearTimeout(terminalScreenActiveTimerRef.current);
+      terminalScreenActiveTimerRef.current = window.setTimeout(() => {
+        terminalScreenActiveTimerRef.current = null;
+        setTerminalScreenActive(false);
+      }, TERMINAL_SCREEN_ACTIVITY_WINDOW_MS);
+    }
+    lastScannedScreenTextRef.current = screenText;
+    if (runtimeId) {
+      const claudeMode = runtimeId === CLAUDE_CLI_RUNTIME_ID ? claudePermissionMode(screenText) : undefined;
+      const mode = claudeMode === undefined
+        ? cliBuildModeState(runtimeId, screenText)
+        : claudeMode === null ? null : claudeMode === "plan mode on" ? "plan" : "build";
+      setTerminalPlanMode(mode);
+      // The CLI drew its prompt footer at least once, so it has finished starting.
+      const sessionId = sessionResponseRef.current?.session.sessionId ?? null;
+      if (mode !== null && sessionId) setPromptSeenSessionId(sessionId);
+    }
+    if (screenWorkingMs !== null) {
+      setTerminalScreenWorkingMs((prev) => {
+        if (prev === null) return screenWorkingMs;
+        if (Math.floor(prev / 60_000) === Math.floor(screenWorkingMs / 60_000)) return prev;
+        return screenWorkingMs;
+      });
+    } else if (!isRunning) {
+      // A finished turn's elapsed time must not seed the next turn.
+      setTerminalScreenWorkingMs(null);
+    }
+    if (terminalScreenRunningRef.current !== isRunning) {
+      const wasRunning = terminalScreenRunningRef.current;
+      terminalScreenRunningRef.current = isRunning;
+      setTerminalScreenRunning(isRunning);
+      if (wasRunning && !isRunning && fallbackRunRef.current) {
+        finishFallbackRun(fallbackRunRef.current.runKey);
+      }
+    }
+  }, []);
+
+  // Output chunks only schedule the screen scan: a burst (for example the
+  // replay after a reveal) is scanned once per frame instead of per chunk.
+  // Hidden documents get no frames, so they keep the immediate scan.
+  const screenRunningCheckFrameRef = useRef<number | null>(null);
+  const scheduleTerminalScreenRunningCheck = useCallback(() => {
+    if (document.visibilityState === "hidden") {
+      if (screenRunningCheckFrameRef.current !== null) {
+        window.cancelAnimationFrame(screenRunningCheckFrameRef.current);
+        screenRunningCheckFrameRef.current = null;
+      }
+      checkTerminalScreenRunning();
+      return;
+    }
+    if (screenRunningCheckFrameRef.current !== null) return;
+    screenRunningCheckFrameRef.current = window.requestAnimationFrame(() => {
+      screenRunningCheckFrameRef.current = null;
+      checkTerminalScreenRunning();
+    });
+  }, [checkTerminalScreenRunning]);
+
+  useEffect(() => {
+    const flushPendingScreenRunningCheck = () => {
+      if (document.visibilityState !== "hidden" || screenRunningCheckFrameRef.current === null) return;
+      window.cancelAnimationFrame(screenRunningCheckFrameRef.current);
+      screenRunningCheckFrameRef.current = null;
+      checkTerminalScreenRunning();
+    };
+    document.addEventListener("visibilitychange", flushPendingScreenRunningCheck);
+    return () => {
+      document.removeEventListener("visibilitychange", flushPendingScreenRunningCheck);
+      if (screenRunningCheckFrameRef.current !== null) {
+        window.cancelAnimationFrame(screenRunningCheckFrameRef.current);
+        screenRunningCheckFrameRef.current = null;
+      }
+    };
+  }, [checkTerminalScreenRunning]);
+
+  useEffect(() => {
+    if ((!terminalScreenRunning && !fallbackRunActive) || !isVisible || pane.isMinimized) return;
+    const interval = window.setInterval(() => {
+      checkTerminalScreenRunning();
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [terminalScreenRunning, fallbackRunActive, isVisible, pane.isMinimized, checkTerminalScreenRunning]);
   const terminalTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const oskOpenRef = useRef(oskOpen);
   oskOpenRef.current = oskOpen;
@@ -1780,6 +2235,11 @@ export function TerminalPane({
     }
     fallbackRunIdleTimerRef.current = window.setTimeout(() => {
       fallbackRunIdleTimerRef.current = null;
+      checkTerminalScreenRunning();
+      if (terminalScreenRunningRef.current) {
+        resetFallbackRunIdleTimer();
+        return;
+      }
       finishFallbackRun(run.runKey);
     }, CLI_FALLBACK_RUN_IDLE_MS);
   }
@@ -1798,6 +2258,11 @@ export function TerminalPane({
   useEffect(() => { shortcutLiveRef.current = true; return () => { shortcutLiveRef.current = false; }; }, []);
   const [modelSettings, setModelSettings] = useState<PaneCliModelSettings | null>(null);
   const [modelSettingsError, setModelSettingsError] = useState<string | null>(null);
+  const managedPlan = useManagedPlanExecution({ api, paneId: pane.id, sessionId: sessionResponse?.session.sessionId ?? null,
+    enabled: isVisible && !pane.isMinimized && sessionResponse?.session.runtimeId === "cli:codex" });
+  const hasManagedPlan = Boolean(managedPlan.execution && managedPlan.execution.sessionId === sessionResponse?.session.sessionId && !isFinishedExecution(managedPlan.execution));
+  const managedModelClickScope: ManagedStageScope | null = hasManagedPlan && managedPlan.execution
+    ? { executionId: managedPlan.execution.id, stageId: managedPlan.execution.snapshot.stages[managedPlan.execution.activeStageIndex]?.id ?? "" } : null;
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const xtermHostRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1805,6 +2270,8 @@ export function TerminalPane({
   const uploadPreviewCloseRef = useRef<HTMLButtonElement | null>(null);
   const uploadPreviewReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
+  const reconnectFrameRef = useRef<ReturnType<typeof holdTerminalReconnectFrame>>(null);
+  useEffect(() => () => { reconnectFrameRef.current?.dispose(); }, []);
   const fitAddonRef = useRef<XtermFitAddon | null>(null);
   const terminalFontSizeRef = useRef(terminalFontSize);
   const wheelGeometryReconcileAtRef = useRef(0);
@@ -1819,6 +2286,8 @@ export function TerminalPane({
   const terminalControlRequestPendingRef = useRef(false);
   const observerControlUpgradePendingRef = useRef(false);
   const pendingTerminalInputsRef = useRef<PendingTerminalInput[]>([]);
+  const lastTerminalControlMutationRef = useRef<{ socket: WebSocket; record: RecordedTerminalControlMutation } | null>(null);
+  const terminalControlReplayBudgetRef = useRef<TerminalControlReplayBudget>({ attempts: 0, windowStartedAtMs: 0 });
   const sessionResponseRef = useRef<PaneCliSessionResponse | null>(null);
   const autoAttachAttemptRef = useRef<string | null>(null);
   const pasteShortcutFallbackRef = useRef<number | null>(null);
@@ -1831,6 +2300,12 @@ export function TerminalPane({
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectCoordinatorRef = useRef(createTerminalReconnectCoordinator());
   const reconnectInProgressRef = useRef(false);
+  const reconnectStartedAtRef = useRef<number | null>(null);
+
+  function setReconnectInProgress(inProgress: boolean): void {
+    reconnectInProgressRef.current = inProgress;
+    reconnectStartedAtRef.current = inProgress ? Date.now() : null;
+  }
   const intentionalSocketParkRef = useRef(false);
   const hiddenWarmSocketParkTimerRef = useRef<number | null>(null);
   const modelSettingsRefreshTimerRef = useRef<number | null>(null);
@@ -1840,9 +2315,6 @@ export function TerminalPane({
   const modelSettingsRef = useRef<PaneCliModelSettings | null>(null);
   modelSettingsRef.current = modelSettings;
   const hiddenInputEchoFiltersRef = useRef<HiddenInputEchoFilter[]>([]);
-  const hiddenEchoPendingChunkRef = useRef("");
-  const hiddenEchoFlushTimerRef = useRef<number | null>(null);
-  const terminalPromptDraftRef = useRef<TerminalPromptDraftState>({ text: "", cursor: 0 });
   const managedPromptAttachmentsRef = useRef<ManagedPromptAttachmentState>({
     imageCount: 0,
     videoCount: 0,
@@ -1869,6 +2341,8 @@ export function TerminalPane({
   const scheduledTerminalRepaintFrameRef = useRef<number | null>(null);
   const lastTerminalOutputRefitAtRef = useRef(0);
   const claudePlanModeActionPendingRef = useRef(false);
+  // Mirrors the ref so the pane menu can disable Plan while a Claude mode change is in flight.
+  const [claudePlanModeActionPending, setClaudePlanModeActionPending] = useState(false);
   const bootstrapReportedRef = useRef(false);
 
   const cliRuntimes = useMemo(
@@ -1882,22 +2356,28 @@ export function TerminalPane({
   const isGeminiRuntime = selectedRuntimeId === "cli:gemini";
   const isCopilotRuntime = selectedRuntimeId === "cli:copilot";
   const isCursorRuntime = selectedRuntimeId === "cli:cursor";
+  const isClaudeRuntime = selectedRuntimeId === "cli:claude";
   const [copilotAccountProfiles, setCopilotAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedCopilotAccountProfileId, setSelectedCopilotAccountProfileId] = useState(readLastCopilotAccountProfileId);
-  const [copilotAccountMenuOpen, setCopilotAccountMenuOpen] = useState(false);
-  const copilotAccountPickerRef = useRef<HTMLDivElement | null>(null);
-  const copilotAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const [cursorAccountProfiles, setCursorAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedCursorAccountProfileId, setSelectedCursorAccountProfileId] = useState(readLastCursorAccountProfileId);
-  const [cursorAccountMenuOpen, setCursorAccountMenuOpen] = useState(false);
-  const cursorAccountPickerRef = useRef<HTMLDivElement | null>(null);
-  const cursorAccountButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [claudeAccountProfiles, setClaudeAccountProfiles] = useState<CliAccountProfile[]>([]);
+  const [selectedClaudeAccountProfileId, setSelectedClaudeAccountProfileId] = useState(readLastClaudeAccountProfileId);
   const selectedUploadPreviewIndex = useMemo(
     () => uploadPreviews.findIndex((preview) => preview.id === selectedUploadPreviewId),
     [selectedUploadPreviewId, uploadPreviews]
   );
   const selectedUploadPreview = selectedUploadPreviewIndex >= 0 ? uploadPreviews[selectedUploadPreviewIndex] ?? null : null;
   const selectedUploadPreviewLabel = selectedUploadPreviewIndex >= 0 ? `Image ${selectedUploadPreviewIndex + 1}` : "Image";
+  const cliPlansMenuPane = useMemo(
+    () => ({
+      ...pane,
+      cwd: pane.cwd || sessionResponse?.session.cwd || null,
+      isMaximized: pane.isMaximized,
+      isMinimized: pane.isMinimized
+    }),
+    [pane, sessionResponse?.session.cwd]
+  );
   const isTerminalLoginSession = sessionResponse?.session.purpose === "LOGIN";
   const activeRuntimeId = sessionResponse?.session.runtimeId ?? selectedRuntimeId;
   const supportsCliFileUploads = true;
@@ -1940,9 +2420,17 @@ export function TerminalPane({
   function settleTerminalPrefill(): void {
     const pending = terminalOutputCoordinatorRef.current?.snapshot().pendingPrefillEvents ?? 0;
     if (pending === 0) setTerminalPrefillReady(true);
+    checkTerminalScreenRunning();
   }
   const activeTurnMarker = activeCliTurn?.marker ?? null;
   const isCodexCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID;
+  const isClaudeCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === CLAUDE_CLI_RUNTIME_ID;
+  // Codex and Claude Code turn a bracketed-pasted image path into a native image attachment.
+  const usesNativeImagePaste = isCodexCliSession || isClaudeCliSession;
+  const isTurnActivityPollingSession =
+    sessionResponse?.session.purpose === "NORMAL" &&
+    (sessionResponse.session.runtimeId === DEFAULT_CLI_RUNTIME_ID ||
+      sessionResponse.session.runtimeId === GEMINI_CLI_RUNTIME_ID);
   const isOpenCodeCliSession = sessionResponse?.session.purpose === "NORMAL" && sessionResponse.session.runtimeId === OPENCODE_CLI_RUNTIME_ID;
   const isCliModelSettingsSession = sessionResponse?.session.purpose === "NORMAL" && isModelPickerRuntime(sessionResponse.session.runtimeId);
   const isFloatingTurnControlSession = isRunCapableCliSession(sessionResponse?.session);
@@ -1951,7 +2439,14 @@ export function TerminalPane({
       sessionResponse.session.isActive &&
       sessionResponse.websocket
   );
-  const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive || fallbackRunActive);
+  const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive || fallbackRunActive || terminalScreenRunning);
+
+  useEffect(() => {
+    onWorkingStateChange?.({
+      isWorking: isTurnRunning,
+      screenWorkingMs: terminalScreenWorkingMs
+    });
+  }, [isTurnRunning, terminalScreenWorkingMs, onWorkingStateChange]);
   const turnControlState = isTurnRunning
     ? "running"
     : terminalPromptDraft.trim() &&
@@ -1961,6 +2456,14 @@ export function TerminalPane({
       ? "ready"
       : "idle";
   const canSendTurn = turnControlState === "ready";
+  // After Stop the button would turn into Send under the pointer; hold it briefly so a double
+  // click neither submits the draft nor sends a second interrupt (Ctrl+C twice exits some CLIs).
+  const [turnStopPending, setTurnStopPending] = useState(false);
+  const turnControlStopping = turnStopPending || (stopCooldown && isTurnRunning);
+  const turnStopPendingTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (turnStopPendingTimerRef.current !== null) window.clearTimeout(turnStopPendingTimerRef.current);
+  }, []);
   const voiceOwned = voiceInput.ownerId === voiceOwnerId;
   const voiceAttachmentEligible =
     isNormalAttachedCli &&
@@ -1978,14 +2481,17 @@ export function TerminalPane({
     voiceInput.settingsLoading ||
     Boolean(voiceInput.ownerId && !voiceOwned) ||
     (voiceOwned && (voiceInput.status === "connecting" || voiceInput.status === "transcribing"));
+  const voiceRecording = voiceOwned && voiceInput.status === "recording";
+  const voiceElapsedMs = useRecordingElapsed(voiceRecording ? voiceInput.recordingStartedAt : null);
+  const voiceClock = voiceRecording ? formatRecordingClock(voiceElapsedMs, voiceInput.serverSettings?.maxDurationMs) : null;
   const voiceStatusText = !voiceOwned
     ? null
     : voiceInput.status === "connecting"
       ? "Connecting microphone"
       : voiceInput.status === "recording"
-        ? voiceInput.preview || "Listening"
+        ? previewTail(voiceInput.preview) || "Listening"
         : voiceInput.status === "transcribing"
-          ? voiceInput.preview || "Transcribing"
+          ? previewTail(voiceInput.preview) || "Transcribing"
           : voiceInput.error;
   const showCliDebugMode = cliDebugModeEnabled ?? readStoredCliDebugMode();
   const imagePreviewLimit = normalizeCliImagePreviewLimit(maxImagePreviews);
@@ -2093,6 +2599,8 @@ export function TerminalPane({
         return;
       }
       socket.send(JSON.stringify({ type: "control_heartbeat", leaseId: current.leaseId }));
+      // A later denial may be for this heartbeat, so never replay an earlier, accepted input.
+      lastTerminalControlMutationRef.current = null;
     }, intervalMs);
   }
 
@@ -2278,13 +2786,18 @@ export function TerminalPane({
     }
   }
 
+  const lifecyclePaneLabelRef = useRef({ title: pane.title, mode: pane.mode });
+  lifecyclePaneLabelRef.current = { title: pane.title, mode: pane.mode };
+
+  // Teardown follows pane identity only: a rename (the server renames panes
+  // too) must not invalidate the live socket generation or pending loads.
   useEffect(() => {
     recordLifecycleDebugEvent({
       type: "component_mounted",
       scope: "TerminalPane",
-      detail: `pane=${pane.title}`,
+      detail: `pane=${lifecyclePaneLabelRef.current.title}`,
       paneId: pane.id,
-      paneMode: pane.mode
+      paneMode: lifecyclePaneLabelRef.current.mode
     });
     return () => {
       loadRuntimesGenerationRef.current += 1;
@@ -2301,12 +2814,12 @@ export function TerminalPane({
       recordLifecycleDebugEvent({
         type: "component_unmounted",
         scope: "TerminalPane",
-        detail: `pane=${pane.title}`,
+        detail: `pane=${lifecyclePaneLabelRef.current.title}`,
         paneId: pane.id,
-        paneMode: pane.mode
+        paneMode: lifecyclePaneLabelRef.current.mode
       });
     };
-  }, [pane.id, pane.mode, pane.title]);
+  }, [pane.id]);
 
   async function refreshModelSettings(expectedSessionId: string): Promise<boolean> {
     const generation = modelSettingsRefreshGenerationRef.current;
@@ -2333,7 +2846,22 @@ export function TerminalPane({
       if (settings.sessionId !== expectedSessionId) return false;
       modelSettingsRef.current = settings;
       setModelSettingsError(null);
-      setModelSettings(settings);
+      setModelSettings((prev) => {
+        if (
+          prev &&
+          prev.sessionId === settings.sessionId &&
+          prev.threadId === settings.threadId &&
+          prev.isTurnActive === settings.isTurnActive &&
+          prev.controlMode === settings.controlMode &&
+          prev.current?.modelId === settings.current?.modelId &&
+          prev.current?.reasoningEffort === settings.current?.reasoningEffort &&
+          // A catalog can change while keeping its size (renamed, swapped or re-tiered models).
+          JSON.stringify(prev.models) === JSON.stringify(settings.models)
+        ) {
+          return prev;
+        }
+        return settings;
+      });
       return true;
     } catch {
       const activeSession = sessionResponseRef.current?.session;
@@ -2479,11 +3007,15 @@ export function TerminalPane({
     const session = sessionResponse?.session;
     if (!session) {
       setActiveCliTurn(null);
-    } else if (session.purpose === "NORMAL" && isCliModelSettingsRuntime(session.runtimeId) && session.isActive) {
+    } else if (session.purpose === "NORMAL" && isTurnCapableRuntime(session.runtimeId) && session.isActive) {
       setActiveCliTurn(readStoredActiveCliTurn(pane.id, session.sessionId));
     } else {
       clearStoredActiveCliTurn(pane.id);
       setActiveCliTurn(null);
+    }
+    if (terminalPromptDraftDebounceTimerRef.current !== null) {
+      window.clearTimeout(terminalPromptDraftDebounceTimerRef.current);
+      terminalPromptDraftDebounceTimerRef.current = null;
     }
     terminalPromptDraftRef.current = { text: "", cursor: 0 };
     managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
@@ -2539,7 +3071,7 @@ export function TerminalPane({
   }, [pane.id, sessionResponse?.session.isActive, sessionResponse?.session.purpose, sessionResponse?.session.runtimeId, sessionResponse?.session.sessionId, sessionResponse?.websocket, terminalReplayReady, terminalStatus]);
 
   useEffect(() => {
-    if (!modelSettings?.isTurnActive || activeCliTurn || !sessionResponse?.session.isActive) return;
+    if ((!modelSettings?.isTurnActive && !terminalScreenRunning) || activeCliTurn || !sessionResponse?.session.isActive) return;
     let disposed = false;
     const timer = window.setTimeout(() => {
       if (!disposed) void refreshModelSettings(sessionResponse.session.sessionId);
@@ -2548,10 +3080,10 @@ export function TerminalPane({
       disposed = true;
       window.clearTimeout(timer);
     };
-  }, [activeCliTurn, modelSettings?.isTurnActive, pane.id, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
+  }, [activeCliTurn, modelSettings?.isTurnActive, terminalScreenRunning, pane.id, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
 
   useEffect(() => {
-    if (!activeTurnMarker || !isCodexCliSession || !sessionResponse?.session.isActive) return;
+    if (!activeTurnMarker || !isTurnActivityPollingSession || !sessionResponse?.session.isActive) return;
     let disposed = false;
     let timer: number | null = null;
     const discoveryDeadlineMs = Date.now() + CLI_TURN_ACTIVITY_DISCOVERY_GRACE_MS;
@@ -2563,7 +3095,21 @@ export function TerminalPane({
       try {
         const activity = await api.cliTurnActivity(pane.id, activeTurnMarker);
         if (disposed || activity.marker !== activeTurnMarker) return;
-        if (activity.status === "PENDING" || activity.status === "RUNNING") {
+        if (activity.status === "PENDING") {
+          if (Date.now() >= discoveryDeadlineMs && !terminalScreenRunningRef.current) {
+            setActiveCliTurn((current) => (current?.marker === activeTurnMarker ? null : current));
+            clearStoredActiveCliTurn(pane.id);
+            return;
+          }
+          const nextTurn = { marker: activeTurnMarker, status: "PENDING" as const };
+          setActiveCliTurn((current) =>
+            current?.marker === activeTurnMarker ? nextTurn : current
+          );
+          storeActiveCliTurn(pane.id, sessionResponse.session.sessionId, nextTurn);
+          schedulePoll();
+          return;
+        }
+        if (activity.status === "RUNNING") {
           const status: ActiveCliTurn["status"] = activity.status;
           const nextTurn = { marker: activeTurnMarker, status };
           setActiveCliTurn((current) =>
@@ -2573,7 +3119,7 @@ export function TerminalPane({
           schedulePoll();
           return;
         }
-        if (activity.status === "UNAVAILABLE" && Date.now() < discoveryDeadlineMs) {
+        if (activity.status === "UNAVAILABLE" && (Date.now() < discoveryDeadlineMs || terminalScreenRunningRef.current)) {
           schedulePoll();
           return;
         }
@@ -2595,7 +3141,7 @@ export function TerminalPane({
       disposed = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [activeTurnMarker, isCodexCliSession, pane.id, pane.roomId, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
+  }, [activeTurnMarker, isTurnActivityPollingSession, pane.id, pane.roomId, sessionResponse?.session.isActive, sessionResponse?.session.sessionId]);
 
   useEffect(() => {
     if (!activeTurnMarker || !isOpenCodeCliSession || !sessionResponse?.session.isActive) return;
@@ -2675,12 +3221,15 @@ export function TerminalPane({
     const intervalId = window.setInterval(() => checkTerminalSocketHealth("watchdog"), TERMINAL_SOCKET_WATCHDOG_INTERVAL_MS);
     const onWindowFocus = () => checkTerminalSocketHealth("focus");
     const onVisibilityChange = () => checkTerminalSocketHealth("visibilitychange");
+    const onAppResumed = () => checkTerminalSocketHealth("app-resumed");
     window.addEventListener("focus", onWindowFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("space:app-resumed", onAppResumed);
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener("focus", onWindowFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("space:app-resumed", onAppResumed);
     };
     // Refs keep session and socket authority current; triggerTerminalSocketRecovery only touches refs and stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2694,6 +3243,47 @@ export function TerminalPane({
   useEffect(() => {
     setDismissedClipboardDebugAt(null);
   }, [pane.id]);
+
+  // A missing purpose is the schema default, NORMAL.
+  const actionSessionActive = Boolean(sessionResponse?.session.isActive) && (sessionResponse?.session.purpose ?? "NORMAL") === "NORMAL";
+  const actionControllable = !observerOnly && sessionResponse?.websocket?.proofScope !== "READ_ONLY";
+  const actionRuntimeReady = Boolean(selectedRuntime) && !observerOnly && !pane.id.startsWith("pane:optimistic-");
+  const actionHasDraft = Boolean(terminalPromptDraft.trim());
+  useEffect(() => {
+    onActionAvailabilityChange?.({
+      hasSession: sessionResponse !== null,
+      sessionActive: actionSessionActive,
+      attached: actionSessionActive && terminalStatus === "attached",
+      controllable: actionControllable,
+      turnRunning: isTurnRunning,
+      screenActive: terminalScreenActive,
+      stopCooldown,
+      hasDraft: actionHasDraft,
+      requestPending: pending,
+      shortcutPending: shortcutPending || claudePlanModeActionPending,
+      uploading,
+      planMode: actionSessionActive ? terminalPlanMode : null,
+      promptSeen: Boolean(sessionResponse && promptSeenSessionId === sessionResponse.session.sessionId),
+      runtimeReady: actionRuntimeReady
+    });
+  }, [
+    actionControllable,
+    actionHasDraft,
+    actionRuntimeReady,
+    actionSessionActive,
+    isTurnRunning,
+    onActionAvailabilityChange,
+    pending,
+    sessionResponse,
+    shortcutPending,
+    claudePlanModeActionPending,
+    stopCooldown,
+    promptSeenSessionId,
+    terminalPlanMode,
+    terminalScreenActive,
+    terminalStatus,
+    uploading
+  ]);
 
   useEffect(() => {
     onSessionMetadataChange?.(
@@ -2781,6 +3371,10 @@ export function TerminalPane({
   }
 
   async function loadRuntimes(showLoading = true) {
+    if (pane.id.startsWith("pane:optimistic-")) return;
+    // Fetch the shared renderer while session/registry requests are in flight.
+    // This imports code only: minimized-pane attachment remains deferred.
+    void loadTerminalModules().catch(() => undefined);
     const generation = ++loadRuntimesGenerationRef.current;
     const bootstrapParticipant = bootstrapBarrier?.join(pane.id);
     if (observerOnly) {
@@ -2996,81 +3590,29 @@ export function TerminalPane({
   }, [isCursorRuntime, observerOnly]);
 
   useEffect(() => {
-    if (!isGeminiRuntime || !geminiAccountProfiles.length) {
-      setGeminiAccountMenuOpen(false);
-    }
-  }, [isGeminiRuntime, geminiAccountProfiles.length]);
-
-  useEffect(() => {
-    if (!isCursorRuntime || !cursorAccountProfiles.length) setCursorAccountMenuOpen(false);
-  }, [isCursorRuntime, cursorAccountProfiles.length]);
-
-  useEffect(() => {
-    if (!geminiAccountMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (geminiAccountPickerRef.current?.contains(target)) return;
-      setGeminiAccountMenuOpen(false);
+    if (!isClaudeRuntime || observerOnly) return;
+    let cancelled = false;
+    const loadAccountProfiles = () => {
+      void api.listCliAccountProfiles("cli:claude").then((result) => {
+        if (cancelled) return;
+        setClaudeAccountProfiles(result.profiles);
+        setSelectedClaudeAccountProfileId((current) => {
+          const profileId = result.profiles.some((profile) => profile.profileId === current)
+            ? current : result.profiles[0]?.profileId ?? "main";
+          writeLastClaudeAccountProfileId(profileId);
+          return profileId;
+        });
+      }).catch(() => {
+        if (!cancelled) setClaudeAccountProfiles([]);
+      });
     };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setGeminiAccountMenuOpen(false);
-      geminiAccountButtonRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown, true);
+    loadAccountProfiles();
+    window.addEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown, true);
+      cancelled = true;
+      window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     };
-  }, [geminiAccountMenuOpen]);
-
-  useEffect(() => {
-    if (!copilotAccountMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (copilotAccountPickerRef.current?.contains(target)) return;
-      setCopilotAccountMenuOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setCopilotAccountMenuOpen(false);
-      copilotAccountButtonRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown, true);
-    };
-  }, [copilotAccountMenuOpen]);
-
-  useEffect(() => {
-    if (!cursorAccountMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && cursorAccountPickerRef.current?.contains(target)) return;
-      setCursorAccountMenuOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setCursorAccountMenuOpen(false);
-      cursorAccountButtonRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown, true);
-    };
-  }, [cursorAccountMenuOpen]);
+  }, [isClaudeRuntime, observerOnly]);
 
   useEffect(() => {
     if (!uploadPreviews.length) {
@@ -3081,6 +3623,7 @@ export function TerminalPane({
   useEffect(() => {
     if (!uploadPreviewsOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
+      if (shouldPreserveForSnipTool(event)) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (selectedUploadPreviewId) return;
@@ -3113,6 +3656,14 @@ export function TerminalPane({
       const profileId = session.accountProfileId ?? "main";
       setSelectedCopilotAccountProfileId(profileId);
       writeLastCopilotAccountProfileId(profileId);
+    } else if (session?.runtimeId === "cli:cursor") {
+      const profileId = session.accountProfileId ?? "main";
+      setSelectedCursorAccountProfileId(profileId);
+      writeLastCursorAccountProfileId(profileId);
+    } else if (session?.runtimeId === "cli:claude") {
+      const profileId = session.accountProfileId ?? "main";
+      setSelectedClaudeAccountProfileId(profileId);
+      writeLastClaudeAccountProfileId(profileId);
     }
   }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
 
@@ -3122,10 +3673,6 @@ export function TerminalPane({
       if (clipboardAttemptTimerRef.current !== null) {
         window.clearTimeout(clipboardAttemptTimerRef.current);
         clipboardAttemptTimerRef.current = null;
-      }
-      if (hiddenEchoFlushTimerRef.current !== null) {
-        window.clearTimeout(hiddenEchoFlushTimerRef.current);
-        hiddenEchoFlushTimerRef.current = null;
       }
     },
     []
@@ -3179,6 +3726,15 @@ export function TerminalPane({
   }, [notice]);
 
   useAutoDismiss(error, setError);
+
+  useEffect(() => {
+    if (!connectionAlert) return;
+    const dismissMs = connectionAlert.tone === "warn" ? 5_000 : 8_000;
+    const timer = window.setTimeout(() => {
+      setConnectionAlert((current) => (current === connectionAlert ? null : current));
+    }, dismissMs);
+    return () => window.clearTimeout(timer);
+  }, [connectionAlert]);
 
   useEffect(() => {
     if (loading || pending || sessionResponse || !selectedRuntime || !isCliRuntimeTerminalLaunchable(selectedRuntime)) return;
@@ -3277,7 +3833,7 @@ export function TerminalPane({
     if (!terminal) return;
     terminal.options.fontSize = terminalFontSize;
     invalidateTerminalWidthMeasurements(terminal);
-    scheduleTerminalRefit({ repair: true });
+    scheduleTerminalRefit({ repair: true, reason: "FONT" });
   }, [terminalFontSize]);
 
   useEffect(() => {
@@ -3330,6 +3886,9 @@ export function TerminalPane({
         const accumulated = accumulateTouchScrollLines(pendingTouchPx, deltaY, lineHeightPx);
         pendingTouchPx = accumulated.pendingPx;
         if (accumulated.lines !== 0) {
+          if (accumulated.lines < 0) {
+            wasAtBottomRef.current = false;
+          }
           scrollXtermByTouchLines(terminal, accumulated.lines);
           syncTerminalViewportEvidence(host, terminal);
         }
@@ -3353,10 +3912,16 @@ export function TerminalPane({
     // the wheel for a useless partial scroll. Apps without mouse tracking
     // (plain shells) keep native viewport scrolling.
     const handleMouseWheel = (event: WheelEvent) => {
-      if (event.deltaY === 0 || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.deltaY === 0 || event.ctrlKey || event.metaKey || event.altKey) return;
       const terminal = terminalRef.current;
       if (!terminal) return;
-      if ((terminal.modes?.mouseTrackingMode ?? "none") === "none") return;
+      if ((terminal.modes?.mouseTrackingMode ?? "none") === "none") {
+        if (event.deltaY < 0) {
+          wasAtBottomRef.current = false;
+        }
+        return;
+      }
+      if (event.shiftKey) return;
       event.preventDefault();
       event.stopPropagation();
       // Reconcile the pane host PTY geometry on interaction: the one-shot resize
@@ -3432,6 +3997,7 @@ export function TerminalPane({
     let outputReadyForGeometry = false;
     let terminalSurfaceOpened = false;
     let initialTerminalFocusResolved = false;
+    let initialTerminalGeometryReady = false;
     let initialTailPending = true;
     let openTerminalSurface = () => undefined;
     const terminalSurfaceEligible = () =>
@@ -3450,6 +4016,12 @@ export function TerminalPane({
     const initialReplayRequiresReveal = true;
     const terminalOutputWritable = () =>
       Boolean(terminal) && initialReplayBuffered && terminalSurfaceEligible();
+    const resizeTrace = createTerminalResizeTrace({
+      host: terminalHost, roomId: pane.roomId, paneId: pane.id,
+      instanceId: terminalInstanceIdRef.current,
+      getTerminal: () => terminal, isVisible: () => isVisibleRef.current,
+      isMinimized: () => paneMinimizedRef.current
+    });
     const writeXtermOutput = (
       data: string,
       done: (error?: unknown) => void,
@@ -3464,6 +4036,7 @@ export function TerminalPane({
         const replayTerminal = terminal;
         const end = terminalReplayChunkEnd(data, offset);
         const chunk = data.slice(offset, end);
+        resizeTrace.wrote(chunk.length);
         try {
           recordTerminalStressXtermWrite(
             pane.roomId,
@@ -3475,13 +4048,13 @@ export function TerminalPane({
           notifyTerminalPreviewChangedThrottled(pane.id);
           const activeBuffer = replayTerminal.buffer.active;
           const wasAtBottom = activeBuffer
-            ? activeBuffer.baseY <= 0 || activeBuffer.viewportY >= activeBuffer.baseY - 1
+            ? activeBuffer.baseY <= 0 || (wasAtBottomRef.current && activeBuffer.viewportY >= activeBuffer.baseY)
             : wasAtBottomRef.current;
           isWritingChunkRef.current = true;
           replayTerminal.write(chunk, () => {
             isWritingChunkRef.current = false;
             offset = end;
-            if (wasAtBottom) {
+            if (wasAtBottom && wasAtBottomRef.current) {
               replayTerminal.scrollToBottom();
               wasAtBottomRef.current = true;
               syncTerminalViewportEvidence(terminalHost, replayTerminal);
@@ -3532,6 +4105,7 @@ export function TerminalPane({
     });
     terminalOutputCoordinatorRef.current = outputCoordinator;
     const geometryCoordinator = createTerminalGeometryCoordinator({
+      onTrace: resizeTrace.trace,
       ownerDocument: terminalHost.ownerDocument,
       host: terminalHost,
       getTerminal: () => terminal,
@@ -3595,20 +4169,22 @@ export function TerminalPane({
           ...(force ? { force: true } : {}),
           ...(leaseId ? { leaseId } : {})
         }));
+        // A later denial may be for this resize, so never replay an earlier, accepted input.
+        lastTerminalControlMutationRef.current = null;
       },
       isScrolledToBottom: () => {
+        if (!wasAtBottomRef.current) return false;
         const activeBuffer = terminal?.buffer.active;
         if (!activeBuffer) return wasAtBottomRef.current;
         if (activeBuffer.baseY <= 0) return true;
         return activeBuffer.viewportY >= activeBuffer.baseY - 1;
       },
       scrollToBottom: () => {
+        // xterm 6 owns scrolling through its ScrollableElement. The legacy
+        // .xterm-viewport is empty; reading its scrollHeight forces a full
+        // layout for each pane without moving the terminal's buffer.
         terminal?.scrollToBottom();
         wasAtBottomRef.current = true;
-        const viewport = terminalHost?.querySelector<HTMLElement>(".xterm-viewport");
-        if (viewport) {
-          viewport.scrollTop = viewport.scrollHeight;
-        }
         syncTerminalViewportEvidence(terminalHost, terminal);
       },
       onRepaint: (info) => {
@@ -3636,6 +4212,11 @@ export function TerminalPane({
         });
       },
       onReady: ({ width, height, cols, rows, repaired }) => {
+        initialTerminalGeometryReady = true;
+        if (terminal) reconnectFrameRef.current?.releaseAfterPaint(terminal, {
+          replay: initialReplayBuffered && !initialReplayWritePending,
+          geometry: initialTerminalGeometryReady
+        });
         if (revealGeometryResolve) {
           const resolve = revealGeometryResolve;
           revealGeometryResolve = null;
@@ -3737,9 +4318,10 @@ export function TerminalPane({
           }
         }
         // Initial page refreshes can reveal a live pane with a stale xterm
-        // canvas even though no host resize event was emitted. Use the same
-        // repair path as a manual Pane layout change before painting output.
-        geometryCoordinator.syncVisibility({ repair: true });
+        // canvas even though no host resize event was emitted. Repair that first
+        // reveal; a resident terminal keeps its geometry and only needs fitting
+        // when its host changed or the coordinator detects a real geometry fault.
+        geometryCoordinator.syncVisibility({ repair: !initialTerminalGeometryReady });
         // Wait for the geometry to actually land (onReady) before the first
         // visible paint — after a refresh the shell layout is still settling,
         // so a fixed frame count lets the default 100x30 grid flash. Bounded
@@ -3785,6 +4367,7 @@ export function TerminalPane({
       if (disposed) return;
       setTerminalReplayReady(false);
       setTerminalStatus("closed");
+      reconnectFrameRef.current?.dispose();
       setError(error instanceof Error ? error.message : "CLI terminal replay failed");
       setTerminalPrefillReady(true);
     };
@@ -3824,11 +4407,18 @@ export function TerminalPane({
           scheduleModelSettingsRefreshAfterParsedOutput(pendingRefresh.token, pendingRefresh.revision);
         }
         pendingFinalize?.();
+        if (terminal) {
+          reconnectFrameRef.current?.releaseAfterPaint(terminal, {
+            replay: initialReplayBuffered && !initialReplayWritePending,
+            geometry: initialTerminalGeometryReady
+          });
+        }
         initialReplayErrorPending = false;
       }).catch(handleTerminalReplayFailure);
     };
     setTerminalReplayReady(false);
     const nativePasteListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!isNativeClipboardEvent(event)) return;
       const activeElement = typeof document !== "undefined" ? document.activeElement : null;
       const targetInsideTerminal = event.target instanceof Node && terminalHost.contains(event.target);
@@ -3868,6 +4458,7 @@ export function TerminalPane({
       handleTerminalNativePaste(event);
     };
     const nativePasteShortcutListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!(event instanceof KeyboardEvent)) return;
       const isPasteShortcut = isPasteShortcutEvent(event);
       const activeElement = typeof document !== "undefined" ? document.activeElement : null;
@@ -3911,6 +4502,7 @@ export function TerminalPane({
       handleTerminalPasteShortcut(event);
     };
     const nativeBeforeInputListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!isPasteBeforeInputEvent(event)) return;
       const activeElement = typeof document !== "undefined" ? document.activeElement : null;
       const targetInsideTerminal = event.target instanceof Node && terminalHost.contains(event.target);
@@ -3951,6 +4543,7 @@ export function TerminalPane({
     };
 
     const nativeCopyShortcutListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!(event instanceof KeyboardEvent) || !isCopyShortcutEvent(event)) return;
       const activeElement = typeof document !== "undefined" ? document.activeElement : null;
       const targetInTerminal = event.target instanceof Node && terminalHost.contains(event.target);
@@ -3968,6 +4561,7 @@ export function TerminalPane({
     };
 
     const nativeContextMenuListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!(event instanceof MouseEvent)) return;
       if (voiceInputRef.current.settings.terminalContextMenu === false) return;
       event.preventDefault();
@@ -3982,6 +4576,7 @@ export function TerminalPane({
     };
 
     const nativeReasonixShortcutListener: EventListener = (event) => {
+      if (terminalHost.closest("[inert]")) return;
       if (!(event instanceof KeyboardEvent)) return;
       const session = sessionResponseRef.current?.session;
       if (session?.purpose !== "NORMAL" || session.runtimeId !== "cli:deepseek" || !isTargetRef.current) return;
@@ -4082,13 +4677,17 @@ export function TerminalPane({
           background: "#090b0c",
           foreground: "#e8e3d8",
           cursor: "#5cc8aa",
-          selectionBackground: "#254941"
+          selectionBackground: "#254941",
+          scrollbarSliderBackground: "rgba(232, 227, 216, 0.18)",
+          scrollbarSliderHoverBackground: "rgba(232, 227, 216, 0.32)",
+          scrollbarSliderActiveBackground: "rgba(232, 227, 216, 0.45)"
         }
       });
       fitAddon = new FitAddon();
       fitAddonRef.current = fitAddon;
       terminal.loadAddon(fitAddon);
       terminalRef.current = terminal;
+      resizeTrace.sync();
       lastTerminalOutputRefitAtRef.current = 0;
       const replayTerminal = terminal;
       writeParsedDisposable = replayTerminal.onWriteParsed(() => {
@@ -4100,12 +4699,10 @@ export function TerminalPane({
       scrollDisposable = replayTerminal.onScroll(() => {
         const activeBuffer = replayTerminal.buffer.active;
         if (activeBuffer) {
-          if (activeBuffer.baseY <= 0 || activeBuffer.viewportY >= activeBuffer.baseY - 1) {
+          if (activeBuffer.baseY <= 0 || activeBuffer.viewportY >= activeBuffer.baseY) {
             wasAtBottomRef.current = true;
-          } else if (activeBuffer.viewportY < activeBuffer.baseY - 2) {
-            if (!isWritingChunkRef.current) {
-              wasAtBottomRef.current = false;
-            }
+          } else {
+            wasAtBottomRef.current = false;
           }
         }
         syncTerminalViewportEvidence(terminalHost, replayTerminal);
@@ -4183,6 +4780,9 @@ export function TerminalPane({
         addTerminalIntentTarget(terminalHost, "pointerdown");
         addTerminalIntentTarget(terminalHost, "focusin");
         addTerminalIntentTarget(terminalDom.textarea, "focus");
+        activeTerminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+          return customKeyEventHandlerRef.current?.(event) ?? true;
+        });
         const dispatchInputSegments = (segments: TerminalInputSegment[]) => {
           for (const segment of segments) {
             if (segment.display === "hidden") {
@@ -4382,7 +4982,7 @@ export function TerminalPane({
           }
           if (terminal) geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
           const wasReconnect = reconnectInProgressRef.current;
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           reportCliLifecycleEvent(
             "SOCKET_READY",
             "SUCCESS",
@@ -4454,6 +5054,9 @@ export function TerminalPane({
           return;
         }
         if (message.type === "control_upgraded") {
+          // Only acknowledge an upgrade this socket actually requested. A late
+          // or unsolicited acknowledgement is not a new user interaction.
+          if (!observerControlUpgradePendingRef.current) return;
           observerControlUpgradePendingRef.current = false;
           setTerminalControl({
             clientMode: "INTERACTIVE",
@@ -4474,8 +5077,10 @@ export function TerminalPane({
             expiresAt: message.expiresAt ?? null
           }, socket, terminalSessionResponse.session.sessionId);
           if (message.controlState === "CONTROLLER" && terminal) {
-            geometryCoordinator.requestRefit({ repair: true });
-            geometryCoordinator.reconcileResize(terminal.cols, terminal.rows, true);
+            // A lease grant/state pair reconciles geometry once per identity.
+            // Forcing the same grid nudges the PTY and replays CLI history.
+            geometryCoordinator.requestRefit({ reason: "CONTROL" });
+            geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
           }
           reportCliLifecycleEvent("CONTROL_STATE_CHANGED", "INFO", "SERVER_STATE", {
             controlState: message.controlState,
@@ -4497,8 +5102,10 @@ export function TerminalPane({
             expiresAt: message.expiresAt
           }, socket, terminalSessionResponse.session.sessionId);
           if (terminal) {
-            geometryCoordinator.requestRefit({ repair: true });
-            geometryCoordinator.reconcileResize(terminal.cols, terminal.rows, true);
+            // A lease grant/state pair reconciles geometry once per identity.
+            // Forcing the same grid nudges the PTY and replays CLI history.
+            geometryCoordinator.requestRefit({ reason: "CONTROL" });
+            geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
           }
           reportCliLifecycleEvent("CONTROL_GRANTED", "SUCCESS", "CONTROL_ACQUIRED", {
             controlState: "CONTROLLER",
@@ -4527,9 +5134,16 @@ export function TerminalPane({
           return;
         }
         if (message.type === "control_denied") {
+          const deniedLeaseId = terminalControlRef.current.leaseId;
           terminalControlRequestPendingRef.current = false;
           observerControlUpgradePendingRef.current = false;
           if (message.code === "CLI_CONTROL_REQUIRED" || message.code === "CLI_LEASE_STALE") {
+            // Denials have no input correlation and may reject a heartbeat.
+            // Never infer that the last input is safe to replay.
+            setConnectionAlert({
+              tone: "bad",
+              message: "Terminal control changed. Check the prompt before sending again."
+            });
             setTerminalControl({
               state: terminalControlRef.current.clientMode === "OBSERVER" ? "OBSERVER" : "AVAILABLE",
               leaseId: null,
@@ -4537,6 +5151,7 @@ export function TerminalPane({
               expiresAt: null
             });
           }
+          replayDeniedTerminalInput(message.code, socket, deniedLeaseId);
           reportCliLifecycleEvent(
             "CONTROL_DENIED",
             "DENIED",
@@ -4591,6 +5206,7 @@ export function TerminalPane({
                 }
               } else {
                 void outputCoordinator.enqueue(visibleData, () => {
+                  scheduleTerminalScreenRunningCheck();
                   if (
                     terminalReplayComplete &&
                     refreshOutputToken !== null &&
@@ -4603,6 +5219,7 @@ export function TerminalPane({
               return;
             }
             void outputCoordinator.enqueue(visibleData, () => {
+              scheduleTerminalScreenRunningCheck();
               if (
                 terminalReplayComplete &&
                 refreshOutputToken !== null &&
@@ -4744,7 +5361,7 @@ export function TerminalPane({
           setTerminalStatus("attached");
           setConnectionAlert(null);
           resetTerminalControl();
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           if (xtermHostRef.current) {
             xtermHostRef.current.dataset.terminalSocketParked = "true";
           }
@@ -4765,7 +5382,7 @@ export function TerminalPane({
           setTerminalStatus("closed");
           setConnectionAlert(null);
           resetTerminalControl();
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           if (!reconnectStopReported) {
             reconnectStopReported = true;
             reportCliLifecycleEvent(
@@ -4797,7 +5414,7 @@ export function TerminalPane({
             if (readySocketRef.current?.socket === socket) readySocketRef.current = null;
             setTerminalStatus("reconnecting");
             setConnectionAlert(null);
-            reconnectInProgressRef.current = true;
+            setReconnectInProgress(true);
             scheduleReconnect(socketGeneration, "SOCKET_CLOSE");
           }
           return;
@@ -4808,7 +5425,7 @@ export function TerminalPane({
           "code" in event && typeof event.code === "number" ? event.code : undefined;
         const wasClean =
           "wasClean" in event && typeof event.wasClean === "boolean" ? event.wasClean : undefined;
-        reconnectInProgressRef.current = true;
+        setReconnectInProgress(true);
         reportCliLifecycleEvent("SOCKET_DISCONNECTED", "RETRY", disconnectReason, {
           socketGeneration,
           ...(closeCode !== undefined ? { closeCode } : {}),
@@ -4827,7 +5444,7 @@ export function TerminalPane({
           finishFallbackRun();
           setTerminalStatus("closed");
           resetTerminalControl();
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           reportCliLifecycleEvent(
             "RECONNECT_STOPPED",
             "FAILURE",
@@ -4853,6 +5470,7 @@ export function TerminalPane({
     void attachTerminal().catch((err) => {
       if (disposed) return;
       setTerminalStatus("closed");
+      reconnectFrameRef.current?.dispose();
       setError(err instanceof Error ? err.message : "CLI attach failed");
       setTerminalPrefillReady(true);
       onRevealReady?.(pane.id, revealGenerationRef.current);
@@ -4861,9 +5479,12 @@ export function TerminalPane({
     let lastHostResizeDebug = "";
     let lastObservedHostWidth = 0;
     let lastObservedHostHeight = 0;
-    const resizeObserver = new ResizeObserver(() => {
-      const hostWidth = terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0;
-      const hostHeight = terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0;
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries.find((entry) => entry.target === terminalHost);
+      // This host has no padding/border. Use the already-computed content box
+      // rather than synchronously measuring again during observer delivery.
+      const hostWidth = entry ? entry.contentRect.width : terminalHost.clientWidth || terminalHost.getBoundingClientRect().width || 0;
+      const hostHeight = entry ? entry.contentRect.height : terminalHost.clientHeight || terminalHost.getBoundingClientRect().height || 0;
       const roundedWidth = Math.round(hostWidth);
       const roundedHeight = Math.round(hostHeight);
       if (roundedWidth === lastObservedHostWidth && roundedHeight === lastObservedHostHeight) {
@@ -4888,7 +5509,7 @@ export function TerminalPane({
       }
       // Standard container resize refits through the fit addon without destroying
       // GPU texture atlases or forcing PTY nudges on every frame unless broken.
-      geometryCoordinator.requestRefit({ delayedPass: false });
+      geometryCoordinator.requestRefit({ delayedPass: false, reason: "OBSERVER" });
     });
     resizeObserver.observe(terminalHost);
 
@@ -4899,6 +5520,10 @@ export function TerminalPane({
       if (inputTokenizerFlushTimer !== null) {
         window.clearTimeout(inputTokenizerFlushTimer);
         inputTokenizerFlushTimer = null;
+      }
+      if (terminalPromptDraftDebounceTimerRef.current !== null) {
+        window.clearTimeout(terminalPromptDraftDebounceTimerRef.current);
+        terminalPromptDraftDebounceTimerRef.current = null;
       }
       delete terminalHost.dataset.terminalInitialGeometry;
       delete terminalHost.dataset.terminalPendingPrefillEvents;
@@ -4921,6 +5546,7 @@ export function TerminalPane({
       if (socketGeneration > 0) reconnectCoordinatorRef.current.invalidateSocketGeneration(socketGeneration);
       clearScheduledTerminalRepaint();
       geometryCoordinator.dispose();
+      resizeTrace.dispose();
       if (terminalGeometryCoordinatorRef.current === geometryCoordinator) {
         terminalGeometryCoordinatorRef.current = null;
       }
@@ -5043,10 +5669,51 @@ export function TerminalPane({
     }
   }
 
+  // Remembers the account for the next pane of this CLI and restarts only this pane on it.
+  // Gemini and Claude keep the active model and effort and continue the same conversation.
+  function switchCliAccountProfile(runtimeId: "cli:gemini" | "cli:copilot" | "cli:cursor" | "cli:claude", profileId: string) {
+    const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+    if (runtimeId === "cli:gemini") {
+      setSelectedGeminiAccountProfileId(profileId);
+      writeLastGeminiAccountProfileId(profileId);
+    } else if (runtimeId === "cli:copilot") {
+      setSelectedCopilotAccountProfileId(profileId);
+      writeLastCopilotAccountProfileId(profileId);
+    } else if (runtimeId === "cli:cursor") {
+      setSelectedCursorAccountProfileId(profileId);
+      writeLastCursorAccountProfileId(profileId);
+    } else {
+      setSelectedClaudeAccountProfileId(profileId);
+      writeLastClaudeAccountProfileId(profileId);
+    }
+    if (!sessionResponseRef.current || profileId === currentProfileId) return;
+    if (runtimeId === "cli:gemini" || runtimeId === "cli:claude") {
+      const hasActiveTask = Boolean(sessionResponseRef.current?.session);
+      const activeModelId = modelSettingsRef.current?.current?.modelId
+        ?? sessionResponseRef.current?.session.modelId
+        ?? pane.modelId
+        ?? undefined;
+      const activeReasoningEffort = (modelSettingsRef.current?.current?.reasoningEffort
+        ?? pane.reasoningEffort
+        ?? undefined) as Pane["reasoningEffort"];
+      void requestCliSession({
+        accountProfileId: profileId,
+        modelId: activeModelId,
+        reasoningEffort: activeReasoningEffort,
+        forceRestart: true,
+        resume: hasActiveTask
+      });
+      return;
+    }
+    const hasActiveTask = Boolean(sessionResponseRef.current.session.cliTaskId);
+    void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
+  }
+
   async function requestCliSession(
     input: { accountProfileId?: string | null; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
     options: { automaticReconnect?: boolean; expectedSocketGeneration?: number } = {}
   ): Promise<PaneCliSessionResponse | null> {
+    if (pane.id.startsWith("pane:optimistic-")) return null;
     if (!selectedRuntime && !options.automaticReconnect) return null;
     const selectedRuntimeForRequest = selectedRuntime;
     return reconnectCoordinatorRef.current.runSessionRequest(async () => {
@@ -5054,7 +5721,10 @@ export function TerminalPane({
         options.automaticReconnect &&
         (options.expectedSocketGeneration === undefined ||
           !reconnectCoordinatorRef.current.isCurrentSocketGeneration(options.expectedSocketGeneration))
-      ) return null;
+      ) {
+        setReconnectInProgress(false);
+        return null;
+      }
       setPending(true);
       if (!options.automaticReconnect) {
         clearReconnectTimer();
@@ -5077,6 +5747,8 @@ export function TerminalPane({
                     ? { ...input, accountProfileId: input.accountProfileId ?? selectedCopilotAccountProfileId }
                     : selectedRuntimeForRequest!.id === "cli:cursor"
                       ? { ...input, accountProfileId: input.accountProfileId ?? selectedCursorAccountProfileId }
+                      : selectedRuntimeForRequest!.id === "cli:claude"
+                        ? { ...input, accountProfileId: input.accountProfileId ?? selectedClaudeAccountProfileId }
                   : input
               )
             );
@@ -5097,11 +5769,18 @@ export function TerminalPane({
           options.automaticReconnect &&
           options.expectedSocketGeneration !== undefined &&
           !reconnectCoordinatorRef.current.isCurrentSocketGeneration(options.expectedSocketGeneration)
-        ) return null;
+        ) {
+          setReconnectInProgress(false);
+          return null;
+        }
         clearReconnectTimer();
         reconnectAttemptRef.current = 0;
         setError(null);
         setConnectionAlert(null);
+        reconnectFrameRef.current?.dispose();
+        reconnectFrameRef.current = options.automaticReconnect && isVisibleRef.current && !paneMinimizedRef.current &&
+          nextSession.session.sessionId === sessionResponseRef.current?.session.sessionId && xtermHostRef.current
+          ? holdTerminalReconnectFrame(xtermHostRef.current) : null;
         setSessionResponse(nextSession);
         recordLifecycleDebugEvent({
           type: "session_sync",
@@ -5135,7 +5814,7 @@ export function TerminalPane({
           clearReconnectTimer();
           setTerminalStatus("closed");
           setError(err instanceof Error ? err.message : "CLI reconnect stopped");
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           reportCliLifecycleEvent(
             "RECONNECT_STOPPED",
             "FAILURE",
@@ -5153,7 +5832,7 @@ export function TerminalPane({
           clearReconnectTimer();
           setTerminalStatus("closed");
           setError(err instanceof Error ? err.message : "CLI reconnect stopped");
-          reconnectInProgressRef.current = false;
+          setReconnectInProgress(false);
           reportCliLifecycleEvent(
             "RECONNECT_STOPPED",
             "FAILURE",
@@ -5186,7 +5865,7 @@ export function TerminalPane({
     if (reconnectTimerRef.current !== null) return;
     const session = sessionResponseRef.current;
     if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
-    reconnectInProgressRef.current = true;
+    setReconnectInProgress(true);
     setTerminalStatus("reconnecting");
     setConnectionAlert(null);
     const generation = reconnectCoordinatorRef.current.beginSocketGeneration();
@@ -5201,12 +5880,30 @@ export function TerminalPane({
   }
 
   function checkTerminalSocketHealth(source = "watchdog"): void {
-    if (reconnectInProgressRef.current) return;
+    const now = Date.now();
+    if (reconnectInProgressRef.current) {
+      if (reconnectStartedAtRef.current !== null && now - reconnectStartedAtRef.current > 12_000) {
+        recordLifecycleDebugEvent({
+          type: "terminal_reconnect_watchdog_deadlock_cleared",
+          scope: "TerminalPane",
+          detail: `source=${source} elapsedMs=${now - reconnectStartedAtRef.current}`,
+          paneId: pane.id,
+          paneMode: pane.mode
+        });
+        setReconnectInProgress(false);
+        clearReconnectTimer();
+        reconnectCoordinatorRef.current.clearSessionRequestFlight();
+        api.clearActiveCliSessionFlight?.(pane.id);
+      } else {
+        return;
+      }
+    }
     if (reconnectTimerRef.current !== null) return;
     if (intentionalSocketParkRef.current) return;
     const status = terminalStatusRef.current;
-    if (status !== "attached" && status !== "connecting" && status !== "reconnecting") return;
     const session = sessionResponseRef.current;
+    const isPotentiallyActiveCli = Boolean(session && isRecoverableCliSession(session.session));
+    if (!isPotentiallyActiveCli && status !== "attached" && status !== "connecting" && status !== "reconnecting") return;
     if (!session?.websocket || !isRecoverableCliSession(session.session)) return;
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -5283,7 +5980,7 @@ export function TerminalPane({
     const rememberedTaskId = sessionResponseRef.current?.session.cliTaskId ?? null;
     clearReconnectTimer();
     reconnectAttemptRef.current = 0;
-    reconnectInProgressRef.current = false;
+    setReconnectInProgress(false);
     setConnectionAlert(null);
     setNotice(null);
     autoAttachAttemptRef.current = null;
@@ -5397,6 +6094,7 @@ export function TerminalPane({
   }
 
   function focusTerminal() {
+    if (xtermHostRef.current?.closest("[inert]")) return;
     const terminal = terminalRef.current;
     terminal?.scrollToBottom();
     wasAtBottomRef.current = true;
@@ -5449,7 +6147,7 @@ export function TerminalPane({
     return terminalGeometryCoordinatorRef.current?.repairIfBroken() ?? false;
   }
 
-  function scheduleTerminalRefit(options: { delayedPass?: boolean; repair?: boolean } = {}) {
+  function scheduleTerminalRefit(options: TerminalRefitOptions = {}) {
     terminalGeometryCoordinatorRef.current?.requestRefit(options);
   }
 
@@ -5464,12 +6162,10 @@ export function TerminalPane({
     ensureTerminalControl(true);
     const coordinator = terminalGeometryCoordinatorRef.current;
     if (coordinator && isVisible) {
-      coordinator.requestRefit({ repair: true });
+      coordinator.requestRefit({ reason: "LAYOUT_EFFECT" });
       if (wasAtBottomRef.current) {
         terminalRef.current?.scrollToBottom();
         const host = xtermHostRef.current;
-        const viewport = host?.querySelector<HTMLElement>(".xterm-viewport");
-        if (viewport) viewport.scrollTop = viewport.scrollHeight;
         syncTerminalViewportEvidence(host, terminalRef.current);
       }
     }
@@ -5536,9 +6232,17 @@ export function TerminalPane({
 
   useEffect(() => {
     if (!voiceAttachmentEligible || !voiceInput.settings.enabled || !voiceInput.serverSettings?.enabled) {
-      voiceInput.cancel(voiceOwnerId);
+      voiceInput.cancel(voiceOwnerId, isTurnRunning ? "Voice input stopped because the CLI started a turn." : "Voice input stopped.");
     }
-  }, [voiceAttachmentEligible, voiceInput.cancel, voiceInput.serverSettings?.enabled, voiceInput.settings.enabled, voiceOwnerId]);
+  }, [voiceAttachmentEligible, voiceInput.cancel, voiceInput.serverSettings?.enabled, voiceInput.settings.enabled, voiceOwnerId, isTurnRunning]);
+
+  // Say why a recording ended without a transcript instead of letting it vanish.
+  useEffect(() => {
+    const cancelled = voiceInput.cancelNotice;
+    if (!cancelled || cancelled.ownerId !== voiceOwnerId) return;
+    voiceInput.clearCancelNotice();
+    setNotice(cancelled.message);
+  }, [voiceInput.cancelNotice, voiceInput.clearCancelNotice, voiceOwnerId]);
 
   useEffect(() => () => voiceInput.cancel(voiceOwnerId), [voiceInput.cancel, voiceOwnerId]);
 
@@ -5621,10 +6325,12 @@ export function TerminalPane({
     window.addEventListener("focus", repairTerminalAfterBrowserResume);
     window.addEventListener("pageshow", repairTerminalAfterBrowserResume);
     document.addEventListener("visibilitychange", repairTerminalAfterBrowserResume);
+    window.addEventListener("space:app-resumed", repairTerminalAfterBrowserResume);
     return () => {
       window.removeEventListener("focus", repairTerminalAfterBrowserResume);
       window.removeEventListener("pageshow", repairTerminalAfterBrowserResume);
       document.removeEventListener("visibilitychange", repairTerminalAfterBrowserResume);
+      window.removeEventListener("space:app-resumed", repairTerminalAfterBrowserResume);
     };
   }, [pane.id, sessionResponse?.websocket]);
 
@@ -5805,6 +6511,12 @@ export function TerminalPane({
         ...(control.protocolVersion === 2 ? { leaseId: control.leaseId } : {})
       })
     );
+    if (control.protocolVersion === 2 && source !== "terminal protocol response") {
+      lastTerminalControlMutationRef.current = {
+        socket,
+        record: { data: terminalData, source, display, preserveNotice, options, leaseId: control.leaseId, sentAtMs: Date.now() }
+      };
+    }
     if (wireDisplay === "visible") {
       armModelSettingsOutputRefresh(terminalData, socket, sessionId, terminalRef.current);
     }
@@ -5813,21 +6525,41 @@ export function TerminalPane({
       const nextDraft = nextTerminalPromptDraft(previousDraft, terminalData);
       const trackedDraft = nextDraft ?? { text: "", cursor: 0 };
       terminalPromptDraftRef.current = trackedDraft;
-      setTerminalPromptDraft(trackedDraft.text);
+
+      const hadText = Boolean(previousDraft.text.trim());
+      const hasText = Boolean(trackedDraft.text.trim());
       const promptWasCleared =
         terminalData.includes("\u0015") ||
         (nextDraft !== null && Boolean(previousDraft.text) && !trackedDraft.text);
-      if (!isTerminalSubmitInput(terminalData) && promptWasCleared) {
-        managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
-      } else if (nextDraft === null) {
-        managedPromptAttachmentsRef.current = {
-          ...managedPromptAttachmentsRef.current,
-          pending: []
-        };
+
+      if (promptWasCleared || hadText !== hasText || isTerminalSubmitInput(terminalData)) {
+        if (terminalPromptDraftDebounceTimerRef.current !== null) {
+          window.clearTimeout(terminalPromptDraftDebounceTimerRef.current);
+          terminalPromptDraftDebounceTimerRef.current = null;
+        }
+        setTerminalPromptDraft(trackedDraft.text);
+      } else {
+        if (terminalPromptDraftDebounceTimerRef.current !== null) {
+          window.clearTimeout(terminalPromptDraftDebounceTimerRef.current);
+        }
+        terminalPromptDraftDebounceTimerRef.current = window.setTimeout(() => {
+          terminalPromptDraftDebounceTimerRef.current = null;
+          setTerminalPromptDraft(terminalPromptDraftRef.current.text);
+        }, 120);
       }
+
+      if (!isTerminalSubmitInput(terminalData) && promptWasCleared) {
+        // A Ctrl+U rewrite (layout fix, prompt variables) retypes the labels it keeps.
+        const kept = managedPromptAttachmentsRef.current.pending.filter((attachment) => trackedDraft.text.includes(attachment.token));
+        managedPromptAttachmentsRef.current = kept.length
+          ? { ...managedPromptAttachmentsRef.current, pending: kept }
+          : { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
+      }
+      // Input the draft model cannot follow (arrows, Tab, Alt keys) keeps pending labels;
+      // submit confirms them against the visible prompt instead of dropping their paths.
     }
     if (options.turnMarker) {
-      if (session?.purpose === "NORMAL" && isCliModelSettingsRuntime(session.runtimeId)) {
+      if (session?.purpose === "NORMAL" && isTurnCapableRuntime(session.runtimeId)) {
         const nextTurn = { marker: options.turnMarker, status: "PENDING" as const };
         setActiveCliTurn(nextTurn);
         storeActiveCliTurn(pane.id, sessionId, nextTurn);
@@ -5838,7 +6570,7 @@ export function TerminalPane({
         runKey: options.turnMarker,
         status: "STARTED"
       });
-      if (session?.purpose === "NORMAL" && !isCliModelSettingsRuntime(session.runtimeId)) {
+      if (session?.purpose === "NORMAL" && !isTurnCapableRuntime(session.runtimeId)) {
         armFallbackRunWatcher(options.turnMarker);
       }
     }
@@ -5853,9 +6585,13 @@ export function TerminalPane({
     options: { turnMarker?: string } = {}
   ): boolean {
     const attachmentState = managedPromptAttachmentsRef.current;
+    const visiblePrompt = attachmentState.pending.length
+      ? visibleTerminalPromptText(terminalRef.current)
+      : "";
     const activeAttachments = attachmentState.pending.filter((attachment) =>
       terminalPromptDraftRef.current.text.includes(attachment.token) ||
-      data.includes(attachment.token)
+      data.includes(attachment.token) ||
+      visiblePrompt.includes(attachment.token.replace(/\s+/g, ""))
     );
     if (activeAttachments.length) {
       const hiddenPaths = ` ${activeAttachments.map((attachment) => attachment.terminalInputPath).join(" ")} `;
@@ -5868,14 +6604,21 @@ export function TerminalPane({
         `${source}: tokenCount=${activeAttachments.length}; insertedPathLength=${hiddenPaths.length}; display=hidden; containsUploadPath=true.`
       );
     }
+    if (promptVariablesSettings.enabled && promptVariablesSettings.autoExpandOnSubmit) {
+      const currentDraft = terminalPromptDraftRef.current.text;
+      if (currentDraft && promptVariables.length) {
+        const expanded = expandPromptVariables(currentDraft, promptVariables, { autoUnescape: true });
+        if (expanded !== currentDraft) {
+          sendTerminalInput(`\u0015${expanded}`, "auto expand prompt variables", "visible", true);
+        }
+      }
+    }
     const sent = sendTerminalInput(data, source, "visible", false, options);
     if (sent) {
       managedPromptAttachmentsRef.current = { imageCount: 0, videoCount: 0, fileCount: 0, pending: [] };
       wasAtBottomRef.current = true;
       terminalRef.current?.scrollToBottom();
       const host = xtermHostRef.current;
-      const viewport = host?.querySelector<HTMLElement>(".xterm-viewport");
-      if (viewport) viewport.scrollTop = viewport.scrollHeight;
       syncTerminalViewportEvidence(host, terminalRef.current);
     }
     return sent;
@@ -5883,6 +6626,33 @@ export function TerminalPane({
 
   async function runCliShortcut(command: OskCliCommand) {
     if (shortcutPendingRef.current) return;
+    if (command.id === "scroll_top" || command.action === "scroll_top") {
+      const terminal = terminalRef.current;
+      if (terminal) {
+        terminal.scrollToTop();
+        wasAtBottomRef.current = false;
+        syncTerminalViewportEvidence(xtermHostRef.current, terminal);
+      }
+      if (transcriptRef.current) {
+        transcriptRef.current.scrollTop = 0;
+      }
+      return;
+    }
+    if (command.id === "scroll_bottom" || command.action === "scroll_bottom") {
+      const terminal = terminalRef.current;
+      if (terminal) {
+        terminal.scrollToBottom();
+        wasAtBottomRef.current = true;
+        syncTerminalViewportEvidence(xtermHostRef.current, terminal);
+        if (isTargetRef.current) {
+          terminal.focus();
+        }
+      }
+      if (transcriptRef.current) {
+        transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+      }
+      return;
+    }
     const identity = sessionResponseRef.current?.session;
     const socket = socketRef.current;
     if (!identity || identity.purpose !== "NORMAL" || !socket) return;
@@ -5893,8 +6663,9 @@ export function TerminalPane({
     setShortcutPending(true);
     try {
       if (command.id === "transcript") {
-        if (identity.runtimeId !== "cli:codex" || !isCurrent()) return;
-        if (!sendTerminalInput("\u0014", "CLI full transcript", "visible", false, { trackDraft: false })) {
+        const transcript = cliTranscriptCommand(identity.runtimeId);
+        if (!transcript || !isCurrent()) return;
+        if (!sendTerminalInput(transcript.text, "CLI full transcript", "visible", false, { trackDraft: false })) {
           throw new Error("Full transcript shortcut could not be sent.");
         }
         if (isCurrent()) focusTerminal();
@@ -5976,7 +6747,7 @@ export function TerminalPane({
             }
             if (current.reasoningEffort !== "low") {
               const result = await handleModelSwitch(current.modelId, "low", null, false);
-              if (result.current.modelId !== current.modelId || result.current.reasoningEffort !== "low") {
+              if (result.current?.modelId !== current.modelId || result.current?.reasoningEffort !== "low" || result.pending) {
                 throw new Error("Low reasoning was not confirmed. Save to memory was not sent.");
               }
             }
@@ -6013,74 +6784,157 @@ export function TerminalPane({
     }
     const session = sessionResponseRef.current?.session;
     const planTitle = plan.title?.trim();
-    const planText = plan.text.trim();
 
-    if (terminalPromptDraftRef.current.text.trim()) {
-      sendTerminalInput("\u0015", "clear draft before plan submit", "visible", true, { trackDraft: true });
+    // Routing returns before every legacy path for Codex, including failed starts.
+    await routePanePlanSelection(session?.runtimeId, async () => {
+      try {
+        await managedPlan.start(plan);
+        if (sessionResponseRef.current?.session.sessionId !== session?.sessionId || !isVisibleRef.current) return;
+        setNotice(`Started plan: ${planTitle || "Untitled"}`);
+      } catch (failure) {
+        if (sessionResponseRef.current?.session.sessionId !== session?.sessionId || !isVisibleRef.current) return;
+        setError(failure instanceof Error ? failure.message : "Managed plan could not be started. Complete its stage configuration and retry.");
+      }
+    }, submitLegacyPlan);
+
+    async function submitLegacyPlan() {
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem(`space_active_plan_${pane.id}`, plan.id);
+          window.dispatchEvent(new CustomEvent(SPACE_CLIPBOARD_UPDATED_EVENT));
+        } catch {}
+      }
+      void api.updatePlanProgress?.(plan.id, {
+        executionStatus: "IN_PROGRESS",
+        paneId: pane.id,
+        roomId: pane.roomId,
+        paneTitle: pane.paneName ?? pane.title ?? undefined
+      } as any).catch(() => {});
+
+      if (terminalPromptDraftRef.current.text.trim()) {
+        sendTerminalInput("\u0015", "clear draft before plan submit", "visible", true, { trackDraft: true });
+      }
+
+      try {
+        const asciiSlug = (planTitle || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+        const filename = `plan-${asciiSlug || plan.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`;
+        const planContent = formatPlanAttachment(plan);
+        const file = new File([planContent], filename, { type: "text/markdown" });
+
+        const uploaded = await api.uploadCliFiles({ paneId: pane.id, source: "CLIPBOARD", files: [file] });
+        const uploadedFile = uploaded.files[0];
+        if (!uploadedFile) throw new Error("Plan file upload returned no file.");
+
+        const previous = managedPromptAttachmentsRef.current;
+        const nextFileCount = previous.fileCount + 1;
+        const token = `[File #${nextFileCount}]`;
+        const attachmentPath = terminalInputPath(uploadedFile);
+
+        managedPromptAttachmentsRef.current = {
+          ...previous,
+          fileCount: nextFileCount,
+          pending: [
+            ...previous.pending,
+            { token, terminalInputPath: attachmentPath }
+          ]
+        };
+
+        const instruction = planTitle
+          ? `Implement the following plan: ${token} ("${planTitle}")\nPlan ID: ${plan.id}`
+          : `Implement the following plan: ${token}\nPlan ID: ${plan.id}`;
+
+        const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
+        const sent = sendTerminalSubmit(`${instruction}\r`, "cli open plan select", {
+          ...(turnMarker ? { turnMarker } : {})
+        });
+        updateClipboardDebug(
+          sent ? "good" : "bad",
+          "open plan execution submit",
+          `selected plan ${plan.id}; title=${planTitle || "Untitled"}; token=${token}; charCount=${plan.text.trim().length}; autoStart=true.`
+        );
+        if (sent) {
+          setNotice(`Sent plan: ${planTitle || "Untitled"}`);
+          focusTerminal();
+        } else {
+          setError("Attach a running CLI before sending a plan to it.");
+        }
+      } catch {
+        // Fallback to direct text submit if file upload is unavailable
+        const instruction = `Implement the following plan:\n\n${formatPlanAttachment(plan)}`;
+        const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
+        const payload = `${BRACKETED_PASTE_START}${instruction}${BRACKETED_PASTE_END}\r`;
+        const sent = sendTerminalSubmit(payload, "cli open plan select fallback", {
+          ...(turnMarker ? { turnMarker } : {})
+        });
+        if (sent) {
+          setNotice(`Sent plan: ${planTitle || "Untitled"}`);
+          focusTerminal();
+        } else {
+          setError("Attach a running CLI before sending a plan to it.");
+        }
+      }
     }
+  }
 
+  // Uploads the plan as a file and puts its reference into the prompt without Enter, keeping any draft.
+  async function handleInsertOpenPlan(plan: ClipboardItem) {
+    setNotice(null);
+    if (terminalStatus !== "attached") {
+      setError("Attach a running CLI before inserting a plan into it.");
+      return;
+    }
+    const planTitle = plan.title?.trim();
+    try {
+      localStorage.setItem(`space_active_plan_${pane.id}`, plan.id);
+    } catch {}
+    void api.updatePlanProgress?.(plan.id, {
+      paneId: pane.id,
+      roomId: pane.roomId,
+      paneTitle: pane.paneName ?? pane.title ?? undefined
+    } as any).catch(() => {});
+
+    let inserted = false;
     try {
       const asciiSlug = (planTitle || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
       const filename = `plan-${asciiSlug || plan.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`;
-      const planContent = planTitle && !planText.startsWith("# ")
-        ? `# ${planTitle}\n\n${planText}`
-        : planText;
-      const file = new File([planContent], filename, { type: "text/markdown" });
-
+      const file = new File([formatPlanAttachment(plan)], filename, { type: "text/markdown" });
       const uploaded = await api.uploadCliFiles({ paneId: pane.id, source: "CLIPBOARD", files: [file] });
       const uploadedFile = uploaded.files[0];
       if (!uploadedFile) throw new Error("Plan file upload returned no file.");
-
       const previous = managedPromptAttachmentsRef.current;
-      const nextFileCount = previous.fileCount + 1;
-      const token = `[File #${nextFileCount}]`;
-      const attachmentPath = terminalInputPath(uploadedFile);
-
-      managedPromptAttachmentsRef.current = {
-        ...previous,
-        fileCount: nextFileCount,
-        pending: [
-          ...previous.pending,
-          { token, terminalInputPath: attachmentPath }
-        ]
-      };
-
-      const instruction = planTitle
-        ? `Implement the following plan: ${token} ("${planTitle}")\nPlan ID: ${plan.id}`
-        : `Implement the following plan: ${token}\nPlan ID: ${plan.id}`;
-
-      const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
-      const sent = sendTerminalSubmit(`${instruction}\r`, "cli open plan select", {
-        ...(turnMarker ? { turnMarker } : {})
-      });
-      updateClipboardDebug(
-        sent ? "good" : "bad",
-        "open plan execution submit",
-        `selected plan ${plan.id}; title=${planTitle || "Untitled"}; token=${token}; charCount=${planText.length}; autoStart=true.`
-      );
-      if (sent) {
-        setNotice(`Sent plan: ${planTitle || "Untitled"}`);
-        focusTerminal();
-      } else {
-        setError("Attach a running CLI before sending a plan to it.");
+      const token = `[File #${previous.fileCount + 1}]`;
+      // One line, so no TUI treats a newline as Enter; the token resolves to the file on submit.
+      const reference = planTitle
+        ? `Implement the following plan: ${token} ("${planTitle}") Plan ID: ${plan.id} `
+        : `Implement the following plan: ${token} Plan ID: ${plan.id} `;
+      inserted = sendTerminalInput(reference, "cli open plan insert", "visible", true, { trackDraft: true });
+      if (inserted) {
+        managedPromptAttachmentsRef.current = {
+          ...previous,
+          fileCount: previous.fileCount + 1,
+          pending: [...previous.pending, { token, terminalInputPath: terminalInputPath(uploadedFile) }]
+        };
       }
     } catch {
-      // Fallback to direct text submit if file upload is unavailable
-      const instruction = planTitle
-        ? `Implement the following plan:\n\n# ${planTitle}\n\n${planText}`
-        : `Implement the following plan:\n\n${planText}`;
-      const turnMarker = isRunCapableCliSession(session) ? createCliTurnMarker() : undefined;
-      const payload = `${BRACKETED_PASTE_START}${instruction}${BRACKETED_PASTE_END}\r`;
-      const sent = sendTerminalSubmit(payload, "cli open plan select fallback", {
-        ...(turnMarker ? { turnMarker } : {})
-      });
-      if (sent) {
-        setNotice(`Sent plan: ${planTitle || "Untitled"}`);
-        focusTerminal();
-      } else {
-        setError("Attach a running CLI before sending a plan to it.");
-      }
+      const instruction = `Implement the following plan:\n\n${formatPlanAttachment(plan)}`.replace(/\r?\n/g, "\r");
+      inserted = sendTerminalInput(`${BRACKETED_PASTE_START}${instruction}${BRACKETED_PASTE_END}`, "cli open plan insert fallback", "visible", true, { trackDraft: true });
     }
+    updateClipboardDebug(
+      inserted ? "good" : "bad",
+      "open plan insert",
+      `selected plan ${plan.id}; title=${planTitle || "Untitled"}; autoStart=false.`
+    );
+    if (inserted) {
+      setNotice(`Inserted plan: ${planTitle || "Untitled"}. Press Enter to send it.`);
+      focusTerminal();
+    } else {
+      setError("Attach a running CLI before inserting a plan into it.");
+    }
+  }
+
+  // Only the non-managed path clears typed text before sending; Codex starts a managed plan instead.
+  function planSendClearsDraft(): boolean {
+    return !usesManagedPlanExecution(sessionResponseRef.current?.session.runtimeId) && Boolean(terminalPromptDraftRef.current.text.trim());
   }
 
   function submitVoiceTranscript(transcript: string): boolean {
@@ -6174,6 +7028,30 @@ export function TerminalPane({
     return true;
   }
 
+  // A lease denial re-queues the input this socket just sent with that lease
+  // (once per helper budget) instead of dropping it; the grant flush resends it.
+  function replayDeniedTerminalInput(code: string, socket: WebSocket, deniedLeaseId: string | null) {
+    const recorded = lastTerminalControlMutationRef.current;
+    const record = recorded?.socket === socket && recorded.record.leaseId === deniedLeaseId ? recorded.record : null;
+    const nowMs = Date.now();
+    const replayBudget = terminalControlReplayBudgetRef.current;
+    if (!record || terminalControlDenialReplay({ code, record, nowMs, replayBudget }) !== "REPLAY") return;
+    const queuedBytes = pendingTerminalInputsRef.current.reduce((total, pendingInput) => total + pendingInput.data.length, 0);
+    if (!terminalPendingInputAdmission({ length: pendingTerminalInputsRef.current.length, queuedBytes }, record.data.length)) return;
+    lastTerminalControlMutationRef.current = null;
+    terminalControlReplayBudgetRef.current = nextTerminalControlReplayBudget(replayBudget, nowMs);
+    pendingTerminalInputsRef.current.push({
+      data: record.data,
+      source: `${record.source}: control replay`,
+      display: record.display,
+      preserveNotice: record.preserveNotice,
+      // The draft model already applied this input when it was first sent.
+      options: { ...record.options, trackDraft: false }
+    });
+    setNotice(TERMINAL_CONTROL_REPLAY_NOTICE);
+    ensureTerminalControl(true);
+  }
+
   function flushPendingTerminalInputs() {
     if (
       terminalControlRef.current.protocolVersion === 2 &&
@@ -6191,33 +7069,59 @@ export function TerminalPane({
     }
   }
 
+  function stopRunningCliTurn(source: string) {
+    if (isOpenCodeCliSession) {
+      void abortOpenCodeTurn();
+      return;
+    }
+    const sent = sendTerminalInput(
+      floatingTurnPauseSequence(sessionResponse?.session.runtimeId ?? null),
+      source,
+      "visible",
+      true,
+      { trackDraft: false }
+    );
+    if (sent) {
+      if (activeTurnMarker) {
+        publishPaneRunLifecycle({
+          roomId: pane.roomId,
+          paneId: pane.id,
+          runKey: activeTurnMarker,
+          status: "FAILED"
+        });
+      }
+      clearStoredActiveCliTurn(pane.id);
+      setActiveCliTurn(null);
+      setModelSettings((current) => current ? { ...current, isTurnActive: false } : current);
+      setTerminalScreenRunning(false);
+      terminalScreenRunningRef.current = false;
+      finishFallbackRun(null, "FAILED");
+    }
+  }
+
+  // One interrupt cooldown for every Stop entry point (pane menu and floating button), so two
+  // quick Stops never send two interrupts (Ctrl+C twice exits most CLIs).
+  function startStopCooldown() {
+    setStopCooldown(true);
+    if (stopCooldownTimerRef.current !== null) window.clearTimeout(stopCooldownTimerRef.current);
+    stopCooldownTimerRef.current = window.setTimeout(() => {
+      stopCooldownTimerRef.current = null;
+      setStopCooldown(false);
+    }, STOP_COOLDOWN_MS);
+  }
+
   function handleTurnControlClick() {
+    if (turnStopPending) return;
     if (isTurnRunning) {
-      if (isOpenCodeCliSession) {
-        void abortOpenCodeTurn();
-        return;
-      }
-      const sent = sendTerminalInput(
-        floatingTurnPauseSequence(sessionResponse?.session.runtimeId ?? null),
-        "floating turn pause",
-        "visible",
-        true,
-        { trackDraft: false }
-      );
-      if (sent) {
-        if (activeTurnMarker) {
-          publishPaneRunLifecycle({
-            roomId: pane.roomId,
-            paneId: pane.id,
-            runKey: activeTurnMarker,
-            status: "FAILED"
-          });
-        }
-        clearStoredActiveCliTurn(pane.id);
-        setActiveCliTurn(null);
-        setModelSettings((current) => current ? { ...current, isTurnActive: false } : current);
-        finishFallbackRun(null, "FAILED");
-      }
+      if (stopCooldown) return;
+      setTurnStopPending(true);
+      if (turnStopPendingTimerRef.current !== null) window.clearTimeout(turnStopPendingTimerRef.current);
+      turnStopPendingTimerRef.current = window.setTimeout(() => {
+        turnStopPendingTimerRef.current = null;
+        setTurnStopPending(false);
+      }, TURN_STOP_SETTLE_MS);
+      stopRunningCliTurn("floating turn pause");
+      startStopCooldown();
       return;
     }
     if (!canSendTurn) return;
@@ -6238,6 +7142,10 @@ export function TerminalPane({
       clearStoredActiveCliTurn(pane.id);
       setActiveCliTurn(null);
       setModelSettings((current) => current ? { ...current, isTurnActive: result.isTurnActive } : current);
+      if (!result.isTurnActive) {
+        setTerminalScreenRunning(false);
+        terminalScreenRunningRef.current = false;
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "OpenCode turn abort failed.");
     }
@@ -6247,46 +7155,60 @@ export function TerminalPane({
     modelId: string,
     reasoningEffort: string,
     _providerId: string | null = null,
-    continueActiveTurn = false
+    continueActiveTurn = false,
+    clickedManagedScope?: ManagedStageScope | null
   ): Promise<{
-    current: NonNullable<PaneCliModelSettings["current"]>;
+    current: PaneCliModelSettings["current"];
     message: string | null;
+    pending?: boolean;
   }> {
     const currentSession = sessionResponseRef.current;
     if (!currentSession) throw new Error("Attach a CLI session before changing model settings.");
-    const result = await api.updateCliModelSettings(pane.id, {
-      expectedSessionId: currentSession.session.sessionId,
-      modelId,
-      reasoningEffort,
-      continueActiveTurn
-    }).catch(async (error: unknown) => {
-      await refreshModelSettings(currentSession.session.sessionId);
-      throw error;
-    });
-    if (sessionResponseRef.current?.session.sessionId !== currentSession.session.sessionId ||
-        result.settings.sessionId !== currentSession.session.sessionId) {
-      throw new Error("The CLI session changed while updating its model settings.");
+    const expectedSessionId = currentSession.session.sessionId;
+    if (currentSession.session.runtimeId === "cli:codex") {
+      return routePaneModelSwitch(managedPlan.getClient(), { modelId, reasoningEffort }, async () => {
+        const settings = await api.cliModelSettings(pane.id);
+        if (sessionResponseRef.current?.session.sessionId !== expectedSessionId) throw new Error("The CLI session changed while reading model settings.");
+        return settings;
+      }, updateUnmanagedModel, clickedManagedScope);
     }
-    modelSettingsRef.current = result.settings;
-    setModelSettings(result.settings);
-    setSessionResponse((current) => {
-      if (!current || current.session.sessionId !== result.session.session.sessionId) return result.session;
-      return { ...current, session: result.session.session };
-    });
-    if (result.interrupted) {
-      clearStoredActiveCliTurn(pane.id);
-      setActiveCliTurn(null);
+    return updateUnmanagedModel();
+
+    async function updateUnmanagedModel() {
+      const result = await api.updateCliModelSettings(pane.id, {
+        expectedSessionId,
+        modelId,
+        reasoningEffort,
+        continueActiveTurn
+      }).catch(async (error: unknown) => {
+        await refreshModelSettings(expectedSessionId);
+        throw error;
+      });
+      if (sessionResponseRef.current?.session.sessionId !== expectedSessionId ||
+          result.settings.sessionId !== expectedSessionId) {
+        throw new Error("The CLI session changed while updating its model settings.");
+      }
+      modelSettingsRef.current = result.settings;
+      setModelSettings(result.settings);
+      setSessionResponse((current) => {
+        if (!current || current.session.sessionId !== result.session.session.sessionId) return result.session;
+        return { ...current, session: result.session.session };
+      });
+      if (result.interrupted) {
+        clearStoredActiveCliTurn(pane.id);
+        setActiveCliTurn(null);
+      }
+      if (!result.settings.current) {
+        throw new Error("The CLI runtime did not confirm the applied model settings.");
+      }
+      const message = result.appliedScope === "REASONING_ONLY"
+        ? result.warning ?? "Reasoning changed; the CLI kept the previous model."
+        : result.warning;
+      return {
+        current: result.settings.current,
+        message
+      };
     }
-    if (!result.settings.current) {
-      throw new Error("The CLI runtime did not confirm the applied model settings.");
-    }
-    const message = result.appliedScope === "REASONING_ONLY"
-      ? result.warning ?? "Reasoning changed; the CLI kept the previous model."
-      : result.warning;
-    return {
-      current: result.settings.current,
-      message
-    };
   }
 
   function registerHiddenTerminalInput(data: string) {
@@ -6301,38 +7223,9 @@ export function TerminalPane({
   function stripHiddenTerminalEcho(data: string): string {
     const now = Date.now();
     hiddenInputEchoFiltersRef.current = hiddenInputEchoFiltersRef.current.filter((item) => item.remaining && item.expiresAtMs > now);
-    let output = data;
-    if (hiddenEchoPendingChunkRef.current) {
-      output = `${hiddenEchoPendingChunkRef.current}${output}`;
-      hiddenEchoPendingChunkRef.current = "";
-      if (hiddenEchoFlushTimerRef.current !== null) {
-        window.clearTimeout(hiddenEchoFlushTimerRef.current);
-        hiddenEchoFlushTimerRef.current = null;
-      }
-    }
-    const hasActiveUploadPathFilter = hiddenInputEchoFiltersRef.current.some((item) => containsCliUploadPath(item.value));
-    if (hasActiveUploadPathFilter || containsCliUploadPath(output)) {
-      output = output.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-      const cutoff = isUploadPathCutoff(output);
-      if (cutoff >= 0) {
-        hiddenEchoPendingChunkRef.current = output.slice(cutoff);
-        output = output.slice(0, cutoff);
-        if (hiddenEchoFlushTimerRef.current !== null) {
-          window.clearTimeout(hiddenEchoFlushTimerRef.current);
-        }
-        hiddenEchoFlushTimerRef.current = window.setTimeout(() => {
-          hiddenEchoFlushTimerRef.current = null;
-          const pending = hiddenEchoPendingChunkRef.current;
-          hiddenEchoPendingChunkRef.current = "";
-          if (pending && terminalRef.current) {
-            const stripped = pending.replace(CLI_UPLOAD_WRAPPED_PATH_PATTERN, "");
-            if (stripped && !containsCliUploadPath(stripped) && isUploadPathCutoff(stripped) < 0) {
-              terminalRef.current.write(stripped);
-            }
-          }
-        }, 1500);
-      }
-    }
+    // The pane host and API already mask upload paths (and rejoin paths split
+    // across chunks); this per-chunk mask is a layout-preserving backstop.
+    let output = maskUploadPaths(data);
     if (!hiddenInputEchoFiltersRef.current.length) return output;
 
     for (let index = 0; index < hiddenInputEchoFiltersRef.current.length && output; ) {
@@ -6473,7 +7366,16 @@ export function TerminalPane({
           return Array.from(byId.values());
         });
       }
-      if (isCodexCliSession) {
+      if (sessionResponseRef.current?.session.runtimeId === "cli:root") {
+        // Bash would treat "[File #1]" labels as a command plus a comment; a shell gets the quoted paths.
+        const sent = sendTerminalInput(`${uploadedFiles.map(terminalInputPath).join(" ")} `, `${debugSource}: root shell paths`);
+        updateClipboardDebug(
+          sent ? "good" : "bad",
+          sent ? "root shell paths inserted" : "root shell paths failed",
+          `${debugSource}: uploaded=${uploadedFiles.length}; display=visible; containsUploadPath=true.`
+        );
+        focusTerminal();
+      } else if (usesNativeImagePaste) {
         const imageFiles = uploadedFiles.filter((file) => file.isImage);
         const attachedImageCount = imageFiles.filter((file) =>
           sendTerminalInput(terminalImagePaste(file), `${debugSource}: image attachment`, "hidden", true)
@@ -6520,6 +7422,70 @@ export function TerminalPane({
     setNotice(null);
     const file = new File([text], clipboardTextFilename(), { type: "text/plain" });
     await uploadFiles([file], "CLIPBOARD", source, CLIPBOARD_TEXT_FILE_NOTICE);
+  }
+
+  async function pasteClipboardTextToTerminal(
+    text: string,
+    source: string,
+    routingSummary?: string
+  ): Promise<boolean> {
+    const isLoginPurpose = sessionResponseRef.current?.session.purpose === "LOGIN";
+    const hasNewlines = text.includes("\n") || text.includes("\r");
+    const lineCount = text.split(/\r?\n/).length;
+    const bracketedPasteSupported = Boolean(
+      terminalRef.current?.modes?.bracketedPasteMode || isCodexCliSession || isClaudeCliSession
+    );
+
+    const mode = resolveTerminalPasteMode({
+      isLoginPurpose,
+      hasNewlines,
+      lineCount,
+      charCount: text.length,
+      bracketedPasteSupported
+    });
+
+    if (mode === "raw") {
+      const display = isLoginPurpose ? "hidden" : "visible";
+      const sent = sendTerminalInput(text, source, display);
+      clearClipboardPasteAttempt();
+      if (!isLoginPurpose) {
+        updateClipboardDebug(
+          sent ? "good" : "bad",
+          sent ? "text paste sent" : "text paste failed",
+          `${source}; ${routingSummary ?? ""}.`
+        );
+      }
+      return sent;
+    }
+
+    if (mode === "bracketed") {
+      const normalized = text.replace(/\r?\n/g, "\r");
+      const bracketed = `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`;
+      const sent = sendTerminalInput(bracketed, source, "visible");
+      clearClipboardPasteAttempt();
+      updateClipboardDebug(
+        sent ? "good" : "bad",
+        sent ? "multiline bracketed paste sent" : "multiline bracketed paste failed",
+        `${source}: lines=${lineCount}; chars=${text.length}; bracketed=true; ${routingSummary ?? ""}.`
+      );
+      return sent;
+    }
+
+    try {
+      await insertClipboardText(text, source);
+      clearClipboardPasteAttempt();
+      updateClipboardDebug(
+        "good",
+        "multiline text attached as file",
+        `${source}: lines=${lineCount}; chars=${text.length}; attached as txt file; ${routingSummary ?? ""}.`
+      );
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to attach text file";
+      setError(message);
+      clearClipboardPasteAttempt();
+      return false;
+    }
   }
 
   function stopClipboardEvent(event: Pick<Event, "preventDefault" | "stopPropagation"> & { stopImmediatePropagation?: () => void }) {
@@ -6678,12 +7644,10 @@ export function TerminalPane({
             paneTitle: pane.title
           });
         }
-        const sent = sendTerminalInput(text, `${source}: async clipboard text read succeeded`);
-        clearClipboardPasteAttempt();
-        updateClipboardDebug(
-          sent ? "good" : "bad",
-          sent ? "async clipboard text sent" : "async clipboard text blocked",
-          `${source}: ${priorClipboardSummary}; textLength=${text.length}.`
+        await pasteClipboardTextToTerminal(
+          text,
+          `${source}: async clipboard text read succeeded`,
+          `${priorClipboardSummary}; textLength=${text.length}`
         );
         return;
       }
@@ -6732,9 +7696,7 @@ export function TerminalPane({
       }
       event.preventDefault();
       event.stopPropagation();
-      sendTerminalInput(text, `react paste text: ${snapshot.summary}`);
-      clearClipboardPasteAttempt();
-      updateClipboardDebug("good", "text paste sent", `react paste event: ${snapshot.summary}; ${routing}.`);
+      void pasteClipboardTextToTerminal(text, `react paste text: ${snapshot.summary}`, routing);
       return;
     }
     stopClipboardEvent(event.nativeEvent);
@@ -6770,9 +7732,7 @@ export function TerminalPane({
         });
       }
       stopClipboardEvent(event);
-      sendTerminalInput(snapshot.text, `native paste text: ${snapshot.summary}`);
-      clearClipboardPasteAttempt();
-      updateClipboardDebug("good", "text paste sent", `native paste event: ${snapshot.summary}; ${routing}.`);
+      void pasteClipboardTextToTerminal(snapshot.text, `native paste text: ${snapshot.summary}`, routing);
       return;
     }
     stopClipboardEvent(event);
@@ -7069,13 +8029,30 @@ export function TerminalPane({
       if (event.detail.action === "enter_native_plan_mode") {
         const actionSession = sessionResponseRef.current?.session;
         const actionSocket = socketRef.current;
-        if (actionSession?.runtimeId !== event.detail.runtimeId) return;
+        if (actionSession?.runtimeId !== event.detail.runtimeId) {
+          if (!actionSession) {
+            setNotice(null);
+            setError("Attach a running CLI before changing Plan mode.");
+          }
+          return;
+        }
         const actionIdentity = actionSocket
           ? { runtimeId: event.detail.runtimeId, sessionId: actionSession.sessionId, socket: actionSocket }
           : null;
         if (!actionIdentity || !nativePlanModeActionIdentityMatches(actionIdentity)) {
           setNotice(null);
           setError(`Attach a running ${event.detail.runtimeId === "cli:gemini" ? "Gemini" : event.detail.runtimeId === "cli:omp" ? "Oh My Pi" : "Qwen Code"} CLI before changing Plan mode.`);
+          return;
+        }
+        // "/plan" typed after a draft would be sent as part of that message.
+        if (terminalPromptDraftRef.current.text.trim()) {
+          setNotice(null);
+          setError("Send or clear the current CLI draft before changing modes.");
+          return;
+        }
+        if (isTurnRunning) {
+          setNotice(null);
+          setError("Wait for the current CLI turn to finish before changing modes.");
           return;
         }
         sendTerminalInput("/plan\r", `terminal action ${event.detail.runtimeId} native Plan mode`, "visible", false, {
@@ -7086,7 +8063,13 @@ export function TerminalPane({
       if (event.detail.action === "ensure_plan_mode") {
         const actionSession = sessionResponseRef.current?.session;
         const actionSocket = socketRef.current;
-        if (actionSession?.runtimeId !== CLAUDE_CLI_RUNTIME_ID) return;
+        if (actionSession?.runtimeId !== CLAUDE_CLI_RUNTIME_ID) {
+          if (!actionSession) {
+            setNotice(null);
+            setError("Attach a running Claude Code CLI before changing Plan mode.");
+          }
+          return;
+        }
         if (claudePlanModeActionPendingRef.current) return;
         const actionIdentity = actionSocket ? { sessionId: actionSession.sessionId, socket: actionSocket } : null;
         if (!actionIdentity || !claudePlanModeActionIdentityMatches(actionIdentity)) {
@@ -7102,9 +8085,13 @@ export function TerminalPane({
           return;
         }
         setError(null);
-        if (detectedMode === "plan mode on") return;
+        if (detectedMode === "plan mode on") {
+          setNotice("Plan mode is already on.");
+          return;
+        }
         let currentMode: ClaudePermissionMode = detectedMode;
         claudePlanModeActionPendingRef.current = true;
+        setClaudePlanModeActionPending(true);
         try {
           for (let attempt = 0; attempt < 4; attempt += 1) {
             if (!claudePlanModeActionIdentityMatches(actionIdentity)) return;
@@ -7125,7 +8112,52 @@ export function TerminalPane({
           setError("Claude Code did not reach Plan mode after four bounded attempts.");
         } finally {
           claudePlanModeActionPendingRef.current = false;
+          setClaudePlanModeActionPending(false);
         }
+        return;
+      }
+      if (event.detail.action === "enable_plan_mode") {
+        const actionSession = sessionResponseRef.current?.session;
+        if (!actionSession || actionSession.purpose !== "NORMAL" || !socketRef.current) {
+          setNotice(null);
+          setError("Attach a running CLI before changing Plan mode.");
+          return;
+        }
+        const terminal = terminalRef.current;
+        // Mode keys such as Tab or Shift+Tab toggle; never turn Plan mode off from "Enable Plan mode".
+        if (terminal && cliBuildModeState(actionSession.runtimeId, terminalCurrentScreenText(terminal)) === "plan") {
+          setError(null);
+          setNotice("Plan mode is already on.");
+          return;
+        }
+        const planCommand = OSK_CLI_COMMANDS.find((command) => command.id === "plan");
+        if (planCommand) await runCliShortcut(planCommand);
+        return;
+      }
+      if (event.detail.action === "stop_task") {
+        const actionSession = sessionResponseRef.current?.session;
+        if (!actionSession || !socketRef.current) {
+          setNotice(null);
+          setError("Attach a running CLI before stopping its task.");
+          return;
+        }
+        if (actionSession.runtimeId === "cli:root") {
+          sendTerminalInput(terminalControlKeySequence("ctrl_c"), "terminal action stop root command", "visible", true, { trackDraft: false });
+          return;
+        }
+        // Esc (Codex, Claude) and the OpenCode abort API are no-ops when idle. Ctrl+C is not:
+        // a second press on an idle prompt exits most other CLIs, so send it only during a turn.
+        const interruptIsHarmless =
+          isOpenCodeCliSession ||
+          floatingTurnPauseSequence(actionSession.runtimeId) === terminalControlKeySequence("escape");
+        const turnLikelyRunning = isTurnRunning || (terminalScreenActive && !terminalPromptDraftRef.current.text.trim());
+        if (stopCooldown || (!turnLikelyRunning && !interruptIsHarmless)) {
+          setError(null);
+          setNotice("No running CLI task to stop.");
+          return;
+        }
+        stopRunningCliTurn("terminal action stop task");
+        startStopCooldown();
         return;
       }
       if (event.detail.action === "control_key") {
@@ -7134,25 +8166,49 @@ export function TerminalPane({
       }
       if (event.detail.action === "save_to_memory") {
         const commandText = event.detail.text.trim() || "save to memory";
+        const actionSession = sessionResponseRef.current?.session;
+        const isClaude = actionSession?.runtimeId === CLAUDE_CLI_RUNTIME_ID;
+        // Save from the live conversation. Restarting into a fresh session would ask an agent
+        // with no task context to save it, and would end the task the operator is working on.
+        const actionSocket = socketRef.current;
+        if (
+          !actionSession?.isActive ||
+          actionSession.purpose !== "NORMAL" ||
+          !actionSocket ||
+          actionSocket.readyState !== WebSocket.OPEN ||
+          readySocketRef.current?.socket !== actionSocket
+        ) {
+          setNotice(null);
+          setError(`Attach a running ${isClaude ? "Claude Code " : ""}CLI before saving it to memory.`);
+          return;
+        }
+        if (terminalPromptDraftRef.current.text.trim()) {
+          setNotice(null);
+          setError("Send or clear the current CLI draft before saving to memory.");
+          return;
+        }
         const memoryBody = buildMemorySaveBody({
           paneTitle: pane.title,
-          modelId: event.detail.modelId,
+          modelId: modelSettingsRef.current?.current?.modelId ?? actionSession.modelId ?? (isClaude ? "Claude Code" : actionSession.runtimeId),
           commandText,
           transcript: collectTerminalContent()
         });
-        const nextSession = await requestCliSession({
-          modelId: event.detail.modelId,
-          forceRestart: true
-        });
-        if (!nextSession) return;
-        const socketReady = nextSession.websocket ? await waitForTerminalSocketOpen(nextSession.session.sessionId) : false;
-        if (!socketReady) {
-          setError("CLI restarted, but the replacement terminal socket did not become ready in time.");
+        try {
+          await submitCliShortcut({ id: "memory", label: "Save to memory", text: commandText, enter: true }, {
+            isCurrent: () =>
+              sessionResponseRef.current?.session.sessionId === actionSession.sessionId &&
+              socketRef.current === actionSocket &&
+              actionSocket.readyState === WebSocket.OPEN,
+            runtimeId: actionSession.runtimeId,
+            prepare: async () => {},
+            write: (text) => sendTerminalInput(text, "terminal action save_to_memory"),
+            enter: () => sendTerminalSubmit("\r", "terminal action save_to_memory enter", { turnMarker: createCliTurnMarker() })
+          });
+        } catch (error) {
+          setNotice(null);
+          setError(error instanceof Error ? error.message : "Save to memory could not be sent.");
           return;
         }
-        const prompt = commandText.endsWith("\n") ? commandText : `${commandText}\n`;
-        const sent = sendTerminalInput(prompt, "terminal action save_to_memory");
-        if (!sent) return;
         await api.createMemory({
           scope: event.detail.memory.scope,
           roomId: event.detail.memory.scope === "ROOM" ? event.detail.memory.roomId ?? pane.roomId : null,
@@ -7184,14 +8240,23 @@ export function TerminalPane({
         return;
       }
       if (event.detail.action === "new_task") {
+        if (!selectedRuntime || pane.id.startsWith("pane:optimistic-")) {
+          setNotice(null);
+          setError("The CLI runtime is still loading. Try New task again in a moment.");
+          return;
+        }
         clearReconnectTimer();
         reconnectAttemptRef.current = 0;
-        reconnectInProgressRef.current = false;
+        setReconnectInProgress(false);
         setConnectionAlert(null);
         setNotice(null);
         setError(null);
         autoAttachAttemptRef.current = null;
         takeCliResumeIntent(pane.id);
+        if (terminalPromptDraftDebounceTimerRef.current !== null) {
+          window.clearTimeout(terminalPromptDraftDebounceTimerRef.current);
+          terminalPromptDraftDebounceTimerRef.current = null;
+        }
         terminalPromptDraftRef.current = { text: "", cursor: 0 };
         setTerminalPromptDraft("");
         if (typeof terminalRef.current?.reset === "function") {
@@ -7299,16 +8364,43 @@ export function TerminalPane({
         void (async () => {
           try {
             const clipboard = getSpaceRuntime().platform.clipboard;
-            const text = await clipboard?.readText?.();
+            if (!clipboard?.readText) {
+              setError("This page cannot read the clipboard. Paste with Ctrl+V inside the terminal instead.");
+              return;
+            }
+            const text = await clipboard.readText();
             if (text) {
-              sendTerminalInput(text, "toolbar paste", "visible");
-              setNotice("Pasted into CLI.");
+              const sent = await pasteClipboardTextToTerminal(text, "toolbar paste");
+              if (sent) {
+                setNotice("Pasted into CLI.");
+              }
             } else {
               setError("No text available in clipboard to paste.");
             }
             focusTerminal();
           } catch (err) {
             setError(err instanceof Error ? err.message : "Clipboard paste failed.");
+          }
+        })();
+        return;
+      }
+      if (event.detail.action === "paste_file") {
+        void (async () => {
+          try {
+            const clipboard = getSpaceRuntime().platform.clipboard;
+            if (!clipboard?.readText) {
+              setError("This page cannot read the clipboard, so it cannot attach it as a file.");
+              return;
+            }
+            const text = await clipboard.readText();
+            if (text) {
+              await insertClipboardText(text, "toolbar paste as file");
+              focusTerminal();
+            } else {
+              setError("No text available in clipboard to paste as file.");
+            }
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Clipboard paste as file failed.");
           }
         })();
         return;
@@ -7394,7 +8486,7 @@ export function TerminalPane({
           </div>
         </div>
       ) : null}
-      {!readStoredSuppressNotifications() && notice && ["CLI content copied.", "CLI memory save requested.", "Build mode is ready. Send a task to continue."].includes(notice) ? (
+      {!readStoredSuppressNotifications() && notice && ["CLI content copied.", "CLI memory save requested.", "Build mode is ready. Send a task to continue.", "Plan mode is already on.", "No running CLI task to stop.", TERMINAL_CONTROL_REPLAY_NOTICE].includes(notice) ? (
         <div className="terminal-alert good" role="status">
           <div className="terminal-alert-head">
             <span>{notice}</span>
@@ -7467,9 +8559,10 @@ export function TerminalPane({
                 type="button"
                 className="terminal-upload-modal-close"
                 aria-label="Close image preview"
+                title="Close image preview"
                 onClick={() => setSelectedUploadPreviewId(null)}
               >
-                <X aria-hidden="true" />
+                <X size={15} aria-hidden="true" />
               </button>
               <button
                 type="button"
@@ -7594,149 +8687,53 @@ export function TerminalPane({
           </div>
         ) : null}
         {isGeminiRuntime && geminiAccountProfiles.length ? (
-          <div ref={geminiAccountPickerRef} className="terminal-gemini-account-picker">
-            <button
-              ref={geminiAccountButtonRef}
-              type="button"
-              className={`terminal-gemini-account-trigger${geminiAccountMenuOpen ? " is-open" : ""}`}
-              aria-label={`Google account for ${pane.title}`}
-              aria-haspopup="dialog"
-              aria-expanded={geminiAccountMenuOpen}
-              title={`Google account: ${geminiAccountProfiles.find((profile) => profile.profileId === selectedGeminiAccountProfileId)?.displayName ?? "Select account"}`}
-              disabled={pending || observerOnly}
-              onClick={() => setGeminiAccountMenuOpen((prev) => !prev)}
-            >
-              <GoogleGIcon size={16} />
-            </button>
-            {geminiAccountMenuOpen ? (
-              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`Google account for ${pane.title}`}>
-                <label className="terminal-gemini-account-popover-label">
-                  <span>Google account</span>
-                  <select
-                    aria-label={`Google account for ${pane.title}`}
-                    value={selectedGeminiAccountProfileId}
-                    disabled={pending || observerOnly}
-                    autoFocus
-                    onChange={(event) => {
-                      const profileId = event.currentTarget.value;
-                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
-                      setSelectedGeminiAccountProfileId(profileId);
-                      writeLastGeminiAccountProfileId(profileId);
-                      if (sessionResponseRef.current && profileId !== currentProfileId) {
-                        const hasActiveTask = Boolean(sessionResponseRef.current?.session);
-                        const activeModelId = modelSettingsRef.current?.current?.modelId
-                          ?? sessionResponseRef.current?.session.modelId
-                          ?? pane.modelId
-                          ?? undefined;
-                        const activeReasoningEffort = (modelSettingsRef.current?.current?.reasoningEffort
-                          ?? pane.reasoningEffort
-                          ?? undefined) as Pane["reasoningEffort"];
-                        void requestCliSession({
-                          accountProfileId: profileId,
-                          modelId: activeModelId,
-                          reasoningEffort: activeReasoningEffort,
-                          forceRestart: true,
-                          resume: hasActiveTask
-                        });
-                      }
-                    }}
-                  >
-                    {geminiAccountProfiles.map((profile) => (
-                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            ) : null}
-          </div>
+          <CliAccountPicker
+            runtimeId="cli:gemini"
+            providerLabel="Google"
+            icon={<GoogleGIcon size={16} />}
+            paneTitle={pane.title}
+            profiles={geminiAccountProfiles}
+            selectedProfileId={selectedGeminiAccountProfileId}
+            disabled={pending || observerOnly}
+            onSelect={(profileId) => switchCliAccountProfile("cli:gemini", profileId)}
+            modelId={modelSettings?.current?.modelId ?? sessionResponse?.session.modelId ?? pane.modelId ?? null}
+          />
         ) : null}
         {isCopilotRuntime && copilotAccountProfiles.length ? (
-          <div ref={copilotAccountPickerRef} className="terminal-gemini-account-picker">
-            <button
-              ref={copilotAccountButtonRef}
-              type="button"
-              className={`terminal-gemini-account-trigger${copilotAccountMenuOpen ? " is-open" : ""}`}
-              aria-label={`GitHub account for ${pane.title}`}
-              aria-haspopup="dialog"
-              aria-expanded={copilotAccountMenuOpen}
-              title={`GitHub account: ${copilotAccountProfiles.find((profile) => profile.profileId === selectedCopilotAccountProfileId)?.displayName ?? "Select account"}`}
-              disabled={pending || observerOnly}
-              onClick={() => setCopilotAccountMenuOpen((prev) => !prev)}
-            >
-              <Github size={16} aria-hidden="true" />
-            </button>
-            {copilotAccountMenuOpen ? (
-              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`GitHub account for ${pane.title}`}>
-                <label className="terminal-gemini-account-popover-label">
-                  <span>GitHub account</span>
-                  <select
-                    aria-label={`GitHub account for ${pane.title}`}
-                    value={selectedCopilotAccountProfileId}
-                    disabled={pending || observerOnly}
-                    autoFocus
-                    onChange={(event) => {
-                      const profileId = event.currentTarget.value;
-                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
-                      setSelectedCopilotAccountProfileId(profileId);
-                      writeLastCopilotAccountProfileId(profileId);
-                      if (sessionResponseRef.current && profileId !== currentProfileId) {
-                        const hasActiveTask = Boolean(sessionResponseRef.current.session.cliTaskId);
-                        void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
-                      }
-                    }}
-                  >
-                    {copilotAccountProfiles.map((profile) => (
-                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            ) : null}
-          </div>
+          <CliAccountPicker
+            runtimeId="cli:copilot"
+            providerLabel="GitHub"
+            icon={<Github size={16} aria-hidden="true" />}
+            paneTitle={pane.title}
+            profiles={copilotAccountProfiles}
+            selectedProfileId={selectedCopilotAccountProfileId}
+            disabled={pending || observerOnly}
+            onSelect={(profileId) => switchCliAccountProfile("cli:copilot", profileId)}
+          />
         ) : null}
         {isCursorRuntime && cursorAccountProfiles.length ? (
-          <div ref={cursorAccountPickerRef} className="terminal-gemini-account-picker">
-            <button
-              ref={cursorAccountButtonRef}
-              type="button"
-              className={`terminal-gemini-account-trigger${cursorAccountMenuOpen ? " is-open" : ""}`}
-              aria-label={`Cursor account for ${pane.title}`}
-              aria-haspopup="dialog"
-              aria-expanded={cursorAccountMenuOpen}
-              title={`Cursor account: ${cursorAccountProfiles.find((profile) => profile.profileId === selectedCursorAccountProfileId)?.displayName ?? "Select account"}`}
-              disabled={pending || observerOnly}
-              onClick={() => setCursorAccountMenuOpen((prev) => !prev)}
-            >
-              <TerminalIcon size={16} aria-hidden="true" />
-            </button>
-            {cursorAccountMenuOpen ? (
-              <div className="terminal-gemini-account-popover" role="dialog" aria-label={`Cursor account for ${pane.title}`}>
-                <label className="terminal-gemini-account-popover-label">
-                  <span>Cursor account</span>
-                  <select
-                    aria-label={`Cursor account for ${pane.title}`}
-                    value={selectedCursorAccountProfileId}
-                    disabled={pending || observerOnly}
-                    autoFocus
-                    onChange={(event) => {
-                      const profileId = event.currentTarget.value;
-                      const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
-                      setSelectedCursorAccountProfileId(profileId);
-                      writeLastCursorAccountProfileId(profileId);
-                      if (sessionResponseRef.current && profileId !== currentProfileId) {
-                        const hasActiveTask = Boolean(sessionResponseRef.current.session.cliTaskId);
-                        void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
-                      }
-                    }}
-                  >
-                    {cursorAccountProfiles.map((profile) => (
-                      <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            ) : null}
-          </div>
+          <CliAccountPicker
+            runtimeId="cli:cursor"
+            providerLabel="Cursor"
+            icon={<TerminalIcon size={16} aria-hidden="true" />}
+            paneTitle={pane.title}
+            profiles={cursorAccountProfiles}
+            selectedProfileId={selectedCursorAccountProfileId}
+            disabled={pending || observerOnly}
+            onSelect={(profileId) => switchCliAccountProfile("cli:cursor", profileId)}
+          />
+        ) : null}
+        {isClaudeRuntime && claudeAccountProfiles.length ? (
+          <CliAccountPicker
+            runtimeId="cli:claude"
+            providerLabel="Claude"
+            icon={<ClaudeIcon size={16} aria-hidden="true" />}
+            paneTitle={pane.title}
+            profiles={claudeAccountProfiles}
+            selectedProfileId={selectedClaudeAccountProfileId}
+            disabled={pending || observerOnly}
+            onSelect={(profileId) => switchCliAccountProfile("cli:claude", profileId)}
+          />
         ) : null}
 
         <div
@@ -7780,8 +8777,13 @@ export function TerminalPane({
         {isNormalAttachedCli && !hideFloatingControls ? (
           <div className="terminal-voice-controls-stack">
             {voiceStatusText ? (
-              <div className={voiceInput.error ? "terminal-voice-status bad" : "terminal-voice-status"} role={voiceInput.error ? "alert" : "status"}>
+              <div
+                className={voiceInput.error ? "terminal-voice-status bad" : "terminal-voice-status"}
+                role={voiceInput.error ? "alert" : "status"}
+                aria-live={voiceRecording ? "off" : undefined}
+              >
                 <span>{voiceStatusText}</span>
+                {voiceClock ? <span className="terminal-voice-clock" aria-hidden="true">{voiceClock}</span> : null}
                 {voiceInput.error ? <button type="button" aria-label="Dismiss voice input error" onClick={() => voiceInput.clearError(voiceOwnerId)}><X aria-hidden="true" /></button> : null}
               </div>
             ) : null}
@@ -7814,7 +8816,39 @@ export function TerminalPane({
                 </button>
               </div>
             ) : null}
+            {activeVariableToken ? (
+              <PromptVariableAutocomplete
+                query={activeVariableToken.query}
+                selectedIndex={highlightedVariableIndex}
+                onSelect={handleSelectPromptVariable}
+                onClose={() => setDismissedVariableToken(activeVariableToken.token)}
+                onOpenManager={(name) => {
+                  setVariablesManagerInitialName(name ?? "");
+                  setVariablesManagerOpen(true);
+                }}
+                onHighlightIndex={setSelectedVariableIndex}
+              />
+            ) : null}
             <div className="terminal-floating-controls">
+              {voiceInput.settings.terminalShortcutsButton ? (
+                <CliShortcutsMenu commands={cliShortcutCommandsForRuntime(sessionResponse?.session.runtimeId)} showKeys transcriptCommand={cliTranscriptCommand(sessionResponse?.session.runtimeId)} disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
+              ) : null}
+              {/* Hidden from the toolbar it still mounts while the autocomplete opens its manager. */}
+              {voiceInput.settings.terminalVariablesButton || variablesManagerOpen ? <PromptVariablesMenu
+                disabled={terminalStatus !== "attached" || shortcutPending}
+                active={isVisible && !pane.isMinimized}
+                paneTitle={pane.title}
+                initialName={variablesManagerInitialName}
+                open={variablesManagerOpen}
+                onOpenChange={(nextOpen) => {
+                  setVariablesManagerOpen(nextOpen);
+                  if (!nextOpen) setVariablesManagerInitialName("");
+                }}
+                onInsertVariable={(variable) => {
+                  sendTerminalInput(`#${variable.name} `, "insert prompt variable", "visible", true);
+                  focusTerminal();
+                }}
+              /> : null}
               {isComposerLayoutIconVisible(autocorrectSettings) ? (
                 <button
                   type="button"
@@ -7828,8 +8862,11 @@ export function TerminalPane({
                   <Keyboard aria-hidden="true" />
                 </button>
               ) : null}
-              <CliShortcutsMenu showTranscript={sessionResponse?.session.runtimeId === "cli:codex"} disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onCommand={runCliShortcut} />
-              <CliPlansMenu disabled={terminalStatus !== "attached" || shortcutPending} active={isVisible && !pane.isMinimized} onSelectPlan={handleSelectOpenPlan} />
+              {voiceInput.settings.terminalPlansButton ? (
+                <CliPlansMenu pane={cliPlansMenuPane} disabled={shortcutPending} canSend={terminalStatus === "attached"} active={isVisible && !pane.isMinimized} onSelectPlan={handleSelectOpenPlan} onInsertPlan={handleInsertOpenPlan} draftWillBeCleared={planSendClearsDraft}
+                  managedExecution={managedPlan.execution} managedSettings={modelSettings} managedError={managedPlan.error} managedPending={managedPlan.pending}
+                  canControlManaged={terminalControlState === "CONTROLLER"} onManagedOverride={managedPlan.override} onManagedControl={managedPlan.control} onManagedRefresh={managedPlan.refresh} />
+              ) : null}
               {voiceInput.settings.terminalVoiceButton ? (
                 <VoiceInputButton label={pane.title.replace(/^Terminal\b/i, "CLI")} active={voiceOwned && voiceInput.status === "recording"} disabled={voiceDisabled} onClick={toggleTerminalVoiceCapture} onPrewarm={voiceInput.prewarm} />
               ) : null}
@@ -7841,38 +8878,53 @@ export function TerminalPane({
                     allowSelectionWithoutCurrent
                     groupNativeProviders={selectedRuntime?.id === OPENCODE_CLI_RUNTIME_ID || selectedRuntime?.id === "cli:omp"}
                     settings={modelSettings}
+                    selectionScope={hasManagedPlan && managedPlan.execution ? JSON.stringify([pane.id, modelSettings.sessionId, managedPlan.execution.id, managedPlan.execution.snapshot.stages[managedPlan.execution.activeStageIndex]?.id]) : undefined}
+                    showLabel
                     disabled={terminalStatus !== "attached" || terminalControlState !== "CONTROLLER" ||
-                      (modelSettings.controlMode === "NATIVE" && (isTurnRunning || Boolean(terminalPromptDraft.trim())))}
+                      (!hasManagedPlan && modelSettings.controlMode === "NATIVE" && (isTurnRunning || Boolean(terminalPromptDraft.trim())))}
+                    disabledReason={terminalStatus !== "attached"
+                      ? "Available once the CLI is attached."
+                      : terminalControlState !== "CONTROLLER"
+                        ? "Another window controls this CLI."
+                        : !hasManagedPlan && modelSettings.controlMode === "NATIVE" && isTurnRunning
+                          ? "Available when the current turn finishes."
+                          : !hasManagedPlan && modelSettings.controlMode === "NATIVE" && terminalPromptDraft.trim()
+                            ? "Send or clear the typed prompt to change the model."
+                            : null}
                     onRefreshCatalog={async () => {
                       const sessionId = sessionResponseRef.current?.session.sessionId;
                       if (sessionId) await refreshModelSettings(sessionId);
                     }}
-                    onSwitch={handleModelSwitch}
+                    onSwitch={(modelId, effort, providerId) => handleModelSwitch(modelId, effort, providerId, false, managedModelClickScope)}
                   />
                 </Suspense>
               ) : (
                 <div className="terminal-model-picker">
-                  <button type="button" className="terminal-model-chip"
+                  <button type="button"
+                    className={`terminal-model-chip${pane.reasoningEffort ? " has-reasoning" : ""}`}
+                    data-effort={pane.reasoningEffort ? pane.reasoningEffort.toLowerCase() : undefined}
                     aria-label={modelSettingsError ? "Retry model settings" : "Loading models"}
-                    title={modelSettingsError ?? "Loading models…"}
+                    title={modelSettingsError ?? (pane.reasoningEffort ? `Loading models… (${reasoningEffortLabel(pane.reasoningEffort)})` : "Loading models…")}
                     disabled={!modelSettingsError || terminalStatus !== "attached"}
                     onClick={() => {
                       const sessionId = sessionResponseRef.current?.session.sessionId;
                       if (sessionId) { setModelSettingsError(null); void refreshModelSettings(sessionId); }
-                    }}><BrainCircuit aria-hidden="true" /></button>
+                    }}>
+                    <BrainCircuit aria-hidden="true" />
+                  </button>
                 </div>
               ) : null}
               {isFloatingTurnControlSession && voiceInput.settings.terminalTurnControl ? (
                 <button
                   type="button"
                   className="terminal-turn-control"
-                  data-state={turnControlState}
-                  aria-label={isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
-                  title={isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
-                  disabled={isTurnRunning ? terminalStatus !== "attached" : !canSendTurn}
+                  data-state={turnControlStopping ? "stopping" : turnControlState}
+                  aria-label={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
+                  title={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
+                  disabled={turnControlStopping || (isTurnRunning ? terminalStatus !== "attached" : !canSendTurn)}
                   onClick={handleTurnControlClick}
                 >
-                  {isTurnRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
+                  {turnControlStopping || isTurnRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
                 </button>
               ) : null}
             </div>
@@ -7926,8 +8978,10 @@ export function TerminalPane({
                     const clipboard = getSpaceRuntime().platform.clipboard;
                     const text = await clipboard?.readText?.();
                     if (text) {
-                      sendTerminalInput(text, "context menu paste", "visible");
-                      setNotice("Pasted into CLI.");
+                      const sent = await pasteClipboardTextToTerminal(text, "context menu paste", "context menu");
+                      if (sent) {
+                        setNotice("Pasted into CLI.");
+                      }
                     } else {
                       setError("No text available in clipboard to paste.");
                     }
@@ -7943,6 +8997,32 @@ export function TerminalPane({
                 <span>Paste</span>
               </div>
               <kbd>Ctrl+V</kbd>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                void (async () => {
+                  try {
+                    const clipboard = getSpaceRuntime().platform.clipboard;
+                    const text = await clipboard?.readText?.();
+                    if (text) {
+                      await insertClipboardText(text, "context menu paste as file");
+                      focusTerminal();
+                    } else {
+                      setError("No text available in clipboard to paste as file.");
+                    }
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Clipboard paste as file failed.");
+                  }
+                })();
+              }}
+            >
+              <div className="terminal-context-menu-item-left">
+                <FileIcon aria-hidden="true" />
+                <span>Attach as TXT file</span>
+              </div>
             </button>
             <button
               type="button"
@@ -8049,4 +9129,4 @@ export function TerminalPane({
       })() : null}
     </section>
   );
-}
+});

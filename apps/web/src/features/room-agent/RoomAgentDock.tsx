@@ -1,7 +1,7 @@
 import { runRoomPlaybackCommand } from "./room-playback-control.js";
 import { Bot, CircleStop, Keyboard, MessageSquareX, Pause, Play, Send, X } from "../ui-theme/app-icons.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { Room, RoomAgentSession } from "@space/contracts";
+import type { Room, RoomAgentMissionSummary, RoomAgentSession, RoomAgentStatus } from "@space/contracts";
 import { api } from "../../api.js";
 import { useOptionalVoiceInput } from "../voice-input/VoiceInputProvider.js";
 import { VoiceInputButton } from "../voice-input/VoiceInputButton.js";
@@ -20,9 +20,21 @@ import {
   playLayoutSuggestionBeep,
   useKeyboardAutocorrectSettings
 } from "../keyboard-autocorrect/keyboard-autocorrect-settings.js";
+import { useIsDockActive } from "../docks/dock-active-context.js";
+import {
+  DockButton,
+  DockIconButton,
+  DockNotice,
+  DockState,
+  DockToolbar,
+  useDockConfirm
+} from "../dock-kit/DockKit.js";
+import "./room-agent-dock.css";
+
 
 interface RoomAgentDockProps {
   activeRoom: Room | null;
+  /** Kept for App compatibility; the Room Agent works whether or not the Codex CLI is enabled. */
   isCodexEnabled?: boolean;
   selectedBrowserPaneId?: string;
   refreshKey?: string | null;
@@ -50,6 +62,95 @@ function durationLabel(value: number): string {
   return [hours ? `${hours}h` : null, minutes || hours ? `${minutes}m` : null, `${seconds}s`].filter(Boolean).join(" ");
 }
 
+function shortDurationLabel(value: number): string {
+  return value < 1_000 ? "under 1s" : durationLabel(value);
+}
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+const statusLabels: Record<RoomAgentStatus, string> = {
+  IDLE: "Ready",
+  QUEUED: "Queued",
+  RUNNING: "Running",
+  PAUSED: "Paused",
+  RECOVERING: "Recovering",
+  BLOCKED: "Blocked"
+};
+
+const statusTones: Record<RoomAgentStatus, string> = {
+  IDLE: "is-success",
+  QUEUED: "is-accent",
+  RUNNING: "is-accent",
+  PAUSED: "is-warning",
+  RECOVERING: "is-warning",
+  BLOCKED: "is-danger"
+};
+
+function statusLabel(status: string): string {
+  if (status in statusLabels) return statusLabels[status as RoomAgentStatus];
+  const words = status.toLowerCase().replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function MissionReport({ summary }: { summary: RoomAgentMissionSummary }) {
+  const successRate = Math.round(summary.successRate);
+  const successTone = summary.totalTasks === 0 ? "" : successRate >= 80 ? " is-success" : successRate > 0 ? " is-warning" : " is-danger";
+  const averageQuality = summary.averageQuality === null ? null : Math.round(summary.averageQuality);
+  const minQuality = summary.minQuality === null ? null : Math.round(summary.minQuality);
+  const maxQuality = summary.maxQuality === null ? null : Math.round(summary.maxQuality);
+  const qualityRange = minQuality !== null && maxQuality !== null && minQuality !== maxQuality
+    ? ` (lowest ${minQuality}, highest ${maxQuality})`
+    : "";
+  // Success counts only verified work; low-quality and unevaluated tasks are named, never counted as success.
+  const needsReview = [
+    summary.lowQualityTasks ? `${summary.lowQualityTasks} low quality` : null,
+    summary.unevaluatedTasks ? `${summary.unevaluatedTasks} not evaluated` : null
+  ].filter(Boolean).join(" · ");
+  const rows: Array<[string, string]> = [
+    ["Tasks done", `${summary.completedTasks}/${summary.totalTasks} completed`],
+    ...(needsReview ? [["Needs review", needsReview] as [string, string]] : []),
+    ["Total time", durationLabel(summary.totalMs)],
+    ["Quality score", averageQuality === null ? "Not available yet" : `${averageQuality} / 100 on average${qualityRange}`],
+    ["First reply", summary.averageFirstResponseMs === null ? "Not available yet" : `${shortDurationLabel(summary.averageFirstResponseMs)} on average`],
+    ["Most at once", plural(summary.peakConcurrency, "task")],
+    ["Retries", String(summary.retries)],
+    ["Stalled", plural(summary.stalls, "time")],
+    ["Blocked", plural(summary.blockedTasks, "task")]
+  ];
+  return (
+    <section className="room-agent-report dock-kit-card is-accent" aria-label="Room Agent mission report">
+      <div className="dock-kit-meta">
+        <span className="dock-kit-card-title">Mission report</span>
+        <span className={`dock-kit-badge${successTone}`}>{successRate}% verified</span>
+      </div>
+      <dl className="room-agent-report-stats">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+const roomAgentSessionCache = new Map<string, RoomAgentSession>();
+
+interface OptimisticTurn {
+  clientRequestId: string;
+  roomId: string;
+  userMessage: {
+    id: string;
+    role: "user";
+    content: string;
+    status: "READY";
+    createdAt: string;
+  };
+}
+
 export function RoomAgentDock({
   activeRoom,
   selectedBrowserPaneId,
@@ -57,15 +158,21 @@ export function RoomAgentDock({
 }: RoomAgentDockProps) {
   const voiceInput = useOptionalVoiceInput();
   const voiceOwnerId = `room-agent:${activeRoom?.id ?? "none"}`;
-  const [session, setSession] = useState<RoomAgentSession | null>(null);
+  const isDockActive = useIsDockActive();
+  const { confirm, confirmDialog } = useDockConfirm();
+  const [session, setSession] = useState<RoomAgentSession | null>(() =>
+    activeRoom?.id ? roomAgentSessionCache.get(activeRoom.id) ?? null : null
+  );
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [optimisticTurns, setOptimisticTurns] = useState<OptimisticTurn[]>([]);
   const [stopping, setStopping] = useState(false);
   const [controlling, setControlling] = useState<"PAUSE" | "RESUME" | null>(null);
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [layoutSuggestion, setLayoutSuggestion] = useState<LayoutMismatchDetection | null>(null);
+  const layoutCheckTimerRef = useRef<number | null>(null);
   const [typingLayoutMode, setTypingLayoutMode] = useState<"el" | "en" | null>(null);
   const greekTypingMode = typingLayoutMode === "el";
   const greekInputStateRef = useRef(createGreekInputState(false));
@@ -121,10 +228,30 @@ export function RoomAgentDock({
   useEffect(() => {
     if (!activeRoom) voiceInput?.cancel(voiceOwnerId);
   }, [activeRoom?.id, voiceInput?.cancel, voiceOwnerId]);
-  const visibleMessages = useMemo(
-    () => session?.messages.filter((message) => message.role === "user" || message.role === "assistant") ?? [],
-    [session?.messages]
-  );
+  const visibleMessages = useMemo(() => {
+    const rawDbMessages = session?.messages.filter((message) => message.role === "user" || message.role === "assistant") ?? [];
+    const currentOptMessages = optimisticTurns
+      .filter((turn) => turn.roomId === activeRoom?.id)
+      .map((turn) => turn.userMessage)
+      .filter((opt) => !rawDbMessages.some((db) => db.role === "user" && db.content === opt.content && Boolean(db.createdAt) && Math.abs(new Date(db.createdAt!).getTime() - new Date(opt.createdAt).getTime()) < 10_000));
+
+    const combined = [...rawDbMessages, ...currentOptMessages];
+
+    return combined.sort((a, b) => {
+      const parseTime = (val: string | null | undefined) => {
+        if (!val) return 0;
+        const t = Date.parse(val);
+        return Number.isNaN(t) ? 0 : t;
+      };
+      const timeA = parseTime(a.createdAt);
+      const timeB = parseTime(b.createdAt);
+      if (timeA !== timeB) return timeA - timeB;
+      const roleRank = (role: string) => (role === "user" ? 1 : role === "assistant" ? 2 : 3);
+      const rankDiff = roleRank(a.role) - roleRank(b.role);
+      if (rankDiff !== 0) return rankDiff;
+      return a.id.localeCompare(b.id);
+    });
+  }, [session?.messages, optimisticTurns, activeRoom?.id]);
 
 
   const loadSession = useCallback(async (roomId: string, showLoading = false) => {
@@ -133,6 +260,7 @@ export function RoomAgentDock({
     try {
       const next = await api.roomAgent(roomId);
       if (activeRoomIdRef.current !== roomId || loadSequenceRef.current !== sequence) return;
+      roomAgentSessionCache.set(roomId, next);
       setSession(next);
       setError(null);
     } catch (loadError) {
@@ -146,6 +274,7 @@ export function RoomAgentDock({
   useEffect(() => {
     setDraft("");
     setError(null);
+    setOptimisticTurns([]);
     sendSequenceRef.current += 1;
     stopSequenceRef.current += 1;
     controlSequenceRef.current += 1;
@@ -161,8 +290,13 @@ export function RoomAgentDock({
       setSession(null);
       return;
     }
-    setSession(null);
-    void loadSession(activeRoom.id, true);
+    const cached = roomAgentSessionCache.get(activeRoom.id);
+    if (cached) {
+      setSession(cached);
+    } else {
+      setSession(null);
+    }
+    void loadSession(activeRoom.id, !cached);
   }, [activeRoom?.id, loadSession]);
 
   useEffect(() => {
@@ -170,16 +304,25 @@ export function RoomAgentDock({
   }, [activeRoom?.id, refreshKey, loadSession]);
 
   useEffect(() => {
-    if (!activeRoom) return;
+    if (!activeRoom || !isDockActive) return;
     const active = ["RUNNING", "PAUSED", "RECOVERING", "QUEUED"].includes(session?.status ?? "IDLE");
     const timer = window.setInterval(() => void loadSession(activeRoom.id), active ? 1_500 : 3_000);
     return () => window.clearInterval(timer);
-  }, [activeRoom?.id, loadSession, session?.status]);
+  }, [activeRoom?.id, loadSession, session?.status, isDockActive]);
+
+  useEffect(() => {
+    return () => {
+      if (layoutCheckTimerRef.current !== null) {
+        window.clearTimeout(layoutCheckTimerRef.current);
+        layoutCheckTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (transcript) transcript.scrollTop = transcript.scrollHeight;
-  }, [visibleMessages.length, session?.statusReason]);
+  }, [visibleMessages.length, pendingCount, optimisticTurns.length, session?.statusReason]);
 
   async function submit(event?: FormEvent, contentOverride?: string): Promise<boolean> {
     event?.preventDefault();
@@ -204,6 +347,18 @@ export function RoomAgentDock({
     if (event) voiceInput?.cancel(voiceOwnerId);
     setDraft(current => current.trim() === content ? "" : current);
     setError(null);
+    const optimisticTurn: OptimisticTurn = {
+      clientRequestId: request.clientRequestId,
+      roomId,
+      userMessage: {
+        id: `optimistic:${request.clientRequestId}`,
+        role: "user",
+        content,
+        status: "READY",
+        createdAt: new Date().toISOString()
+      }
+    };
+    setOptimisticTurns((prev) => [...prev, optimisticTurn]);
     try {
       let next = await api.sendRoomAgentMessage(roomId, content, request.clientRequestId, request.selectedBrowserPaneId);
       // Every command receipt is handled, even if a later independent request finished first.
@@ -240,6 +395,7 @@ export function RoomAgentDock({
       return false;
     } finally {
       request.inFlight = false;
+      setOptimisticTurns((prev) => prev.filter((turn) => turn.clientRequestId !== request.clientRequestId));
       if (isCurrentRoom()) setPendingCount(count => Math.max(0, count - 1));
     }
   }
@@ -314,14 +470,20 @@ export function RoomAgentDock({
 
   async function clearConversation() {
     if (!activeRoom || clearing || session?.capabilities.canClear === false) return;
-    if (!window.confirm("Clear the visible Room Agent history? The active goal and its durable evidence will be preserved.")) return;
     const roomId = activeRoom.id;
+    const accepted = await confirm({
+      title: "Clear Room Agent history?",
+      message: "The visible conversation is cleared. The active goal and its saved evidence are kept.",
+      confirmLabel: "Clear history"
+    });
+    if (!accepted || activeRoomIdRef.current !== roomId) return;
     const sequence = ++clearSequenceRef.current;
     setClearing(true);
     setError(null);
     try {
       const next = await api.clearRoomAgentTranscript(roomId);
       if (activeRoomIdRef.current !== roomId || clearSequenceRef.current !== sequence) return;
+      setOptimisticTurns([]);
       setSession(next);
     } catch (clearError) {
       if (activeRoomIdRef.current !== roomId || clearSequenceRef.current !== sequence) return;
@@ -382,139 +544,167 @@ export function RoomAgentDock({
   }
 
 
+  const sessionStatus = session?.status ?? "IDLE";
+  const statusText = loading ? "Connecting…" : statusLabel(sessionStatus);
+  const statusTone = loading ? "" : ` ${statusTones[sessionStatus as RoomAgentStatus] ?? ""}`;
+  const hasConversation = visibleMessages.length > 0 || pendingCount > 0 || optimisticTurns.length > 0;
+  const firstLoadFailed = Boolean(activeRoom && !session && error && !hasConversation);
+  const awaitingFirstLoad = Boolean(activeRoom && !session && !error && !hasConversation);
+
   return (
     <section className="dock-panel room-agent-dock" aria-label="Room Agent chat">
-      <header className="room-agent-head">
-        <span className={`room-agent-status is-${(session?.status ?? "IDLE").toLowerCase()}`} role="status">
-          {loading ? "Connecting…" : session?.status === "IDLE" || !session ? "Ready" : session.status.replaceAll("_", " ").toLowerCase()}
-        </span>
-        <span className="room-agent-room-name" title={activeRoom?.name}>{activeRoom?.name ?? "No room selected"}</span>
-        <button
-          type="button"
-          className="room-agent-clear"
+      <DockToolbar
+        className="room-agent-head"
+        summary={activeRoom ? (
+          <>
+            <span className={`dock-kit-badge room-agent-status${statusTone}`} data-status={loading ? "CONNECTING" : sessionStatus} role="status">
+              {statusText}
+            </span>
+            <span className="room-agent-room-name" title={activeRoom.name}>{activeRoom.name}</span>
+          </>
+        ) : (
+          <span className="room-agent-room-name">No room selected</span>
+        )}
+      >
+        <DockIconButton
+          label="Clear Room Agent history"
+          icon={MessageSquareX}
+          tone="danger"
           onClick={() => void clearConversation()}
           disabled={!activeRoom || clearing || !visibleMessages.length || session?.capabilities.canClear === false}
-          aria-label="Clear Room Agent history"
-          title="Clear visible Room Agent history"
-        >
-          <MessageSquareX aria-hidden="true" />
-        </button>
-      </header>
+          busy={clearing}
+        />
+      </DockToolbar>
 
-      {pendingCount > 0 ? <p role="status" className="room-agent-pending">{pendingCount} request{pendingCount === 1 ? "" : "s"} pending</p> : null}
+      {pendingCount > 0 ? (
+        <DockNotice tone="info" className="room-agent-pending">{pendingCount} request{pendingCount === 1 ? "" : "s"} pending</DockNotice>
+      ) : null}
 
-      {activeRoom && session ? (
-        <div className="room-agent-goal">
+      {activeRoom && session && (session.activeMission || session.status !== "IDLE" || session.roomInventory) ? (
+        <div className="room-agent-goal-card dock-kit-card">
           {session.activeMission || session.status !== "IDLE" ? (
-            <p className="room-agent-goal-summary" role="status">{session.statusReason ?? "Working on your request…"}</p>
+            <p className="room-agent-goal-text" role="status">{session.statusReason ?? "Working on your request…"}</p>
           ) : null}
           {session.activeMission ? (
-            <div className="room-agent-goal-metrics" aria-label="Room Agent goal statistics">
-              <span>{session.progress?.completedSteps ?? 0} / {session.progress?.totalSteps ?? 0} complete</span>
-              <span>{session.activePaneIds?.length ?? 0} active panes</span>
-              <span>{durationLabel(session.progress?.elapsedMs ?? 0)}</span>
-              <span>Peak {session.progress?.peakConcurrency ?? 0}</span>
+            <div className="dock-kit-meta room-agent-goal-stats" aria-label="Room Agent goal statistics">
+              <span className="dock-kit-badge is-accent">{session.progress?.completedSteps ?? 0} / {session.progress?.totalSteps ?? 0} complete</span>
+              <span className="dock-kit-badge">{plural(session.activePaneIds?.length ?? 0, "active pane")}</span>
+              <span className="dock-kit-badge">{durationLabel(session.progress?.elapsedMs ?? 0)} elapsed</span>
+              <span className="dock-kit-badge">Up to {session.progress?.peakConcurrency ?? 0} at once</span>
             </div>
           ) : (
-            <div className="room-agent-goal-metrics" aria-label="Room plan statistics">
-              <span>{session.roomInventory?.totalPanes ?? 0} panes</span>
-              {(session.roomInventory?.pendingPlans ?? 0) > 0 ? <span>{session.roomInventory!.pendingPlans} pending</span> : null}
-              {(session.roomInventory?.pausedPlans ?? 0) > 0 ? <span>{session.roomInventory!.pausedPlans} paused</span> : null}
-              {(session.roomInventory?.runningPlans ?? 0) > 0 ? <span>{session.roomInventory!.runningPlans} running</span> : null}
+            <div className="dock-kit-meta room-agent-goal-stats" aria-label="Room plan statistics">
+              <span className="dock-kit-badge">{plural(session.roomInventory?.totalPanes ?? 0, "pane")}</span>
+              {(session.roomInventory?.pendingPlans ?? 0) > 0 ? <span className="dock-kit-badge is-accent">{session.roomInventory!.pendingPlans} pending</span> : null}
+              {(session.roomInventory?.pausedPlans ?? 0) > 0 ? <span className="dock-kit-badge is-warning">{session.roomInventory!.pausedPlans} paused</span> : null}
+              {(session.roomInventory?.runningPlans ?? 0) > 0 ? <span className="dock-kit-badge is-success">{session.roomInventory!.runningPlans} running</span> : null}
             </div>
           )}
-          {(session.queuedMissionCount ?? 0) > 0 ? <small>{session.queuedMissionCount} queued</small> : null}
+          {(session.queuedMissionCount ?? 0) > 0 ? <span className="dock-kit-meta-text">{session.queuedMissionCount} more queued</span> : null}
         </div>
       ) : null}
 
       <div className="room-agent-transcript" ref={transcriptRef} aria-label="Room Agent transcript">
         {!activeRoom ? (
-          <div className="room-agent-empty"><Bot aria-hidden="true" /><span>Select a room to supervise it.</span></div>
-        ) : visibleMessages.length ? (
-          visibleMessages.map((message) => (
-            <article key={message.id} className={`room-agent-message is-${message.role}`}>
-              <header>
-                <strong>{message.role === "user" ? "You" : "Room Agent"}</strong>
-                <time dateTime={message.createdAt ?? undefined}>{messageTime(message.createdAt)}</time>
-              </header>
-              <p>{message.content}</p>
-            </article>
-          ))
+          <DockState kind="empty" icon={Bot} title="Select a room to supervise it." detail="The Room Agent works inside the room you have open." />
+        ) : awaitingFirstLoad ? (
+          <DockState kind="loading" title="Connecting to the Room Agent…" />
+        ) : firstLoadFailed ? (
+          <DockState
+            kind="error"
+            title="The Room Agent could not be reached"
+            detail={error}
+            action={{ label: "Try again", onClick: () => { setError(null); void loadSession(activeRoom.id, true); } }}
+          />
+        ) : hasConversation ? (
+          <>
+            {visibleMessages.map((message) => (
+              <article key={message.id} className={`room-agent-message is-${message.role}`}>
+                <header>
+                  <strong>{message.role === "user" ? "You" : "Room Agent"}</strong>
+                  <time dateTime={message.createdAt ?? undefined}>{messageTime(message.createdAt)}</time>
+                </header>
+                <p>{message.content}</p>
+              </article>
+            ))}
+            {pendingCount > 0 || optimisticTurns.length > 0 ? (
+              <article className="room-agent-message is-assistant is-thinking" aria-live="polite">
+                <header>
+                  <strong>Room Agent</strong>
+                </header>
+                <p className="room-agent-thinking">
+                  <span className="room-agent-thinking-dots" aria-hidden="true">
+                    <span>.</span><span>.</span><span>.</span>
+                  </span>
+                  <span>Room Agent is thinking…</span>
+                </p>
+              </article>
+            ) : null}
+          </>
         ) : (
-          <div className="room-agent-empty">
-            <Bot aria-hidden="true" />
-            <strong>What needs doing?</strong>
-            <span>Give the Room Agent a task for this room.</span>
-            <div className="room-agent-suggestions" aria-label="Suggested requests">
+          <div className="room-agent-start">
+            <DockState kind="empty" icon={Bot} title="What needs doing?" detail="Give the Room Agent a task for this room." />
+            <div className="room-agent-suggestions" role="group" aria-label="Suggested requests">
               {[
                 ["Check progress", "Check the progress of this room's tasks and tell me what needs attention."],
                 ["Continue pending work", "Continue the pending plans in this room and report what you complete."]
               ].map(([label, prompt]) => (
-                <button key={label} type="button" disabled={session?.capabilities.canSend === false}
+                <button key={label} type="button" className="dock-kit-chip" disabled={session?.capabilities.canSend === false}
                   onClick={() => { setDraft(prompt!); composerRef.current?.focus(); }}>{label}</button>
               ))}
             </div>
           </div>
         )}
-        {session?.missionSummary ? (
-          <section className="room-agent-mission-report" aria-label="Room Agent mission report">
-            <header><strong>Mission report</strong><span>{Math.round(session.missionSummary.successRate)}% success</span></header>
-            <p>
-              {session.missionSummary.completedTasks}/{session.missionSummary.totalTasks} completed · Peak {session.missionSummary.peakConcurrency} · {durationLabel(session.missionSummary.totalMs)} total
-            </p>
-            <small>
-              Combined quality {session.missionSummary.averageQuality === null ? "unavailable" : `${Math.round(session.missionSummary.averageQuality)}/100 avg (${Math.round(session.missionSummary.minQuality ?? 0)}–${Math.round(session.missionSummary.maxQuality ?? 0)})`} · First response {session.missionSummary.averageFirstResponseMs === null ? "N/A" : `${durationLabel(session.missionSummary.averageFirstResponseMs)} avg`} · {session.missionSummary.retries} retries · {session.missionSummary.stalls} stalls · {session.missionSummary.blockedTasks} blocked
-            </small>
-          </section>
-        ) : null}
+        {session?.missionSummary ? <MissionReport summary={session.missionSummary} /> : null}
       </div>
 
       {session && (session.capabilities.canPause || session.capabilities.canResume || session.capabilities.canStop) ? (
-          <div className="room-agent-run-controls" aria-label="Task controls">
-            {session?.capabilities.canPause ? (
-              <button
-                type="button"
-                className="room-agent-pause"
-                onClick={() => void control("PAUSE")}
-                disabled={!activeRoom || controlling !== null || stopping}
-                aria-label="Pause Room Agent"
-              >
-                <Pause aria-hidden="true" />
-                <span>{controlling === "PAUSE" ? "Pausing" : "Pause"}</span>
-              </button>
-            ) : null}
-            {session?.capabilities.canResume ? (
-              <button
-                type="button"
-                className="room-agent-resume"
-                onClick={() => void control("RESUME")}
-                disabled={!activeRoom || controlling !== null || stopping}
-                aria-label="Resume Room Agent"
-              >
-                <Play aria-hidden="true" />
-                <span>{controlling === "RESUME" ? "Resuming" : "Resume"}</span>
-              </button>
-            ) : null}
-            {session?.capabilities.canStop ? <button
-              type="button"
-              className="room-agent-stop"
+        <div className="room-agent-controls" role="group" aria-label="Task controls">
+          {session.capabilities.canPause ? (
+            <DockButton
+              icon={Pause}
+              onClick={() => void control("PAUSE")}
+              disabled={!activeRoom || controlling !== null || stopping}
+              busy={controlling === "PAUSE"}
+              aria-label="Pause Room Agent"
+            >
+              {controlling === "PAUSE" ? "Pausing" : "Pause"}
+            </DockButton>
+          ) : null}
+          {session.capabilities.canResume ? (
+            <DockButton
+              icon={Play}
+              onClick={() => void control("RESUME")}
+              disabled={!activeRoom || controlling !== null || stopping}
+              busy={controlling === "RESUME"}
+              aria-label="Resume Room Agent"
+            >
+              {controlling === "RESUME" ? "Resuming" : "Resume"}
+            </DockButton>
+          ) : null}
+          {session.capabilities.canStop ? (
+            <DockButton
+              icon={CircleStop}
+              className="room-agent-stop-button"
               onClick={() => void stop()}
-              disabled={!activeRoom || stopping || controlling !== null || !session?.capabilities.canStop}
+              disabled={!activeRoom || stopping || controlling !== null || !session.capabilities.canStop}
+              busy={stopping}
               aria-label="Stop Room Agent"
             >
-              <CircleStop aria-hidden="true" />
-              <span>{stopping ? "Stopping" : "Stop"}</span>
-            </button> : null}
-          </div>
+              {stopping ? "Stopping" : "Stop"}
+            </DockButton>
+          ) : null}
+        </div>
       ) : null}
 
-      {error ? <p className="room-agent-error" role="alert">{error}</p> : null}
+      {error && !firstLoadFailed ? (
+        <DockNotice className="room-agent-error" onDismiss={() => setError(null)}>{error}</DockNotice>
+      ) : null}
       {voiceOwned && voiceInput && voiceInput.status !== "idle" ? (
-        <p className="room-agent-voice-status" role="status">
+        <DockNotice tone="info" className="room-agent-voice-status">
           {voiceInput.preview || (voiceInput.status === "recording" ? "Listening" : voiceInput.status === "connecting" ? "Connecting microphone" : "Transcribing")}
-        </p>
+        </DockNotice>
       ) : null}
-
       <form className="room-agent-composer" onSubmit={(event) => void submit(event)}>
         <label className="room-agent-composer-label" htmlFor="room-agent-message">Message Room Agent</label>
         {layoutSuggestion && isComposerSuggestionBarVisible(autocorrectSettings) ? (
@@ -556,18 +746,25 @@ export function RoomAgentDock({
           onChange={(event) => {
             const val = event.target.value;
             setDraft(val);
-            if (!autocorrectSettings.enabled) {
+            if (layoutCheckTimerRef.current !== null) {
+              window.clearTimeout(layoutCheckTimerRef.current);
+              layoutCheckTimerRef.current = null;
+            }
+            if (!autocorrectSettings.enabled || !val.trim()) {
               setLayoutSuggestion(null);
               return;
             }
-            const detection = detectKeyboardLayoutMismatch(val);
-            const isLangSupported = (detection.direction === "toGreek" && autocorrectSettings.supportedLanguages.includes("el")) ||
-              (detection.direction === "toQwerty" && autocorrectSettings.supportedLanguages.includes("en"));
-            if (detection.hasMismatch && detection.confidence >= 0.85 && isLangSupported) {
-              setLayoutSuggestion(detection);
-            } else {
-              setLayoutSuggestion(null);
-            }
+            layoutCheckTimerRef.current = window.setTimeout(() => {
+              layoutCheckTimerRef.current = null;
+              const detection = detectKeyboardLayoutMismatch(val);
+              const isLangSupported = (detection.direction === "toGreek" && autocorrectSettings.supportedLanguages.includes("el")) ||
+                (detection.direction === "toQwerty" && autocorrectSettings.supportedLanguages.includes("en"));
+              if (detection.hasMismatch && detection.confidence >= 0.85 && isLangSupported) {
+                setLayoutSuggestion(detection);
+              } else {
+                setLayoutSuggestion(null);
+              }
+            }, 150);
           }}
           onKeyDown={handleComposerKeyDown}
           placeholder={activeRoom ? "What would you like to do?" : "Select a room first"}
@@ -632,17 +829,19 @@ export function RoomAgentDock({
             </button>
           ) : null}
           <span className="room-agent-composer-hint">Enter to send</span>
-          <button
+          <DockButton
             type="submit"
-            className="room-agent-send"
+            tone="primary"
+            icon={Send}
+            className="room-agent-submit"
             disabled={!activeRoom || !draft.trim() || session?.capabilities.canSend === false}
             aria-label="Send to Room Agent"
-            >
-            <Send aria-hidden="true" />
-            <span>Send</span>
-          </button>
+          >
+            Send
+          </DockButton>
         </div>
       </form>
+      {confirmDialog}
     </section>
   );
 }

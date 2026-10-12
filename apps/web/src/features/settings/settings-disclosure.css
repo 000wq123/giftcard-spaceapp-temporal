@@ -18,7 +18,7 @@
 .settings-disclosure h3 strong { font-size: .85rem; font-weight: 600; }
 .settings-disclosure h3 small { font-size: .75rem; line-height: 1.45; color: var(--room-muted, #a2a7ad); font-weight: 400; }
 .settings-disclosure[data-open="true"] > h3 > button > svg:last-child { transform: rotate(90deg); }
-.settings-disclosure-content { padding: 0 .8rem .8rem; }
+.settings-disclosure-content { padding: 0 .8rem .8rem; overflow-x: hidden; max-width: 100%; box-sizing: border-box; }
 .settings-disclosure-content[hidden] { display: none; }
 .settings-scope { color: var(--room-muted, #a2a7ad); font-size: .7rem; margin: .2rem 0 .6rem; }
 .settings-disclosure-content > .settings-flat-card { border: 0; background: transparent; padding: 0; }

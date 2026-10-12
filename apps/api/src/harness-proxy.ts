@@ -1,4 +1,5 @@
 import http from "node:http";
+import zlib from "node:zlib";
 import { harnessSharedEventsBootstrap } from "./harness-shared-events.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
@@ -27,7 +28,8 @@ const BROWSER_TRUST_HEADERS = new Set([
 
 const HARNESS_WEBSOCKET_PATHS = new Set([
   "/api/events.mux",
-  "/api/events.host"
+  "/api/events.host",
+  "/api/remote.mux"
 ]);
 
 const HARNESS_ROOT_HTTP_PATHS = new Set([
@@ -37,7 +39,8 @@ const HARNESS_ROOT_HTTP_PATHS = new Set([
   "/api/commands/execute",
   "/api/pluginInventory/list",
   "/api/dynamicCordisRunner/inventory",
-  "/api/dynamicCordisRunner/syncInspectManifest"
+  "/api/dynamicCordisRunner/syncInspectManifest",
+  "/api/session/uploadFileBinary"
 ]);
 
 const SPACE_PANE_ID_PATTERN = /^pane:[A-Za-z0-9_-]{6,80}$/;
@@ -49,15 +52,18 @@ const HARNESS_REVISION_PATTERN = /^[a-f0-9]{8,64}$/i;
 
 export function isHarnessRootHttpPath(rawUrl: string | undefined): boolean {
   const pathname = (rawUrl ?? "").split("?", 1)[0] ?? "";
-  return HARNESS_ROOT_HTTP_PATHS.has(pathname);
+  return HARNESS_ROOT_HTTP_PATHS.has(pathname) || pathname.startsWith("/plugins/");
 }
 
 const HTML_REWRITE_RULES: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
   { pattern: /src="\/assets\//g, replacement: 'src="/api/harness/assets/' },
   { pattern: /href="\/assets\//g, replacement: 'href="/api/harness/assets/' },
   { pattern: /href="\/plugins\//g, replacement: 'href="/api/harness/plugins/' },
+  { pattern: /href="plugins\//g, replacement: 'href="/api/harness/plugins/' },
   { pattern: /"url":"\/plugins\//g, replacement: '"url":"/api/harness/plugins/' },
+  { pattern: /"url":"plugins\//g, replacement: '"url":"/api/harness/plugins/' },
   { pattern: /src="\/plugins\//g, replacement: 'src="/api/harness/plugins/' },
+  { pattern: /src="plugins\//g, replacement: 'src="/api/harness/plugins/' },
   { pattern: /href="\/manifest\.webmanifest"/g, replacement: 'href="/api/harness/manifest.webmanifest"' },
   { pattern: /href="\/favicon\.svg"/g, replacement: 'href="/api/harness/favicon.svg"' }
 ];
@@ -69,20 +75,28 @@ function harnessPaneSessionId(rawUrl: string): string | null {
   return `space-pane-${paneId.slice("pane:".length)}`;
 }
 
-function harnessUpstreamPath(rawUrl: string): string {
-  const relative = rawUrl.replace(/^\/api\/harness/, "") || "/";
-  const url = new URL(relative, "http://space.local");
-  url.searchParams.delete("spacePane");
-  return `${url.pathname}${url.search}`;
+export function harnessUpstreamPath(rawUrl: string): string {
+  let relative = rawUrl.replace(/^\/api\/harness\/?/, "/");
+  if (!relative.startsWith("/")) {
+    relative = `/${relative}`;
+  }
+  if (!relative.includes("spacePane=")) {
+    return relative;
+  }
+  return relative
+    .replace(/([?&])spacePane=[^&#]*(&|$)/, (_, p1, p2) => (p2 ? p1 : ""))
+    .replace(/\?&/, "?")
+    .replace(/[?&]$/, "");
 }
 
 export function harnessStaticCacheControl(rawUrl: string, method: string): string | null {
   if (method !== "GET" && method !== "HEAD") return null;
   const url = new URL(rawUrl, "http://space.local");
-  if (url.pathname.startsWith("/assets/") && HARNESS_FINGERPRINTED_ASSET_PATTERN.test(url.pathname)) {
+  const pathname = url.pathname.replace(/^\/api\/harness/, "") || "/";
+  if (pathname.startsWith("/assets/") && HARNESS_FINGERPRINTED_ASSET_PATTERN.test(pathname)) {
     return HARNESS_IMMUTABLE_CACHE_CONTROL;
   }
-  if (url.pathname.startsWith("/plugins/") && HARNESS_REVISION_PATTERN.test(url.searchParams.get("rev") ?? "")) {
+  if (pathname.startsWith("/plugins/") && HARNESS_REVISION_PATTERN.test(url.searchParams.get("rev") ?? "")) {
     return HARNESS_IMMUTABLE_CACHE_CONTROL;
   }
   return null;
@@ -98,39 +112,339 @@ function harnessPaneStorageBootstrap(sessionId: string): string {
     const currentKey=${currentKey},scopedKey=${scopedKey},paneSessionId=${JSON.stringify(sessionId)};
     const realStorage=window.localStorage;
     realStorage.setItem(scopedKey,${initialValue});
+    realStorage.setItem(currentKey,${initialValue});
     function publish(){try{const selected=JSON.parse(realStorage.getItem(scopedKey)||"null");if(typeof selected?.sessionId==="string")window.parent.postMessage({type:"space:harness-session",paneSessionId,sessionId:selected.sessionId},window.location.origin);}catch{}}
     const scopedStorage=new Proxy(realStorage,{get:function(target,property){
       if(property==="getItem")return function(key){return target.getItem(key===currentKey?scopedKey:key);};
-      if(property==="setItem")return function(key,value){const result=target.setItem(key===currentKey?scopedKey:key,value);if(key===currentKey)publish();return result;};
-      if(property==="removeItem")return function(key){return target.removeItem(key===currentKey?scopedKey:key);};
+      if(property==="setItem")return function(key,value){
+        const result=target.setItem(key===currentKey?scopedKey:key,value);
+        if(key===currentKey){
+          target.setItem(currentKey,value);
+          publish();
+        }
+        return result;
+      };
+      if(property==="removeItem")return function(key){
+        target.removeItem(key===currentKey?scopedKey:key);
+        if(key===currentKey)target.removeItem(currentKey);
+      };
       const value=Reflect.get(target,property,target);return typeof value==="function"?value.bind(target):value;
     },set:function(target,property,value){return Reflect.set(target,property,value,target);}});
     Object.defineProperty(window,"localStorage",{configurable:true,enumerable:true,value:scopedStorage});
     publish();
+
+    function isComposerInert(){
+      try{
+        const input=document.querySelector('[data-composer-input]');
+        if(!input) return true;
+        const phase=input.getAttribute('data-phase');
+        const editable=input.getAttribute('contenteditable');
+        return phase==='inert'||editable==='false';
+      }catch(e){return false;}
+    }
+
+    function isInteractiveFocused(){
+      try{
+        const active=document.activeElement;
+        if(!active) return false;
+        if(active.closest('[role="menu"]')||active.closest('[role="dialog"]')||active.closest('[aria-haspopup="menu"]')||active.closest('button')||active.closest('input')||active.closest('select')||active.closest('[data-model-select]')) return true;
+      }catch(e){}
+      return false;
+    }
+
+    function focusComposer(){
+      try{
+        if(document.querySelector('[role="menu"]')) return false;
+        if(isInteractiveFocused()) return false;
+        const el=document.querySelector('[data-slate-editor="true"],textarea,[contenteditable="true"]');
+        if(el){el.focus();return true;}
+      }catch(e){}
+      return false;
+    }
+
+    function clickElement(el){
+      if(!el) return false;
+      try{
+        el.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,cancelable:true}));
+        el.dispatchEvent(new MouseEvent("mousedown",{bubbles:true,cancelable:true}));
+        el.dispatchEvent(new PointerEvent("pointerup",{bubbles:true,cancelable:true}));
+        el.dispatchEvent(new MouseEvent("mouseup",{bubbles:true,cancelable:true}));
+        el.click();
+        return true;
+      }catch(e){
+        try{el.click();return true;}catch(err){return false;}
+      }
+    }
+
+    function isWorkspaceMenu(menu){
+      if(!menu) return false;
+      try{
+        const txt=(menu.textContent||"").toLowerCase();
+        if(txt.includes("effort")||menu.querySelector('[data-model-select]')) return false;
+        if(txt.includes("workspace")||txt.includes("/opt/spaceapp")||txt.includes("space")) return true;
+        const trigger=document.querySelector('button[aria-label*="Choose workspace"],button.pXSMma_workspace,button[class*="workspace"]');
+        if(trigger&&trigger.getAttribute('aria-expanded')==='true') return true;
+      }catch(e){}
+      return false;
+    }
+
+    function autoSelectWorkspace(){
+      if(!isComposerInert()) return false;
+      try{
+        const menus=Array.from(document.querySelectorAll('[role="menu"]'));
+        const menu=menus.find(isWorkspaceMenu);
+        if(!menu) return false;
+        const items=Array.from(menu.querySelectorAll('button[role="menuitem"],button'));
+        if(items.length===0) return false;
+
+        const targetItem=items.find(function(btn){
+          const txt=(btn.textContent||"").trim();
+          return txt==="space"||txt==="/opt/spaceapp";
+        })||items.find(function(btn){
+          const txt=(btn.textContent||"").trim();
+          return /\\bspace\\b/i.test(txt)&&!/space[0-9]/i.test(txt)&&!/workspace/i.test(txt);
+        });
+
+        if(targetItem){
+          clickElement(targetItem);
+          setTimeout(function(){
+            if(!isComposerInert()){
+              cleanupWatchdog();
+              focusComposer();
+            }
+          },100);
+          return true;
+        }
+      }catch(e){}
+      return false;
+    }
+
+    let observer=null;
+    let autoSelectTimer=null;
+    function cleanupWatchdog(){
+      if(autoSelectTimer){clearInterval(autoSelectTimer);autoSelectTimer=null;}
+      if(observer){observer.disconnect();observer=null;}
+    }
+
+    function checkAndAutoSelect(){
+      if(!isComposerInert()){
+        cleanupWatchdog();
+        focusComposer();
+        return;
+      }
+      if(autoSelectWorkspace()) return;
+      try{
+        const chip=document.querySelector('button[aria-label*="Choose workspace"],button.pXSMma_workspace,button[class*="workspace"]');
+        if(chip){
+          clickElement(chip);
+          setTimeout(autoSelectWorkspace,50);
+          setTimeout(autoSelectWorkspace,150);
+        }
+      }catch(e){}
+    }
+
+    let intervalCount=0;
+    autoSelectTimer=setInterval(function(){
+      intervalCount++;
+      if(!isComposerInert()){
+        cleanupWatchdog();
+        focusComposer();
+        return;
+      }
+      checkAndAutoSelect();
+      if(intervalCount>60) cleanupWatchdog();
+    },150);
+
+    observer=new MutationObserver(function(){
+      if(!isComposerInert()){
+        cleanupWatchdog();
+        focusComposer();
+        return;
+      }
+      if(document.querySelector('[role="menu"]')){
+        autoSelectWorkspace();
+      }
+    });
+    try{
+      observer.observe(document.documentElement||document.body,{childList:true,subtree:true});
+    }catch(e){}
+
+    window.addEventListener("DOMContentLoaded",function(){checkAndAutoSelect();});
+    window.addEventListener("load",function(){checkAndAutoSelect();});
+    document.addEventListener("click",function(e){
+      const target=e.target;
+      if(target&&target.closest&&target.closest('[data-composer-card],[data-composer-input],[class*="composer"],[class*="heroWorkspaceRow"]')){
+        if(isComposerInert()){
+          setTimeout(autoSelectWorkspace,30);
+          setTimeout(checkAndAutoSelect,100);
+        }
+      }
+    },true);
   })();</script>`;
 }
+
+function harnessDebugBootstrap(sessionId: string): string {
+  return `<script data-space-harness-debug>(function(){
+    const state = {
+      paneSessionId: ${JSON.stringify(sessionId)},
+      errors: [],
+      rejections: [],
+      failedResources: [],
+      startTime: Date.now(),
+      isRendered: false,
+      collapsed: false,
+      appDebugEnabled: false
+    };
+    window.__SPACE_HARNESS_DEBUG__ = state;
+
+    try {
+      fetch("/api/app-diagnostics", { credentials: "include" })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d && d.enabled) {
+            state.appDebugEnabled = true;
+            renderStatus(false);
+          }
+        }).catch(function(){});
+    } catch(e) {}
+
+    function createOverlay() {
+      let overlay = document.getElementById("space-harness-debug-overlay");
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = "space-harness-debug-overlay";
+        overlay.style.cssText = "position:fixed;bottom:12px;right:12px;max-width:540px;max-height:80vh;overflow-y:auto;background:rgba(15,23,42,0.96);color:#f1f5f9;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;padding:12px;border-radius:8px;box-shadow:0 12px 36px rgba(0,0,0,0.5);border:1px solid #334155;z-index:999999;line-height:1.4;";
+        (document.body || document.documentElement).appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    function renderStatus(isFatal) {
+      if (!document.body && !document.documentElement) return;
+      const hasErrors = state.errors.length > 0 || state.failedResources.length > 0 || state.rejections.length > 0;
+      if (!hasErrors && !isFatal && !state.appDebugEnabled) {
+        const existing = document.getElementById("space-harness-debug-overlay");
+        if (existing) existing.remove();
+        return;
+      }
+      const overlay = createOverlay();
+      if (state.collapsed) {
+        overlay.style.padding = "4px 8px";
+        overlay.style.cursor = "pointer";
+        let mini = '';
+        if (hasErrors) {
+          mini += '<span style="color:#f87171;font-weight:600;">● ' + (state.errors.length + state.failedResources.length + state.rejections.length) + ' Issue(s)</span>';
+        }
+        if (state.appDebugEnabled) {
+          mini += ' <span style="background:#dc2626;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;font-weight:bold;margin-left:4px;">DEBUG ON</span>';
+        }
+        overlay.innerHTML = mini;
+        overlay.onclick = function() { state.collapsed = false; renderStatus(false); };
+        return;
+      }
+
+      overlay.style.padding = "12px";
+      overlay.style.cursor = "default";
+      overlay.onclick = null;
+      let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:bold;border-bottom:1px solid #334155;padding-bottom:6px;">';
+      html += '<span>Space Harness Diagnostics</span>';
+      html += '<div style="display:flex;gap:6px;align-items:center;">';
+      if (state.appDebugEnabled) {
+        html += '<span style="background:#dc2626;color:#fff;font-size:9px;padding:2px 5px;border-radius:3px;font-weight:bold;">DEBUG ON</span>';
+      }
+      html += '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:' + (state.isRendered ? '#065f46;color:#34d399' : (isFatal || hasErrors ? '#7f1d1d;color:#f87171' : '#1e293b;color:#94a3b8')) + ';">' + (state.isRendered ? 'Ready' : (isFatal || hasErrors ? 'Load Issue' : 'Initializing')) + '</span>';
+      if (state.isRendered && !hasErrors) {
+        html += '<button id="space-harness-debug-collapse-btn" style="background:#334155;border:none;color:#cbd5e1;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:10px;">Minimize</button>';
+      }
+      html += '</div></div>';
+      html += '<div style="color:#94a3b8;font-size:11px;margin-bottom:6px;">Pane Session: <span style="color:#38bdf8;">' + state.paneSessionId + '</span></div>';
+      if (state.failedResources.length > 0) {
+        html += '<div style="color:#f87171;font-weight:bold;margin-top:6px;">Failed Resources (' + state.failedResources.length + '):</div>';
+        state.failedResources.forEach(function(r) {
+          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;">• ' + r + '</div>';
+        });
+      }
+      if (state.errors.length > 0) {
+        html += '<div style="color:#ef4444;font-weight:bold;margin-top:6px;">Uncaught JavaScript Errors (' + state.errors.length + '):</div>';
+        state.errors.forEach(function(e) {
+          html += '<div style="color:#fca5a5;word-break:break-all;margin-left:8px;margin-bottom:4px;">• ' + (e.message || e) + (e.stack ? '<pre style="font-size:10px;color:#cbd5e1;overflow-x:auto;margin:2px 0 0 0;padding:4px;background:#0f172a;border-radius:4px;">' + e.stack + '</pre>' : '') + '</div>';
+        });
+      }
+      if (state.rejections.length > 0) {
+        html += '<div style="color:#f97316;font-weight:bold;margin-top:6px;">Unhandled Rejections (' + state.rejections.length + '):</div>';
+        state.rejections.forEach(function(r) {
+          html += '<div style="color:#fdba74;word-break:break-all;margin-left:8px;">• ' + (r.reason || r) + '</div>';
+        });
+      }
+      if (!state.isRendered && (isFatal || hasErrors) && state.errors.length === 0 && state.failedResources.length === 0) {
+        html += '<div style="color:#fbbf24;margin-top:6px;">Waiting for client bundle to mount. Scripts are loading.</div>';
+      }
+      overlay.innerHTML = html;
+      const btn = document.getElementById("space-harness-debug-collapse-btn");
+      if (btn) {
+        btn.onclick = function(e) { e.stopPropagation(); state.collapsed = true; renderStatus(false); };
+      }
+    }
+
+    window.addEventListener("error", function(evt) {
+      if (evt.target && evt.target !== window && (evt.target.src || evt.target.href)) {
+        state.failedResources.push(evt.target.src || evt.target.href);
+        renderStatus(true);
+        return;
+      }
+      state.errors.push({ message: evt.message || String(evt), stack: evt.error?.stack || "" });
+      renderStatus(true);
+    }, true);
+
+    window.addEventListener("unhandledrejection", function(evt) {
+      state.rejections.push({ reason: evt.reason?.message || String(evt.reason) });
+      renderStatus(true);
+    });
+
+    const checkInterval = setInterval(function() {
+      const root = document.getElementById("root") || document.querySelector("#app, main, .dsh-app, [data-ds-theme]");
+      if (root && root.children.length > 0) {
+        state.isRendered = true;
+        clearInterval(checkInterval);
+        if (!state.appDebugEnabled && state.errors.length === 0 && state.failedResources.length === 0) {
+          state.collapsed = true;
+        }
+        renderStatus(false);
+      } else if (Date.now() - state.startTime > 4000) {
+        clearInterval(checkInterval);
+        renderStatus(true);
+      }
+    }, 250);
+  })();</script>`;
+}
+
+const harnessTransportBootstrap = `<script data-space-harness-transport>(function(){
+  window.__DSH_TRANSPORT__ = Object.assign(window.__DSH_TRANSPORT__ || {}, { ownsHost: true });
+})();</script>`;
 
 function rewriteHarnessHtml(body: string, paneSessionId?: string): string {
   let out = body;
   for (const rule of HTML_REWRITE_RULES) {
     out = out.replace(rule.pattern, rule.replacement);
   }
-  if (paneSessionId) {
-    const bootstrap = harnessPaneStorageBootstrap(paneSessionId) + harnessSharedEventsBootstrap;
-    out = /<head(?:\s[^>]*)?>/i.test(out)
-      ? out.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${bootstrap}`)
-      : `${bootstrap}${out}`;
-  }
+  const paneBootstrap = paneSessionId
+    ? harnessDebugBootstrap(paneSessionId) + harnessPaneStorageBootstrap(paneSessionId) + harnessSharedEventsBootstrap
+    : "";
+  const bootstrap = `${harnessTransportBootstrap}${paneBootstrap}`;
+  out = /<head(?:\s[^>]*)?>/i.test(out)
+    ? out.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${bootstrap}`)
+    : `${bootstrap}${out}`;
   return out;
 }
 
-function callHarnessRpc(
+function callHarnessRpcOnce(
   target: URL,
+  path: string,
   method: string,
   rpcPayload: unknown,
   timeoutMs: number,
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
+): Promise<{ ok: boolean; status: number; value?: unknown; error?: Error }> {
+  return new Promise((resolve) => {
     const payload = JSON.stringify({
       type: "client-request",
       rpcId: `space-pane-${randomUUID()}`,
@@ -143,7 +457,7 @@ function callHarnessRpc(
         hostname: target.hostname,
         port: target.port,
         method: "POST",
-        path: `/api/${method}`,
+        path: `/api/${path}`,
         headers: {
           host: harnessLoopbackAuthority(target),
           "content-type": "application/json",
@@ -152,6 +466,7 @@ function callHarnessRpc(
         timeout: timeoutMs,
       },
       (response) => {
+        const statusCode = response.statusCode ?? 500;
         const chunks: Buffer[] = [];
         let bytes = 0;
         response.on("data", (chunk: Buffer) => {
@@ -164,38 +479,110 @@ function callHarnessRpc(
           }
           chunks.push(chunk);
         });
-        response.once("error", reject);
+        response.once("error", (err) => resolve({ ok: false, status: statusCode, error: err }));
         response.on("end", () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
               result?: { ok?: boolean; value?: unknown; error?: { code?: string; message?: string } };
             };
             if (
-              (response.statusCode ?? 500) < 200 ||
-              (response.statusCode ?? 500) >= 300 ||
+              statusCode < 200 ||
+              statusCode >= 300 ||
               body.result?.ok !== true
             ) {
-              const errorMessage = body.result?.error?.message || "Harness RPC failed.";
+              const errorMessage = body.result?.error?.message || `Harness RPC failed with status ${statusCode}.`;
               const err = new Error(errorMessage);
               if (body.result?.error?.code) {
                 (err as { code?: string }).code = body.result.error.code;
               }
-              reject(err);
+              resolve({ ok: false, status: statusCode, error: err });
               return;
             }
-            resolve(body.result.value);
+            resolve({ ok: true, status: statusCode, value: body.result.value });
           } catch {
-            reject(new Error("Harness pane session response was invalid."));
+            resolve({
+              ok: false,
+              status: statusCode,
+              error: new Error("Harness pane session response was invalid."),
+            });
           }
         });
       },
     );
-    upstream.once("timeout", () =>
-      upstream.destroy(new Error("Harness pane session request timed out.")),
-    );
-    upstream.once("error", reject);
+    upstream.once("timeout", () => {
+      upstream.destroy();
+      resolve({
+        ok: false,
+        status: 504,
+        error: new Error("Harness pane session request timed out."),
+      });
+    });
+    upstream.once("error", (err) => resolve({ ok: false, status: 502, error: err }));
     upstream.end(payload);
   });
+}
+
+const knownTypertHosts = new Set<string>();
+
+async function callHarnessRpc(
+  target: URL,
+  method: string,
+  rpcPayload: unknown,
+  timeoutMs: number,
+): Promise<unknown> {
+  const isTypertPayload =
+    rpcPayload !== null &&
+    typeof rpcPayload === "object" &&
+    "args" in (rpcPayload as Record<string, unknown>);
+  const slashMethod = method.includes(".") ? method.replace(".", "/") : method;
+  const typertPayload = isTypertPayload ? rpcPayload : { args: { request: rpcPayload } };
+
+  // If already known to be Typert Gateway, or if method uses slash notation, use Typert directly
+  if (knownTypertHosts.has(target.host) || !method.includes(".")) {
+    const res = await callHarnessRpcOnce(
+      target,
+      slashMethod,
+      slashMethod,
+      typertPayload,
+      timeoutMs,
+    );
+    if (res.ok) {
+      knownTypertHosts.add(target.host);
+      return res.value;
+    }
+    // If Typert call failed and method was originally dot-separated, fallback to dot
+    if (method.includes(".") && res.status === 404) {
+      knownTypertHosts.delete(target.host);
+      const dotRes = await callHarnessRpcOnce(target, method, method, rpcPayload, timeoutMs);
+      if (dotRes.ok) return dotRes.value;
+      throw dotRes.error || new Error("Harness RPC failed.");
+    }
+    throw res.error || new Error("Harness RPC failed.");
+  }
+
+  // Otherwise, try legacy/dot format first (compatible with existing test fixtures and older versions)
+  const dotRes = await callHarnessRpcOnce(target, method, method, rpcPayload, timeoutMs);
+  if (dotRes.ok) {
+    return dotRes.value;
+  }
+
+  // If dot format returned 404, fallback to Typert Gateway format
+  if (dotRes.status === 404) {
+    const typertRes = await callHarnessRpcOnce(
+      target,
+      slashMethod,
+      slashMethod,
+      typertPayload,
+      timeoutMs,
+    );
+    if (typertRes.ok) {
+      knownTypertHosts.add(target.host);
+      return typertRes.value;
+    }
+    throw typertRes.error || new Error("Harness RPC failed.");
+  }
+
+  throw dotRes.error || new Error("Harness RPC failed.");
 }
 
 /** Metadata-only RPCs for the exact session assigned to this Space pane. */
@@ -212,31 +599,73 @@ export async function readHarnessTaskTitle(
     return null;
   const sessionId = selectedSessionId ?? `space-pane-${paneId.slice(5)}`;
   if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(sessionId)) return null;
-  const history = (await callHarnessRpc(
-    new URL(config.harnessOrigin),
-    "session.history",
-    { sessionId, maxMessages: 30 },
-    5000,
-  )) as {
-    events?: Array<{ event?: { type?: string; data?: any } }>;
-    projections?: { values?: { title?: unknown } };
-  };
-  const events = history.events ?? [];
-  const requests = events
-    .filter(
-      (item) =>
+
+  let title: unknown = null;
+  const requests: string[] = [];
+
+  try {
+    const history = (await callHarnessRpc(
+      new URL(config.harnessOrigin),
+      "session.history",
+      { sessionId, maxMessages: 30 },
+      5000,
+    )) as {
+      events?: Array<{ event?: { type?: string; data?: any } }>;
+      projections?: { values?: { title?: unknown } };
+    };
+    const events = history.events ?? [];
+    for (const item of events) {
+      if (
         item.event?.type === "user/message" &&
-        item.event.data?.source?.kind === "user",
-    )
-    .map((item) =>
-      (Array.isArray(item.event?.data?.content) ? item.event.data.content : [])
-        .filter(
-          (part: any) => part.type === "text" && typeof part.text === "string",
-        )
-        .map((part: any) => part.text)
-        .join(" "),
-    );
-  const title = history.projections?.values?.title;
+        item.event.data?.source?.kind === "user"
+      ) {
+        const parts = Array.isArray(item.event?.data?.content) ? item.event.data.content : [];
+        const text = parts
+          .filter((part: any) => part.type === "text" && typeof part.text === "string")
+          .map((part: any) => part.text)
+          .join(" ");
+        if (text) requests.push(text);
+      }
+    }
+    title = history.projections?.values?.title;
+  } catch {
+    try {
+      const proj = (await callHarnessRpc(
+        new URL(config.harnessOrigin),
+        "session/projections",
+        { sessionId },
+        5000,
+      )) as { asOfSeq?: number; values?: { title?: unknown } };
+      title = proj?.values?.title;
+      if (typeof proj?.asOfSeq === "number" && proj.asOfSeq > 0) {
+        try {
+          const page = (await callHarnessRpc(
+            new URL(config.harnessOrigin),
+            "session/page",
+            { address: { kind: "session", sessionId }, throughSeq: proj.asOfSeq },
+            5000,
+          )) as { records?: Array<{ type?: string; event?: { type?: string; data?: any } }> };
+          const records = page?.records ?? [];
+          for (const item of records) {
+            if (
+              item.event?.type === "user/message" &&
+              item.event.data?.source?.kind === "user"
+            ) {
+              const parts = Array.isArray(item.event?.data?.content) ? item.event.data.content : [];
+              const text = parts
+                .filter((part: any) => part.type === "text" && typeof part.text === "string")
+                .map((part: any) => part.text)
+                .join(" ");
+              if (text) requests.push(text);
+            }
+          }
+        } catch {}
+      }
+    } catch {
+      return null;
+    }
+  }
+
   return {
     sessionId,
     requests: requests.slice(-12).map((value) => value.slice(0, 3000)),
@@ -295,18 +724,12 @@ async function ensureHarnessPaneSession(
   } catch (error: any) {
     if (
       error?.code === "session-conflict" ||
-      String(error?.message).includes("session-conflict") ||
+      error?.code === "session/conflict" ||
+      String(error?.code).includes("conflict") ||
+      String(error?.message).includes("conflict") ||
       String(error?.message).includes("already exists with cwd")
     ) {
-      const hash = createHash("sha256").update(workspacePath).digest("hex").slice(0, 8);
-      const fallbackSessionId = `${sessionId}-${hash}`;
-      const fallbackResult = await callHarnessRpc(
-        target,
-        "session.create",
-        { sessionId: fallbackSessionId, workspaceId },
-        timeoutMs
-      ) as { sessionId?: string };
-      if (fallbackResult.sessionId === fallbackSessionId) return fallbackSessionId;
+      return sessionId;
     }
     throw error;
   }
@@ -351,9 +774,10 @@ function sendProxyError(reply: FastifyReply, statusCode: number, code: string, m
 function buildUpstreamHeaders(
   request: FastifyRequest,
   target: URL,
-  extra?: Record<string, string | string[] | number | undefined>
+  extra?: Record<string, string | string[] | number | undefined>,
+  forceIdentityEncoding?: boolean
 ): http.OutgoingHttpHeaders {
-  return {
+  const headers: http.OutgoingHttpHeaders = {
     ...Object.fromEntries(
       Object.entries(request.headers)
         .filter(([name, value]) => stripHopByHop(name) && !BROWSER_TRUST_HEADERS.has(name.toLowerCase()) && value !== undefined)
@@ -366,6 +790,10 @@ function buildUpstreamHeaders(
     "x-forwarded-prefix": "/api/harness",
     ...extra
   };
+  if (forceIdentityEncoding) {
+    headers["accept-encoding"] = "identity";
+  }
+  return headers;
 }
 
 function proxyToHarness(
@@ -379,8 +807,24 @@ function proxyToHarness(
   paneSessionId?: string
 ): Promise<FastifyReply | void> {
   return new Promise<FastifyReply | void>((resolve) => {
+    const isHtmlCandidate =
+      Boolean(paneSessionId) ||
+      (request.headers.accept?.includes("text/html") ?? false) ||
+      (() => {
+        const p = pathname.split("?", 1)[0] ?? "";
+        return p === "/" || p === "" || p.endsWith(".html") || p.endsWith(".htm");
+      })();
+
     const serializedBody =
       body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body);
+    const isEventStream =
+      pathname.startsWith("/plugins/events") ||
+      pathname.includes("/events.") ||
+      pathname.includes("/events/") ||
+      pathname.endsWith("/events") ||
+      (typeof request.headers.accept === "string" && request.headers.accept.includes("text/event-stream"));
+    const effectiveTimeout = isEventStream ? 0 : timeoutMs;
+
     const upstream = http.request(
       {
         protocol: target.protocol,
@@ -388,11 +832,16 @@ function proxyToHarness(
         port: target.port,
         method: request.method,
         path: pathname,
-        headers: buildUpstreamHeaders(request, target, {
-          ...(serializedBody !== undefined ? { "content-length": Buffer.byteLength(serializedBody) } : {}),
-          ...extraHeaders
-        }),
-        timeout: timeoutMs
+        headers: buildUpstreamHeaders(
+          request,
+          target,
+          {
+            ...(serializedBody !== undefined ? { "content-length": Buffer.byteLength(serializedBody) } : {}),
+            ...extraHeaders
+          },
+          isHtmlCandidate
+        ),
+        timeout: effectiveTimeout
       },
       (upstreamResponse) => {
         const contentType = upstreamResponse.headers["content-type"];
@@ -408,24 +857,45 @@ function proxyToHarness(
         }
         responseHeaders["x-frame-options"] = "SAMEORIGIN";
         const staticCacheControl = harnessStaticCacheControl(pathname, request.method);
-        if (staticCacheControl) responseHeaders["cache-control"] = staticCacheControl;
+        if (staticCacheControl && (upstreamResponse.statusCode ?? 200) >= 200 && (upstreamResponse.statusCode ?? 200) < 300) {
+          responseHeaders["cache-control"] = staticCacheControl;
+        }
 
         if (isHtml && (request.method === "GET" || request.method === "HEAD")) {
           responseHeaders["cache-control"] = "no-store";
           const chunks: Buffer[] = [];
           upstreamResponse.on("data", (chunk: Buffer) => chunks.push(chunk));
           upstreamResponse.on("end", () => {
-            if (reply.sent) {
+            if (reply.sent || reply.raw.headersSent) {
               resolve();
               return;
             }
-            const raw = Buffer.concat(chunks).toString("utf8");
-            const rewritten = request.method === "HEAD" ? "" : rewriteHarnessHtml(raw, paneSessionId);
-            delete responseHeaders["content-length"];
-            resolve(reply.code(upstreamResponse.statusCode ?? 200).headers(responseHeaders).send(rewritten));
+            try {
+              let buffer = Buffer.concat(chunks);
+              const encoding = String(upstreamResponse.headers["content-encoding"] ?? "").toLowerCase().trim();
+              if (encoding === "gzip") {
+                buffer = zlib.gunzipSync(buffer);
+              } else if (encoding === "deflate") {
+                buffer = zlib.inflateSync(buffer);
+              } else if (encoding === "br") {
+                buffer = zlib.brotliDecompressSync(buffer);
+              }
+              delete responseHeaders["content-encoding"];
+              delete responseHeaders["content-length"];
+              const raw = buffer.toString("utf8");
+              const rewritten = request.method === "HEAD" ? "" : rewriteHarnessHtml(raw, paneSessionId);
+              resolve(reply.code(upstreamResponse.statusCode ?? 200).headers(responseHeaders).send(rewritten));
+            } catch (err) {
+              request.log.error(err, "Failed to decompress or rewrite harness HTML response");
+              if (!reply.sent && !reply.raw.headersSent) {
+                resolve(sendProxyError(reply, 502, "HARNESS_DECODE_FAILED", "Failed to decode Harness HTML response."));
+              } else {
+                resolve();
+              }
+            }
           });
           upstreamResponse.on("error", () => {
-            if (!reply.sent) {
+            if (!reply.sent && !reply.raw.headersSent) {
               resolve(sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable."));
             } else {
               resolve();
@@ -434,7 +904,7 @@ function proxyToHarness(
           return;
         }
 
-        if (reply.sent) {
+        if (reply.sent || reply.raw.headersSent) {
           resolve();
           return;
         }
@@ -444,14 +914,14 @@ function proxyToHarness(
 
     upstream.once("timeout", () => {
       upstream.destroy();
-      if (!reply.sent) {
+      if (!reply.sent && !reply.raw.headersSent) {
         resolve(sendProxyError(reply, 504, "HARNESS_TIMEOUT", "The Harness upstream timed out."));
       } else {
         resolve();
       }
     });
     upstream.once("error", () => {
-      if (!reply.sent) {
+      if (!reply.sent && !reply.raw.headersSent) {
         resolve(sendProxyError(reply, 502, "HARNESS_UNAVAILABLE", "The Harness upstream is unavailable."));
       } else {
         resolve();
@@ -610,6 +1080,12 @@ export function registerHarnessRoutes(
     };
   });
 
+  app.all("/api/harness", async (request, reply) => {
+    const queryIndex = request.url.indexOf("?");
+    const query = queryIndex >= 0 ? request.url.slice(queryIndex) : "";
+    return reply.redirect(`/api/harness/${query}`, 307);
+  });
+
   app.all("/api/harness/*", async (request, reply) => {
     if (!config.harnessEnabled) {
       return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
@@ -620,7 +1096,7 @@ export function registerHarnessRoutes(
       ? harnessPaneSessionId(request.url)
       : null;
     if (!paneSessionId) {
-      return proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs);
+      return proxyToHarness(request, reply, target, pathname, config.harnessProxyTimeoutMs, undefined, request.body);
     }
 
     let workspacePath = HARNESS_DEFAULT_WORKSPACE;
@@ -652,6 +1128,16 @@ export function registerHarnessRoutes(
         return sendProxyError(reply, 502, "HARNESS_PANE_SESSION_UNAVAILABLE", "The Harness pane session is unavailable.");
       }
     }
+  });
+
+  app.all("/plugins/*", (request, reply) => {
+    if (!config.harnessEnabled) {
+      return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
+    }
+    const target = new URL(config.harnessOrigin);
+    return proxyToHarness(request, reply, target, request.url, config.harnessProxyTimeoutMs, {
+      "x-forwarded-prefix": "/"
+    }, request.body);
   });
 
   for (const pathname of HARNESS_ROOT_HTTP_PATHS) {

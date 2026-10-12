@@ -696,21 +696,23 @@ export async function stopAppDiagnosticsVideoRecording(
   syncGlobalRecorderState();
 }
 
-window.addEventListener(APP_DIAGNOSTICS_STATE_EVENT, () => {
-  if (!getAppDiagnosticsClientState().status?.isEnabled) {
-    void stopAppDiagnosticsVideoRecording("DEBUG_OFF");
-  }
-});
-window.addEventListener("pagehide", () => {
-  const state = globalRecorder?.getState();
-  if (state && state.status === "RECORDING" && state.paused) {
-    emitAppDiagnosticsPerformance({
-      category: "PERFORMANCE",
-      metric: "RECORDER",
-      phase: "RESTORED_SKIP",
-      value: 1
-    });
-    return;
-  }
-  void stopAppDiagnosticsVideoRecording("PAGE_HIDE");
-});
+if (typeof window !== "undefined") {
+  window.addEventListener(APP_DIAGNOSTICS_STATE_EVENT, () => {
+    if (!getAppDiagnosticsClientState().status?.isEnabled) {
+      void stopAppDiagnosticsVideoRecording("DEBUG_OFF");
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    const state = globalRecorder?.getState();
+    if (state && state.status === "RECORDING" && state.paused) {
+      emitAppDiagnosticsPerformance({
+        category: "PERFORMANCE",
+        metric: "RECORDER",
+        phase: "RESTORED_SKIP",
+        value: 1
+      });
+      return;
+    }
+    void stopAppDiagnosticsVideoRecording("PAGE_HIDE");
+  });
+}

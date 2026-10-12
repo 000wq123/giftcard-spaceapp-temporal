@@ -1,0 +1,250 @@
+.codex-chat-shell.dots-chat-shell { display: flex; flex-direction: column; container: dots-chat / inline-size; color: var(--room-text); }
+
+/* Two compact chrome rows (identity + selector, views + session) keep the transcript useful in short panes. */
+.dots-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; padding: 7px 12px; border-bottom: 1px solid var(--room-border); flex-shrink: 0; }
+.dots-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dots-identity > div { min-width: 0; }
+.dots-identity strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .95rem; line-height: 1.2; }
+.dots-status { display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; line-height: 1.3; color: var(--room-muted); white-space: nowrap; }
+.dots-status::before { content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--room-muted); }
+.dots-status[data-status="ready"]::before { background: #4fbf7f; }
+.dots-status[data-status="working"]::before { background: var(--room-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--room-accent) 22%, transparent); }
+.dots-status[data-status="waiting"]::before { background: #e3a93b; }
+.dots-status[data-status="paused"]::before { background: #8ea0b5; }
+.dots-status[data-status="offline"]::before { background: #d4645c; }
+.dots-selected-mascot { display: inline-flex; flex-shrink: 0; animation: dots-breathe 5s ease-in-out infinite; }
+.dots-selected-mascot img { width: 36px; height: 36px; }
+.dots-selected-mascot[data-motion-active="false"] { animation-play-state: paused; }
+
+.dots-header button, .dots-session-actions button, .dots-panel button { color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; cursor: pointer; }
+.dots-wide-selector { display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--room-border); border-radius: 999px; background: color-mix(in srgb, var(--room-surface) 70%, transparent); }
+.dots-chat-shell .dots-header .dots-wide-selector button[aria-pressed] { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 3px 10px 3px 4px; border-color: transparent; border-radius: 999px; background: transparent; font-size: .75rem; transition: background .16s ease, border-color .16s ease; }
+.dots-wide-selector img { width: 26px; height: 26px; flex: 0 0 auto; }
+.dots-chat-shell .dots-header .dots-wide-selector button[aria-pressed]:hover:not(:disabled) { background: color-mix(in srgb, var(--room-accent) 10%, transparent); }
+.dots-chat-shell .dots-header .dots-wide-selector button[aria-pressed="true"], .dots-chat-shell .dots-header .dots-choice-menu button[aria-checked="true"] { border-color: var(--room-accent); background: var(--room-accent-soft); }
+.dots-header button:focus-visible, .dots-tabs button:focus-visible, .dots-panel button:focus-visible, .dots-session-actions button:focus-visible, .dots-session-actions select:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-header button:disabled, .dots-session-actions button:disabled, .dots-session-actions select:disabled { opacity: .5; cursor: default; }
+.dots-narrow-selector { display: none; position: relative; flex-shrink: 0; }
+.dots-narrow-selector > button { display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 4px 10px 4px 5px; font-size: .8rem; border-radius: 999px; }
+.dots-narrow-selector > button img { width: 22px; height: 22px; }
+.dots-choice-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 12; width: min(260px, 80cqw); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 8px; border: 1px solid var(--room-border); border-radius: 12px; background: var(--room-surface); box-shadow: 0 12px 32px rgb(0 0 0 / 24%); }
+.dots-choice-menu button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 4px; min-width: 0; font-size: .75rem; overflow-wrap: anywhere; }
+.dots-narrow-selector .dots-menu-dismiss { position: fixed; inset: 0; z-index: 11; background: transparent; border: 0; padding: 0; }
+
+.dots-toolbar { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 8px 0 6px; border-bottom: 1px solid var(--room-border); flex-shrink: 0; }
+.dots-tabs { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.dots-tabs::-webkit-scrollbar { display: none; }
+.dots-chat-shell .dots-toolbar .dots-tabs button[role="tab"] { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; min-height: 40px; padding: 0 8px; font: inherit; font-size: .8rem; color: var(--room-muted); background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; outline-offset: -3px; }
+.dots-tabs button svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.dots-chat-shell .dots-toolbar .dots-tabs button[role="tab"]:hover { color: var(--room-text); background: color-mix(in srgb, var(--room-accent) 8%, transparent); }
+.dots-chat-shell .dots-toolbar .dots-tabs button[role="tab"][aria-selected="true"] { color: var(--room-text); border-bottom-color: var(--room-accent); }
+.dots-session-actions { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; font-size: .75rem; }
+.dots-session-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 4px 9px; white-space: nowrap; }
+.dots-session-actions button svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.dots-session-actions .dots-icon-button { padding: 4px 7px; }
+.dots-session-actions select { min-width: 0; max-width: 168px; height: 30px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; padding: 0 6px; font: inherit; text-overflow: ellipsis; }
+.dots-switch-hint { margin: 0; padding: 6px 12px; font-size: .75rem; color: var(--room-muted); flex-shrink: 0; }
+.dots-switch-hint button { margin-left: 6px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 6px; font: inherit; cursor: pointer; }
+
+.dots-chat-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.dots-chat-content > .chat-transcript-region { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.dots-chat-content > .codex-composer { flex-shrink: 0; }
+.dots-chat-content[hidden] { display: none; }
+.dots-panel { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+.dots-panel h3 { margin: 0 0 12px; font-size: 1rem; }
+.dots-panel h4 { font-size: .85rem; }
+.dots-panel-hint, .dots-panel time, .dots-panel small { color: var(--room-muted); font-size: .75rem; }
+.dots-panel button { padding: 6px 12px; }
+.dots-records { margin: 0; padding: 0; list-style: none; }
+.dots-records li { display: flex; flex-direction: column; gap: 5px; padding: 12px 0; border-bottom: 1px solid var(--room-border); overflow-wrap: anywhere; }
+.dots-records li strong { font-size: .85rem; }
+.dots-records li span, .dots-records li p { font-size: .8rem; }
+.dots-records li p { margin: 0; }
+.dots-memory-body { white-space: pre-wrap; }
+.dots-tools-controls { display: grid; gap: 8px; margin-bottom: 8px; }
+.dots-tools-controls input[type="search"] { width: 100%; min-height: 36px; padding: 6px 10px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; }
+.dots-tools-controls input[type="search"]:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-tools-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.dots-chat-shell .dots-panel .dots-tools-filters button[aria-pressed] { padding: 4px 10px; font-size: .75rem; border-radius: 999px; }
+.dots-chat-shell .dots-panel .dots-tools-filters button[aria-pressed="true"] { border-color: var(--room-accent); background: var(--room-accent-soft); }
+.dots-tool-list li[data-availability="FORBIDDEN"], .dots-tool-list li[data-availability="UNAVAILABLE"] { opacity: .72; }
+.dots-records code { font-size: .72rem; overflow-wrap: anywhere; }
+
+/* The welcome presents the selected Dot instead of the generic agent orbit. */
+.room-agent-welcome-art.has-dot .room-agent-welcome-dot { width: 84px; height: 84px; filter: drop-shadow(0 6px 16px color-mix(in srgb, var(--room-accent, #e2e86b) 26%, transparent)); }
+
+/* Labels stay in the accessibility tree when space only allows icons. */
+@container dots-chat (max-width: 820px) {
+  .dots-chip-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .dots-chat-shell .dots-header .dots-wide-selector button[aria-pressed] { justify-content: center; width: 34px; padding: 3px; }
+}
+@container dots-chat (max-width: 640px) {
+  .dots-tab-label, .dots-new-task-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .dots-chat-shell .dots-toolbar .dots-tabs button[role="tab"] { padding: 0 9px; }
+  .dots-session-actions button { padding: 4px 7px; }
+  .dots-session-actions select { max-width: 116px; }
+}
+@container dots-chat (max-width: 500px) { .dots-wide-selector { display: none; } .dots-narrow-selector { display: block; } }
+@container dots-chat (max-width: 380px) { .dots-session-actions select { max-width: 92px; } .dots-chat-shell .dots-toolbar .dots-tabs button[role="tab"] { padding: 0 7px; } }
+
+/* Short panes keep the welcome title and both starting actions above the composer. */
+@container chat-transcript (max-height: 230px) {
+  .vscode-codex-pane .dots-chat-shell .codex-transcript { padding: 10px 12px; }
+  .dots-chat-shell .room-agent-welcome-art, .dots-chat-shell .room-agent-welcome-eyebrow, .dots-chat-shell .room-agent-welcome-copy p,
+  .vscode-codex-pane .dots-chat-shell .room-agent-welcome-footnote, .dots-chat-shell .room-agent-welcome-actions button small,
+  .dots-chat-shell .room-agent-welcome-actions button > svg:last-child { display: none; }
+  .vscode-codex-pane .dots-chat-shell .room-agent-welcome { min-height: 0; padding: 0; }
+  .dots-chat-shell .room-agent-welcome-copy h2 { font-size: 19px; }
+  .dots-chat-shell .room-agent-welcome-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+  .dots-chat-shell .room-agent-welcome-actions button { min-height: 42px; padding: 8px 10px; }
+}
+
+@keyframes dots-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .dots-selected-mascot { animation: none; } .dots-chat-shell .dots-header .dots-wide-selector button[aria-pressed] { transition: none; } }
+
+/* Sensitive Dot actions wait here for an explicit decision. */
+.dots-approvals { display: grid; gap: 8px; padding: 8px 12px 0; flex-shrink: 0; }
+.dots-approval { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #e3a93b; border-radius: 10px; background: color-mix(in srgb, #e3a93b 10%, var(--room-surface)); }
+.dots-approval > div:first-child { min-width: 0; flex: 1 1 220px; }
+.dots-approval strong { font-size: .8rem; }
+.dots-approval p { margin: 2px 0; font-size: .82rem; overflow-wrap: anywhere; }
+.dots-approval small { color: var(--room-muted); }
+.dots-approval-actions { display: flex; gap: 6px; }
+.dots-chat-shell .dots-approval-actions button { min-height: 32px; padding: 4px 12px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; font-size: .8rem; cursor: pointer; }
+.dots-chat-shell .dots-approval-actions .dots-approval-approve { border-color: var(--room-accent); background: var(--room-accent-soft); }
+.dots-approval-actions button:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-approvals [role="status"], .dots-approvals [role="alert"] { margin: 0; font-size: .78rem; color: var(--room-muted); }
+
+/* Server-run Goals: progress, budget and owner controls above the composer. */
+.dots-goal-strip { display: grid; gap: 6px; margin: 8px 12px 0; padding: 10px 12px; border: 1px solid var(--room-border); border-left: 3px solid var(--room-accent); border-radius: 10px; background: color-mix(in srgb, var(--room-accent) 6%, var(--room-surface)); flex-shrink: 0; }
+.dots-goal-strip[data-status="BLOCKED"] { border-left-color: #e3a93b; }
+.dots-goal-strip[data-status="PAUSED"] { border-left-color: #8ea0b5; }
+.dots-goal-strip[data-status="FAILED"], .dots-goal-strip[data-status="CANCELLED"], .dots-goal-strip[data-status="BUDGET_EXHAUSTED"] { border-left-color: var(--room-muted); }
+.dots-goal-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dots-goal-head strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
+.dots-goal-status { flex: 0 0 auto; padding: 1px 8px; border: 1px solid var(--room-border); border-radius: 999px; font-size: .7rem; color: var(--room-muted); }
+.dots-goal-meta { margin: 0; font-size: .75rem; color: var(--room-muted); overflow-wrap: anywhere; }
+.dots-goal-milestones { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; font-size: .75rem; }
+.dots-goal-milestones li { display: inline-flex; gap: 4px; align-items: baseline; }
+.dots-goal-milestones li[data-status="DONE"] { color: var(--room-muted); text-decoration: line-through; }
+.dots-goal-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dots-goal-controls form { display: flex; gap: 6px; flex: 1 1 220px; min-width: 0; }
+.dots-goal-controls input { flex: 1 1 auto; min-width: 0; min-height: 32px; padding: 4px 8px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; font-size: .8rem; }
+.dots-chat-shell .dots-goal-controls button, .dots-chat-shell .dots-goal-dismiss { min-height: 32px; padding: 4px 10px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; font-size: .78rem; cursor: pointer; }
+.dots-chat-shell .dots-goal-dismiss { display: inline-flex; align-items: center; padding: 4px; }
+.dots-chat-shell .dots-goal-dismiss svg { width: 14px; height: 14px; }
+.dots-chat-shell .dots-goal-controls .dots-goal-cancel { border-color: #d4645c; }
+.dots-goal-controls button:focus-visible, .dots-goal-controls input:focus-visible, .dots-goal-dismiss:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-goal-error { margin: 0; font-size: .75rem; color: #d4645c; }
+.dots-goal-budget { display: flex; gap: 12px; flex-wrap: wrap; }
+.dots-goal-budget label { display: grid; gap: 4px; }
+.dots-goal-budget input { width: 8rem; }
+.dots-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Reminders and recurring work in the Tasks view. */
+.dots-schedules { display: grid; gap: 8px; margin-bottom: 12px; }
+.dots-schedules-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dots-schedules-head h4 { margin: 0; }
+.dots-schedule-form { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--room-border); border-radius: 10px; }
+.dots-schedule-form label { display: grid; gap: 4px; font-size: .78rem; }
+.dots-schedule-form input, .dots-schedule-form textarea { min-height: 32px; padding: 4px 8px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; }
+.dots-schedule-kinds, .dots-schedule-days, .dots-schedule-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dots-chat-shell .dots-panel .dots-schedule-kinds button[aria-pressed="true"], .dots-chat-shell .dots-panel .dots-schedule-days button[aria-pressed="true"] { border-color: var(--room-accent); background: var(--room-accent-soft); }
+.dots-schedule-prompt { color: var(--room-muted); white-space: pre-wrap; }
+.dots-schedule-form input:focus-visible, .dots-schedule-form textarea:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-goal-question { margin: 0; padding: 6px 8px; border-radius: 8px; font-size: .8rem; background: color-mix(in srgb, #e3a93b 14%, transparent); overflow-wrap: anywhere; }
+
+/* The Dot's computer: live work, private workspace and its own browsers. */
+.dots-computer { display: grid; align-content: start; gap: 16px; }
+.dots-computer h3 { margin: 0; }
+.dots-computer h4 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 6px; }
+.dots-computer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dots-chat-shell .dots-panel .dots-computer-head .dots-icon-button { display: inline-flex; padding: 5px 7px; }
+.dots-computer-head svg, .dots-computer-actions svg, .dots-computer-files svg, .dots-computer-browsers strong svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.dots-computer-count { font-weight: 400; font-size: .72rem; color: var(--room-muted); }
+.dots-computer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.dots-chat-shell .dots-panel .dots-computer-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.dots-chat-shell .dots-panel .dots-computer-actions .dots-computer-stop-all:not(:disabled) { border-color: #d4645c; }
+.dots-chat-shell .dots-panel .dots-computer-actions button:disabled { opacity: .5; cursor: default; }
+.dots-computer-path { display: block; margin: 6px 0; padding: 6px 8px; font-size: .72rem; border: 1px solid var(--room-border); border-radius: 8px; overflow-wrap: anywhere; }
+.dots-computer-files { margin: 0; padding: 0; list-style: none; }
+.dots-computer-files li { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--room-border); font-size: .8rem; }
+.dots-computer-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dots-computer-file-meta { grid-column: 2; color: var(--room-muted); font-size: .72rem; }
+.dots-computer-browsers strong { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Dot settings: tasks-at-once is a segmented choice, not a native checkbox or slider. */
+.dots-settings-limit { display: grid; gap: 6px; font-size: .8rem; }
+.dots-settings-limit-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.dots-settings-dialog .dots-settings-limit-options button { min-width: 36px; min-height: 32px; padding: 4px 10px; color: inherit; background: transparent; border: 1px solid var(--room-border, currentColor); border-radius: 8px; font: inherit; cursor: pointer; }
+.dots-settings-dialog .dots-settings-limit-options button[aria-pressed="true"] { border-color: var(--room-accent, currentColor); background: var(--room-accent-soft, transparent); font-weight: 600; }
+.dots-settings-dialog .dots-settings-limit-options button:focus-visible { outline: 2px solid var(--room-accent, currentColor); outline-offset: 2px; }
+.dots-settings-limit small { color: var(--room-muted, inherit); font-size: .72rem; }
+
+/* Stage 5: how much of each attached file a task could read. */
+.chat-task-attachments .chat-task-coverage { display: block; margin: 2px 0 0 24px; font-size: .72rem; color: var(--room-muted, inherit); overflow-wrap: anywhere; }
+.chat-task-attachments .chat-task-coverage[data-coverage="partial"]::before, .chat-task-attachments .chat-task-coverage[data-coverage="unavailable"]::before { content: "● "; }
+.chat-task-attachments .chat-task-coverage[data-coverage="partial"]::before { color: #e3a93b; }
+.chat-task-attachments .chat-task-coverage[data-coverage="unavailable"]::before { color: #d4645c; }
+
+/* Stage 5: the Dot's own memory. */
+.dots-memory { display: grid; gap: 8px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--room-border); }
+.dots-memory-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dots-memory-head h4 { margin: 0; }
+.dots-memory-form { display: grid; gap: 8px; }
+.dots-memory-form label { display: grid; gap: 4px; font-size: .78rem; }
+.dots-memory-form textarea, .dots-memory-controls input { min-height: 32px; padding: 4px 8px; color: var(--room-text); background: var(--room-surface); border: 1px solid var(--room-border); border-radius: 8px; font: inherit; }
+.dots-memory-form textarea:focus-visible, .dots-memory-controls input:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-memory-controls { display: grid; gap: 6px; }
+.dots-memory-scopes, .dots-memory-filters, .dots-memory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dots-chat-shell .dots-panel .dots-memory-scopes button[aria-pressed], .dots-chat-shell .dots-panel .dots-memory-filters button[aria-pressed] { padding: 4px 10px; font-size: .75rem; border-radius: 999px; }
+.dots-chat-shell .dots-panel .dots-memory-scopes button[aria-pressed="true"], .dots-chat-shell .dots-panel .dots-memory-filters button[aria-pressed="true"] { border-color: var(--room-accent); background: var(--room-accent-soft); }
+.dots-memory-text { white-space: pre-wrap; }
+.dots-chat-shell .dots-panel .dots-memory-actions button { padding: 3px 10px; font-size: .75rem; }
+.dots-chat-shell .dots-panel .dots-memory-actions .dots-memory-forget { border-color: #d4645c; }
+
+/* Stage 5: workspace browsing and deliverables. */
+.dots-workspace-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: .75rem; margin-bottom: 4px; }
+.dots-chat-shell .dots-panel .dots-workspace-crumbs button { padding: 2px 6px; border-color: transparent; background: none; font-size: .75rem; text-decoration: underline; }
+.dots-chat-shell .dots-panel .dots-workspace-folder { padding: 0; border: 0; background: none; text-align: left; text-decoration: underline; font-size: .8rem; }
+.dots-workspace-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: .72rem; }
+.dots-workspace-actions a, .dots-deliverable-versions a { color: var(--room-accent); }
+.dots-workspace-actions a:focus-visible, .dots-deliverable-versions a:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-chat-shell .dots-panel .dots-workspace-actions button { padding: 2px 8px; font-size: .72rem; }
+.dots-deliverable-versions { display: flex; flex-wrap: wrap; gap: 10px; }
+.dots-deliverable-versions a { display: inline-flex; align-items: center; gap: 4px; }
+.dots-deliverable-versions svg { width: 13px; height: 13px; }
+
+/* Stage 5: connected email and calendar accounts. */
+.dots-connections { display: grid; gap: 8px; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--room-border); }
+.dots-connections h4 { margin: 0; }
+.dots-connection-providers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: .78rem; }
+.dots-connect-link { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 12px; border: 1px solid var(--room-accent); border-radius: 8px; color: var(--room-text); text-decoration: none; }
+.dots-connect-link:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-connect-unavailable { color: var(--room-muted); }
+.dots-connect-help { font-size: .75rem; color: var(--room-muted); }
+.dots-connect-help summary { cursor: pointer; width: fit-content; }
+.dots-connect-help summary:focus-visible { outline: 2px solid var(--room-accent); outline-offset: 2px; }
+.dots-connect-help p { margin: 6px 0 0; }
+
+/* Stage 7: evaluation runs (ADMIN). */
+.dots-evaluation { display: grid; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--room-border, currentColor); font-size: 0.85rem; }
+.dots-evaluation h3 { margin: 0; font-size: 0.95rem; }
+.dots-evaluation p { margin: 0; opacity: 0.85; }
+.dots-evaluation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dots-evaluation-controls [role="group"] { display: flex; gap: 6px; }
+.dots-evaluation button { min-height: 30px; padding: 4px 10px; color: inherit; background: transparent; border: 1px solid var(--room-border, currentColor); border-radius: 8px; font: inherit; cursor: pointer; }
+.dots-evaluation button[aria-pressed="true"] { border-color: var(--room-accent, currentColor); background: var(--room-accent-soft, transparent); font-weight: 600; }
+.dots-evaluation button:disabled { opacity: 0.55; cursor: default; }
+.dots-evaluation-runs { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dots-evaluation-runs li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dots-evaluation-runs li span { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.dots-evaluation-report { overflow-x: auto; }
+.dots-evaluation-report table { border-collapse: collapse; min-width: 260px; }
+.dots-evaluation-report th, .dots-evaluation-report td { padding: 3px 10px 3px 0; text-align: left; }
+@media (prefers-reduced-motion: reduce) { .dots-evaluation button { transition: none; } }
+
+/* Stage 6: Slack and Teams link code. */
+.dots-channel-code { overflow-wrap: anywhere; }
+.dots-channel-code code { font-weight: 600; }
+.dots-connections .dots-connection-providers button { min-height: 30px; padding: 4px 10px; color: inherit; background: transparent; border: 1px solid var(--room-border, currentColor); border-radius: 8px; font: inherit; cursor: pointer; }

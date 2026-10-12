@@ -61,7 +61,23 @@ const selectionEventSchema = z.object({
   paneId: diagnosticsIdSchema.nullable().optional()
 }).strict();
 
+export const terminalResizeTraceSchema = z.object({
+  version: z.literal(1),
+  event: z.enum(["REFIT_REQUEST", "FIT_BEFORE", "FIT_AFTER", "RESIZE_SENT", "SYNC_WAIT", "HOLD_BEGIN", "HOLD_SKIP", "HOLD_RELEASE", "OUTPUT_SAMPLE", "VISIBILITY"]),
+  reason: z.enum(["UNKNOWN", "NORMAL", "REPAIR", "RECONCILE", "OBSERVER", "LAYOUT_EFFECT", "REVEAL", "FONT", "VIEWPORT", "CONTROL", "QUIET", "DEADLINE", "INTERACTION", "HIDDEN", "CANCEL", "DISPOSE", "INELIGIBLE", "NO_SURFACE"]),
+  elapsedMs: z.number().finite().min(0).max(120_000),
+  cols: z.number().int().min(0).max(100_000),
+  rows: z.number().int().min(0).max(100_000),
+  baseY: z.number().int().min(0).max(10_000_000),
+  viewportY: z.number().int().min(0).max(10_000_000),
+  cursorY: z.number().int().min(0).max(100_000),
+  synchronized: z.boolean(), held: z.boolean(), visible: z.boolean(), minimized: z.boolean(),
+  parsed: sequenceSchema, rendered: sequenceSchema, scrolls: sequenceSchema, written: sequenceSchema
+}).strict();
+export type TerminalResizeTrace = z.infer<typeof terminalResizeTraceSchema>;
+
 const performanceEventSchema = z.object({
+  terminalResizeTrace: terminalResizeTraceSchema.optional(),
   terminalRender: terminalRenderObservationSchema.optional(),
   sequence: sequenceSchema,
   occurredAt: occurredAtSchema,

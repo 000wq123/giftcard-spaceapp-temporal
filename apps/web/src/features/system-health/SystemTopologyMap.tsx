@@ -6,6 +6,7 @@ import type {
   SystemTopologySubcomponent,
 } from "@space/contracts";
 import { api } from "../../api.js";
+import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import {
   Activity,
   AlertTriangle,
@@ -1257,14 +1258,12 @@ export function SystemTopologyMap({ onInspectNode }: SystemTopologyMapProps) {
           )}
 
           <div className="topology-actions">
-            <label className="topology-autorefresh-toggle">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-              />
-              <span>Live (10s)</span>
-            </label>
+            <SpaceToggle
+              className="topology-autorefresh-toggle"
+              label="Live (10s)"
+              checked={autoRefresh}
+              onChange={setAutoRefresh}
+            />
 
             <button
               type="button"

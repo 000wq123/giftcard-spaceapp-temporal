@@ -1,4 +1,5 @@
 import { useWorkspaceSurface } from "../ui-theme/WorkspaceSurface.js";
+import { syncRailScale } from "../ui-theme/rail-dynamic-scaling.js";
 import {
   lazy,
   Suspense,
@@ -25,6 +26,7 @@ import {
   useRailVisibility,
   type RailVisibilityMenuState,
 } from "../ui-theme/use-rail-visibility.js";
+import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 import { dispatchRailMenuChange } from "../rail-popover.js";
 import type {
   AntigravityUsageAccount,
@@ -63,7 +65,7 @@ import {
   X,
   type LucideIcon,
 } from "../ui-theme/app-icons.js";
-import { computeQuotaAggregates } from "../desktop-widgets/AiQuotaWidget.js";
+import { computeQuotaAggregates } from "../desktop-widgets/quota-aggregates.js";
 import {
   ToolbarMetrics,
   formatBytes,
@@ -482,10 +484,10 @@ const ACCOUNT_QUOTA_FILTER_STORAGE_KEY = "space:health-accounts:quota-filter";
 const ACCOUNT_PRO_FILTER_STORAGE_KEY = "space:health-accounts:pro-filter";
 const ACCOUNT_GEMINI_FILTER_STORAGE_KEY = "space:health-accounts:gemini-filter";
 
-function readStoredAccountProviderFilter(): "all" | "antigravity" | "codex" | "api" {
+function readStoredAccountProviderFilter(): "all" | "antigravity" | "codex" | "claude" | "api" {
   try {
     const v = getSpaceRuntime().platform.localStorage.getItem(ACCOUNT_PROVIDER_FILTER_STORAGE_KEY);
-    if (v === "all" || v === "antigravity" || v === "codex" || v === "api") return v;
+    if (v === "all" || v === "antigravity" || v === "codex" || v === "claude" || v === "api") return v;
   } catch {}
   return "all";
 }
@@ -534,15 +536,16 @@ function HealthDetailAnalysis({
   reopeningAll: boolean;
   closingSessionId?: string | null;
 }) {
-  const [providerFilter, setProviderFilterState] = useState<"all" | "antigravity" | "codex" | "api">(readStoredAccountProviderFilter);
+  const [providerFilter, setProviderFilterState] = useState<"all" | "antigravity" | "codex" | "claude" | "api">(readStoredAccountProviderFilter);
   const [quotaFilter, setQuotaFilterState] = useState<boolean>(readStoredAccountQuotaFilter);
   const [proFilter, setProFilterState] = useState<boolean>(readStoredAccountProFilter);
   const [geminiFilter, setGeminiFilterState] = useState<boolean>(readStoredAccountGeminiFilter);
 
-  const setProviderFilter = useCallback((val: "all" | "antigravity" | "codex" | "api") => {
+  const setProviderFilter = useCallback((val: "all" | "antigravity" | "codex" | "claude" | "api") => {
     setProviderFilterState(val);
     try {
       getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_PROVIDER_FILTER_STORAGE_KEY, val);
+      saveUserSettingDebounced("accountFilters", { provider: val });
     } catch {}
   }, []);
 
@@ -550,6 +553,7 @@ function HealthDetailAnalysis({
     setQuotaFilterState(val);
     try {
       getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_QUOTA_FILTER_STORAGE_KEY, String(val));
+      saveUserSettingDebounced("accountFilters", { quota: val });
     } catch {}
   }, []);
 
@@ -557,6 +561,7 @@ function HealthDetailAnalysis({
     setProFilterState(val);
     try {
       getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_PRO_FILTER_STORAGE_KEY, String(val));
+      saveUserSettingDebounced("accountFilters", { pro: val });
     } catch {}
   }, []);
 
@@ -564,6 +569,7 @@ function HealthDetailAnalysis({
     setGeminiFilterState(val);
     try {
       getSpaceRuntime().platform.localStorage.setItem(ACCOUNT_GEMINI_FILTER_STORAGE_KEY, String(val));
+      saveUserSettingDebounced("accountFilters", { gemini: val });
     } catch {}
   }, []);
 
@@ -742,8 +748,12 @@ function HealthDetailAnalysis({
     const codexVisible = codexAccounts
       .filter((acc) => !quotaFilter || isCodexAccountActive(acc));
 
+    const claudeVisible = (telemetry.claudeAccounts?.data ?? [])
+      .filter((acc) => !quotaFilter || isCodexAccountActive(acc));
+
     const showAntigravity = providerFilter === "all" || providerFilter === "antigravity";
     const showCodex = providerFilter === "all" || providerFilter === "codex";
+    const showClaude = providerFilter === "all" || providerFilter === "claude";
     const showApi = providerFilter === "all" || providerFilter === "api";
 
     return (
@@ -781,6 +791,15 @@ function HealthDetailAnalysis({
               onClick={() => setProviderFilter("codex")}
             >
               Codex
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={providerFilter === "claude"}
+              className={`health-filter-btn ${providerFilter === "claude" ? "is-active" : ""}`}
+              onClick={() => setProviderFilter("claude")}
+            >
+              Claude
             </button>
             <button
               type="button"
@@ -895,6 +914,35 @@ function HealthDetailAnalysis({
               </ul>
             ) : (
               <p className="health-analysis-empty">No Codex accounts match filter.</p>
+            )}
+          </>
+        )}
+
+        {showClaude && (
+          <>
+            <strong className="health-analysis-subtitle">Claude</strong>
+            {claudeVisible.length > 0 ? (
+              <ul className="health-analysis-list is-grid-2">
+                {claudeVisible.map((acc) => {
+                  const claudeCountdown = acc.status === "CONNECTED" ? getReactivationCountdown(acc, telemetry.clock) : null;
+                  return (
+                    <li key={acc.id}>
+                      <div className="health-analysis-list-item-header">
+                        <strong title={acc.email ?? acc.label}>{acc.label}</strong>
+                        <span>{acc.status === "NOT_CONNECTED" ? "NOT SIGNED IN" : acc.status === "API_KEY" ? "API KEY" : acc.status}</span>
+                      </div>
+                      <span>
+                        Claude: 5h {formatPercent(acc.fiveHourRemainingPercent)} · week {formatPercent(acc.weeklyRemainingPercent)}
+                      </span>
+                      {claudeCountdown && (
+                        <small className="health-account-countdown">{claudeCountdown}</small>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="health-analysis-empty">No Claude accounts match filter.</p>
             )}
           </>
         )}
@@ -1806,6 +1854,7 @@ function HealthWindow({
 export function SystemHealth({
   userId,
   railVisible,
+  indicatorsVisible = true,
   environment,
   onManage,
   allowChanges = true,
@@ -1823,6 +1872,7 @@ export function SystemHealth({
   onClose?: () => void;
   userId: string;
   railVisible: boolean;
+  indicatorsVisible?: boolean;
   environment: CodexEnvironment | null;
   allowChanges?: boolean;
   onManage?: (id: "accounts" | "provider" | "cli") => void;
@@ -1867,7 +1917,7 @@ export function SystemHealth({
   );
   useRailOrder(
     healthRailItemsRef,
-    Boolean(railVisible && !open),
+    Boolean(railVisible && !open && indicatorsVisible),
     {
       storageKey: UPPER_RAIL_ORDER_KEY,
       allowedIds: UPPER_RAIL_IDS,
@@ -1875,24 +1925,59 @@ export function SystemHealth({
     },
   );
   useEffect(() => {
-    if (!railVisible || open) setVisibilityMenu(null);
-  }, [open, railVisible]);
+    if (!railVisible || open || !indicatorsVisible) setVisibilityMenu(null);
+  }, [open, railVisible, indicatorsVisible]);
   useEffect(() => {
     dispatchRailMenuChange();
   }, [open]);
   useLayoutEffect(() => {
     if (embedded) return;
-    const shell = source.current?.closest<HTMLElement>(".space-shell");
+    const shell =
+      source.current?.closest<HTMLElement>(".space-shell") ??
+      (typeof document !== "undefined"
+        ? document.querySelector<HTMLElement>(".space-shell")
+        : null);
     const element = rail.current;
-    if (!shell || !element) return;
-    const measure = () => shell.style.setProperty("--resource-rail-height", `${element.getBoundingClientRect().height}px`);
+    if (!shell) return;
+    if (expanded && indicatorsVisible) {
+      shell.dataset.resourceRailExpanded = "true";
+    } else {
+      delete shell.dataset.resourceRailExpanded;
+    }
+    syncRailScale(shell);
+    if (!element) return;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      shell.style.setProperty(
+        "--resource-rail-height",
+        `${rect.height}px`
+      );
+      if (rect.bottom > 0) {
+        shell.style.setProperty(
+          "--resource-rail-bottom",
+          `${Math.round(rect.bottom)}px`
+        );
+      }
+      syncRailScale(shell);
+    };
     measure();
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    const observer =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(measure)
+        : null;
     observer?.observe(element);
-    return () => { observer?.disconnect(); shell.style.removeProperty("--resource-rail-height"); };
-  }, [railVisible, open, expanded, embedded]);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      shell.style.removeProperty("--resource-rail-height");
+      shell.style.removeProperty("--resource-rail-bottom");
+      delete shell.dataset.resourceRailExpanded;
+      syncRailScale(shell);
+    };
+  }, [railVisible, indicatorsVisible, open, expanded, embedded]);
   const telemetry = useHealthTelemetry(
-    railVisible || open !== null,
+    Boolean((railVisible && indicatorsVisible) || open !== null),
     open === "health",
     environment,
     thresholds,
@@ -2146,31 +2231,38 @@ export function SystemHealth({
   return (
     <>
       <span ref={source} hidden />
-      {railVisible && !open && (
+      {railVisible && !open && (indicatorsVisible || (minimizedBarToggle && upperRailVisibility.isVisible("minimized-bar"))) && (
         <nav
           ref={rail}
-          className={`health-indicator-rail${expanded ? " is-expanded" : ""}`}
+          className={`health-indicator-rail${expanded && indicatorsVisible ? " is-expanded" : ""}`}
+          data-expanded={expanded && indicatorsVisible ? "true" : undefined}
           aria-label="Resource indicators"
           onContextMenu={(event) => {
+            if (!indicatorsVisible) return;
             event.preventDefault();
             event.stopPropagation();
             setVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
           }}
         >
-          <button
-            className="health-rail-expander"
-            type="button"
-            aria-label={
-              expanded
-                ? "Collapse resource indicators"
-                : "Expand resource indicators"
-            }
-            aria-expanded={expanded}
-            onClick={() => setExpanded((v) => !v)}
-          >
-            <Activity aria-hidden="true" />
-          </button>
-          <div className="health-rail-items" ref={healthRailItemsRef}>
+          {minimizedBarToggle && upperRailVisibility.isVisible("minimized-bar")
+            ? minimizedBarToggle
+            : null}
+          {indicatorsVisible ? (
+            <>
+              <button
+                className="health-rail-expander"
+                type="button"
+                aria-label={
+                  expanded
+                    ? "Collapse resource indicators"
+                    : "Expand resource indicators"
+                }
+                aria-expanded={expanded}
+                onClick={() => setExpanded((v) => !v)}
+              >
+                <Activity aria-hidden="true" />
+              </button>
+              <div className="health-rail-items" ref={healthRailItemsRef}>
             {!readOnly && onOpenAgentsDashboard && upperRailVisibility.isVisible("agents-dashboard") ? (() => {
               const border = getAgentsIndicatorBorder(agentsLiveSummary);
               const borderClass = border === "run" ? "has-run" : border === "waiting-only" ? "has-waiting-only" : border === "done-only" ? "has-done-only" : "is-idle";
@@ -2240,9 +2332,6 @@ export function SystemHealth({
                 </button>
               );
             })() : null}
-            {minimizedBarToggle && upperRailVisibility.isVisible("minimized-bar")
-              ? minimizedBarToggle
-              : null}
             {summary.map((m) => {
               const isAccounts = m.id === "accounts";
               const currentProvider =
@@ -2288,7 +2377,9 @@ export function SystemHealth({
               );
             })}
           </div>
-          {visibilityMenu ? (
+            </>
+          ) : null}
+          {indicatorsVisible && visibilityMenu ? (
             <RailVisibilityMenu
               anchorRef={rail}
               items={upperMenuItems}

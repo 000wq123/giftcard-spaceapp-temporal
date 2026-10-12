@@ -286,8 +286,62 @@
   color: #ff8b97;
 }
 
-:root[data-interface-theme="motion"] .space-shell .room-item.selected {
+:root[data-interface-theme="motion"] .space-shell :is(.room-item.selected, .room-item.is-clicked) {
   box-shadow: none;
+  animation: room-card-press-pop 320ms cubic-bezier(0.2, 0.8, 0.25, 1);
+}
+
+:root[data-interface-theme="motion"] .space-shell :is(.room-item.selected, .room-item.is-clicked)::before {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 230, 0, 0.14) 18%,
+    rgba(255, 230, 0, 0.65) 50%,
+    rgba(255, 230, 0, 0.2) 78%,
+    transparent 100%
+  );
+}
+
+:root[data-interface-theme="motion"] .space-shell :is(.room-item.selected, .room-item.is-clicked)::after {
+  border-color: #ffe600;
+  animation-name: motion-room-select-shockwave;
+}
+
+@keyframes motion-room-select-shockwave {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.95;
+    box-shadow: 0 0 18px rgba(255, 230, 0, 0.8), inset 0 0 12px rgba(255, 230, 0, 0.4);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 10px rgba(255, 230, 0, 0.4), inset 0 0 6px rgba(255, 230, 0, 0.18);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+    box-shadow: none;
+  }
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-active-badge {
+  color: #ffe600;
+  background: rgba(255, 230, 0, 0.14);
+  border-color: rgba(255, 230, 0, 0.45);
+  box-shadow: 0 0 10px rgba(255, 230, 0, 0.25);
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-active-dot {
+  background: #ffe600;
+  box-shadow: 0 0 6px #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-active-pulse::after {
+  background: #ffe600;
+}
+
+:root[data-interface-theme="motion"] .space-shell .room-active-icon {
+  color: #ffe600;
 }
 
 :root[data-interface-theme="motion"] .space-shell .room-dock-expansion {

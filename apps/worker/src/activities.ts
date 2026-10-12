@@ -1,8 +1,11 @@
 import {
   buildCodexAppServerProcessEnv,
+  codexTurnTokenUsage,
+  type CodexTokenTotals,
   isCodexAppServerTurnSessionComplete,
   resolveCodexAppServerRequestUserInput,
   runCodexAppServerStdioTurnSession,
+  type CodexAppServerJsonRpcMessage,
   type CodexAppServerProviderRoute,
   type CodexAppServerProcessEnv,
   type CodexAppServerStdioProcessFactory,
@@ -11,17 +14,25 @@ import {
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename, isAbsolute, resolve, sep } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { Artifact, DummyTurnInput, DummyTurnResult, Provider, RoomAgentRoomInventory, RoomAgentTurnOutcome, TurnWorkflowResult } from "@space/contracts";
 import {
+  DOT_TOOL_GATEWAY_VERSION,
+  DOT_WORKSPACE_ROOT,
+  estimateAgentRunCost,
+  modelPriceCatalogSchema,
+  type AgentRunMeasuredUsage,
+  type ModelPriceCatalog,
+  dotWorkspacePath,
   dummyTurnInputSchema,
   dummyTurnResultSchema,
   imageArtifactMimeTypeSchema,
   roomAgentVerificationEnvelopeSchema,
   turnWorkflowResultSchema
 } from "@space/contracts";
-import { PostgresSpaceStore } from "@space/db";
+import { PostgresDotsRepository, PostgresSpaceStore } from "@space/db";
 import {
   fetchOpenCodeCurrentModel,
   fetchOpenCodeSessionIsTurnActive,
@@ -36,6 +47,7 @@ import {
 } from "@space/opencode-control";
 import { Context } from "@temporalio/activity";
 import { continuationEvidence, prepareBackgroundContinuation, discardSupervisorTurn, supervisorTurnState, finishSupervisorTurn } from "./room-background-continuation.js";
+import { DEFAULT_ROOM_AGENT_MAX_PASSES, ROOM_AGENT_PASS_LIMIT, roomAgentLimitsFromEnv } from "./room-agent-limits.js";
 import {
   createCanonicalGeminiMemoryBridge,
   redactMemoryText,
@@ -61,6 +73,10 @@ import { executeSkillActionBridge, parseSkillActionBlock } from "./skill-action-
 import { ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS } from "./room-supervisor-state.js";
 import { isCliChatQuotaError, isCliChatTurnProviderId, isNativeChatTurn } from "./turn-runtime-policy.js";
 import { evaluateCompletedTaskResult } from "./task-result-evaluation.js";
+import { noteActivityFailureReason } from "./activity-observability.js";
+import { observeTurnActivity, recordTurnStatePersistenceFailure } from "./turn-observability.js";
+import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIdentity, handleDotToolCall, nativeChatThreadConfig } from "./dot-tool-gateway.js";
+import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
 
 let cachedStore: PostgresSpaceStore | null = null;
 const execFileAsync = promisify(execFile);
@@ -85,6 +101,10 @@ export interface CodexAppServerTurnActivityConfig {
   mcpToolBridgeEnabled: boolean;
   internalApiBaseUrl: string;
   internalApiToken: string | null;
+  /** Operator's versioned model price list (SPACE_MODEL_PRICE_CATALOG); without one, costs stay UNKNOWN. */
+  priceCatalogPath?: string | null;
+  /** Room Agent supervision passes per turn (SPACE_ROOM_AGENT_MAX_PASSES); see room-agent-limits.ts. */
+  roomAgentMaxPasses?: number;
 }
 
 export interface RunCodexAppServerTurnOptions {
@@ -136,6 +156,8 @@ interface ToolBridgeObservation {
 
 interface RoomAgentToolLoopResult extends ToolObservationFollowUpResult {
   outcome: RoomAgentTurnOutcome;
+  /** Stable run error code when the loop ended at a configured limit. */
+  errorCode?: string;
 }
 
 export interface ParsedRoomAgentVerificationBlock {
@@ -161,9 +183,44 @@ function codexAppServerSessionMetadata(session: CodexAppServerTurnSessionState):
       goalStatus: session.goalStatus ?? null,
       notificationCount: session.notificationCount,
       completedNotificationSeen: session.completedNotificationSeen,
+      ...(codexTurnTokenUsage(session) ? { tokenUsage: codexTurnTokenUsage(session) } : {}),
       ...(agentMessageText ? { agentMessageText } : {})
     }
   };
+}
+
+/**
+ * Stage 7: the turn's measured tokens, from the runtime's own usage reports: Codex
+ * `thread/tokenUsage/updated` deltas, or the OpenCode assistant message's counters.
+ */
+function measuredTurnUsage(metadata: Record<string, unknown> | undefined, model: string | null): AgentRunMeasuredUsage | null {
+  const turn = metadata?.codexAppServer as { tokenUsage?: CodexTokenTotals; tokenUsageSource?: unknown; tokenUsageModel?: unknown } | undefined;
+  const usage = turn?.tokenUsage;
+  if (!usage || usage.totalTokens <= 0) return null;
+  const source = turn?.tokenUsageSource === openCodeTurnUsageSource ? openCodeTurnUsageSource : "codex-app-server:thread/tokenUsage/updated";
+  const reportedModel = typeof turn?.tokenUsageModel === "string" ? turn.tokenUsageModel : model;
+  return { status: "MEASURED", ...usage, source, observedAt: new Date().toISOString(),
+    model: reportedModel && reportedModel.length <= 200 ? reportedModel : null };
+}
+let cachedPriceCatalog: { path: string; mtimeMs: number; catalog: ModelPriceCatalog | null } | null = null;
+/** The operator's versioned price list, reread when the file changes; an unreadable or invalid one counts as none. */
+function modelPriceCatalog(path: string | null | undefined): ModelPriceCatalog | null {
+  if (!path) return null;
+  let mtimeMs: number;
+  try { mtimeMs = statSync(path).mtimeMs; } catch { return null; }
+  if (cachedPriceCatalog?.path === path && cachedPriceCatalog.mtimeMs === mtimeMs) return cachedPriceCatalog.catalog;
+  let catalog: ModelPriceCatalog | null = null;
+  try { catalog = modelPriceCatalogSchema.parse(JSON.parse(readFileSync(path, "utf8"))); } catch { catalog = null; }
+  cachedPriceCatalog = { path, mtimeMs, catalog };
+  return catalog;
+}
+
+let cachedDotsRepository: PostgresDotsRepository | null = null;
+function getDotsRepository(env: NodeJS.ProcessEnv = process.env): PostgresDotsRepository | null {
+  const databaseUrl = env.SPACE_DATABASE_URL ?? process.env.SPACE_DATABASE_URL;
+  if (!databaseUrl) return null;
+  cachedDotsRepository ??= PostgresDotsRepository.fromConnectionString(databaseUrl);
+  return cachedDotsRepository;
 }
 
 function getCompletionStore(storeOverride?: SpaceStore): SpaceStore | null {
@@ -174,6 +231,17 @@ function getCompletionStore(storeOverride?: SpaceStore): SpaceStore | null {
   }
   cachedStore ??= PostgresSpaceStore.fromConnectionString(databaseUrl);
   return cachedStore;
+}
+
+/** The Dot's private workspace; null when it cannot be created, so the turn still runs. */
+export async function ensureDotWorkspace(dotId: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  try {
+    const path = dotWorkspacePath(dotId, env.SPACE_DOT_WORKSPACE_ROOT || DOT_WORKSPACE_ROOT);
+    await mkdir(path, { recursive: true, mode: 0o770 });
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveTurnWorkspace(input: DummyTurnInput, storeOverride?: SpaceStore): Promise<string | null> {
@@ -379,7 +447,9 @@ export function getCodexAppServerTurnActivityConfig(env: NodeJS.ProcessEnv = pro
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
     mcpToolBridgeEnabled: env.SPACE_MCP_TOOL_BRIDGE_ENABLED === "true",
     internalApiBaseUrl: env.SPACE_INTERNAL_API_BASE_URL || `http://127.0.0.1:${env.SPACE_API_PORT || "4910"}`,
-    internalApiToken: env.SPACE_INTERNAL_API_TOKEN || null
+    internalApiToken: env.SPACE_INTERNAL_API_TOKEN || null,
+    priceCatalogPath: env.SPACE_MODEL_PRICE_CATALOG || null,
+    roomAgentMaxPasses: roomAgentLimitsFromEnv(env).maxPasses
   };
 }
 
@@ -389,6 +459,32 @@ export async function runRoomAgentBackgroundAction(input: {
   const timer = setInterval(() => { try { Context.current().heartbeat({ phase: "room-pane-action" }); } catch { /* Outside Temporal in tests. */ } }, 5_000);
   try { return await executeBackgroundRoomAction(input.bridge, getCodexAppServerTurnActivityConfig()); }
   finally { clearInterval(timer); }
+}
+
+/** Space Dots Goals: one bounded API call per workflow iteration; the API is the authority. */
+async function dotGoalApi(path: "step" | "observe", body: Record<string, unknown>, fetchImpl: typeof fetch = fetch) {
+  const config = getCodexAppServerTurnActivityConfig();
+  if (!config.internalApiToken) throw new Error("Dot Goals require internal API authentication.");
+  const response = await fetchImpl(`${config.internalApiBaseUrl.replace(/\/+$/, "")}/api/internal/dots/goals/${path}`, {
+    method: "POST", headers: { "content-type": "application/json", "x-space-internal-token": config.internalApiToken },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(90_000)
+  });
+  const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
+  // Only a Goal that no longer exists ends its workflow; any other failure is retried.
+  if (response.status === 404 && (parsed.error as { code?: unknown } | undefined)?.code === "DOT_GOAL_NOT_FOUND") return { missing: true as const, body: parsed };
+  if (!response.ok) throw new Error(`Dot Goal ${path} returned HTTP ${response.status}.`);
+  return { missing: false as const, body: parsed };
+}
+export async function dotGoalStep(goalId: string, fetchImpl?: typeof fetch): Promise<{ state: string; runId: string | null; goalStatus: string }> {
+  const result = await dotGoalApi("step", { goalId }, fetchImpl);
+  if (result.missing) return { state: "DONE", runId: null, goalStatus: "MISSING" };
+  const goal = result.body.goal as { status?: string } | undefined;
+  return { state: String(result.body.state), runId: typeof result.body.runId === "string" ? result.body.runId : null, goalStatus: goal?.status ?? "UNKNOWN" };
+}
+export async function dotGoalObserve(goalId: string, runId: string, fetchImpl?: typeof fetch): Promise<{ run: string; goalStatus: string }> {
+  const result = await dotGoalApi("observe", { goalId, runId }, fetchImpl);
+  if (result.missing) return { run: "MISSING", goalStatus: "MISSING" };
+  return { run: String(result.body.run), goalStatus: (result.body.goal as { status?: string } | undefined)?.status ?? "UNKNOWN" };
 }
 
 export async function failRoomAgentBackgroundAction(input: {
@@ -432,7 +528,8 @@ export async function settleRoomAgentBackgroundMission(input: { roomId: string; 
 }
 
 export async function prepareRoomAgentBackgroundContinuation(input: Parameters<typeof prepareBackgroundContinuation>[0], storeOverride?: SpaceStore) {
-  return prepareBackgroundContinuation(input, requiredRoomAgentStore(storeOverride));
+  const limits = roomAgentLimitsFromEnv();
+  return prepareBackgroundContinuation(input, requiredRoomAgentStore(storeOverride), limits.maxContinuations, limits.maxMissionTokens);
 }
 
 export async function discardRoomAgentSupervisorTurn(input: { item: import("@space/contracts").RoomAgentSupervisorQueueItem; reason: string }, storeOverride?: SpaceStore) {
@@ -529,14 +626,34 @@ async function defaultStdioTurnExecutor(
   storeOverride?: SpaceStore
 ): Promise<CodexAppServerTurnSessionState> {
   const imageAttachments = await loadCodexTurnImageAttachments(input, config);
-  const targetWorkspace = await resolveTurnWorkspace(input, storeOverride);
+  const nativeChat = isNativeChatTurn(input);
+  // A Dot works in its private workspace, created on first use; a project stays the working directory when there is one.
+  const dotWorkspace = nativeChat && input.dotId ? await ensureDotWorkspace(input.dotId, env) : null;
+  const targetWorkspace = await resolveTurnWorkspace(input, storeOverride) ?? dotWorkspace;
   const baseTurnConfig = runtime.codexHome ? { ...config, home: runtime.codexHome } : config;
   const turnConfig = targetWorkspace ? { ...baseTurnConfig, cwd: targetWorkspace } : baseTurnConfig;
   const modelProvider = runtime.modelProvider;
-  const nativeChat = isNativeChatTurn(input);
+  const proactive = nativeChat && input.dotWorkMode === "PROACTIVE";
   await applyCodexProviderRoute(runtime, turnConfig, env, routeSwitcher);
   const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env, targetWorkspace);
+  const dotsRepository = nativeChat ? getDotsRepository(env) : null;
+  const gateway = nativeChat && input.toolGateway === DOT_TOOL_GATEWAY_VERSION && dotGatewayIdentity(input) && dotsRepository
+    ? { repository: dotsRepository, store: storeOverride ?? getCompletionStore() } : null;
+  const dotToolContext = gateway?.store ? { turnInput: input, config, store: gateway.store, repository: gateway.repository,
+    canonicalMemory: canonicalMemoryBridgeFromEnv(env) } : null;
+  const serverRequestHandler = nativeChat ? (request: CodexAppServerJsonRpcMessage) => request.method === "item/tool/call"
+    ? dotToolContext ? handleDotToolCall(dotToolContext, request)
+      : { contentItems: [{ type: "inputText", text: "Space tools are unavailable in this conversation." }], success: false }
+    : resolveCodexAppServerRequestUserInput(request) : undefined;
   const run = (threadId: string | null, resumeTurnId: string | null) => runCodexAppServerStdioTurnSession({
+    // Native Chat: dispatcher identity always; Dot tools and instructions only on gateway threads.
+    threadConfig: nativeChat ? nativeChatThreadConfig(undefined, { writableRoots: dotWorkspace ? [dotWorkspace] : [], proactive }) : null,
+    readOnly: proactive,
+    developerInstructions: dotToolContext ? dotGatewayDeveloperInstructions(input.developerContext) : null,
+    dynamicTools: dotToolContext && !threadId ? dotGatewayDynamicTools() : null,
+    onThreadStarted: dotToolContext ? async (thread) => {
+      if (thread.dynamicTools) await gateway!.repository.markSessionToolGateway(input.agentSessionId!, thread.threadId).catch(() => undefined);
+    } : undefined,
     command: turnConfig.command,
     cwd: turnConfig.cwd,
     env: turnEnv,
@@ -557,7 +674,7 @@ async function defaultStdioTurnExecutor(
       version: "0.1.0"
     },
     timeoutMs: config.turnTimeoutMs ?? 240_000,
-    serverRequestHandler: nativeChat ? resolveCodexAppServerRequestUserInput : undefined,
+    serverRequestHandler,
     signal,
     shouldInterruptOnAbort: reason => !["WORKER_SHUTDOWN", "TIMED_OUT"].includes(reason instanceof Error ? reason.message : String(reason)),
     spawnProcess,
@@ -1031,6 +1148,17 @@ async function runRoomAgentToolLoop(input: {
     observation.executedActionCount !== initialRequestedActionCount ||
     !threadId
   ) {
+    if (initialRequestedActionCount === 0 && executedActionCount === 0) {
+      return {
+        threadId,
+        turnId,
+        outcome: {
+          status: "VERIFIED",
+          executedActionCount: 0,
+          statusReason: "Informational turn completed without actions requiring verification."
+        }
+      };
+    }
     return {
       threadId,
       turnId,
@@ -1043,7 +1171,8 @@ async function runRoomAgentToolLoop(input: {
   }
 
   let actionElicitationAttempt = 0;
-  for (let pass = 1; pass <= 8; pass += 1) {
+  const maxPasses = input.config.roomAgentMaxPasses ?? DEFAULT_ROOM_AGENT_MAX_PASSES;
+  for (let pass = 1; pass <= maxPasses; pass += 1) {
     try {
       const verificationPass = verificationOnly;
       const actionPromptPrefix = actionElicitationAttempt > 0
@@ -1213,6 +1342,8 @@ async function runRoomAgentToolLoop(input: {
           actionRepairReason = "The preceding response contained prose but no complete execution plan.";
           continue;
         }
+        // A prose claim after executed actions is never verified completion, even
+        // after a read-only inspection: the verification block is the contract.
         return {
           threadId,
           turnId,
@@ -1304,10 +1435,11 @@ async function runRoomAgentToolLoop(input: {
   return {
     threadId,
     turnId,
+    errorCode: ROOM_AGENT_PASS_LIMIT,
     outcome: {
       status: "UNVERIFIED",
-      executedActionCount,
-      statusReason: "The Room Agent reached the eight-pass supervision limit before final verification."
+      executedActionCount: Math.min(executedActionCount, 100),
+      statusReason: `The Room Agent reached its ${maxPasses}-pass supervision limit before final verification.`
     }
   };
 }
@@ -1436,11 +1568,13 @@ async function recordSpaceAgentRunCompleted(
     : null;
   const workflowId = buildCodexAppServerTurnWorkflowId(input);
   const runtimeModelAtStart = codexMetadataValue(metadata, "runtimeModelAtStart");
+  const measured = measuredTurnUsage(metadata, runtimeModelAtStart ?? input.modelId ?? null);
   const run = await store.updateSpaceAgentRunByWorkflowId(workflowId, {
     runtimeModelAtStart: runtimeModelAtStart && runtimeModelAtStart.length <= 200 ? runtimeModelAtStart : null,
     status: "RUNNING",
     codexThreadId: threadId,
-    codexTurnId: turnId
+    codexTurnId: turnId,
+    ...(measured ? { usage: measured, cost: estimateAgentRunCost(measured, modelPriceCatalog(config.priceCatalogPath), measured.observedAt) } : {})
   });
   for (const toolMessageContent of toolMessageContents) {
     await store.createSpaceAgentMessage({
@@ -1507,11 +1641,19 @@ async function recordSpaceAgentRunCompleted(
     });
   }
   const roomAgentOutcome: RoomAgentTurnOutcome | undefined = input.roomAgentMissionId
-    ? roomAgentLoop?.outcome ?? {
-        status: "UNVERIFIED",
-        executedActionCount: roomAgentToolObservation?.executedActionCount ?? 0,
-        statusReason: "The Room Agent could not run a final mediated verification pass."
-      }
+    ? roomAgentLoop?.outcome ?? (
+        (roomAgentToolObservation?.executedActionCount ?? 0) === 0
+          ? {
+              status: "VERIFIED",
+              executedActionCount: 0,
+              statusReason: "Informational Room Agent turn completed without actions requiring verification."
+            }
+          : {
+              status: "UNVERIFIED",
+              executedActionCount: roomAgentToolObservation?.executedActionCount ?? 0,
+              statusReason: "The Room Agent could not run a final mediated verification pass."
+            }
+      )
     : undefined;
   const verified = !roomAgentOutcome || roomAgentOutcome.status === "VERIFIED";
   const completedAt = new Date().toISOString();
@@ -1538,14 +1680,15 @@ async function recordSpaceAgentRunCompleted(
     });
   } else {
     await store.updateSpaceAgentMessage(input.agentAssistantMessageId, { content: finalContent, status: "COMPLETED" });
+    noteActivityFailureReason("ROOM_AGENT_OUTCOME_UNVERIFIED");
     await store.updateSpaceAgentRun(run.runId, {
         status: "FAILED",
         codexThreadId: followUp?.threadId ?? threadId,
         codexTurnId: followUp?.turnId ?? turnId,
-        errorCode: "ROOM_AGENT_OUTCOME_UNVERIFIED",
+        errorCode: (roomAgentLoop as { errorCode?: string } | null)?.errorCode ?? "ROOM_AGENT_OUTCOME_UNVERIFIED",
         errorMessage: roomAgentOutcome.statusReason,
         completedAt
-    });
+    }, input.traceId);
     await store.updateSpaceAgentSession(input.agentSessionId, {
       status: "ERROR",
       threadId: followUp?.threadId ?? threadId,
@@ -1560,12 +1703,14 @@ async function recordSpaceAgentRunFailed(input: DummyTurnInput, reasonCode: stri
   const store = getCompletionStore(storeOverride);
   if (!store) return;
   const workflowId = buildCodexAppServerTurnWorkflowId(input);
+  // The TURN_FAILED event uses the originating request id as its trace id, so
+  // the failure is found by the same id as the API request and worker logs.
   await store.updateSpaceAgentRunByWorkflowId(workflowId, {
     status: "FAILED",
     errorCode: reasonCode,
     errorMessage: message,
     completedAt: new Date().toISOString()
-  });
+  }, input.traceId);
   await store.updateSpaceAgentMessage(input.agentAssistantMessageId, { content: message, status: "FAILED" });
   await store.updateSpaceAgentSession(input.agentSessionId, {
     status: reasonCode.endsWith("_DISABLED") || reasonCode.includes("CONFIG") ? "BLOCKED" : "ERROR",
@@ -1573,22 +1718,48 @@ async function recordSpaceAgentRunFailed(input: DummyTurnInput, reasonCode: stri
   });
 }
 
-async function recordSpaceAgentRunInterrupted(input: DummyTurnInput, message: string, storeOverride?: SpaceStore): Promise<void> {
+async function recordSpaceAgentRunInterrupted(input: DummyTurnInput, message: string, storeOverride?: SpaceStore,
+  errorCode = "ROOM_AGENT_STOPPED"): Promise<void> {
   if (!isSpaceAgentTurn(input)) return;
   const store = getCompletionStore(storeOverride);
   if (!store) return;
   const workflowId = buildCodexAppServerTurnWorkflowId(input);
   await store.updateSpaceAgentRunByWorkflowId(workflowId, {
     status: "INTERRUPTED",
-    errorCode: "ROOM_AGENT_STOPPED",
+    errorCode,
     errorMessage: message,
     completedAt: new Date().toISOString()
-  });
+  }, input.traceId);
   await store.updateSpaceAgentMessage(input.agentAssistantMessageId, { content: message, status: "INTERRUPTED" });
   await store.updateSpaceAgentSession(input.agentSessionId, {
     status: "READY",
     lastSyncedAt: new Date().toISOString()
   });
+}
+
+/** Temporal cancels an attempt with these reasons when its worker shuts down or the attempt expired. */
+function isWorkerAttemptAbort(signal: AbortSignal): boolean {
+  const reason = signal.reason instanceof Error ? signal.reason.message : String(signal.reason);
+  return reason === "WORKER_SHUTDOWN" || reason === "TIMED_OUT";
+}
+
+/**
+ * CLI chat and OpenCode turns run with maximumAttempts 1 (workflows.ts) because
+ * their prompt send is not idempotent, so a worker shutdown or an expired
+ * attempt ends the turn for good. The runtime may already have processed the
+ * prompt: record an unknown outcome for the operator instead of leaving the run
+ * RUNNING or calling it an operator stop. Nothing is retried automatically.
+ */
+export const singleAttemptTurnOutcomeUnknownMessage =
+  "The worker stopped during this turn. It is not retried automatically because the prompt may already have been processed; review the conversation and workspace before sending it again.";
+
+async function recordSingleAttemptTurnAborted(input: DummyTurnInput, signal: AbortSignal, operatorStopMessage: string,
+  storeOverride?: SpaceStore): Promise<void> {
+  if (isWorkerAttemptAbort(signal)) {
+    await recordSpaceAgentRunInterrupted(input, singleAttemptTurnOutcomeUnknownMessage, storeOverride, "TURN_OUTCOME_UNKNOWN");
+  } else {
+    await recordSpaceAgentRunInterrupted(input, operatorStopMessage, storeOverride);
+  }
 }
 
 async function loadCodexTurnImageAttachments(input: DummyTurnInput, config: CodexAppServerTurnActivityConfig): Promise<Array<{
@@ -1710,6 +1881,7 @@ async function recordCodexAppServerTurnFailure(
   metadata: Record<string, unknown> = {},
   storeOverride?: SpaceStore
 ): Promise<TurnWorkflowResult> {
+  noteActivityFailureReason(reasonCode);
   const parsed = dummyTurnInputSchema.parse(input);
   const result = turnWorkflowResultSchema.parse({
     workflowId: buildCodexAppServerTurnWorkflowId(parsed),
@@ -1802,6 +1974,15 @@ function classifyCodexExecutorFailure(error: unknown): { reasonCode: string; mes
       kind: "unknown"
     }
   };
+  // A store lookup failure is evidence of missing execution state, not a
+  // missing executable. Keep identifiers and raw error text out of the result.
+  if (error instanceof SpaceNotFoundError) {
+    return {
+      reasonCode: "SPACE_EXECUTION_STATE_UNAVAILABLE",
+      message: "Required Space execution state was not found. Reconcile the task before retrying.",
+      metadata: { executorFailure: { ...metadata.executorFailure, kind: "state_unavailable" } }
+    };
+  }
   if (/route switch/i.test(rawMessage)) {
     return {
       reasonCode: "CODEX_PROVIDER_ROUTE_SWITCH_FAILED",
@@ -1857,7 +2038,8 @@ export async function runCodexAppServerTurn(
     Math.max(1, options.heartbeatIntervalMs ?? ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS)
   );
   try {
-    return await runCodexAppServerTurnImplementation(input, options);
+    return await observeTurnActivity(input, "CODEX_APP_SERVER", () => runCodexAppServerTurnImplementation(input, options),
+      options.abortSignal ?? currentActivityCancellationSignal());
   } finally {
     stopHeartbeat();
   }
@@ -1921,6 +2103,7 @@ async function runCodexAppServerTurnImplementation(
     if (durableRun?.codexThreadId && parsed.agentSessionId) {
       parsed = dummyTurnInputSchema.parse({ ...parsed, agentThreadId: durableRun.codexThreadId });
     }
+    if (durableRun?.runId && !parsed.agentRunId) parsed = dummyTurnInputSchema.parse({ ...parsed, agentRunId: durableRun.runId });
     const providerRuntime = await resolveCodexAppServerTurnRuntime(parsed, options.completionStore);
     if (providerRuntime.gate) {
       return recordCodexAppServerTurnFailure(
@@ -2039,7 +2222,8 @@ export async function runOpenCodeAgentTurn(
     Math.max(1, options.heartbeatIntervalMs ?? ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS)
   );
   try {
-    return await runOpenCodeAgentTurnImplementation(input, options);
+    return await observeTurnActivity(input, "OPENCODE_HTTP", () => runOpenCodeAgentTurnImplementation(input, options),
+      options.abortSignal ?? currentActivityCancellationSignal());
   } finally {
     stopHeartbeat();
   }
@@ -2108,9 +2292,15 @@ async function runOpenCodeAgentTurnImplementation(
     }
 
     await ensureOpenCodeTurnModel(control, parsed);
-    const text = await executeOpenCodeTurnPrompt(control, parsed, config, abortSignal, options.fetchImpl ?? fetch);
+    const { text, usage } = await executeOpenCodeTurnPrompt(control, parsed, config, abortSignal, options.fetchImpl ?? fetch);
     if (abortSignal?.aborted) throw abortSignal.reason;
-    const metadata = { codexAppServer: { agentMessageText: text ?? null, turnStatus: "COMPLETED" } };
+    const metadata = {
+      codexAppServer: {
+        agentMessageText: text ?? null,
+        turnStatus: "COMPLETED",
+        ...(usage ? { tokenUsage: usage.totals, tokenUsageSource: openCodeTurnUsageSource, tokenUsageModel: usage.model } : {})
+      }
+    };
     if (!text) {
       return recordOpenCodeAgentTurnFailure(
         parsed,
@@ -2143,9 +2333,8 @@ async function runOpenCodeAgentTurnImplementation(
     });
   } catch (error) {
     if (abortSignal?.aborted) {
-      const retryingWorker = ["WORKER_SHUTDOWN", "TIMED_OUT"].includes(
-        abortSignal.reason instanceof Error ? abortSignal.reason.message : String(abortSignal.reason));
-      if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Room Agent turn was stopped by the operator.", options.completionStore);
+      // Single attempt: unlike the Codex turn, no later attempt re-enters this turn.
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Room Agent turn was stopped by the operator.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failure = classifyOpenCodeExecutorFailure(error);
@@ -2188,6 +2377,7 @@ async function recordOpenCodeAgentTurnFailure(
   metadata: Record<string, unknown> = {},
   storeOverride?: SpaceStore
 ): Promise<TurnWorkflowResult> {
+  noteActivityFailureReason(reasonCode);
   const parsed = dummyTurnInputSchema.parse(input);
   const result = turnWorkflowResultSchema.parse({
     workflowId: buildCodexAppServerTurnWorkflowId(parsed),
@@ -2262,7 +2452,7 @@ export async function executeOpenCodeTurnPrompt(
   config: OpenCodeAgentTurnActivityConfig,
   abortSignal: AbortSignal | undefined,
   fetchImpl: typeof fetch
-): Promise<string | null> {
+): Promise<{ text: string | null; usage: OpenCodeTurnUsage | null }> {
   const baseUrl = openCodeServerBaseUrl(control.serverPort, control.serverHost);
   const authorization = `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`;
   const composite = input.modelId ? parseOpenCodeCompositeModelId(input.modelId) : null;
@@ -2289,8 +2479,8 @@ export async function executeOpenCodeTurnPrompt(
     if (!response.ok) {
       throw new Error(`OpenCode message failed with HTTP ${response.status}.`);
     }
-    const payload = (await response.json()) as { parts?: unknown };
-    return extractOpenCodeAssistantText(payload.parts);
+    const payload = (await response.json()) as { parts?: unknown; info?: unknown };
+    return { text: extractOpenCodeAssistantText(payload.parts), usage: openCodeTurnUsage(payload.info) };
   } catch (error) {
     try {
       await fetchImpl(`${baseUrl}/session/${encodeURIComponent(control.nativeSessionId)}/abort`, {
@@ -2311,6 +2501,13 @@ export interface CliAgentTurnActivityConfig {
   turnTimeoutMs: number;
   maxPromptBytes: number;
   maxOutputBytes: number;
+}
+
+class CliAgentTurnOutputLimitError extends Error {
+  constructor(limit: number) {
+    super(`The CLI chat output exceeds the ${limit} byte limit; the incomplete response was not accepted.`);
+    this.name = "CliAgentTurnOutputLimitError";
+  }
 }
 
 export function getCliAgentTurnActivityConfig(env: NodeJS.ProcessEnv = process.env): CliAgentTurnActivityConfig {
@@ -2348,7 +2545,8 @@ export async function runCliAgentTurn(
     Math.max(1, options.heartbeatIntervalMs ?? ROOM_AGENT_TURN_HEARTBEAT_INTERVAL_MS)
   );
   try {
-    return await runCliAgentTurnImplementation(input, options);
+    return await observeTurnActivity(input, "CLI_BROKER", () => runCliAgentTurnImplementation(input, options),
+      options.abortSignal ?? currentActivityCancellationSignal());
   } finally {
     stopHeartbeat();
   }
@@ -2391,6 +2589,7 @@ async function runCliAgentTurnImplementation(
   }
 
   try {
+    abortSignal?.throwIfAborted();
     const durableRun = await markSpaceAgentRunStarted(parsed, options.completionStore);
     await ensureCliTurnWorkflowRow(parsed, durableRun, options);
     const text = await executeCliAgentTurnPrompt(runtimeId, parsed, config, abortSignal, options.completionStore);
@@ -2428,10 +2627,15 @@ async function runCliAgentTurnImplementation(
     });
   } catch (error) {
     if (abortSignal?.aborted) {
-      await recordSpaceAgentRunInterrupted(parsed, "CLI chat turn was stopped by the operator.", options.completionStore);
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "CLI chat turn was stopped by the operator.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failureMessage = error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.";
+    if (error instanceof CliAgentTurnOutputLimitError) {
+      return recordCliAgentTurnFailure(
+        parsed, "CLI_CHAT_TURN_OUTPUT_TOO_LARGE", failureMessage, {}, options.completionStore
+      );
+    }
     if (isCliChatQuotaError(failureMessage)) {
       return recordCliAgentTurnFailure(
         parsed,
@@ -2458,7 +2662,6 @@ async function ensureCliTurnWorkflowRow(
 ): Promise<void> {
   const store = getCompletionStore(options.completionStore);
   if (!store || !durableRun) return;
-  console.log("ensureCliTurnWorkflowRow: start", input.providerId, buildCodexAppServerTurnWorkflowId(input));
   try {
     const providerId = input.providerId ?? null;
     if (providerId) {
@@ -2484,9 +2687,8 @@ async function ensureCliTurnWorkflowRow(
       providerId: input.providerId ?? null,
       modelId: input.modelId ?? null
     });
-    console.log("ensureCliTurnWorkflowRow: ok");
-  } catch (error) {
-    console.error("ensureCliTurnWorkflowRow failed:", error instanceof Error ? error.message : String(error));
+  } catch {
+    recordTurnStatePersistenceFailure(input);
   }
 }
 
@@ -2497,6 +2699,7 @@ async function recordCliAgentTurnFailure(
   metadata: Record<string, unknown> = {},
   storeOverride?: SpaceStore
 ): Promise<TurnWorkflowResult> {
+  noteActivityFailureReason(reasonCode);
   const parsed = dummyTurnInputSchema.parse(input);
   const result = turnWorkflowResultSchema.parse({
     workflowId: buildCodexAppServerTurnWorkflowId(parsed),
@@ -2538,7 +2741,7 @@ async function executeCliAgentTurnPrompt(
     workspaceDir
   );
   const text = stdout.trim();
-  return text.length ? text.slice(0, config.maxOutputBytes) : null;
+  return text.length ? text : null;
 }
 
 function runCliAgentTurnProcess(
@@ -2551,6 +2754,9 @@ function runCliAgentTurnProcess(
   workspaceDir?: string | null
 ): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
+    // Workspace and durable-state reads can yield after the activity's first
+    // cancellation check. Never start a new side effect for that cancelled turn.
+    abortSignal?.throwIfAborted();
     const modelEnv = modelId && modelId !== "auto"
       ? { SPACE_AGENT_CHAT_MODEL: modelId }
       : {};
@@ -2577,9 +2783,9 @@ function runCliAgentTurnProcess(
       }
     );
     let stdout = "";
+    let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
-    const boundedOutputLimit = Math.max(config.maxOutputBytes, 4096);
     const settle = (resolve: boolean, error?: Error) => {
       if (settled) return;
       settled = true;
@@ -2602,7 +2808,17 @@ function runCliAgentTurnProcess(
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      if (stdout.length < boundedOutputLimit) stdout += chunk.slice(0, boundedOutputLimit - stdout.length);
+      if (settled) return;
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (bytes > config.maxOutputBytes - stdoutBytes) {
+        // Reject before retaining the excess or interpreting any partial tool
+        // action. CLI activities have no automatic retry of this side effect.
+        settle(false, new CliAgentTurnOutputLimitError(config.maxOutputBytes));
+        try { child.kill("SIGKILL"); } catch {}
+        return;
+      }
+      stdoutBytes += bytes;
+      stdout += chunk;
     });
     child.stderr.on("data", (chunk: string) => {
       if (stderr.length < 16_384) stderr += chunk.slice(0, 16_384 - stderr.length);
