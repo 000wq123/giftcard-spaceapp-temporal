@@ -45,6 +45,21 @@ test('a first install sends the anonymous ping only when the owner answers yes',
   assert.equal(await run(answers(true),agreed.options),0);
   assert.equal(agreed.urls.filter(x=>x.includes('install-ping')).length,1);
 });
+test('an explicit SPACEAPP_TELEMETRY at install is stored, so later updates keep the first_answer choice', async(t)=>{
+  const answers=(telemetry)=>['install','--non-interactive','--answers',JSON.stringify({confirm:true,profile:'light',access:'isolated',companions:false,telemetry,open:false})];
+  const stored=async(f)=>({config:JSON.parse(await readFile(join(f.root,'config.json'),'utf8')).telemetry,env:(await readFile(join(f.root,'runtime.env'),'utf8')).match(/^SPACEAPP_TELEMETRY=(.*)$/m)?.[1]});
+  const optedOut=await fixture(t); optedOut.options.env.SPACEAPP_TELEMETRY='0';
+  assert.equal(await run(answers(true),optedOut.options),0);
+  assert.deepEqual(await stored(optedOut),{config:false,env:'false'});
+  assert.ok(!optedOut.urls.some(x=>x.includes('install-ping')));
+  const optedIn=await fixture(t); optedIn.options.env.SPACEAPP_TELEMETRY='1';
+  assert.equal(await run(answers(false),optedIn.options),0);
+  assert.deepEqual(await stored(optedIn),{config:true,env:'true'});
+  assert.equal(optedIn.urls.filter(x=>x.includes('install-ping')).length,1);
+  const answered=await fixture(t); delete answered.options.env.SPACEAPP_TELEMETRY;
+  assert.equal(await run(answers(true),answered.options),0);
+  assert.deepEqual(await stored(answered),{config:true,env:'true'});
+});
 test('noninteractive install without explicit confirm:true cannot mutate installation', async(t)=>{
   const f=await fixture(t);
   assert.equal(await run(['install','--non-interactive','--answers','{"profile":"light"}'],f.options),1);

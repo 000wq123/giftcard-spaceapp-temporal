@@ -57,6 +57,7 @@ import {
 } from "./package-info.mjs";
 import {
   INSTALL_PING_TIMEOUT_MS,
+  isInstallPingAllowed,
   reportFirstInstallPing
 } from "./telemetry.mjs";
 
@@ -669,7 +670,9 @@ async function installCommand(args, {
     accessMode,
     ...(companionsEnabled ? { companionsEnabled } : {})
   });
-  if (telemetryEnabled && !existingConfig) {
+  // The stored choice also drives the app's first_answer event after later updates, so an explicit
+  // SPACEAPP_TELEMETRY at install time is stored like the answer it overrides (as for the install ping).
+  if (!existingConfig && isInstallPingAllowed({ consent: telemetryEnabled, env })) {
     result.config = { ...result.config, telemetry: true };
   }
 

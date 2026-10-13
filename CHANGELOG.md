@@ -17,6 +17,8 @@ Semantic Versioning.
 - Opt-in `first_answer` telemetry: with telemetry Yes, one anonymous event is sent
   the first time an agent finishes an answer (event, random id, version, CPU
   architecture, date). Nothing is sent with telemetry No.
+- An explicit `SPACEAPP_TELEMETRY` during a fresh install is now stored with the
+  installation, so later updates keep that choice for the `first_answer` event.
 - Quieter request logs; `fast-uri` 4 for fastify's JSON serializer.
 - The application is updated to the current SpaceApp source (sanitized export of
   aa53bc0a8d). The core image now includes the Space Gateway tree-sitter grammars
