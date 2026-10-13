@@ -198,7 +198,17 @@ const publicBinaryFiles = new Map([
   ["apps/web/public/demo/media/hello-there.wav", "4b5d6cdf5fa86b6dcc6ecb793654afa5ac7352b44eb2d12046d094fa627eb87b"],
   ["apps/web/public/demo/media/space-loop-1.mp3", "11c6987efd0d525dab3a17f90c7e47b45414f4127eddcbfe780393eb0c32ee48"],
   ["apps/web/public/demo/media/space-loop-2.mp3", "2ba2a8380b001886dd0d0ab22907d9141a43d3cf9bc52414564d7036f6cdf3aa"],
-  ["apps/web/public/demo/media/space-loop-3.mp3", "fa7e84e49c6a552e4e5e09539c42f1412b7acc1a83233a83c4d6ecc6211f2f4a"]
+  ["apps/web/public/demo/media/space-loop-3.mp3", "fa7e84e49c6a552e4e5e09539c42f1412b7acc1a83233a83c4d6ecc6211f2f4a"],
+  // Space Gateway CodeAware grammars: byte-identical to the WebAssembly files in the
+  // MIT-licensed npm packages tree-sitter-<lang> (versions in THIRD_PARTY_NOTICES.md).
+  ["packages/gateway/grammars/tree-sitter-c.wasm", "c852c2a85ebf2beb636aa3b0ef7f7e70458684d74f6741b20dcb296885bed9f9"],
+  ["packages/gateway/grammars/tree-sitter-cpp.wasm", "174eb0deb75b2ec7881bcacda9f995648d8e683956e5c2267e69ab6dc503fcbf"],
+  ["packages/gateway/grammars/tree-sitter-go.wasm", "9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7"],
+  ["packages/gateway/grammars/tree-sitter-java.wasm", "4fdeac4ca6ca089f06c6f7e562abcac1733cd465728cc7031ebb73c2019122c4"],
+  ["packages/gateway/grammars/tree-sitter-javascript.wasm", "5fb488d0cabb4775a594bab85682de5ad6ce83c0d6ac997a9f82dd084d571240"],
+  ["packages/gateway/grammars/tree-sitter-python.wasm", "16108b50df4ee9a30168794252ab55e7c93bfc5765d7fa0aa3e335752c515f47"],
+  ["packages/gateway/grammars/tree-sitter-rust.wasm", "f65f354215611fd94ad34134b3427eb3d58cbb745df7b6509ba722184db73d57"],
+  ["packages/gateway/grammars/tree-sitter-typescript.wasm", "778025db5a8be0e70f8ccc3671e486dfeddd048c25d9e8a70c26de2e1bf6f97d"]
 ]);
 
 function joined(...parts) {

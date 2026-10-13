@@ -45,3 +45,28 @@ volume and remains subject to Anthropic's terms.
 Maintainers must not add Claude Code back to a distributed image without
 written or counsel-reviewed confirmation that the planned redistribution is
 permitted. Public npm availability alone is not redistribution permission.
+
+## Bundled tree-sitter grammars
+
+The core image ships `packages/gateway/grammars/*.wasm`, which the Space Gateway
+compression worker loads for code-aware compression. Each file is the unmodified
+WebAssembly build from its npm package (byte-identical, checked by SHA-256 when the
+public tree is exported). The tree-sitter runtime (`web-tree-sitter@0.25.10`, MIT,
+Copyright (c) 2018-2024 Max Brunsfeld) is an ordinary npm dependency.
+
+| File | npm package | Source | License and copyright |
+| --- | --- | --- | --- |
+| `tree-sitter-c.wasm` | `tree-sitter-c@0.24.1` | [tree-sitter/tree-sitter-c](https://github.com/tree-sitter/tree-sitter-c) | MIT, Copyright (c) 2014 Max Brunsfeld |
+| `tree-sitter-cpp.wasm` | `tree-sitter-cpp@0.23.4` | [tree-sitter/tree-sitter-cpp](https://github.com/tree-sitter/tree-sitter-cpp) | MIT, Copyright (c) 2014 Max Brunsfeld |
+| `tree-sitter-go.wasm` | `tree-sitter-go@0.25.0` | [tree-sitter/tree-sitter-go](https://github.com/tree-sitter/tree-sitter-go) | MIT, Copyright (c) 2014 Max Brunsfeld |
+| `tree-sitter-java.wasm` | `tree-sitter-java@0.23.5` | [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java) | MIT, Copyright (c) 2017 Ayman Nadeem |
+| `tree-sitter-javascript.wasm` | `tree-sitter-javascript@0.25.0` | [tree-sitter/tree-sitter-javascript](https://github.com/tree-sitter/tree-sitter-javascript) | MIT, Copyright (c) 2014 Max Brunsfeld |
+| `tree-sitter-python.wasm` | `tree-sitter-python@0.25.0` | [tree-sitter/tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python) | MIT, Copyright (c) 2016 Max Brunsfeld |
+| `tree-sitter-rust.wasm` | `tree-sitter-rust@0.24.0` | [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust) | MIT, Copyright (c) 2017 Maxim Sokolov |
+| `tree-sitter-typescript.wasm` | `tree-sitter-typescript@0.23.2` | [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) | MIT, Copyright (c) 2017 Max Brunsfeld |
+
+Each package is distributed under the MIT License. It permits use, copying,
+modification, merging, publishing, distribution, sublicensing and sale, provided the
+copyright notice above and the permission notice are included in all copies or
+substantial portions; the software is provided "as is", without warranty of any
+kind. The full MIT License text is in each package.
