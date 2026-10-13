@@ -144,7 +144,9 @@ const publicAppTests = new Set([
   "apps/api/tests/setup.test.ts",
   "apps/api/tests/storage-warning.test.ts",
   "apps/web/tests/clipboard-html.test.ts",
-  "apps/web/tests/owner-setup.test.tsx"
+  "apps/web/tests/owner-setup.test.tsx",
+  // Loaded by apps/web/vite.config.ts (test.setupFiles) for every web test.
+  "apps/web/tests/setup-testing-library.ts"
 ]);
 
 const publicPackageTests = new Set([
