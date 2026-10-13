@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "a1d44fcfd043e808fcbc15fc30ac71921bec7958e14c8bf9502d70b5cc3bcde7",
+  "candidateDigest": "bc3f9751d0f3a2bfc1434163552652923717704a88fe10af2db054872fc1af86",
   "sourceCommit": "7fd6217dd009381aaa3a5ae664719f31fc2b03b5",
   "launcherVersion": "1.1.3",
   "runtimeVersion": "1.1.3",
-  "createdAt": "2026-10-13T03:06:47.551Z",
+  "createdAt": "2026-10-13T03:19:22.671Z",
   "checks": [
     {
       "platform": "linux",
@@ -382,6 +382,7 @@
     "The lab VMs were shared with the 1.1.2 release session; the Linux runner was shut down once by that session during an earlier 1.1.3 candidate run, which was then repeated.",
     "Profiles ran one VM boot per sequence under a 20 GiB host memory floor: small at 8 GiB/4 CPU, medium at 12 GiB/4 CPU, large at 16 GiB/8 CPU (Docker Desktop/WSL 8 GiB on macOS/Windows for medium and large); every runner was reverted to 8 GiB/4 CPU and its Docker settings restored. Each sequence used a fresh small fixture that was purged afterwards.",
     "macOS 1.1.1 -> 1.1.3 upgrade fixture was seeded with the small profile because the macOS lab disk had about 7 GiB free.",
+    "Evidence was collected on 7fd6217. The only later change, 72a7563 (release tooling: scripts/public-export.mjs and scripts/tests/public-export.test.mjs, so the release workflow export keeps docs/security-model.md and a Git-only test skips outside a checkout), changes neither the npm package, the Dockerfile nor any file copied into the images. Reusing this evidence for 72a7563 was approved by the operator on 2026-10-13; the workflow verify steps passed on a re-export of 72a7563 before dispatch.",
     "npm next publication, environment approval and latest promotion have not yet completed."
   ]
 }
