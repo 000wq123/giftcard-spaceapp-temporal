@@ -73,9 +73,17 @@ generated for that ping, the operating system and CPU architecture, the
 launcher and runtime versions, and the install date. It contains no files,
 credentials, workspace paths, or account details.
 
+With the same Yes, SpaceApp 1.1.4 and later also send one `first_answer` event,
+once per installation, the first time an agent in the app finishes an answer. It
+goes to the same address and contains only the event name, a new random ID (not
+linked to the install ping or to anything in your installation), the SpaceApp
+version, the CPU architecture and the date. No prompt, answer, model, account or
+path is sent. A failed send is retried at most every ten minutes until it succeeds
+once. With telemetry No, nothing is sent.
+
 The environment variable `SPACEAPP_TELEMETRY` overrides the answer: `0`, `false`,
-`no` or `off` never send the ping; `1`, `true`, `yes` or `on` send it, which is
-how unattended installs opt in.
+`no` or `off` never send the ping or the `first_answer` event; `1`, `true`,
+`yes` or `on` send them, which is how unattended installs opt in.
 
 The legacy `light` profile runs the workflow service without managed Chromium;
 `standard` runs both. Resource limits are maximums, not immediate RAM or
