@@ -63,10 +63,16 @@ const publicDocs = new Set([
   "docs/legal/cli-distribution-policy.json",
   "docs/operations.md",
   "docs/installer-release-runbook.md",
-  "docs/public-release.md"
-  // docs/security-model.md is maintained here (installer and host-root
-  // guidance); the source file at that path is the internal model.
+  "docs/public-release.md",
+  "docs/security-model.md"
 ]);
+
+// Files this public repository maintains itself. A sync from the private
+// source never replaces them, even where the source has a different file at the
+// same path (its docs/security-model.md is the internal model; the public one
+// carries the installer and host-root guidance). The release workflow exports
+// this repository itself and keeps them.
+export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"]);
 
 const publicScripts = new Set([
   "scripts/publish-npm-candidate.mjs",
@@ -591,7 +597,8 @@ export async function createPublicExport({
     const collisionKeys = new Map();
     const files = [];
     let transformations = 0;
-    const exportPaths = new Set([...trackedPaths].filter(isPublicExportPath));
+    const keptPublicFiles = publicRepositoryFiles === null ? new Set() : publicRepositoryMaintainedFiles;
+    const exportPaths = new Set([...trackedPaths].filter((path) => isPublicExportPath(path) && !keptPublicFiles.has(path)));
     const hasFile = (path) => exportPaths.has(path) || publicRepositoryScripts.has(path);
     const workspaces = new Set(publicRepositoryWorkspaces);
     for (const path of exportPaths) {
@@ -602,14 +609,14 @@ export async function createPublicExport({
     const packageContext = { hasFile, hasWorkspace: (name) => workspaces.has(name) };
     // A document link resolves when the public tree has the file (or, for a
     // directory link, any file below it): exported or owned by the public repo.
-    const publicTreeFiles = [...exportPaths, ...publicRepositoryScripts,
+    const publicTreeFiles = [...exportPaths, ...publicRepositoryScripts, ...publicRepositoryMaintainedFiles,
       ...(publicRepositoryFiles ?? [...publicDocs, ...rootFiles])];
     const publicTreeSet = new Set(publicTreeFiles);
     const linkTargetExists = (path) => publicTreeSet.has(path) ||
       publicTreeFiles.some((file) => file.startsWith(`${path}/`));
     let exportedScripts = null;
     for (const path of [...trackedPaths].sort()) {
-      if (!isPublicExportPath(path)) continue;
+      if (!exportPaths.has(path)) continue;
       const normalized = normalizeTrackedPath(path);
       const collisionKey = normalized.normalize("NFC").toLocaleLowerCase("en-US");
       const collision = collisionKeys.get(collisionKey);

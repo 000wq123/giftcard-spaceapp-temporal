@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -378,8 +379,24 @@ test("the documented contributor path is exported", () => {
     assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
   }
   assert.equal(isPublicExportPath("docs/quality/README.md"), false);
-  // The public repository keeps its own security model (host-root guidance).
-  assert.equal(isPublicExportPath("docs/security-model.md"), false);
+  // The release workflow exports this repository itself and keeps its security model.
+  assert.equal(isPublicExportPath("docs/security-model.md"), true);
+});
+
+test("a sync from the private source never replaces public-repository maintained files", async () => {
+  const { sourceRoot, trackedPaths } = await writeSourceTree({
+    "README.md": "# SpaceApp\n",
+    "docs/security-model.md": "internal security model\n"
+  });
+  const fromPrivate = join(await mkdtemp(join(tmpdir(), "spaceapp-public-maintained-")), "export");
+  const synced = await createPublicExport({ sourceRoot, outputRoot: fromPrivate, trackedPaths,
+    sourceCommit: "0123456789abcdef0123456789abcdef01234567", publicRepositoryFiles: new Set(["docs/security-model.md"]) });
+  assert.equal(synced.manifest.files.some((file) => file.path === "docs/security-model.md"), false);
+  // The release workflow exports the public repository itself: the file stays.
+  const fromPublic = join(await mkdtemp(join(tmpdir(), "spaceapp-public-maintained-")), "export");
+  const released = await createPublicExport({ sourceRoot, outputRoot: fromPublic, trackedPaths,
+    sourceCommit: "0123456789abcdef0123456789abcdef01234567" });
+  assert.equal(released.manifest.files.some((file) => file.path === "docs/security-model.md"), true);
 });
 
 test("README links to files outside the public tree become their link text", () => {
@@ -444,7 +461,8 @@ test("the export fails when README or CONTRIBUTING still links to a missing file
   }
 });
 
-test("public-repository files are tracked files the previous export did not ship", async () => {
+// Needs a Git checkout; the release workflow runs the suite in an exported tree without .git.
+test("public-repository files are tracked files the previous export did not ship", { skip: !existsSync(join(repoRoot, ".git")) }, async () => {
   const owned = await publicRepositoryOwnedFiles(repoRoot);
   const manifest = JSON.parse(await readFile(join(repoRoot, "PUBLIC_EXPORT_MANIFEST.json"), "utf8"));
   assert.ok(owned.has("packages/run-spaceapp/package.json"));
