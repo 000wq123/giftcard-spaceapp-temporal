@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { hostname } from "node:os";
+import { assertDevInstanceIsolated, instanceBackgroundJobEnabled } from "@space/contracts";
 import { PostgresSpaceStore, PostgresStreamingBotRepository, PostgresStreamingRepository } from "@space/db";
 import { StreamingCredentialStore } from "@space/streaming";
 import { TelegramDeliveryWorker, TelegramSecretStore } from "@space/runtime";
@@ -12,7 +13,9 @@ import { sweepCodexCliCompletions } from "./codex-cli-completion.js";
 import { DEFAULT_TASK_QUEUE, DEFAULT_TEMPORAL_ADDRESS, DEFAULT_TEMPORAL_NAMESPACE } from "./constants.js";
 import { runTelegramNotificationCycle, TelegramNotificationLoop } from "./telegram-notification-runtime.js";
 import { StreamingBotLoop, createSpaceBotMemoryStore, runStreamingBotCycle } from "./streaming-bot-runtime.js";
+import { CHESS_MOVE_SOCKET, startChessMoveServer } from "./chess-cli-move.js";
 
+assertDevInstanceIsolated(process.env, "worker");
 const address = process.env.SPACE_TEMPORAL_ADDRESS ?? DEFAULT_TEMPORAL_ADDRESS;
 const namespace = process.env.SPACE_TEMPORAL_NAMESPACE ?? DEFAULT_TEMPORAL_NAMESPACE;
 const taskQueue = process.env.SPACE_TEMPORAL_TASK_QUEUE ?? DEFAULT_TASK_QUEUE;
@@ -57,10 +60,15 @@ let telegramNotificationLoop: TelegramNotificationLoop | null = null;
 let streamingBotLoop: StreamingBotLoop | null = null;
 let notificationStore: PostgresSpaceStore | null = null;
 const databaseUrl = process.env.SPACE_DATABASE_URL;
-if (databaseUrl) {
+// A dev instance runs on a copy of stable's data, so these loops would resend stable's messages.
+const telegramBridgeEnabled = instanceBackgroundJobEnabled(process.env, "telegram-bridge");
+const streamingBotEnabled = instanceBackgroundJobEnabled(process.env, "streaming-bot");
+if (databaseUrl && (telegramBridgeEnabled || streamingBotEnabled)) {
   notificationStore = PostgresSpaceStore.fromConnectionString(databaseUrl);
-  const spaceStore = notificationStore;
-  const telegramPersistence = notificationStore.createTelegramPersistence();
+}
+if (databaseUrl && telegramBridgeEnabled) {
+  const spaceStore = notificationStore!;
+  const telegramPersistence = spaceStore.createTelegramPersistence();
   const workerId = `space-worker:${hostname()}:${process.pid}`;
   const deliveryWorker = new TelegramDeliveryWorker({
     persistence: telegramPersistence,
@@ -115,7 +123,7 @@ if (databaseUrl) {
   telegramNotificationLoop.start();
 }
 
-if (databaseUrl) {
+if (databaseUrl && streamingBotEnabled) {
   const streamingRepository = PostgresStreamingRepository.fromConnectionString(databaseUrl);
   const botRepository = PostgresStreamingBotRepository.fromConnectionString(databaseUrl);
   streamingBotLoop = new StreamingBotLoop({
@@ -149,10 +157,19 @@ if (databaseUrl) {
   streamingBotLoop.start();
 }
 
+// Chess benchmark CLI moves for the API: CLI processes must run here, never in the API's cgroup.
+const chessMoveServer = process.env.SPACE_CHESS_MOVE_SOCKET === "disabled"
+  ? null
+  : await startChessMoveServer(process.env.SPACE_CHESS_MOVE_SOCKET || CHESS_MOVE_SOCKET).catch((error: unknown) => {
+      workerLog("warn", "worker.chess_move_server", { status: "UNAVAILABLE", error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+
 console.log(JSON.stringify({ service: "space-worker", address, namespace, taskQueue, status: "running" }));
 try {
   await worker.run();
 } finally {
   telegramNotificationLoop?.stop();
   streamingBotLoop?.stop();
+  chessMoveServer?.close();
 }

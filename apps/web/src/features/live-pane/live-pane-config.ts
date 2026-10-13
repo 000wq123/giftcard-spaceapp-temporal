@@ -16,7 +16,7 @@ export interface LivePaneStoredConfig {
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   webSearch?: boolean;
   delegatedPrompt?: string;
-  geminiMemoryEnabled?: boolean;
+  spaceMemoryEnabled?: boolean;
   enableMcpTools?: boolean;
   enableProfileMemory?: boolean;
   selectedDeviceId?: string;
@@ -78,7 +78,10 @@ export function loadLivePaneConfig(paneId: string): LivePaneStoredConfig {
     const paneRaw = localStorage.getItem(`space_live_pane_${paneId}`);
     const defaultConfig: LivePaneStoredConfig = defaultRaw ? JSON.parse(defaultRaw) : {};
     const paneConfig: LivePaneStoredConfig = paneRaw ? JSON.parse(paneRaw) : {};
-    return { ...defaultConfig, ...paneConfig };
+    // Settings saved before the Space Memory rename carry geminiMemoryEnabled.
+    const { geminiMemoryEnabled, ...config } = { ...defaultConfig, ...paneConfig } as LivePaneStoredConfig & { geminiMemoryEnabled?: boolean };
+    const spaceMemoryEnabled = config.spaceMemoryEnabled ?? geminiMemoryEnabled;
+    return spaceMemoryEnabled === undefined ? config : { ...config, spaceMemoryEnabled };
   } catch {}
   return {};
 }

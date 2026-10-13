@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SpaceApiConfig } from "./config.js";
+import type {} from "./request-context.js";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -16,6 +17,35 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade"
 ]);
+
+// Space's own credentials stay on this side of the proxy: the Harness never
+// needs the operator session cookie, CSRF token or internal tokens.
+const SPACE_COOKIE_PREFIX = "space_";
+const SPACE_PRIVATE_HEADER_PREFIX = "x-space-";
+
+function isSpacePrivateHeader(name: string): boolean {
+  return name.toLowerCase().startsWith(SPACE_PRIVATE_HEADER_PREFIX);
+}
+
+export function stripSpaceCookies(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value.join("; ") : value;
+  if (!raw) {
+    return undefined;
+  }
+  const kept = raw
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && !part.toLowerCase().startsWith(SPACE_COOKIE_PREFIX));
+  return kept.length > 0 ? kept.join("; ") : undefined;
+}
+
+function requireHarnessSession(request: FastifyRequest, reply: FastifyReply): boolean {
+  if (request.user) {
+    return true;
+  }
+  sendProxyError(reply, 401, "UNAUTHENTICATED", "Authentication is required.");
+  return false;
+}
 
 const BROWSER_TRUST_HEADERS = new Set([
   "origin",
@@ -780,7 +810,9 @@ function buildUpstreamHeaders(
   const headers: http.OutgoingHttpHeaders = {
     ...Object.fromEntries(
       Object.entries(request.headers)
-        .filter(([name, value]) => stripHopByHop(name) && !BROWSER_TRUST_HEADERS.has(name.toLowerCase()) && value !== undefined)
+        .filter(([name, value]) =>
+          stripHopByHop(name) && !BROWSER_TRUST_HEADERS.has(name.toLowerCase()) && !isSpacePrivateHeader(name) && value !== undefined
+        )
     ),
     host: harnessLoopbackAuthority(target),
     "x-forwarded-host": request.headers.host ?? "",
@@ -790,6 +822,12 @@ function buildUpstreamHeaders(
     "x-forwarded-prefix": "/api/harness",
     ...extra
   };
+  const upstreamCookie = stripSpaceCookies(request.headers.cookie);
+  if (upstreamCookie) {
+    headers.cookie = upstreamCookie;
+  } else {
+    delete headers.cookie;
+  }
   if (forceIdentityEncoding) {
     headers["accept-encoding"] = "identity";
   }
@@ -952,10 +990,10 @@ function proxyHarnessUpgrade(
   }
   const target = new URL(config.harnessOrigin);
   const pathname = (request.url ?? "/").replace(/^\/api\/harness/, "");
-  const upstreamHeaders = {
+  const upstreamHeaders: http.OutgoingHttpHeaders = {
     ...Object.fromEntries(
       Object.entries(request.headers)
-        .filter(([name, value]) => stripHopByHop(name) && value !== undefined)
+        .filter(([name, value]) => stripHopByHop(name) && !isSpacePrivateHeader(name) && value !== undefined)
     ),
     host: harnessLoopbackAuthority(target),
     origin: `${target.protocol}//${harnessLoopbackAuthority(target)}`,
@@ -967,6 +1005,12 @@ function proxyHarnessUpgrade(
     "x-forwarded-proto": request.headers["x-forwarded-proto"] ?? "http",
     "x-forwarded-prefix": "/api/harness"
   };
+  const upgradeCookie = stripSpaceCookies(request.headers.cookie);
+  if (upgradeCookie) {
+    upstreamHeaders.cookie = upgradeCookie;
+  } else {
+    delete upstreamHeaders.cookie;
+  }
   const upstream = http.request({
     protocol: target.protocol,
     hostname: target.hostname,
@@ -1021,10 +1065,16 @@ export interface HarnessStoreWorkspaceResolver {
   getRoom(id: string): Promise<{ projectPath?: string | null } | null> | { projectPath?: string | null } | null;
 }
 
+export interface HarnessRouteOptions {
+  /** Decides whether a raw WebSocket upgrade carries a valid Space session. */
+  authorizeUpgrade?: (request: http.IncomingMessage) => boolean;
+}
+
 export function registerHarnessRoutes(
   app: FastifyInstance,
   config: SpaceApiConfig,
-  store?: HarnessStoreWorkspaceResolver | null
+  store?: HarnessStoreWorkspaceResolver | null,
+  options: HarnessRouteOptions = {}
 ): void {
   const harnessUpgradeHandler: (request: http.IncomingMessage, socket: Duplex, head: Buffer) => void = (
     request,
@@ -1038,6 +1088,11 @@ export function registerHarnessRoutes(
   app.server.removeAllListeners("upgrade");
   app.server.on("upgrade", (request, socket, head) => {
     if (isHarnessUpgradePath(request.url)) {
+      if (options.authorizeUpgrade && !options.authorizeUpgrade(request)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       harnessUpgradeHandler(request, socket, head);
       return;
     }
@@ -1131,6 +1186,9 @@ export function registerHarnessRoutes(
   });
 
   app.all("/plugins/*", (request, reply) => {
+    if (!requireHarnessSession(request, reply)) {
+      return reply;
+    }
     if (!config.harnessEnabled) {
       return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
     }
@@ -1142,6 +1200,9 @@ export function registerHarnessRoutes(
 
   for (const pathname of HARNESS_ROOT_HTTP_PATHS) {
     app.all(pathname, (request, reply) => {
+      if (!requireHarnessSession(request, reply)) {
+        return reply;
+      }
       if (!config.harnessEnabled) {
         return sendProxyError(reply, 404, "HARNESS_DISABLED", "The Harness pane is disabled.");
       }

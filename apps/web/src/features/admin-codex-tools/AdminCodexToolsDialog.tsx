@@ -172,7 +172,7 @@ export function AdminCodexToolsDialog({
     try {
       setSpeed(await client.speedDefaults());
     } catch (reason) {
-      setSpeedError(errorMessage(reason, "Codex-LB speed defaults are unavailable."));
+      setSpeedError(errorMessage(reason, "Codex speed defaults are unavailable."));
     } finally {
       setSpeedLoading(false);
     }
@@ -299,7 +299,7 @@ export function AdminCodexToolsDialog({
 
   const isSpeed = activeTool === "speed";
   const isCleanup = activeTool === "cleanup";
-  const title = isSpeed ? "Codex-LB speed control" : (isCleanup ? "Clean CLI sessions" : "Purge history");
+  const title = isSpeed ? "Codex speed defaults" : (isCleanup ? "Clean CLI sessions" : "Purge history");
   const HeaderIcon = isSpeed ? Gauge : Trash2;
 
   return (
@@ -364,7 +364,7 @@ export function AdminCodexToolsDialog({
         {isSpeed ? (
           <div className="admin-codex-tools-content">
             {!isCodexEnabled ? <p role="status">Enable Codex in Settings to use speed controls.</p> : null}
-            {speedLoading ? <p role="status">Loading Codex-LB speed defaults…</p> : null}
+            {speedLoading ? <p role="status">Loading Codex speed defaults…</p> : null}
             {speedError ? <div className="admin-codex-alert error" role="alert">
               <span>{speedError}</span>
               {!speed ? (

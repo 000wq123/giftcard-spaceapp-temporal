@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
 import type { MemoryAtlasPosition } from "./memory-atlas.js";
+import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 import { DEFAULT_MEMORY_CAMERA, memory3DVolumeRatio, projectMemoryPoint, type MemoryCamera3D, type MemoryPoint3D } from "./memory-3d.js";
 
 export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode, loading, resetToken }: {
@@ -57,7 +58,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       for (const node of ordered) {
         const p = projected.get(node.id)!;
         const highlighted = node.id === focus;
-        const root = node.type === "SOURCE" && node.label === "gemini.md";
+        const root = node.type === "SOURCE" && isMemoryCoreLabel(node.label);
         const radius = Math.max(1, (root ? 10 : node.type === "SOURCE" ? 4.6 : 2.1) * p.perspective * Math.sqrt(cameraRef.current.zoom)) * (highlighted ? 1.5 : 1);
         points.push({ id: node.id, ...p, radius });
         context.globalAlpha = focus && !highlighted && !neighbors.has(node.id) ? 0.2 : Math.max(0.4, Math.min(1, p.perspective));
@@ -67,7 +68,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       }
       context.globalAlpha = 1;
       if (showTitles) {
-        const labeled = [...ordered].sort((a, b) => Number(b.id === focus) - Number(a.id === focus) || Number(b.label === "gemini.md") - Number(a.label === "gemini.md") || Number(b.type === "SOURCE") - Number(a.type === "SOURCE"));
+        const labeled = [...ordered].sort((a, b) => Number(b.id === focus) - Number(a.id === focus) || Number(isMemoryCoreLabel(b.label)) - Number(isMemoryCoreLabel(a.label)) || Number(b.type === "SOURCE") - Number(a.type === "SOURCE"));
         context.font = "11px system-ui, sans-serif";
         for (const node of labeled) {
           if (node.type !== "SOURCE" && node.id !== focus && cameraRef.current.zoom < 1.6) continue;
@@ -77,7 +78,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
           if (x + w > width || y < 14 || y > height - 5 || labelBoxes.some(box => Math.abs(box.y - y) < 16 && x < box.x + box.w + 5 && x + w + 5 > box.x)) continue;
           labelBoxes.push({ x, y, w });
           context.fillStyle = "#09111bea"; context.fillRect(x - 3, y - 11, w + 6, 16);
-          context.fillStyle = node.label === "gemini.md" ? "#fff0b0" : "#c6dfed"; context.fillText(label, x, y + 1);
+          context.fillStyle = isMemoryCoreLabel(node.label) ? "#fff0b0" : "#c6dfed"; context.fillText(label, x, y + 1);
         }
       }
       canvas.dataset.rotation = `${cameraRef.current.yaw.toFixed(3)},${cameraRef.current.pitch.toFixed(3)}`;
@@ -121,7 +122,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
         event.preventDefault(); cameraRef.current.yaw += event.key === "ArrowLeft" ? -0.15 : event.key === "ArrowRight" ? 0.15 : 0;
         cameraRef.current.pitch += event.key === "ArrowUp" ? -0.15 : event.key === "ArrowDown" ? 0.15 : 0; schedule();
-      } else if (event.key === "Enter") { const node = current.current.nodes.find(node => node.id === current.current.selectedNodeId) ?? current.current.nodes.find(node => node.label === "gemini.md"); if (node) current.current.onSelectNode(node.id); }
+      } else if (event.key === "Enter") { const node = current.current.nodes.find(node => node.id === current.current.selectedNodeId) ?? current.current.nodes.find(node => isMemoryCoreLabel(node.label)); if (node) current.current.onSelectNode(node.id); }
     };
     const observer = new ResizeObserver(resize); observer.observe(canvas); resize();
     canvas.addEventListener("pointerdown", down); canvas.addEventListener("pointermove", move); canvas.addEventListener("pointerup", up); canvas.addEventListener("pointercancel", cancel); canvas.addEventListener("wheel", wheel, { passive: false }); canvas.addEventListener("keydown", key);

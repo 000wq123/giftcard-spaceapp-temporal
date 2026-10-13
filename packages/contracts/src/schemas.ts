@@ -8,6 +8,7 @@ import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
+import { jobApplyPaneMetadataSchema } from "./job-apply.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
 
@@ -107,7 +108,7 @@ export const paginated = <T extends z.ZodType>(item: T) =>
   });
 
 export const integrationStatusSchema = z.enum(["VERIFIED", "DISABLED", "ERROR"]);
-export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE"]);
+export const paneModeSchema = z.enum(["CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS", "DATABASES", "T3CODE", "JOB_APPLY"]);
 export const paneStatusSchema = z.enum(["IDLE", "QUEUED", "RUNNING", "BLOCKED", "ERROR", "COMPLETE", "CLOSED"]);
 export const paneTitleSourceSchema = z.enum(["auto", "manual", "ai"]);
 export const paneCategoryColors = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink"] as const;
@@ -166,7 +167,8 @@ export const eventTypeSchema = z.enum([
   "REVIEW_DIFF_RECORDED",
   "REVIEW_DECISION_CREATED",
   "ROOM_AGENT_UPDATED",
-  "ROOM_WATCHDOG_ALERT"
+  "ROOM_WATCHDOG_ALERT",
+  "JOB_APPLY_UPDATED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
@@ -422,6 +424,7 @@ export const paneSchema = z.object({
   titleSource: paneTitleSourceSchema.default("auto"),
   taskMetadata: taskMetadataSchema.nullable().optional(),
   t3CodeMetadata: t3CodePaneMetadataSchema.nullable().optional(),
+  jobApplyMetadata: jobApplyPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -512,11 +515,12 @@ export const createPaneInputSchema = z
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL") {
+    // A Job Applications pane runs its agent in a CLI session, so it carries a runtime too.
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL mode."
+        message: "Terminal runtime selection requires TERMINAL or JOB_APPLY mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -571,6 +575,12 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
       runtimeId: z.string().trim().max(160).optional(),
       sessionId: z.string().trim().max(160).optional(),
       useWorktree: z.boolean().optional()
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("JOB_APPLY"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional()
     })
     .strict()
 ]);
@@ -1812,7 +1822,9 @@ export const cliRuntimeCleanupResultSchema = z.object({
 
 export const updateCliRuntimeSettingResultSchema = z.object({
   setting: cliRuntimeSettingSchema,
-  cleanup: cliRuntimeCleanupResultSchema.nullable()
+  cleanup: cliRuntimeCleanupResultSchema.nullable(),
+  /** Panes the runtime's last disable closed, reopened (and resumed where exact) by this enable. */
+  restoredPaneIds: z.array(idSchema).max(10_000).optional()
 });
 
 export const cliVpnConnectionStatusSchema = z.enum(["NOT_CONFIGURED", "CONNECTED", "ERROR", "BLOCKED"]);
@@ -1911,7 +1923,7 @@ export const updateCliRuntimeVpnInputSchema = z
 
 export const cliAccountProfileIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 
-export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"] as const;
+export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor", "cli:kimi"] as const;
 export const cliAccountProfileRuntimeIdSchema = z.enum(cliAccountProfileRuntimeIds);
 
 export const cliAccountProfileSchema = z
@@ -1971,7 +1983,10 @@ export const cliAccountProfileDetailsResponseSchema = z
 
 export const listCliAccountProfilesResponseSchema = z
   .object({
-    profiles: z.array(cliAccountProfileSchema)
+    profiles: z.array(cliAccountProfileSchema),
+    // The CLI's Space Gateway profile (null when the CLI has none). ready: the gateway runs and has at least
+    // one active account for this CLI, so new panes start on it.
+    gatewayProfile: z.object({ profileId: cliAccountProfileIdSchema, ready: z.boolean() }).strict().nullable().optional()
   })
   .strict();
 
@@ -1982,6 +1997,44 @@ export const cliAccountIdentitySchema = cliAccountProfileDetailsSchema;
 export const cliAccountIdentitiesResponseSchema = z
   .object({
     accounts: z.array(cliAccountIdentitySchema).max(400),
+    checkedAt: isoDateTimeSchema
+  })
+  .strict();
+
+// Session-level balancing (Space Gateway "Auto"): CLIs whose panes can pick the account profile with the most room
+// when they start and move to another one, resuming, when the account runs out.
+export const cliBalancedRuntimeIds = ["cli:copilot", "cli:cursor", "cli:kimi"] as const;
+export const cliBalancedRuntimeIdSchema = z.enum(cliBalancedRuntimeIds);
+
+/** A profile's remaining quota as its CLI wrapper reports it (usage-info); the tightest window sets remainingPercent. */
+export const cliProfileUsageSchema = z
+  .object({
+    status: z.enum(["OK", "UNKNOWN", "NOT_CONNECTED", "GATEWAY", "ERROR"]),
+    plan: z.string().max(120).nullable(),
+    remainingPercent: z.number().min(0).max(100).nullable(),
+    resetAt: isoDateTimeSchema.nullable(),
+    windows: z.array(z.object({
+      id: z.string().regex(/^[a-z0-9_]{1,40}$/),
+      label: z.string().min(1).max(60),
+      remainingPercent: z.number().min(0).max(100),
+      resetAt: isoDateTimeSchema.nullable()
+    }).strict()).max(6)
+  })
+  .strict();
+
+export const cliAccountBalanceSchema = z
+  .object({
+    runtimeId: cliBalancedRuntimeIdSchema,
+    profiles: z.array(z.object({
+      profileId: cliAccountProfileIdSchema,
+      displayName: z.string().trim().min(1).max(80),
+      usage: cliProfileUsageSchema,
+      /** Space saw this account hit its limit; Auto skips it until then. */
+      exhaustedUntil: isoDateTimeSchema.nullable(),
+      available: z.boolean()
+    }).strict()).max(100),
+    /** The profile Auto starts a new pane on now; null when no account is available. */
+    next: cliAccountProfileIdSchema.nullable(),
     checkedAt: isoDateTimeSchema
   })
   .strict();
@@ -2325,6 +2378,8 @@ export const paneCliCodexThreadOwnershipSchema = z.object({
 export const createPaneCliSessionRequestSchema = z.object({
   runtimeId: z.string().trim().min(1).max(160),
   accountProfileId: cliAccountProfileIdSchema.nullable().optional(),
+  /** AUTO: Space picks the account profile with the most room and moves the pane on when it runs out. */
+  accountMode: z.enum(["PROFILE", "AUTO"]).optional(),
   modelId: cliModelIdentifierSchema.nullable().optional(),
   reasoningEffort: cliReasoningEffortSchema.optional(),
   cwd: z.string().trim().min(1).max(500).nullable().optional(),
@@ -2552,7 +2607,9 @@ export const paneCliSessionResponseSchema = z.object({
   session: paneCliSessionSchema,
   runtime: agentRuntimeSchema,
   transcript: z.array(paneCliTranscriptChunkSchema).max(200),
-  websocket: paneCliWebSocketTokenSchema.nullable()
+  websocket: paneCliWebSocketTokenSchema.nullable(),
+  /** Balanced CLIs: whether the pane is on Auto (Space picks and moves its account) or on the account it names. */
+  accountMode: z.enum(["PROFILE", "AUTO"]).optional()
 });
 
 export const cliLoginResponseSchema = z.object({
@@ -3659,7 +3716,14 @@ export const spaceCliBrowserCommandSchema = z.discriminatedUnion("type", [
     kind: z.enum(["CAPTCHA", "LOGIN", "MFA", "OTHER"]),
     reason: z.string().trim().min(1).max(500)
   }).strict(),
-  z.object({ type: z.literal("HANDOFF_STATUS") }).strict()
+  z.object({ type: z.literal("HANDOFF_STATUS") }).strict(),
+  // The room owner's saved Google sign-ins, as in the Browser pane's account menu.
+  z.object({ type: z.literal("LIST_ACCOUNTS") }).strict(),
+  z.object({
+    type: z.literal("SELECT_ACCOUNT"),
+    profileId: z.string().trim().min(1).max(200).nullable(),
+    signIn: z.boolean().optional()
+  }).strict()
 ]);
 
 export const spaceCliBrowserCommandRequestSchema = z.object({
@@ -3884,7 +3948,7 @@ export const coderAgentProxyRequestSchema = z.object({
 export const providerSchema = z.object({
   id: z.string().min(1).max(120),
   displayName: z.string().min(1).max(120),
-  type: z.enum(["CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]),
+  type: z.enum(["SPACE_GATEWAY", "CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]),
   status: integrationStatusSchema,
   statusReason: z.string().max(500).nullable(),
   healthCheckedAt: isoDateTimeSchema.nullable(),
@@ -4076,7 +4140,7 @@ export const voiceRealtimeHistoryResponseSchema = z.object({
 export const createProviderInputSchema = z.object({
   id: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
   displayName: z.string().trim().min(1).max(120),
-  type: z.enum(["CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]).default("CUSTOM"),
+  type: z.enum(["SPACE_GATEWAY", "CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]).default("CUSTOM"),
   baseUrl: z.string().trim().url().nullable().optional(),
   routeProfile: providerSchema.shape.routeProfile.optional(),
   backingProviderId: z.string().trim().min(1).max(120).nullable().optional(),
@@ -4086,7 +4150,7 @@ export const createProviderInputSchema = z.object({
 export const updateProviderInputSchema = z
   .object({
     displayName: z.string().trim().min(1).max(120).optional(),
-    type: z.enum(["CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]).optional(),
+    type: z.enum(["SPACE_GATEWAY", "CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"]).optional(),
     baseUrl: z.string().trim().url().nullable().optional(),
     routeProfile: providerSchema.shape.routeProfile.optional(),
     backingProviderId: z.string().trim().min(1).max(120).nullable().optional(),
@@ -4510,19 +4574,35 @@ export const antigravityUsageAccountListSchema = z
     checkedAt: isoDateTimeSchema
   })
 
+// One Claude account Space Gateway routes to, as the gateway holds it: a limited account counts as
+// used up until the gateway releases it.
+export const claudeGatewayPoolAccountSchema = z
+  .object({
+    label: z.string().min(1).max(120),
+    signInRequired: z.boolean(),
+    fiveHourRemainingPercent: nullableToolbarPercentSchema,
+    fiveHourResetAt: isoDateTimeSchema.nullable(),
+    weeklyRemainingPercent: nullableToolbarPercentSchema,
+    weeklyResetAt: isoDateTimeSchema.nullable()
+  })
+  .strict();
+
 export const claudeUsageAccountSchema = z
   .object({
     id: cliAccountProfileIdSchema,
     label: z.string().min(1).max(200),
     email: z.string().email().nullable(),
     plan: z.string().max(120).nullable(),
-    status: z.enum(["CONNECTED", "NOT_CONNECTED", "EXPIRED", "API_KEY", "ERROR"]),
+    // GATEWAY: requests go through Space Gateway, which picks one of its pooled Claude accounts.
+    status: z.enum(["CONNECTED", "NOT_CONNECTED", "EXPIRED", "API_KEY", "GATEWAY", "ERROR"]),
     fiveHourRemainingPercent: nullableToolbarPercentSchema,
     fiveHourResetAt: isoDateTimeSchema.nullable(),
     weeklyRemainingPercent: nullableToolbarPercentSchema,
     weeklyResetAt: isoDateTimeSchema.nullable(),
     weeklyScope: z.string().max(60).nullable(),
-    sampledAt: isoDateTimeSchema.nullable()
+    sampledAt: isoDateTimeSchema.nullable(),
+    // GATEWAY only: the accounts the gateway routes to (paused and deactivated ones excluded); absent when unknown.
+    pool: z.array(claudeGatewayPoolAccountSchema).max(50).optional()
   })
   .strict();
 
@@ -4576,7 +4656,7 @@ export const codexResetCreditAvailabilityAccountSchema = z
 export const codexResetCreditAvailabilitySchema = z
   .object({
     data: z.array(codexResetCreditAvailabilityAccountSchema).max(100),
-    source: z.enum(["vm214-codex-lb", "space-gateway"]),
+    source: z.literal("space-gateway"),
     isStale: z.boolean(),
     error: z.string().min(1).max(500).nullable(),
     checkedAt: isoDateTimeSchema
@@ -5557,7 +5637,8 @@ export const cliUpdateAllCustomProcedureKindSchema = z.enum([
   "config",
   "mcp",
   "binary",
-  "package"
+  "package",
+  "patch"
 ]);
 export const cliUpdateAllCustomProcedureSchema = z
   .object({
@@ -5647,9 +5728,10 @@ export const cliUpdateAllRequestSchema = z
         "grok",
         "deepseek",
         "cursor",
-        "copilot"
+        "copilot",
+        "hermes"
       ]))
-      .max(11)
+      .max(12)
       .optional(),
     reinstall: z.boolean().optional()
   })
@@ -9185,6 +9267,9 @@ export type CliAccountProfileDetailsResponse = z.infer<typeof cliAccountProfileD
 export type ListCliAccountProfilesResponse = z.infer<typeof listCliAccountProfilesResponseSchema>;
 export type CliAccountIdentity = z.infer<typeof cliAccountIdentitySchema>;
 export type CliAccountIdentitiesResponse = z.infer<typeof cliAccountIdentitiesResponseSchema>;
+export type CliBalancedRuntimeId = z.infer<typeof cliBalancedRuntimeIdSchema>;
+export type CliProfileUsage = z.infer<typeof cliProfileUsageSchema>;
+export type CliAccountBalance = z.infer<typeof cliAccountBalanceSchema>;
 export type RemoveCliAccountProfileResponse = z.infer<typeof removeCliAccountProfileResponseSchema>;
 export type CliRuntimeSettingsResponse = z.infer<typeof cliRuntimeSettingsResponseSchema>;
 export type HarnessMaintenanceStatus = z.infer<typeof harnessMaintenanceStatusSchema>;
@@ -9480,6 +9565,7 @@ export type AntigravityUsageGroup = z.infer<typeof antigravityUsageGroupSchema>;
 export type AntigravityUsageAccount = z.infer<typeof antigravityUsageAccountSchema>;
 export type AntigravityUsageAccountList = z.infer<typeof antigravityUsageAccountListSchema>;
 export type ClaudeUsageAccount = z.infer<typeof claudeUsageAccountSchema>;
+export type ClaudeGatewayPoolAccount = z.infer<typeof claudeGatewayPoolAccountSchema>;
 export type ClaudeUsageAccountList = z.infer<typeof claudeUsageAccountListSchema>;
 export type ApiProviderAccount = z.infer<typeof apiProviderAccountSchema>;
 export type ApiProviderAccountList = z.infer<typeof apiProviderAccountListSchema>;

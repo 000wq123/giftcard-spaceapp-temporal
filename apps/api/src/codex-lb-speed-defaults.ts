@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { CodexAppServerSocketModelOption } from "@space/codex-app-server";
 import {
   cliModelIdentifierSchema,
@@ -9,53 +7,8 @@ import {
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
 
-const execFileAsync = promisify(execFile);
-const defaultCommand = "/opt/spaceapp/bin/codex-vscode-parity";
-
 export type CodexLbSpeedModelId = CodexLbSpeedDefaultsResponse["models"][number]["modelId"];
-export type CodexLbSpeedCommandRunner = (command: string, args: string[]) => Promise<string>;
 type CodexLbSpeedCatalogProvider = () => Promise<CodexAppServerSocketModelOption[]>;
-
-interface CodexLbSpeedMapDocument {
-  version: 1;
-  updated_at: string | null;
-  models: Record<string, "standard" | "fast">;
-}
-
-async function runFixedCommand(command: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(command, args, {
-    timeout: 10_000,
-    maxBuffer: 32_000
-  });
-  return String(stdout);
-}
-
-function parseMapDocument(value: unknown): CodexLbSpeedMapDocument {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid document");
-  const source = value as Record<string, unknown>;
-  const rawModels = source.models;
-  if (source.version !== 1 || !rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) {
-    throw new Error("invalid document");
-  }
-  const updatedAt = source.updated_at;
-  if (
-    updatedAt !== null &&
-    (typeof updatedAt !== "string" ||
-      !Number.isFinite(Date.parse(updatedAt)) ||
-      new Date(updatedAt).toISOString() !== updatedAt)
-  ) {
-    throw new Error("invalid document");
-  }
-  const models: Record<string, "standard" | "fast"> = {};
-  for (const [modelId, tier] of Object.entries(rawModels)) {
-    if (!cliModelIdentifierSchema.safeParse(modelId).success || (tier !== "standard" && tier !== "fast")) {
-      throw new Error("invalid document");
-    }
-    models[modelId] = tier;
-    if (Object.keys(models).length > 5_000) throw new Error("invalid document");
-  }
-  return { version: 1, updated_at: updatedAt, models };
-}
 
 function safeDisplayName(value: string, fallback: string): string {
   const normalized = value
@@ -67,18 +20,21 @@ function safeDisplayName(value: string, fallback: string): string {
   return normalized || fallback;
 }
 
+/** The speed map (standard or fast per Codex model) that Space Gateway applies to Codex requests. */
+export interface CodexSpeedMapStore {
+  read(): Promise<{ models: Record<string, "standard" | "fast">; updatedAt: string | null }>;
+  set(modelId: string, tier: "standard" | "fast"): Promise<{ models: Record<string, "standard" | "fast">; updatedAt: string | null }>;
+}
+
 export function createCodexLbSpeedDefaultsService(options: {
-  command?: string;
   listModels?: CodexLbSpeedCatalogProvider;
   now?: () => Date;
-  runCommand?: CodexLbSpeedCommandRunner;
-} = {}) {
-  const command = options.command ?? defaultCommand;
+  store: CodexSpeedMapStore;
+}) {
   const listModels = options.listModels ?? (async () => {
     throw new Error("Codex model catalog is unavailable.");
   });
   const now = options.now ?? (() => new Date());
-  const runCommand = options.runCommand ?? runFixedCommand;
 
   async function currentCatalog() {
     try {
@@ -102,17 +58,19 @@ export function createCodexLbSpeedDefaultsService(options: {
     }
   }
 
-  async function runMap(args: string[]): Promise<CodexLbSpeedMapDocument> {
+  type SpeedMap = Awaited<ReturnType<CodexSpeedMapStore["read"]>>;
+
+  async function speedMap(change?: { modelId: string; tier: "standard" | "fast" }): Promise<SpeedMap> {
     try {
-      return parseMapDocument(JSON.parse(await runCommand(command, args)));
+      return change ? await options.store.set(change.modelId, change.tier) : await options.store.read();
     } catch {
-      throw new SpaceConflictError("Codex-LB speed defaults are unavailable.");
+      throw new SpaceConflictError("Codex speed defaults are unavailable.");
     }
   }
 
   function response(
     catalog: Awaited<ReturnType<typeof currentCatalog>>,
-    document: CodexLbSpeedMapDocument
+    document: SpeedMap
   ): CodexLbSpeedDefaultsResponse {
     return codexLbSpeedDefaultsResponseSchema.parse({
       models: catalog.map(({ modelId, displayName }) => ({
@@ -120,14 +78,14 @@ export function createCodexLbSpeedDefaultsService(options: {
         displayName,
         tier: document.models[modelId] === "fast" ? "FAST" : "STANDARD"
       })),
-      updatedAt: document.updated_at,
+      updatedAt: document.updatedAt,
       checkedAt: now().toISOString()
     });
   }
 
   return {
     read: async () => {
-      const [catalog, document] = await Promise.all([currentCatalog(), runMap(["speed-status"])]);
+      const [catalog, document] = await Promise.all([currentCatalog(), speedMap()]);
       return response(catalog, document);
     },
     update: async (modelId: CodexLbSpeedModelId, tier: CodexLbSpeedTier) => {
@@ -135,7 +93,7 @@ export function createCodexLbSpeedDefaultsService(options: {
       if (!catalog.some((model) => model.modelId === modelId)) {
         throw new SpaceConflictError("The selected model is not advertised by the current Codex catalog.");
       }
-      const document = await runMap(["speed-set", modelId, tier.toLowerCase()]);
+      const document = await speedMap({ modelId, tier: tier === "FAST" ? "fast" : "standard" });
       return response(catalog, document);
     }
   };

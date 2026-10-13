@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, appendFile, mkdir, open, readFile, rm } from "node:fs/promises";
+import { access, appendFile, mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -15,17 +15,20 @@ import {
   type MemoryEntry,
   type UpdateCodexGoalTaskInput
 } from "@space/contracts";
-import { createCanonicalMemoryReader } from "./canonical-memory-reader.js";
+import { createCanonicalMemoryReader, type CanonicalMemoryReaderOptions } from "./canonical-memory-reader.js";
+import { monthOfMemoryFile, spaceMemoryIndexPath, spaceMemoryMonthlyPath } from "./space-memory-files.js";
 import { nowIso, redactMemoryText } from "./store.js";
 
 const execFileAsync = promisify(execFile);
 const canonicalMemoryListLimit = 1000;
 
-export interface CanonicalGeminiMemoryPaths {
+export interface CanonicalSpaceMemoryPaths {
   indexPath: string;
   monthlyPath: string;
   lockPath?: string;
 }
+/** @deprecated Use CanonicalSpaceMemoryPaths. */
+export type CanonicalGeminiMemoryPaths = CanonicalSpaceMemoryPaths;
 
 export interface CanonicalMemoryBridge {
   list(query: ListMemoryQuery): Promise<MemoryEntry[]>;
@@ -49,21 +52,33 @@ function athensMonthFor(date: Date): string {
   return `${year}-${month}`;
 }
 
-export function defaultCanonicalGeminiMemoryPaths(date = new Date()): CanonicalGeminiMemoryPaths {
-  return resolveCanonicalGeminiMemoryPaths({}, date);
+export function defaultCanonicalSpaceMemoryPaths(date = new Date()): CanonicalSpaceMemoryPaths {
+  return resolveCanonicalSpaceMemoryPaths({}, date);
 }
 
-export function resolveCanonicalGeminiMemoryPaths(
+/**
+ * Space Memory files: space_memory.md and space_memory_YYYY-MM.md once the index has that
+ * name, the legacy gemini_history files until then. Old and new code therefore write the
+ * same monthly file under the same lock. SPACE_MEMORY_* overrides; SPACE_GEMINI_MEMORY_*
+ * is the legacy spelling.
+ */
+export function resolveCanonicalSpaceMemoryPaths(
   env: Record<string, string | undefined>,
   date = new Date()
-): Required<CanonicalGeminiMemoryPaths> {
-  const monthlyPath = env.SPACE_GEMINI_MEMORY_MONTHLY_PATH || `/opt/spaceapp/docs/gemini_history_${athensMonthFor(date)}.md`;
+): Required<CanonicalSpaceMemoryPaths> {
+  const monthlyPath = env.SPACE_MEMORY_MONTHLY_PATH || env.SPACE_GEMINI_MEMORY_MONTHLY_PATH ||
+    spaceMemoryMonthlyPath(athensMonthFor(date));
   return {
-    indexPath: env.SPACE_GEMINI_MEMORY_INDEX_PATH || "/opt/spaceapp/docs/gemini_history.md",
+    indexPath: env.SPACE_MEMORY_INDEX_PATH || env.SPACE_GEMINI_MEMORY_INDEX_PATH || spaceMemoryIndexPath(),
     monthlyPath,
-    lockPath: env.SPACE_GEMINI_MEMORY_LOCK_PATH || `${monthlyPath}.lock`
+    lockPath: env.SPACE_MEMORY_LOCK_PATH || env.SPACE_GEMINI_MEMORY_LOCK_PATH || `${monthlyPath}.lock`
   };
 }
+
+/** @deprecated Use defaultCanonicalSpaceMemoryPaths. */
+export const defaultCanonicalGeminiMemoryPaths = defaultCanonicalSpaceMemoryPaths;
+/** @deprecated Use resolveCanonicalSpaceMemoryPaths. */
+export const resolveCanonicalGeminiMemoryPaths = resolveCanonicalSpaceMemoryPaths;
 
 async function readCanonicalFile(path: string): Promise<string | null> {
   try { return await readFile(path, "utf8"); }
@@ -82,15 +97,38 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+const staleLockMs = 30_000;
+
+/** A lock left by a crashed writer (dead pid, or no pid) blocks every later save until removed. */
+async function removeStaleLock(lockPath: string): Promise<boolean> {
+  try {
+    const info = await stat(lockPath);
+    if (Date.now() - info.mtimeMs < staleLockMs) return false;
+    const pid = Number((await readFile(lockPath, "utf8")).split(/\s+/)[0]);
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, 0); return false; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false; }
+    }
+    await rm(lockPath, { force: true });
+    return true;
+  } catch { return false; }
+}
+
 async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
+  let staleChecked = false;
   while (true) {
     try {
       const handle = await open(lockPath, "wx");
-      await handle.close();
+      try { await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`); }
+      finally { await handle.close(); }
       break;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EEXIST" && !staleChecked) {
+        staleChecked = true;
+        if (await removeStaleLock(lockPath)) continue;
+      }
       if (code !== "EEXIST" || Date.now() - startedAt > 5000) throw error;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -110,7 +148,7 @@ function canonicalAppendBlock(
 ): { block: string; body: string; id: string; title: string } {
   const title = redactMemoryText(input.title).replace(/[\r\n]+/g, " ").slice(0, 160);
   const body = redactMemoryText(input.body).slice(0, 10000);
-  const id = `gemini_memory:${createHash("sha256").update(`${path}\n${createdAt}\n${title}\n${body}`).digest("hex").slice(0, 24)}`;
+  const id = `space_memory:${createHash("sha256").update(`${path}\n${createdAt}\n${title}\n${body}`).digest("hex").slice(0, 24)}`;
   const provenance = redactMemoryText(input.provenance).replace(/[\r\n]+/g, " ").slice(0, 500);
   const roomSuffix = input.roomId ? `, room=${input.roomId}` : "";
   const date = createdAt.slice(0, 10);
@@ -130,8 +168,22 @@ function canonicalAppendBlock(
   return { block: lines.join("\n"), body, id, title };
 }
 
-async function appendCanonicalGeminiMemory(
-  paths: CanonicalGeminiMemoryPaths,
+/** An identical title and body already saved this month is returned instead of appended again. */
+function findSavedBlock(existing: string, title: string, body: string): { id: string; createdAt: string } | null {
+  const heading = ` - Space canonical memory: ${title}\n`;
+  const bodyLine = `\n- ${body.replace(/\r?\n/g, "\n  ")}\n`;
+  for (const block of existing.split(/(?=<!-- space-memory:id=)/)) {
+    const firstLines = block.split("\n", 2).join("\n") + "\n";
+    if (!firstLines.includes(heading) || !`${block}\n`.includes(bodyLine)) continue;
+    const id = /^<!-- space-memory:id=([A-Za-z0-9:_-]{3,200}) -->/.exec(block)?.[1];
+    const createdAt = /\n- created_at=(\S+)/.exec(block)?.[1];
+    if (id && createdAt) return { id, createdAt };
+  }
+  return null;
+}
+
+async function appendCanonicalSpaceMemory(
+  paths: CanonicalSpaceMemoryPaths,
   input: CreateMemoryEntryInput,
   traceId?: string
 ): Promise<MemoryEntry> {
@@ -139,29 +191,39 @@ async function appendCanonicalGeminiMemory(
   const lockPath = paths.lockPath ?? `${paths.monthlyPath}.lock`;
   const createdAt = nowIso();
   const { block, body, id, title } = canonicalAppendBlock(paths.monthlyPath, input, traceId, createdAt);
-  await withFileLock(lockPath, async () => {
-    const prefix = (await fileExists(paths.monthlyPath)) ? "" : `# Gemini History ${createdAt.slice(0, 7)}\n`;
+  const saved = await withFileLock(lockPath, async () => {
+    const month = monthOfMemoryFile(paths.monthlyPath) ?? athensMonthFor(new Date(createdAt));
+    const prefix = (await fileExists(paths.monthlyPath)) ? "" : `# Space Memory ${month}\n`;
     const existing = await readCanonicalFile(paths.monthlyPath);
+    const duplicate = existing ? findSavedBlock(existing, title, body) : null;
+    if (duplicate) return duplicate;
     const separator = existing && !existing.endsWith("\n") ? "\n" : "";
     await appendFile(paths.monthlyPath, `${prefix}${separator}${block}`, "utf8");
+    return { id, createdAt };
   });
   return memoryEntrySchema.parse({
-    id,
+    id: saved.id,
     scope: input.scope,
     roomId: input.scope === "ROOM" ? input.roomId ?? null : null,
     title,
     body,
     provenance: paths.monthlyPath,
-    createdAt
+    createdAt: saved.createdAt
   });
 }
 
-export function createCanonicalGeminiMemoryBridge(paths: CanonicalGeminiMemoryPaths): CanonicalMemoryBridge {
+export function createCanonicalSpaceMemoryBridge(
+  paths: CanonicalSpaceMemoryPaths,
+  options: CanonicalMemoryReaderOptions = {}
+): CanonicalMemoryBridge {
   return {
-    list: createCanonicalMemoryReader(paths),
-    save: (input, traceId) => appendCanonicalGeminiMemory(paths, input, traceId)
+    list: createCanonicalMemoryReader(paths, options),
+    save: (input, traceId) => appendCanonicalSpaceMemory(paths, input, traceId)
   };
 }
+
+/** @deprecated Use createCanonicalSpaceMemoryBridge. */
+export const createCanonicalGeminiMemoryBridge = createCanonicalSpaceMemoryBridge;
 
 function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;

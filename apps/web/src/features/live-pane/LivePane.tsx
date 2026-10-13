@@ -26,6 +26,7 @@ import { captureLiveVisual } from "./live-visual-capture.js";
 import { createRealView, grabVideoFrame, type RealView, type RealViewSource, type RealViewState } from "./live-real-view.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { loadLivePaneConfig, saveLivePaneConfig, type LivePaneStoredConfig } from "./live-pane-config.js";
+import { readLivePaneDot } from "../agent-pane/dot-home-events.js";
 
 function extractTargetNames(toolCall?: LiveTranscriptItem["toolCall"]): string[] {
   if (!toolCall) return [];
@@ -258,7 +259,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
   );
   const [webSearch, setWebSearch] = useState(cfg.webSearch ?? true);
   const [delegatedPrompt, setDelegatedPrompt] = useState(cfg.delegatedPrompt ?? "");
-  const [geminiMemoryEnabled, setGeminiMemoryEnabled] = useState(cfg.geminiMemoryEnabled ?? true);
+  const [spaceMemoryEnabled, setSpaceMemoryEnabled] = useState(cfg.spaceMemoryEnabled ?? true);
   const [enableMcpTools, setEnableMcpTools] = useState(cfg.enableMcpTools ?? true);
   const [enableProfileMemory, setEnableProfileMemory] = useState(cfg.enableProfileMemory ?? true);
   const [voiceOnly, setVoiceOnly] = useState(cfg.voiceOnly ?? false);
@@ -524,7 +525,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       reasoningEffort,
       webSearch,
       delegatedPrompt,
-      geminiMemoryEnabled,
+      spaceMemoryEnabled,
       enableMcpTools,
       enableProfileMemory,
       selectedDeviceId,
@@ -569,7 +570,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     reasoningEffort,
     webSearch,
     delegatedPrompt,
-    geminiMemoryEnabled,
+    spaceMemoryEnabled,
     enableMcpTools,
     enableProfileMemory,
     selectedDeviceId,
@@ -752,7 +753,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
     if (shared) {
       coordinator.configure({ provider, model: voiceModel, language, voice, opening, prompt: [prompt, voicePrompt].filter(Boolean).join("\n\n"),
         delegatedModel, delegatedType, delegatedReasoningEffort: reasoningEffort, delegatedWebSearch: webSearch, delegatedPrompt,
-        audioDeviceId: selectedDeviceId || undefined, enableGeminiMemory: geminiMemoryEnabled, enableMcpTools, enableProfileMemory, timeZone });
+        audioDeviceId: selectedDeviceId || undefined, enableSpaceMemory: spaceMemoryEnabled, enableMcpTools, enableProfileMemory, timeZone });
       coordinator.toggle(); return;
     }
     if (startPendingRef.current || status === "connecting") return;
@@ -820,10 +821,11 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
           delegatedWebSearch: streamingMode ? false : webSearch,
           delegatedPrompt: streamingMode ? undefined : delegatedPrompt.trim() || undefined,
           audioDeviceId: (audioDevices.length === 0 || audioDevices.some((d) => d.deviceId === selectedDeviceId)) ? (selectedDeviceId || undefined) : undefined,
-          enableGeminiMemory: streamingMode ? false : geminiMemoryEnabled,
+          enableSpaceMemory: streamingMode ? false : spaceMemoryEnabled,
           enableMcpTools: streamingMode ? false : enableMcpTools,
           enableProfileMemory: streamingMode ? false : enableProfileMemory,
           timeZone,
+          calledDot: streamingMode ? undefined : readLivePaneDot(pane.id) ?? undefined,
           personalMemories: initialMemories,
           transcripts: streamingMode ? [] : transcripts
         },
@@ -1299,7 +1301,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 disabled={isLive}
                 onClick={() =>
                   setPrompt(
-                    "You are an expert Space system assistant with direct access to Gemini memory. Answer inquiries concisely and recall memory for historical facts."
+                    "You are an expert Space system assistant with direct access to Space Memory. Answer inquiries concisely and recall memory for historical facts."
                   )
                 }
               >
@@ -1402,8 +1404,15 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             <div
               className="live-section-header"
               onClick={() => setVoiceModelCollapsed((prev) => !prev)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setVoiceModelCollapsed((prev) => !prev);
+                }
+              }}
               role="button"
               tabIndex={0}
+              aria-expanded={!voiceModelCollapsed}
             >
               <span>Voice model</span>
               <span>{voiceModelCollapsed ? "+" : "^"}</span>
@@ -1524,8 +1533,15 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             <div
               className="live-section-header"
               onClick={() => setMemoryControlCollapsed((prev) => !prev)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setMemoryControlCollapsed((prev) => !prev);
+                }
+              }}
               role="button"
               tabIndex={0}
+              aria-expanded={!memoryControlCollapsed}
             >
               <span>Space Control & Memory</span>
               <span>{memoryControlCollapsed ? "+" : "^"}</span>
@@ -1549,19 +1565,19 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 />
                 <SpaceToggle
                   className="live-pane-toggle"
-                  label="Gemini Memory Access"
-                  checked={geminiMemoryEnabled}
-                  onChange={setGeminiMemoryEnabled}
+                  label="Space Memory Access"
+                  checked={spaceMemoryEnabled}
+                  onChange={setSpaceMemoryEnabled}
                   disabled={isLive}
                 />
 
                 <div className="live-form-group">
                   <label className="live-form-label">Functions</label>
                   <div className="live-functions-box">
-                    {geminiMemoryEnabled && (
+                    {spaceMemoryEnabled && (
                       <div className="live-function-item">
-                        <span>recall_gemini_memory</span>
-                        <span className="live-function-tag">Gemini Memory</span>
+                        <span>space_recall_memory</span>
+                        <span className="live-function-tag">Space Memory</span>
                       </div>
                     )}
                     <button
@@ -1569,7 +1585,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                       className="live-btn-secondary"
                       style={{ marginTop: "4px" }}
                       disabled={isLive}
-                      onClick={() => alert("Gemini memory tool is natively configured and active.")}
+                      onClick={() => alert("Space Memory tool is natively configured and active.")}
                     >
                       + Add function
                     </button>
@@ -1587,8 +1603,15 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                 <div
                   className="live-section-header"
                   onClick={() => setDelegatedModelCollapsed((prev) => !prev)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setDelegatedModelCollapsed((prev) => !prev);
+                    }
+                  }}
                   role="button"
                   tabIndex={0}
+                  aria-expanded={!delegatedModelCollapsed}
                 >
                   <span>Delegated model</span>
                   <span>{delegatedModelCollapsed ? "+" : "^"}</span>
@@ -1740,8 +1763,15 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
             <div
               className="live-section-header"
               onClick={() => setPersonalMemoryCollapsed((prev) => !prev)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setPersonalMemoryCollapsed((prev) => !prev);
+                }
+              }}
               role="button"
               tabIndex={0}
+              aria-expanded={!personalMemoryCollapsed}
             >
               <span>Personal Memory</span>
               <span>{personalMemoryCollapsed ? "+" : "^"}</span>

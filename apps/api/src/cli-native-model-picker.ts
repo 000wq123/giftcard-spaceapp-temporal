@@ -20,8 +20,9 @@ const geminiFamilyName = (name: string) => name.replace(/\s*\((?:Extra High|None
 function nativeSettingsMenu(screen: string): boolean {
   // Cursor can retain a rendered model list above its next composer. Only the
   // interaction at the bottom is active; old transcript menus need no Escape.
+  // Claude's menu keeps its key hints when PgDn scrolls its title away.
   const lastPrompt = [...screen.matchAll(/^\s*(?:[│┃]\s*[❯›>]|[❯›>]|→)\s*(.*)$/gm)].at(-1);
-  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only/gi)].at(-1);
+  const menu = [...screen.matchAll(/Select (?:a )?model|Select thinking effort|Type to filter[\s\S]*?Tab to\s+edit|Edit\s+P\s*a\s*r\s*a\s*m\s*e\s*t\s*e\s*r\s*s[\s\S]*?Esc to go\s+back|Changes apply to this session only|Enter to set as default/gi)].at(-1);
   return Boolean(menu && (!lastPrompt || menu.index! + menu[0].length > lastPrompt.index! || /Select (?:a )?model|Select thinking effort/i.test(menu[0])));
 }
 
@@ -542,26 +543,35 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
 /**
  * Claude Code's /model menu: numbered family rows ("❯ 3. Fable ✔   Fable 5.1 · …"), the effort line
  * ("◉ xHigh effort ←/→ to adjust") and its key hints. Null while no menu is drawn.
+ *
+ * A short pane lists only a window of the rows: "↑"/"↓" replace the cursor on its edge rows and
+ * "… +3 models" counts the rows below it. A narrow pane also clips the bottom of the menu box,
+ * which PgDn scrolls; the title can then leave the screen above the prompt border ("▔▔▔").
  */
 export function claudeModelMenu(screen: string): {
   rows: { number: number; label: string; highlighted: boolean }[];
   effort: string | null; effortSupported: boolean; sessionOnly: boolean; searching: boolean;
+  moreAbove: boolean; moreBelow: boolean; hintsVisible: boolean;
 } | null {
-  const start = screen.lastIndexOf("Select model");
+  let start = screen.lastIndexOf("Select model");
+  if (start < 0 && /Esc to cancel/i.test(screen) && screen.includes("▔")) start = screen.lastIndexOf("▔") + 1;
   if (start < 0) return null;
   const menu = screen.slice(start);
   const rows: { number: number; label: string; highlighted: boolean }[] = [];
   let effort: string | null = null;
+  let moreBelow = /^\s*(?:…|\.\.\.)\s*\+\d+\s+models?\b/mu.test(menu);
   for (const line of menu.split(/\r?\n/)) {
-    const row = line.match(/^\s*(❯)?\s*(\d+)\.\s+(.+?)(?:\s{2,}|$)/u);
+    const row = line.match(/^\s*(?:(❯)|↑|(↓))?\s*(\d+)\.\s+(.+?)(?:\s{2,}|$)/u);
     if (row) {
-      rows.push({ number: Number(row[2]), label: row[3]!.replace(/\s*✔\s*$/u, "").trim(), highlighted: Boolean(row[1]) });
+      rows.push({ number: Number(row[3]), label: row[4]!.replace(/\s*✔\s*$/u, "").trim(), highlighted: Boolean(row[1]) });
+      moreBelow ||= Boolean(row[2]);
       continue;
     }
     effort ??= line.match(/^\s*\S\s+(Low|Medium|High|xHigh|Max)\s+effort\b/i)?.[1]?.toLowerCase() ?? null;
   }
-  return { rows, effort, effortSupported: !/Effort not supported/i.test(menu),
-    sessionOnly: /\bs to use this session only\b/i.test(menu), searching: /Type to (?:search|filter)/i.test(menu) };
+  return { rows, effort, effortSupported: !/Effort\s+not\s+supported/i.test(menu),
+    sessionOnly: /\bs\s+to\s+use\s+this\s+session\s+only\b/i.test(menu), searching: /Type to (?:search|filter)/i.test(menu),
+    moreAbove: rows.length > 0 && Math.min(...rows.map((row) => row.number)) > 1, moreBelow, hintsVisible: /Esc to cancel/i.test(menu) };
 }
 
 /**
@@ -591,6 +601,10 @@ async function applyClaudeSessionModel(input: {
   const family = input.model.displayName.toLowerCase();
   let actedOn = -1;
   let steps = 0;
+  let pageDowns = 0;
+  let seekDown = true;
+  // A pane too small for the menu box never shows its rows together with its key hints.
+  const tooSmall = () => new SpaceConflictError("The Claude model menu does not fit this pane. Enlarge the pane, then choose the model again.");
   let chosen: { withEffort: boolean } | null = null;
   for (let attempt = 0; attempt < 60; attempt++) {
     await wait(250);
@@ -605,17 +619,29 @@ async function applyClaudeSessionModel(input: {
     const menu = claudeModelMenu(after.text);
     if (!menu?.rows.length) continue;
     const target = menu.rows.find((row) => row.label.toLowerCase() === family);
-    if (!target) throw new SpaceConflictError("This model is not available in this Claude account's model menu. Choose another model.");
     const highlighted = menu.rows.find((row) => row.highlighted);
+    if (menu.hintsVisible) pageDowns = 0;
     let key: string;
-    if (!menu.sessionOnly) {
+    if (!menu.sessionOnly && menu.searching) {
       // A menu that opens in search mode returns to its list with Down.
-      if (!menu.searching) throw new SpaceConflictError("This Claude Code version cannot change the model for one pane only.");
       key = "\u001b[B";
+    } else if (!target) {
+      // Rows outside a short pane's window are hidden: look below the window first, then above it.
+      seekDown &&= menu.moreBelow;
+      if (!seekDown && !menu.moreAbove) {
+        throw menu.hintsVisible ? new SpaceConflictError("This model is not available in this Claude account's model menu. Choose another model.") : tooSmall();
+      }
+      key = seekDown ? "\u001b[B" : "\u001b[A";
+    } else if (menu.hintsVisible && !menu.sessionOnly) {
+      throw new SpaceConflictError("This Claude Code version cannot change the model for one pane only.");
+    } else if (highlighted && highlighted.number !== target.number) {
+      key = target.number > highlighted.number ? "\u001b[B" : "\u001b[A";
+    } else if (!menu.hintsVisible) {
+      // The highlight, the effort line or "s to use this session only" is below the clipped bottom of the menu box.
+      if (++pageDowns > 2) throw tooSmall();
+      key = "\u001b[6~";
     } else if (!highlighted || (effort && menu.effortSupported && !menu.effort)) {
       continue;
-    } else if (highlighted.number !== target.number) {
-      key = target.number > highlighted.number ? "\u001b[B" : "\u001b[A";
     } else if (effort && menu.effortSupported && menu.effort !== effort) {
       if (!levels.includes(menu.effort!)) throw new SpaceConflictError("The Claude model menu shows an unknown effort level.");
       key = levels.indexOf(effort) > levels.indexOf(menu.effort!) ? "\u001b[C" : "\u001b[D";

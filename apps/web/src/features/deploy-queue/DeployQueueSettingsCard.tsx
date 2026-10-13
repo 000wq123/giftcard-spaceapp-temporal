@@ -1,7 +1,8 @@
-import type { DeployQueueReport, DeployQueueTicket, DeployQueueTicketStatus } from "@space/contracts";
+import type { DeployQueueReport, DeployQueueTicket } from "@space/contracts";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api.js";
 import { RefreshCw } from "../ui-theme/app-icons.js";
+import { relative, statusLabel, statusTone, submitterText } from "./deploy-queue-format.js";
 import "./deploy-queue.css";
 
 export interface DeployQueueClient {
@@ -9,37 +10,6 @@ export interface DeployQueueClient {
 }
 
 const REFRESH_MS = 10_000;
-
-const statusTone: Record<DeployQueueTicketStatus, string> = {
-  QUEUED: "idle",
-  INTEGRATING: "busy",
-  VERIFYING: "busy",
-  DEPLOYING: "busy",
-  DEPLOYED: "ok",
-  CONFLICT: "warn",
-  FAILED: "bad",
-  CANCELLED: "idle"
-};
-
-const statusLabel: Record<DeployQueueTicketStatus, string> = {
-  QUEUED: "Queued",
-  INTEGRATING: "Merging",
-  VERIFYING: "Building",
-  DEPLOYING: "Deploying",
-  DEPLOYED: "Live",
-  CONFLICT: "Conflict",
-  FAILED: "Failed",
-  CANCELLED: "Cancelled"
-};
-
-function relative(iso: string | null, now: number): string {
-  if (!iso) return "never";
-  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  if (!Number.isFinite(seconds)) return "unknown";
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-  return `${Math.round(seconds / 3600)} h ago`;
-}
 
 function serviceState(report: DeployQueueReport): { tone: string; label: string; detail: string } {
   if (!report.available) return { tone: "idle", label: "Not installed", detail: "The merge queue service has no state on this server yet." };
@@ -59,7 +29,7 @@ function TicketRow({ ticket, now }: { ticket: DeployQueueTicket; now: number }) 
         <span className="deploy-queue-meta">
           <code>{ticket.sha.slice(0, 10)}</code>
           {ticket.deployedCommit ? <> → <code>{ticket.deployedCommit.slice(0, 10)}</code></> : null}
-          {" · "}{ticket.branch}{" · "}{relative(ticket.updatedAt, now)}
+          {" · "}{ticket.branch}{ticket.submitter ? ` · ${submitterText(ticket.submitter)}` : null}{" · "}{relative(ticket.updatedAt, now)}
           {ticket.remotes === "failed" ? " · Remote push pending" : null}
         </span>
         {ticket.note ? <span className="deploy-queue-note">{ticket.note}</span> : null}

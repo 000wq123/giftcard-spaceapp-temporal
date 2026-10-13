@@ -4,37 +4,17 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import {
   cliSessionStatsSchema,
-  codexUsageAccountListSchema,
   hostMemoryDetailsSchema,
   type CliSessionStats,
-  type CodexUsageAccountList,
   type HostMemoryDetails
 } from "@space/contracts";
 import type { MemoryReclaimResponse } from "@space/contracts";
 
 const execFileAsync = promisify(execFile);
 const kib = 1024;
-const usageCacheTtlMs = 60_000;
-const usageStaleFallbackMs = 10 * 60_000;
 const cliCleanupGraceMs = 5 * 60_000;
 const memoryCacheTtlMs = 10_000;
 const minimumDropCacheBytes = 256 * 1024 * 1024;
-const genericUsageError = "Usage data is temporarily unavailable.";
-
-const codexUsageSnapshotSchema = z.object({
-  schemaVersion: z.literal(1),
-  source: z.literal("vm214-codex-lb"),
-  accounts: z.array(z.object({
-    id: z.string().min(1).max(160),
-    label: z.string().min(1).max(200),
-    fiveHourRemainingPercent: z.number().min(0).max(100).nullable(),
-    weeklyRemainingPercent: z.number().min(0).max(100).nullable(),
-    fiveHourResetAt: z.string().datetime().nullable().optional(),
-    weeklyResetAt: z.string().datetime().nullable().optional(),
-    sampledAt: z.string().datetime().nullable(),
-    planType: z.string().max(60).nullable().optional()
-  }).strict()).max(100)
-}).strict();
 
 export interface InvalidatableProvider<T> {
   (): Promise<T>;
@@ -46,11 +26,6 @@ export type KernelCacheReclaimResult = MemoryReclaimResponse["kernelCache"];
 export const MEMORY_RECLAIM_COMMAND = {
   command: "/usr/bin/sudo",
   args: ["-n", "/opt/spaceapp/bin/space-memory-reclaim"] as const
-};
-
-export const CODEX_USAGE_COMMAND = {
-  command: "/usr/bin/sudo",
-  args: ["-n", "/opt/spaceapp/bin/space-codex-account-usage"] as const
 };
 
 const kernelCacheReclaimResultSchema = z.object({
@@ -87,105 +62,8 @@ function validIso(value: unknown): string | null {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
-function percentOrNull(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : Number.NaN;
-  if (!Number.isFinite(parsed)) return null;
-  return Math.min(Math.max(Math.round(parsed * 10) / 10, 0), 100);
-}
-
 function byteCount(value: number): number {
   return Number.isFinite(value) ? Math.max(Math.trunc(value), 0) : 0;
-}
-
-function page(totalItems: number) {
-  return { page: 1, pageSize: 100, totalItems, totalPages: totalItems ? 1 : 0 };
-}
-
-export function parseCodexUsageAccounts(raw: string, checkedAt: Date): CodexUsageAccountList {
-  const snapshot = codexUsageSnapshotSchema.parse(JSON.parse(raw) as unknown);
-  const data = snapshot.accounts.map((account) => ({
-    id: account.id,
-    label: account.label,
-    fiveHourRemainingPercent: percentOrNull(account.fiveHourRemainingPercent),
-    weeklyRemainingPercent: percentOrNull(account.weeklyRemainingPercent),
-    fiveHourResetAt: validIso(account.fiveHourResetAt),
-    weeklyResetAt: validIso(account.weeklyResetAt),
-    sampledAt: validIso(account.sampledAt),
-    planType: account.planType ?? null
-  }));
-  return codexUsageAccountListSchema.parse({
-    data,
-    pagination: page(data.length),
-    source: snapshot.source,
-    isStale: false,
-    error: null,
-    checkedAt: checkedAt.toISOString()
-  });
-}
-
-export function createCodexUsageRemoteReader(options: {
-  timeoutMs?: number;
-} = {}): () => Promise<string> {
-  const timeoutMs = Math.max(Math.min(Math.trunc(options.timeoutMs ?? 10_000), 15_000), 250);
-  return async () => {
-    const { stdout } = await execFileAsync(
-      CODEX_USAGE_COMMAND.command,
-      [...CODEX_USAGE_COMMAND.args],
-      { timeout: timeoutMs, maxBuffer: 1024 * 1024 }
-    );
-    return String(stdout);
-  };
-}
-
-export function createCodexUsageAccountProvider(options: {
-  readUsage: () => Promise<string>;
-  now?: () => Date;
-}): () => Promise<CodexUsageAccountList> {
-  const now = options.now ?? (() => new Date());
-  let cached: { value: CodexUsageAccountList; collectedAtMs: number } | null = null;
-  let inFlight: Promise<CodexUsageAccountList> | null = null;
-
-  function unavailable(): CodexUsageAccountList {
-    const current = now();
-    if (cached && current.getTime() - cached.collectedAtMs <= usageStaleFallbackMs) {
-      return codexUsageAccountListSchema.parse({
-        ...cached.value,
-        isStale: true,
-        error: genericUsageError,
-        checkedAt: current.toISOString()
-      });
-    }
-    return codexUsageAccountListSchema.parse({
-      data: [],
-      pagination: page(0),
-      source: "vm214-codex-lb",
-      isStale: true,
-      error: genericUsageError,
-      checkedAt: current.toISOString()
-    });
-  }
-
-  function refresh(): Promise<CodexUsageAccountList> {
-    if (inFlight) return inFlight;
-    const request = options.readUsage().then((raw) => {
-      const collectedAt = now();
-      const value = parseCodexUsageAccounts(raw, collectedAt);
-      cached = { value, collectedAtMs: collectedAt.getTime() };
-      return value;
-    }).catch(() => unavailable());
-    inFlight = request;
-    const clear = () => {
-      if (inFlight === request) inFlight = null;
-    };
-    void request.then(clear, clear);
-    return request;
-  }
-
-  return async () => {
-    const nowMs = now().getTime();
-    if (cached && nowMs - cached.collectedAtMs <= usageCacheTtlMs) return cached.value;
-    return refresh();
-  };
 }
 
 function parseRunningSession(value: unknown): ToolbarSessionInput | null {

@@ -16,52 +16,100 @@ const namedRateLimitOptions = new Set([
   "defaultWebsocketRateLimitOptions"
 ]);
 
+// The composition root and the route modules moved verbatim out of it keep explicit per-route limits.
+const compositionRouteSources = [
+  "../src/app.ts",
+  "../src/shared-chat-routes.ts",
+  "../src/health-routes.ts",
+  "../src/desktop-release-routes.ts",
+  "../src/setup-routes.ts",
+  "../src/auth-routes.ts",
+  "../src/app-diagnostics-routes.ts",
+  "../src/activity-log-routes.ts",
+  "../src/agent-session-routes.ts",
+  "../src/room-routes.ts",
+  "../src/proof-room-routes.ts",
+  "../src/admin-ops-routes.ts",
+  "../src/browser-evidence-routes.ts",
+  "../src/artifact-routes.ts",
+  "../src/shared-task-routes.ts",
+  "../src/memory-routes.ts",
+  "../src/mcp-routes.ts",
+  "../src/settings-routes.ts",
+  "../src/source-control-connection-routes.ts",
+  "../src/release-routes.ts",
+  "../src/system-analytics-routes.ts",
+  "../src/admin-toolbar-routes.ts",
+  "../src/codex-history-purge-routes.ts",
+  "../src/cli-auth-handoff-routes.ts",
+  "../src/turn-routes.ts",
+  "../src/event-routes.ts",
+  "../src/voice-routes.ts",
+  "../src/live-routes.ts",
+  "../src/room-agent-routes.ts",
+  "../src/agent-pane-routes.ts",
+  "../src/pane-cli-session-routes.ts",
+  "../src/internal-agent-action-routes.ts",
+  "../src/cli-browser-bridge-routes.ts",
+  "../src/pane-browser-routes.ts",
+  "../src/pane-stream-routes.ts",
+  "../src/pane-routes.ts",
+  "../src/pane-cli-routes.ts",
+  "../src/cli-runtime-routes.ts",
+  "../src/cli-account-routes.ts",
+  "../src/link-inspect-routes.ts",
+  "../src/client-error-routes.ts"
+];
+
 it("declares an explicit CodeQL-visible rate limit on every Fastify route", async () => {
-  const appPath = fileURLToPath(new URL("../src/app.ts", import.meta.url));
-  const sourceText = await readFile(appPath, "utf8");
-  const source = ts.createSourceFile(appPath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const missing: string[] = [];
+  for (const relativePath of compositionRouteSources) {
+    const appPath = fileURLToPath(new URL(relativePath, import.meta.url));
+    const sourceText = await readFile(appPath, "utf8");
+    const source = ts.createSourceFile(appPath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      ts.isIdentifier(node.expression.expression) &&
-      node.expression.expression.text === "app" &&
-      routeMethods.has(node.expression.name.text)
-    ) {
-      const route = node.arguments[0]?.getText(source) ?? "<unknown>";
-      const options = node.arguments[1];
-      const hasRateLimit =
-        node.arguments.length >= 3 &&
-        Boolean(options) &&
-        (
-          options!.getText(source).includes("rateLimit") ||
-          (ts.isIdentifier(options!) && namedRateLimitOptions.has(options!.text))
-        );
-      if (!hasRateLimit) {
-        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-        missing.push(`${line}: ${route}`);
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "app" &&
+        routeMethods.has(node.expression.name.text)
+      ) {
+        const route = node.arguments[0]?.getText(source) ?? "<unknown>";
+        const options = node.arguments[1];
+        const hasRateLimit =
+          node.arguments.length >= 3 &&
+          Boolean(options) &&
+          (
+            options!.getText(source).includes("rateLimit") ||
+            (ts.isIdentifier(options!) && namedRateLimitOptions.has(options!.text))
+          );
+        if (!hasRateLimit) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+          missing.push(`${relativePath}:${line}: ${route}`);
+        }
       }
-    }
-    ts.forEachChild(node, visit);
-  };
+      ts.forEachChild(node, visit);
+    };
 
-  visit(source);
+    visit(source);
+  }
   expect(missing, `Routes without explicit rate limits:\n${missing.join("\n")}`).toEqual([]);
 }, SLOW_TEST_TIMEOUT_MS);
 
-it("registers the global limiter before request authentication and lifecycle hooks", async () => {
+it("registers the global limiter before the request-phase hooks", async () => {
   const appPath = fileURLToPath(new URL("../src/app.ts", import.meta.url));
   const sourceText = await readFile(appPath, "utf8");
   const limiterRegistration = sourceText.indexOf("await app.register(rateLimit");
 
   expect(limiterRegistration).toBeGreaterThan(-1);
+  // Only hooks on the request path matter for limiter ordering. onClose/onReady
+  // cleanups are registered wherever a resource is created (sometimes inside a
+  // helper defined above the limiter) and never run for a request.
   for (const hook of [
     'app.addHook("onRequest"',
     'app.addHook("onResponse"',
-    'app.addHook("onClose"',
-    'app.addHook("onReady"',
     'app.addHook("preHandler"'
   ]) {
     expect(

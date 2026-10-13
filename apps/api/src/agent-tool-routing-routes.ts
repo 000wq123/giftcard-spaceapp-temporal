@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
@@ -24,13 +25,28 @@ export function registerAgentToolRoutingRoutes(app: FastifyInstance, options: {
   agentToolsOptions: AgentToolsOptions | undefined;
   recordAudit: AuditRecorder;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  /** Written by the inventory job (scripts/space-capability-usage.mjs). */
+  capabilityUsagePath?: string;
 }) {
   const { store, agentToolsOptions, recordAudit, routeOptions: defaultRouteRateLimitOptions } = options;
+  const capabilityUsagePath = options.capabilityUsagePath ?? "/opt/spaceapp/var/inventory/capability-usage.json";
   const routingQuery = z.object({ runtimeId: z.string().min(1).max(160), modelId: z.string().min(1).max(160) }).strict();
 
   app.get("/api/model-capabilities", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Routing settings require ADMIN.");
     return { profiles: await discoverRoutingProfiles(agentToolsOptions), state: await store.getToolRoutingState() };
+  });
+
+  // Which skills and MCP tools agents used in the last 30 days (identifiers and counts only).
+  app.get("/api/agent-tools/usage", defaultRouteRateLimitOptions, async (request, reply) => {
+    if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Agent tool usage requires ADMIN.");
+    const raw = await readFile(capabilityUsagePath, "utf8").catch(() => null);
+    if (raw === null) return { available: false, reason: "No usage has been collected yet; the inventory job writes it every 10 minutes." };
+    try {
+      return { available: true, ...JSON.parse(raw) };
+    } catch {
+      return sendApiError(reply, 500, "USAGE_UNREADABLE", "The collected usage file is not valid JSON.");
+    }
   });
 
   app.get("/api/agent-tools/effective", defaultRouteRateLimitOptions, async (request, reply) => {

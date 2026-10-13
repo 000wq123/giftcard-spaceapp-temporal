@@ -11,7 +11,7 @@ export const UI_PARITY_VIEWPORTS = [
 
 export const UI_PARITY_PANE_MODES = [
   "CHAT", "CODE", "BROWSER", "REVIEW", "SWARM", "DESIGN", "TERMINAL", "YOUTUBE", "VNC", "HARNESS", "LIVE", "FILES", "DEMOS",
-  "DATABASES", "T3CODE"
+  "DATABASES", "T3CODE", "JOB_APPLY"
 ] as const satisfies readonly Pane["mode"][];
 
 export const UI_PARITY_REACHABLE_STATES = [
@@ -176,7 +176,7 @@ export const UI_PARITY_ACTIONS = [
   ]),
   ...actions("admin", [
     "restart-open", "restart-confirm", "restart-cancel", "history-preview", "history-confirm",
-    "history-cancel", "cli-reap", "memory-reclaim", "provider-switch", "speed-defaults",
+    "history-cancel", "cli-reap", "memory-reclaim", "speed-defaults",
     "mcp-smoke", "memory-smoke", "codex-handshake", "codex-turn-smoke", "diagnostics",
     "local-simulated-status"
   ]),

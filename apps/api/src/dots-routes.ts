@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { dotIdSchema, dotResourceSchema, updateDotProfileSchema, type AgentPaneGoal, type DotResource, type DotCollectionItem, type Pane } from "@space/contracts";
 import { SpaceFeatureDisabledError, type SpaceStore } from "@space/runtime";
 import type { DotsRepository } from "@space/db";
@@ -14,23 +14,7 @@ export function registerDotsRoutes(app: FastifyInstance, options: {
 }) {
   const params = z.object({ dotId: dotIdSchema }).strict();
   const pagination = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), offset: z.coerce.number().int().min(0).max(100000).default(0) }).strict();
-  const handler = (action: (request: FastifyRequest, owner: string, repository: DotsRepository) => Promise<unknown>) =>
-    async (request: FastifyRequest, reply: import("fastify").FastifyReply) => {
-      if (!request.user) return reply.code(401).send({ error: { code: "UNAUTHENTICATED", message: "Sign in to use Dots." } });
-      if (request.user.automationScope || request.user.proofScope === "READ_ONLY") {
-        return reply.code(403).send({ error: { code: "DOTS_SCOPE_FORBIDDEN", message: "An interactive user session is required." } });
-      }
-      if (!options.repository) return reply.code(503).send({ error: { code: "DOTS_UNAVAILABLE", message: "Dots storage is unavailable." } });
-      try {
-        const owner = await options.authenticatedOwner(request);
-        const data = await action(request, owner, options.repository);
-        if (data === null) return reply.code(404).send({ error: { code: "DOT_NOT_FOUND", message: "Dot was not found." } });
-        return data;
-      } catch (error) {
-        if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: "INVALID_DOT_INPUT", message: "Dots request is invalid." } });
-        throw error;
-      }
-    };
+  const handler = dotsRouteHandler(options.repository, options.authenticatedOwner);
   app.get("/api/dots", options.routeOptions, handler(async (request, owner, repository) => {
     z.object({}).strict().parse(request.query);
     return { dots: await repository.list(owner) };
@@ -65,6 +49,27 @@ export function registerDotsRoutes(app: FastifyInstance, options: {
     app.get(`/api/dots/:dotId/${resource}`, options.routeOptions, handler(async (request, owner, repository) =>
       collection(request, owner, repository, params.parse(request.params).dotId, resource)));
   }
+}
+
+/** An interactive owner's request against Dots storage; `null` from the action means another user's or a missing Dot. */
+export function dotsRouteHandler<R>(repository: R | null, authenticatedOwner: (request: FastifyRequest) => Promise<string>) {
+  return (action: (request: FastifyRequest, owner: string, repository: R) => Promise<unknown>) =>
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send({ error: { code: "UNAUTHENTICATED", message: "Sign in to use Dots." } });
+      if (request.user.automationScope || request.user.proofScope === "READ_ONLY") {
+        return reply.code(403).send({ error: { code: "DOTS_SCOPE_FORBIDDEN", message: "An interactive user session is required." } });
+      }
+      if (!repository) return reply.code(503).send({ error: { code: "DOTS_UNAVAILABLE", message: "Dots storage is unavailable." } });
+      try {
+        const owner = await authenticatedOwner(request);
+        const data = await action(request, owner, repository);
+        if (data === null) return reply.code(404).send({ error: { code: "DOT_NOT_FOUND", message: "Dot was not found." } });
+        return data;
+      } catch (error) {
+        if (error instanceof z.ZodError) return reply.code(400).send({ error: { code: "INVALID_DOT_INPUT", message: "Dots request is invalid." } });
+        throw error;
+      }
+    };
 }
 
 const resourceFields: Record<DotResource, string[]> = {

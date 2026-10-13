@@ -1,7 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { MemoryGraphSnapshot, MemoryGraphNode, MemoryGraphEdge } from "@space/contracts";
+import { isMonthlyMemoryFile, spaceAgentCorePath } from "@space/runtime";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 
@@ -12,7 +13,7 @@ export function createMemorySourceTopology(indexPath: string) {
   let pending: Promise<Topology> | null = null;
   async function load() {
     const directory = await realpath(dirname(indexPath));
-    const queue = [join(directory, "gemini.md"), indexPath];
+    const queue = [spaceAgentCorePath(directory), indexPath];
     const visited = new Set<string>();
     const nodes = new Map<string, MemoryGraphNode>();
     const edges = new Map<string, MemoryGraphEdge>();
@@ -30,7 +31,7 @@ export function createMemorySourceTopology(indexPath: string) {
       const id = `source:${hash(path)}`;
       nodes.set(id, { id, type: "SOURCE", label: basename(path), sourcePath: path, recordId: null });
       // Archive entry bodies are not routing documents. Their containment is in the snapshot.
-      if (/^gemini_history_\d{4}-\d{2}\.md$/.test(basename(path))) continue;
+      if (isMonthlyMemoryFile(basename(path))) continue;
       const references = new Set(content.match(/(?:\/[a-zA-Z0-9_.-]+)*\/?[a-zA-Z][a-zA-Z0-9_-]*\.md\b/g) ?? []);
       for (const reference of references) {
         const targetPath = resolve(directory, reference);

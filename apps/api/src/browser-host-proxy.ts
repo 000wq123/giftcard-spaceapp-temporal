@@ -11,6 +11,7 @@ import { BrowserControlHeldError, type BrowserControlHeldDetails } from "./brows
 import { createBrowserSessionManager, type BrowserSessionManager } from "./browser-sessions.js";
 import type { SpaceApiConfig } from "./config.js";
 import { normalizeGoogleBrowserCheckResult } from "./google-browser-session-check.js";
+import { recordBrowserHostHealth } from "./host-metrics.js";
 
 export interface BrowserSessionManagerWithHostHealth extends BrowserSessionManager {
   browserHostHealth?(): Promise<BrowserHostHealth>;
@@ -108,7 +109,13 @@ export function createBrowserHostProxy(options: {
       maxLiveWorkloads: 0
     },
     async browserHostHealth() {
-      lastHealth = await hostCall(() => client.health());
+      try {
+        lastHealth = await hostCall(() => client.health());
+      } catch (error) {
+        recordBrowserHostHealth(null);
+        throw error;
+      }
+      recordBrowserHostHealth(lastHealth);
       return lastHealth;
     },
     async startOrRestore(input, context) { return withLocalTicket(await hostCall(() => client.startOrRestore(input, context))); },

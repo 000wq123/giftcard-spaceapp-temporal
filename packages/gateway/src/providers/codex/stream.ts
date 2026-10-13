@@ -82,7 +82,19 @@ export class ResponseStreamInspector {
     if (data && data !== "[DONE]") {
       try { payload = obj(JSON.parse(data)); } catch { payload = null; }
     }
-    const type = str(payload?.type) ?? eventName;
+    return this.handleEvent(str(payload?.type) ?? eventName, payload);
+  }
+
+  /** Feeds one already-parsed event (a WebSocket frame); returns true when it is the first client-visible output. */
+  pushEvent(payload: JsonObject): boolean {
+    if (this.handleEvent(str(payload.type), payload) && !this.outputStarted) {
+      this.outputStarted = true;
+      return true;
+    }
+    return false;
+  }
+
+  private handleEvent(type: string | null, payload: JsonObject | null): boolean {
     if (!type) return false;
     if (terminalTypes.has(type)) this.recordTerminal(type, payload);
     else if (type === "response.created" || type === "response.in_progress") this.recordResponse(obj(payload?.response));
@@ -118,6 +130,33 @@ export class ResponseStreamInspector {
     this.outcome.errorCode = str(error?.code) ?? str(obj(response?.incomplete_details)?.reason) ?? type.replace("response.", "");
     this.outcome.errorMessage = str(error?.message);
   }
+}
+
+/** Whether an event ends the response (a terminal response event or an `error`). */
+export const isTerminalEvent = (type: unknown) => typeof type === "string" && (terminalTypes.has(type) || type === "error");
+
+/**
+ * Passive usage from a `codex.rate_limits` event (Codex over WebSocket carries no `x-codex-*` headers), after
+ * codex-lb `live_snapshots.py`: events for limits other than "codex" are ignored.
+ */
+export function readCodexRateLimitEvent(payload: JsonObject, nowSeconds: number): { primaryUsedPercent: number | null; secondaryUsedPercent: number | null;
+  primaryResetAfterSeconds: number | null; secondaryResetAfterSeconds: number | null; primaryWindowMinutes: number | null; secondaryWindowMinutes: number | null } | null {
+  for (const field of ["limit_id", "limit_name", "metered_limit_name"]) {
+    const value = payload[field];
+    if (typeof value === "string" && value !== "codex") return null;
+  }
+  const limits = obj(payload.rate_limits);
+  if (!limits) return null;
+  const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const window = (raw: unknown) => {
+    const entry = obj(raw);
+    const resetAt = number(entry?.reset_at) ?? number(entry?.resets_at);
+    return { used: number(entry?.used_percent), minutes: number(entry?.window_minutes), resetAfter: resetAt === null ? null : Math.max(0, resetAt - nowSeconds) };
+  };
+  const primary = window(limits.primary);
+  const secondary = window(limits.secondary);
+  return { primaryUsedPercent: primary.used, secondaryUsedPercent: secondary.used, primaryResetAfterSeconds: primary.resetAfter,
+    secondaryResetAfterSeconds: secondary.resetAfter, primaryWindowMinutes: primary.minutes, secondaryWindowMinutes: secondary.minutes };
 }
 
 /** Passive usage from `x-codex-*` response headers (percent used and reset seconds per window). */

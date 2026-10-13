@@ -1,7 +1,13 @@
+import { loadLanAccess, type LanAccess } from "./lan-access.js";
+
 /** Gateway-only settings, read from /opt/spaceapp/.env by the space-gateway unit. */
 export interface GatewayConfig {
   host: string;
   port: number;
+  /** A second listener for other internal machines, or null (loopback only). */
+  lan: LanAccess | null;
+  /** Why the LAN settings were not usable; LAN access stays off and loopback keeps working. */
+  lanError: string | null;
   databaseUrl: string | null;
   encryptionKeyFile: string;
   drainTimeoutMs: number;
@@ -26,10 +32,19 @@ function boundedInt(raw: string | undefined, fallback: number, min: number, max:
 
 export function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
   const host = env.SPACE_GATEWAY_HOST?.trim() || "127.0.0.1";
+  let lan: LanAccess | null = null;
+  let lanError: string | null = null;
+  try {
+    lan = loadLanAccess(env);
+  } catch (error) {
+    lanError = error instanceof Error ? error.message : "Invalid LAN settings.";
+  }
   if (!/^[0-9a-fA-F:.]+$/.test(host)) throw new Error("SPACE_GATEWAY_HOST must be an IP address.");
   return {
     host,
     port: boundedInt(env.SPACE_GATEWAY_PORT, defaultGatewayPort, 1024, 65535),
+    lan,
+    lanError,
     databaseUrl: env.SPACE_DATABASE_URL?.trim() || null,
     encryptionKeyFile: env.SPACE_GATEWAY_ENCRYPTION_KEY_FILE?.trim() || defaultGatewayEncryptionKeyFile,
     drainTimeoutMs: boundedInt(env.SPACE_GATEWAY_DRAIN_TIMEOUT_MS, 30_000, 0, 600_000),

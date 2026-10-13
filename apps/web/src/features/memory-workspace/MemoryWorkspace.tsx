@@ -5,6 +5,7 @@ import { api, type MemoryGraphOverviewResponse } from "../../api.js";
 import { MemoryGraphErrorBoundary } from "./MemoryGraphErrorBoundary.js";
 import { MemoryNodeDetail } from "./MemoryNodeDetail.js";
 import { createMemoryAtlas, type MemoryAtlasPosition } from "./memory-atlas.js";
+import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 import { MemoryGraph3D } from "./MemoryGraph3D.js";
 import type { MemoryPoint3D } from "./memory-3d.js";
 import { MemoryCalendarView } from "./MemoryCalendarView.js";
@@ -111,7 +112,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
   const memoryCount = atlas.nodes.filter(node => node.type === "MEMORY").length;
   const displayGroups = useMemo(() => atlas.groups.filter(group => group.kind !== "tag" || group.count >= 10), [atlas.groups]);
   return (
-    <section id="memory-atlas" className="memory-workspace memory-atlas" aria-label="Memory workspace" data-shell-mode={shellMode} data-workspace-mode={workspaceMode} data-view-mode={view3D ? "3D" : "2D"} data-titles-visible={showTitles} data-atlas-layout="network" data-layout-ready={layout?.atlas === atlas} data-layout-root-x={atlasPositions.get(atlas.nodes.find(node => node.label === "gemini.md")?.id ?? "")?.x} data-atlas-group-count={displayGroups.length} data-atlas-color-count={new Set(displayGroups.map(group => group.color)).size}>
+    <section id="memory-atlas" className="memory-workspace memory-atlas" aria-label="Memory workspace" data-shell-mode={shellMode} data-workspace-mode={workspaceMode} data-view-mode={view3D ? "3D" : "2D"} data-titles-visible={showTitles} data-atlas-layout="network" data-layout-ready={layout?.atlas === atlas} data-layout-root-x={atlasPositions.get(atlas.nodes.find(node => isMemoryCoreLabel(node.label))?.id ?? "")?.x} data-atlas-group-count={displayGroups.length} data-atlas-color-count={new Set(displayGroups.map(group => group.color)).size}>
       <header className="memory-atlas-header memory-workspace-header">
         <div className="memory-atlas-brand">
           {workspaceMode === "calendar" ? <CalendarIcon aria-hidden="true" /> : <Network aria-hidden="true" />}
@@ -173,7 +174,7 @@ export function MemoryWorkspace({ shellMode, onClose, initialMode = "calendar" }
                 <div><dt>Connections</dt><dd>{atlas.edges.length.toLocaleString()}</dd></div>
               </dl>
             </div>
-            <div className="memory-graph-layout" data-detail-open={Boolean(selectedNodeId)} data-graph-mode="ATLAS" data-source-count={atlas.nodes.filter(node => node.type === "SOURCE").length} data-source-link-count={atlas.edges.filter(edge => edge.type === "CONTAINS" || edge.type === "DERIVED_FROM").length} data-root-visible={atlas.nodes.some(node => node.type === "SOURCE" && node.label === "gemini.md")} data-raw-node-count={graph?.data.nodes.length ?? 0} data-visible-node-count={atlas.nodes.length} data-visible-edge-count={atlas.edges.length}>
+            <div className="memory-graph-layout" data-detail-open={Boolean(selectedNodeId)} data-graph-mode="ATLAS" data-source-count={atlas.nodes.filter(node => node.type === "SOURCE").length} data-source-link-count={atlas.edges.filter(edge => edge.type === "CONTAINS" || edge.type === "DERIVED_FROM").length} data-root-visible={atlas.nodes.some(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label))} data-raw-node-count={graph?.data.nodes.length ?? 0} data-visible-node-count={atlas.nodes.length} data-visible-edge-count={atlas.edges.length}>
               <div className="memory-atlas-2d" hidden={view3D}><MemoryGraphErrorBoundary>
                 <Suspense fallback={<div className="memory-graph-loading" role="status">Connecting your memories…</div>}>
                   <DesktopMemoryGraph nodes={atlas.nodes} edges={atlas.edges} displayMode="SEMANTIC" relationMode="RELATIONS" selectedNodeId={selectedNodeId} onSelectNode={selectNode} loading={loading || layoutPending} error={error} totalNodes={graph?.data.totalMatchingNodes ?? 0} totalEdges={graph?.data.totalMatchingEdges ?? 0} truncated={graph?.data.truncated ?? false} atlasPositions={atlasPositions} showTitles={showTitles} />

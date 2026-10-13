@@ -16,7 +16,7 @@ const hopByHop = new Set([
 export function shouldDropInboundHeader(name: string): boolean {
   const lowered = name.toLowerCase();
   return ignoredInbound.has(lowered) || hopByHop.has(lowered) || lowered.startsWith("x-forwarded-") || lowered.startsWith("cf-")
-    || lowered.startsWith("x-space-gateway-");
+    || lowered.startsWith("x-space-gateway-") || lowered.startsWith("sec-websocket-");
 }
 
 export function buildCodexUpstreamHeaders(inbound: Record<string, string | string[] | undefined>, accessToken: string, accountId: string | null,

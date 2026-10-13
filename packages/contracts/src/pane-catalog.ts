@@ -45,7 +45,8 @@ export const PANE_TYPES = Object.freeze([
   { typeId: "files", label: "Files", aliases: ["file manager", "filemanager", "explorer"], mode: "FILES", runtimeId: null, adapter: "files", readiness: "BROWSER" },
   { typeId: "databases", label: "Databases", aliases: ["database", "db", "database manager", "sql", "dbms"], mode: "DATABASES", runtimeId: null, adapter: "databases", readiness: "BROWSER" },
   { typeId: "demos", label: "Demo Projects", aliases: ["demo projects", "demos", "demo"], mode: "DEMOS", runtimeId: null, adapter: "demos", readiness: "DEMO_PROJECT" },
-  { typeId: "t3code", label: "T3 Code", aliases: ["t3 code", "t3", "agent harness", "t3code"], mode: "T3CODE", runtimeId: null, adapter: "t3code", readiness: "AGENT_HARNESS" }
+  { typeId: "t3code", label: "T3 Code", aliases: ["t3 code", "t3", "agent harness", "t3code"], mode: "T3CODE", runtimeId: null, adapter: "t3code", readiness: "AGENT_HARNESS" },
+  { typeId: "jobs", label: "Job Copilot", aliases: ["job copilot", "job applications", "jobs", "job apply", "applications", "job search"], mode: "JOB_APPLY", runtimeId: null, adapter: "jobapply", readiness: "TERMINAL_INPUT" }
 ] as const);
 export type PaneType = typeof PANE_TYPES[number];
 export type PaneTypeId = PaneType["typeId"];

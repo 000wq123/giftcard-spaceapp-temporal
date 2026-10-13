@@ -17,6 +17,7 @@ export const AGENTS_DASHBOARD_FILTER_KEY = "space.agentsDashboard.filter";
 export const AGENTS_DASHBOARD_ROOM_FILTER_KEY = "space.agentsDashboard.roomFilter";
 export const AGENTS_DASHBOARD_SEEN_KEY = "space.agentsDashboard.seen.v1";
 export const AGENTS_DASHBOARD_COLLAPSED_KEY = "space.agentsDashboard.collapsed.v1";
+export const AGENTS_DASHBOARD_GROUP_KEY = "space.agentsDashboard.groupBy.v1";
 /** Open and visible: near-live. Closed: the rail summary only needs a slower cadence. */
 export const AGENTS_DASHBOARD_OPEN_POLL_MS = 5_000;
 export const AGENTS_DASHBOARD_CLOSED_POLL_MS = 10_000;
@@ -73,23 +74,48 @@ export function writeStoredFilter(filter: AgentStatus | "all", userId?: string):
   }
 }
 
-export function readStoredRoomFilter(userId?: string, currentRoomId?: string | null): string {
+export type AgentsRoomScope = "current" | "all";
+export type AgentsGroupBy = "status" | "project" | "room";
+
+/** One scope control: this room or every room. A room id saved by the older room picker reads as all rooms. */
+export function readStoredRoomFilter(userId?: string, currentRoomId?: string | null): AgentsRoomScope {
+  const fallback: AgentsRoomScope = currentRoomId ? "current" : "all";
   try {
     const storage = getStorage();
-    if (!storage) return currentRoomId ? "current" : "all";
+    if (!storage) return fallback;
     const userRaw = userId ? storage.getItem(roomStorageKeyForUser(userId)) : null;
-    const globalRaw = storage.getItem(AGENTS_DASHBOARD_ROOM_FILTER_KEY);
-    const raw = userRaw ?? globalRaw;
-    if (typeof raw === "string" && raw.trim()) {
-      return raw.trim();
-    }
-    return currentRoomId ? "current" : "all";
+    const raw = (userRaw ?? storage.getItem(AGENTS_DASHBOARD_ROOM_FILTER_KEY))?.trim();
+    if (!raw) return fallback;
+    return raw === "current" ? fallback : "all";
   } catch {
-    return currentRoomId ? "current" : "all";
+    return fallback;
   }
 }
 
-export function writeStoredRoomFilter(roomFilter: string, userId?: string): void {
+export function readStoredGroupBy(userId?: string): AgentsGroupBy {
+  try {
+    const raw = getStorage()?.getItem(userKey(AGENTS_DASHBOARD_GROUP_KEY, userId));
+    return raw === "project" || raw === "room" ? raw : "status";
+  } catch {
+    return "status";
+  }
+}
+
+function writeStoredGroupBy(groupBy: AgentsGroupBy, userId?: string): void {
+  try { getStorage()?.setItem(userKey(AGENTS_DASHBOARD_GROUP_KEY, userId), groupBy); } catch { /* optional */ }
+}
+
+/** A task description that only repeats the title adds nothing to a card. */
+export function isRedundantPreview(title: string, description: string | null | undefined): boolean {
+  const normalize = (value: string) => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const text = normalize(description ?? "");
+  const heading = normalize(title);
+  if (!text) return true;
+  if (!heading) return false;
+  return text === heading || heading.startsWith(text) || (text.startsWith(heading) && text.length - heading.length <= 24);
+}
+
+export function writeStoredRoomFilter(roomFilter: AgentsRoomScope, userId?: string): void {
   try {
     const storage = getStorage();
     if (!storage) return;
@@ -188,8 +214,8 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
   const [seen, setSeen] = useState<AgentSeenState>(() => readSeenState(userId));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => readCollapsedGroups(userId));
   const [filter, setFilter] = useState<AgentStatus | "all">(() => readStoredFilter(userId));
-  const [roomFilter, setRoomFilter] = useState<string>(() => readStoredRoomFilter(userId, currentRoomId));
-  const [groupBy, setGroupBy] = useState<"status" | "project" | "room">("status");
+  const [roomFilter, setRoomFilter] = useState<AgentsRoomScope>(() => readStoredRoomFilter(userId, currentRoomId));
+  const [groupBy, setGroupBy] = useState<AgentsGroupBy>(() => readStoredGroupBy(userId));
   const [query, setQuery] = useState("");
   const roomIds = JSON.stringify(rooms.filter(room => !room.archivedAt).map(room => room.id).sort());
   openRef.current = open;
@@ -197,6 +223,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
   useEffect(() => {
     setSeen(readSeenState(userId));
     setCollapsed(readCollapsedGroups(userId));
+    setGroupBy(readStoredGroupBy(userId));
   }, [userId]);
 
   useEffect(() => {
@@ -305,25 +332,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     return rooms.find(r => r.id === currentRoomId) ?? null;
   }, [rooms, currentRoomId]);
 
-  const effectiveRoomId = useMemo(() => {
-    if (roomFilter === "all") return null;
-    if (roomFilter === "current") return currentRoomId ?? null;
-    if (rooms.some(r => r.id === roomFilter)) return roomFilter;
-    return currentRoomId ?? null;
-  }, [roomFilter, currentRoomId, rooms]);
-
-  const activeRoomName = useMemo(() => {
-    if (!effectiveRoomId) return null;
-    return rooms.find(r => r.id === effectiveRoomId)?.name ?? null;
-  }, [rooms, effectiveRoomId]);
-
-  const roomScopeLabel = useMemo(() => {
-    if (!effectiveRoomId) return "All rooms";
-    if (effectiveRoomId === currentRoomId && currentRoom) {
-      return `${currentRoom.name} (Current room)`;
-    }
-    return activeRoomName ?? "Selected room";
-  }, [effectiveRoomId, currentRoomId, currentRoom, activeRoomName]);
+  const effectiveRoomId = roomFilter === "current" && currentRoom ? currentRoom.id : null;
 
   const entries = useMemo(() => {
     const names = new Map(rooms.map(room => [room.id, room.name]));
@@ -345,6 +354,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
       return {
         pane, roomName, runtime, status, since, seenFinish,
         provider: runtime?.displayName ?? pane.providerId ?? "Space Agent",
+        providerLabel: runtime?.shortLabel ?? pane.providerId ?? "Space Agent",
         modelId: detail?.modelId ?? pane.modelId ?? null,
         reason: detail?.status === status || seenFinish ? detail?.reason ?? null : null,
         finishedAt: seenFinish ? detail?.since ?? null : null,
@@ -367,6 +377,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
   }, [entries]);
 
   const currentRoomEntriesCount = currentRoom ? (roomCounts[currentRoom.id] ?? 0) : 0;
+  const busyRoomCount = Object.keys(roomCounts).length;
 
   useEffect(() => {
     const summary: AgentDashboardSummary = {
@@ -429,14 +440,16 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     (!normalizedQuery || [entry.pane.title, entry.pane.paneName ?? "", entry.roomName, entry.project.path, entry.provider, entry.modelId ?? "", entry.reason ?? "", agentStatusLabels[entry.status], entry.pane.taskMetadata?.description ?? ""]
       .join(" ").toLocaleLowerCase().includes(normalizedQuery)));
 
-  const groups = groupBy === "status"
+  // A single room makes room groups pointless; the saved choice returns with All rooms.
+  const activeGroupBy: AgentsGroupBy = groupBy === "room" && effectiveRoomId ? "status" : groupBy;
+  const groups = activeGroupBy === "status"
     ? agentStatuses.map(status => ({ key: status, label: agentStatusLabels[status], status, path: undefined, entries: visible.filter(entry => entry.status === status) }))
-    : groupBy === "project"
+    : activeGroupBy === "project"
       ? [...new Map(visible.map(entry => [entry.project.key, entry.project])).values()].sort((a, b) => a.path.localeCompare(b.path)).map(project => ({ key: project.key, label: project.label, path: project.path, status: undefined, entries: visible.filter(entry => entry.project.key === project.key) }))
       : [...new Map(visible.map(entry => [entry.pane.roomId, { id: entry.pane.roomId, name: entry.roomName }])).values()]
         .sort((a, b) => Number(b.id === currentRoomId) - Number(a.id === currentRoomId) || a.name.localeCompare(b.name))
         .map(r => ({ key: r.id, label: r.name, path: undefined, status: undefined, current: r.id === currentRoomId, entries: visible.filter(entry => entry.pane.roomId === r.id) }));
-  const showRoomOnCards = !effectiveRoomId && groupBy !== "room";
+  const showRoomOnCards = !effectiveRoomId && activeGroupBy !== "room";
   const doneEntries = scopedEntries.filter(entry => entry.status === "done");
 
   const handleFilterChange = (nextFilter: AgentStatus | "all") => {
@@ -444,9 +457,14 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     writeStoredFilter(nextFilter, userId);
   };
 
-  const handleRoomFilterChange = (nextRoomFilter: string) => {
+  const handleRoomFilterChange = (nextRoomFilter: AgentsRoomScope) => {
     setRoomFilter(nextRoomFilter);
     writeStoredRoomFilter(nextRoomFilter, userId);
+  };
+
+  const handleGroupByChange = (nextGroupBy: AgentsGroupBy) => {
+    setGroupBy(nextGroupBy);
+    writeStoredGroupBy(nextGroupBy, userId);
   };
 
   const toggleGroup = (key: string) => {
@@ -496,13 +514,20 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
     if (entry.status === "waiting") return elapsed ? `Waiting ${elapsed}` : "Waiting";
     return agentStatusLabels[entry.status];
   };
+  const badgeTitle = (entry: typeof entries[number]) => entry.since ? `${agentStatusLabels[entry.status]} since ${clockTime(entry.since)}` : agentStatusLabels[entry.status];
+  // Working and waiting cards carry their elapsed time on the badge; the footer dates only finished or idle work.
   const footerTime = (entry: typeof entries[number]) => {
-    if (entry.status === "working" && entry.since) return { iso: entry.since, label: `Started ${clockTime(entry.since)}`, title: "Turn started" };
-    if (entry.status === "done" && entry.since) return { iso: entry.since, label: `Finished ${dashboardAge(entry.since, now)}`, title: "Finished" };
-    if (entry.finishedAt) return { iso: entry.finishedAt, label: `Finished ${dashboardAge(entry.finishedAt, now)}`, title: "Finished" };
+    if (entry.status === "working" || entry.status === "waiting") return null;
+    if (entry.status === "done" && entry.since) return { iso: entry.since, label: `Finished ${dashboardAge(entry.since, now)}`, title: `Finished at ${clockTime(entry.since)}` };
+    if (entry.finishedAt) return { iso: entry.finishedAt, label: `Finished ${dashboardAge(entry.finishedAt, now)}`, title: `Finished at ${clockTime(entry.finishedAt)}` };
     return { iso: entry.lastActivityAt, label: dashboardAge(entry.lastActivityAt, now), title: "Last activity" };
   };
   const updatedLabel = error ? "Update delayed" : sampledAt ? (refreshing ? "Updating…" : `Updated ${dashboardAge(new Date(sampledAt).toISOString(), now)}`) : "Connecting…";
+  const scopeSubtitle = effectiveRoomId && currentRoom ? `Room: ${currentRoom.name}`
+    : busyRoomCount === 1 ? "1 room with agents" : `${busyRoomCount} rooms with agents`;
+  const countLabel = visible.length === scopedEntries.length
+    ? `${scopedEntries.length} ${scopedEntries.length === 1 ? "agent" : "agents"}`
+    : `${visible.length} of ${scopedEntries.length} agents`;
 
   return <dialog ref={dialog} data-embedded={embedded || undefined} className={`agents-dashboard${maximized ? " is-maximized" : ""}`} aria-labelledby="agents-dashboard-title" onCancel={event => { event.preventDefault(); onClose(); }}>
     <div className="agents-dashboard-content" onKeyDown={handleKeyDown}>
@@ -510,12 +535,12 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
         <span className="agents-dashboard-brand"><LayoutDashboard aria-hidden="true" /></span>
         <div className="agents-dashboard-heading">
           <h2 id="agents-dashboard-title">Agents Dashboard</h2>
-          <p>{activeRoomName ? `Activity in ${activeRoomName}` : "Activity across your rooms"}</p>
+          <p title={scopeSubtitle}>{scopeSubtitle}</p>
         </div>
         <div className="agents-dashboard-actions">
           <button type="button" className="agents-dashboard-icon agents-dashboard-refresh" aria-label="Refresh agents" title="Refresh now" data-busy={refreshing || undefined} onClick={() => refreshNow.current?.()}><RefreshCw aria-hidden="true" /></button>
-          <button type="button" className="agents-dashboard-icon agents-dashboard-expand-toggle" aria-label={maximized ? "Collapse agents dashboard" : "Expand agents dashboard"} aria-pressed={maximized} onClick={() => setMaximized(value => !value)}>{maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>
-          <button type="button" className="agents-dashboard-icon agents-dashboard-close-btn" aria-label="Close agents dashboard" onClick={onClose}><X aria-hidden="true" /></button>
+          <button type="button" className="agents-dashboard-icon agents-dashboard-expand-toggle" aria-label={maximized ? "Collapse agents dashboard" : "Expand agents dashboard"} title={maximized ? "Collapse" : "Expand"} aria-pressed={maximized} onClick={() => setMaximized(value => !value)}>{maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>
+          <button type="button" className="agents-dashboard-icon agents-dashboard-close-btn" aria-label="Close agents dashboard" title="Close" onClick={onClose}><X aria-hidden="true" /></button>
         </div>
       </header>
       <div className="agents-dashboard-overview">
@@ -531,53 +556,22 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
       </div>
       <div className="agents-dashboard-controls">
         <div className="agents-dashboard-scope-row">
-          <div className="agents-dashboard-room-filters" role="group" aria-label="Filter agents by room">
-            <button
-              type="button"
-              className="agents-dashboard-room-btn"
-              aria-pressed={!effectiveRoomId}
-              onClick={() => handleRoomFilterChange("all")}
-            >
-              All rooms <span>{entries.length}</span>
-            </button>
-            {currentRoom && (
-              <button
-                type="button"
-                className="agents-dashboard-room-btn"
-                aria-pressed={effectiveRoomId === currentRoom.id}
-                onClick={() => handleRoomFilterChange("current")}
-                title={`Current room: ${currentRoom.name}`}
-              >
-                Current room <span>{currentRoomEntriesCount}</span>
-              </button>
-            )}
-            {rooms.length > 1 && (
-              <div className="agents-dashboard-room-select-wrapper">
-                {/* All rooms and Current room are the buttons beside it; the list only picks one specific room. */}
-                <select
-                  className="agents-dashboard-room-select"
-                  aria-label="Filter by specific room"
-                  data-custom={Boolean(effectiveRoomId && effectiveRoomId !== currentRoomId)}
-                  value={roomFilter === "all" || roomFilter === "current" ? "" : roomFilter}
-                  onChange={event => { if (event.target.value) handleRoomFilterChange(event.target.value); }}
-                >
-                  <option value="" disabled>Choose a room…</option>
-                  {rooms.map(room => (
-                    <option key={room.id} value={room.id}>
-                      {room.name}{room.id === currentRoom?.id ? " (current)" : ""} ({roomCounts[room.id] ?? 0})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-          <div className="agents-dashboard-segmented" role="group" aria-label="Group agents by">
-            <button type="button" data-group="status" aria-pressed={groupBy === "status"} onClick={() => setGroupBy("status")}>Status</button>
-            <button type="button" data-group="project" aria-pressed={groupBy === "project"} onClick={() => setGroupBy("project")}>Project</button>
-            <button type="button" data-group="room" aria-pressed={groupBy === "room"} onClick={() => setGroupBy("room")}>Room</button>
+          {/* One scope control: the room name lives in the header, other rooms are a search or a Room group away. */}
+          {currentRoom ? <div className="agents-dashboard-seg agents-dashboard-scope" role="group" aria-label="Show agents from">
+            <button type="button" data-scope="current" aria-pressed={Boolean(effectiveRoomId)} title={`Agents in ${currentRoom.name}`} onClick={() => handleRoomFilterChange("current")}>This room <span>{currentRoomEntriesCount}</span></button>
+            <button type="button" data-scope="all" aria-pressed={!effectiveRoomId} title="Agents in every room" onClick={() => handleRoomFilterChange("all")}>All rooms <span>{entries.length}</span></button>
+          </div> : null}
+          <div className="agents-dashboard-seg agents-dashboard-segmented" role="group" aria-label="Group agents by">
+            <button type="button" data-group="status" aria-pressed={activeGroupBy === "status"} onClick={() => handleGroupByChange("status")}>Status</button>
+            <button type="button" data-group="project" aria-pressed={activeGroupBy === "project"} onClick={() => handleGroupByChange("project")}>Project</button>
+            {effectiveRoomId ? null : <button type="button" data-group="room" aria-pressed={activeGroupBy === "room"} onClick={() => handleGroupByChange("room")}>Room</button>}
           </div>
         </div>
-        <label className="agents-dashboard-search"><Search aria-hidden="true" /><input ref={searchInput} type="search" aria-label="Search agents" placeholder="Search agents, models, projects or rooms…" value={query} onChange={event => setQuery(event.target.value)} /><kbd aria-hidden="true">/</kbd></label>
+        <div className="agents-dashboard-search" role="search" onPointerDown={event => { if (event.target === event.currentTarget) { event.preventDefault(); searchInput.current?.focus(); } }}>
+          <Search aria-hidden="true" />
+          <input ref={searchInput} type="search" aria-label="Search agents" placeholder={effectiveRoomId ? "Search agents, models or projects…" : "Search agents, models, projects or rooms…"} value={query} onChange={event => setQuery(event.target.value)} />
+          {query ? <button type="button" className="agents-dashboard-search-clear" aria-label="Clear search" title="Clear search" onClick={() => { setQuery(""); searchInput.current?.focus(); }}><X aria-hidden="true" /></button> : <kbd aria-hidden="true">/</kbd>}
+        </div>
       </div>
       <div className="agents-dashboard-body" ref={body} aria-busy={!loaded && !error}>
         {error && <div className="agents-dashboard-error" role="alert"><CircleAlert aria-hidden="true" /><span>{error}</span><button type="button" onClick={() => refreshNow.current?.()}>Retry</button></div>}
@@ -587,34 +581,37 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
           <button type="button" onClick={() => markSeen(doneEntries.map(entry => entry.pane.id))}><Check aria-hidden="true" />Mark all as seen</button>
         </div> : null}
         {loaded && visible.length === 0 ? <div className="agents-dashboard-empty"><Bot aria-hidden="true" /><h3>{scopedEntries.length ? "No matching agents" : "Your agents will appear here"}</h3><p>{scopedEntries.length ? "Try another filter or search." : effectiveRoomId ? "No agents in this room yet. Switch to All rooms, or open an AI CLI or Chat pane here." : "Open an AI CLI, Chat or Harness pane in a room to get started."}</p>
-          {scopedEntries.length > 0 && (filter !== "all" || query) ? <button type="button" onClick={() => { handleFilterChange("all"); setQuery(""); }}>Clear filters</button> : null}</div> : null}
+          {scopedEntries.length > 0 && (filter !== "all" || query) ? <button type="button" onClick={() => { handleFilterChange("all"); setQuery(""); }}>Clear filters</button>
+            : !scopedEntries.length && effectiveRoomId && entries.length ? <button type="button" onClick={() => handleRoomFilterChange("all")}>Show all rooms</button> : null}</div> : null}
         {groups.filter(group => group.entries.length > 0).map(group => {
-          const collapseKey = `${groupBy}:${group.key}`;
+          const collapseKey = `${activeGroupBy}:${group.key}`;
           const isCollapsed = collapsed.has(collapseKey);
           const gridId = `${idPrefix}-${collapseKey.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
           return <section className="agents-dashboard-group" key={group.key} aria-label={group.label} data-collapsed={isCollapsed || undefined}>
             <h3 data-status={group.status}>
               <button type="button" className="agents-dashboard-group-toggle" aria-expanded={!isCollapsed} aria-controls={gridId} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${group.label} group`} onClick={() => toggleGroup(collapseKey)}>
                 <ChevronDown className="agents-dashboard-chevron" aria-hidden="true" />
-                {group.status ? <i /> : groupBy === "room" ? <Boxes aria-hidden="true" /> : <Folder aria-hidden="true" />}
+                {group.status ? <i /> : activeGroupBy === "room" ? <Boxes aria-hidden="true" /> : <Folder aria-hidden="true" />}
                 <span title={group.path}>{group.label}</span><small>{group.entries.length}</small>
-                {"current" in group && group.current ? <em className="agents-dashboard-tag">Current</em> : null}
+                {"current" in group && group.current ? <em className="agents-dashboard-tag">This room</em> : null}
               </button>
             </h3>
             {isCollapsed ? null : <div className="agents-dashboard-grid" id={gridId}>{group.entries.map(entry => {
-              const { pane, roomName, runtime, provider, status, project, modelId, reason } = entry;
+              const { pane, roomName, runtime, provider, providerLabel, status, project, modelId, reason } = entry;
               const time = footerTime(entry);
               const isSelected = pane.id === selectedPaneId && pane.roomId === currentRoomId;
+              const description = pane.taskMetadata?.description?.trim() ?? "";
+              const preview = isRedundantPreview(pane.title, description) ? null : description;
               return <button key={pane.id} type="button" className="agents-dashboard-card" data-status={status} data-selected={isSelected || undefined} disabled={opening !== null} onClick={() => void openPane(pane)} aria-label={`Open ${pane.title} in ${roomName}`}>
                 <span className="agents-dashboard-avatar">{runtime ? <img src={runtime.iconSrc} alt="" /> : <Bot aria-hidden="true" />}<i /></span>
                 <span className="agents-dashboard-card-content">
                   <span className="agents-dashboard-card-head">
                     <strong title={pane.title}>{pane.title}</strong>
-                    <span className="agents-dashboard-badge" title={entry.since ? `${agentStatusLabels[status]} since ${clockTime(entry.since)}` : agentStatusLabels[status]}><i />{badgeLabel(entry)}</span>
+                    <span className="agents-dashboard-badge" title={badgeTitle(entry)}><i />{badgeLabel(entry)}</span>
                   </span>
-                  <small className="agents-dashboard-meta" title={modelId ? `${provider} · ${modelId}` : provider}>{provider}{modelId ? <> · <span className="agents-dashboard-model">{modelId}</span></> : null}</small>
+                  <small className="agents-dashboard-meta" title={modelId ? `${provider} · ${modelId}` : provider}>{providerLabel}{modelId ? <> · <span className="agents-dashboard-model">{modelId}</span></> : null}</small>
                   {reason && status === "waiting" ? <span className="agents-dashboard-reason"><CircleAlert aria-hidden="true" />{reason}</span> : null}
-                  {pane.taskMetadata?.description && <span className="agents-dashboard-preview">{pane.taskMetadata.description}</span>}
+                  {preview ? <span className="agents-dashboard-preview">{preview}</span> : null}
                   <span className="agents-dashboard-card-footer">
                     <span className="agents-dashboard-tags">
                       <span title={project.path}><Folder aria-hidden="true" />{project.label}</span>
@@ -623,7 +620,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
                       {pane.isMinimized ? <span className="agents-dashboard-tag">Minimized</span> : null}
                       {isSelected ? <span className="agents-dashboard-tag is-selected">Selected</span> : null}
                     </span>
-                    <time dateTime={time.iso} title={time.title}>{time.label}</time>
+                    {time ? <time dateTime={time.iso} title={time.title}>{time.label}</time> : null}
                   </span>
                 </span>
               </button>;
@@ -631,7 +628,7 @@ export function AgentsDashboard({ open = true, userId, rooms, completions, activ
           </section>;
         })}
       </div>
-      <footer className="agents-dashboard-footer"><span>{visible.length} of {scopedEntries.length} agents · {roomScopeLabel}</span><span>{updatedLabel}</span></footer>
+      <footer className="agents-dashboard-footer"><span>{countLabel}</span><span>{updatedLabel}</span></footer>
       <p className="agents-dashboard-sr-only" role="status" aria-live="polite">{announcement}</p>
     </div>
   </dialog>;

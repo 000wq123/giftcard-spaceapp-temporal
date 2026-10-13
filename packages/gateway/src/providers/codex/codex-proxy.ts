@@ -1,23 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewaySettings } from "@space/contracts";
-import type { GatewayAccountRecord, GatewayCompressionRow, GatewayRequestLogInsert } from "@space/db";
+import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRequestLogInsert } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { gatewayError, gatewayErrors } from "../../errors.js";
 import { applyRequestPolicy, checkKeyLimits, PolicyRejection, type PolicyResult } from "../../policy.js";
 import { compressResponsesBodyAsync, type AsyncBlockRunner, type CompressionCache } from "../../compression/engine.js";
-import { compressionRows } from "../../compression/recorder.js";
+import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { costUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
+import { requestOrigin } from "../../client-detect.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount, USAGE_LIMIT_REACHED, permanentFailureCodes, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
-import { ChatRequestError, ChatStreamTranslator, chatToResponses, responseToChatCompletion } from "./chat.js";
+import { ChatRequestError, ChatStreamTranslator, chatToResponses, normalizeResponsesRequest, responseToChatCompletion } from "./chat.js";
 import { buildCodexUpstreamHeaders } from "./headers.js";
 import type { CodexModelPlans } from "./model-plans.js";
 import { readCodexRateLimitHeaders, readResponseUsage, ResponseStreamInspector } from "./stream.js";
 import { CODEX_UPSTREAM_BASE_URL } from "./usage.js";
+import { registerCodexWebSocketRoutes, type CodexWebSocketRegistry } from "./codex-websocket.js";
+import { handshakeHeaders, openUpstreamWebSocket, responseCreateFrame, UpstreamHandshakeError, upstreamWebSocketHeaders, upstreamWebSocketUrl,
+  UpstreamWebSocketHealth, webSocketResponse } from "./upstream-websocket.js";
 
 /**
  * Codex Responses proxy (`/backend-api/codex/responses`, `/v1/responses`), after codex-lb's proxy service
@@ -28,6 +32,8 @@ const rateLimitCodes = new Set(["rate_limit_exceeded", USAGE_LIMIT_REACHED]);
 const quotaCodes = new Set(["insufficient_quota", "usage_not_included", "quota_exceeded"]);
 const transientCodes = new Set(["server_error", "upstream_error", "stream_incomplete", "overloaded_error", "server_is_overloaded"]);
 const usageLimitMessage = /usage limit|you've hit your limit|purchase more credits/i;
+/** WebSocket open answers about the account, not the transport (codex-lb `_AUTO_WEBSOCKET_HANDSHAKE_NON_FALLBACK_STATUSES`). */
+export const accountHandshakeStatuses = new Set([401, 404, 429]);
 
 export interface CodexProxyOptions {
   pool: AccountPool;
@@ -39,18 +45,27 @@ export interface CodexProxyOptions {
   maxAccountAttempts?: number;
   preOutputBufferBytes?: number;
   /** Context compression (the Headroom rewrite); absent means requests are never compressed. */
-  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; record: (rows: GatewayCompressionRow[]) => Promise<void> };
+  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; record: (rows: GatewayCompressionRow[]) => Promise<void>;
+    recordSignals?: (rows: GatewayCompressionSignalRow[]) => Promise<void> };
   /** Conversation affinity; without it bindings live in memory only. */
   sticky?: { threads: StickyStore; continuations: StickyStore };
+  /** Per-model default speed (the codex-lb speed map); a request without service_tier gets its model's default. */
+  speedDefaults?: () => Promise<Record<string, string>>;
   /** Which plans offer which models; without it every account may serve every model. */
   modelPlans?: CodexModelPlans;
   /** Counts a finished request against the key's limits. */
   settleKeyUsage?: (keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }) => Promise<void>;
+  /** Client WebSocket sessions (Codex `responses_websockets`); without it the WebSocket routes are not served. */
+  webSockets?: CodexWebSocketRegistry;
+  /** Upstream WebSocket health shared by every request; tests pass their own clock. */
+  upstreamWebSocketHealth?: UpstreamWebSocketHealth;
+  /** Opens upstream WebSockets; tests replace it. */
+  openWebSocket?: typeof openUpstreamWebSocket;
 }
 
-type FailureKind = "rate_limit" | "quota" | "transient" | "permanent" | "surface";
+export type FailureKind = "rate_limit" | "quota" | "transient" | "permanent" | "surface";
 
-interface UpstreamFailure {
+export interface UpstreamFailure {
   kind: FailureKind;
   status: number;
   code: string;
@@ -70,7 +85,7 @@ function classify(code: string, message: string, status: number): FailureKind {
   return "surface";
 }
 
-function parseUpstreamError(text: string, status: number): UpstreamFailure {
+export function parseUpstreamError(text: string, status: number): UpstreamFailure {
   let payload: Record<string, unknown> = {};
   try { payload = JSON.parse(text) as Record<string, unknown>; } catch { /* not JSON */ }
   const error = (payload.error && typeof payload.error === "object" ? payload.error : payload) as Record<string, unknown>;
@@ -91,6 +106,93 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
   const responseOwners = options.sticky?.continuations ?? new StickyStore({ provider: "CODEX", kind: "CONTINUATION" });
   /** prompt cache / session key hash -> account (soft sticky threads). */
   const stickyAccounts = options.sticky?.threads ?? new StickyStore({ provider: "CODEX", kind: "STICKY_THREAD" });
+  const webSocketHealth = options.upstreamWebSocketHealth ?? new UpstreamWebSocketHealth(now);
+  const openWebSocket = options.openWebSocket ?? openUpstreamWebSocket;
+
+  async function recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure) {
+    if (failure.kind === "rate_limit") await options.pool.markRateLimited(account, failure.error);
+    else if (failure.kind === "quota") await options.pool.markQuotaExceeded(account, failure.error);
+    else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, failure.code in permanentFailureCodes ? failure.code : "token_invalidated");
+    else options.pool.markTransientError(account.id);
+  }
+
+  /** Passive usage from `x-codex-*` headers (an HTTP reply or a WebSocket handshake). */
+  function recordPassiveUsage(accountId: string, headers: Headers) {
+    const passive = readCodexRateLimitHeaders(headers);
+    const nowSeconds = now() / 1000;
+    void options.pool.recordUsage(accountId, {
+      primaryUsedPercent: passive.primaryUsedPercent, secondaryUsedPercent: passive.secondaryUsedPercent,
+      primaryResetAt: passive.primaryResetAfterSeconds !== null ? new Date((nowSeconds + passive.primaryResetAfterSeconds) * 1000).toISOString() : null,
+      secondaryResetAt: passive.secondaryResetAfterSeconds !== null ? new Date((nowSeconds + passive.secondaryResetAfterSeconds) * 1000).toISOString() : null,
+      primaryWindowMinutes: passive.primaryWindowMinutes, secondaryWindowMinutes: passive.secondaryWindowMinutes
+    }).catch(() => undefined);
+  }
+
+  /**
+   * Context compression of a request body under the effective mode: Shadow measures only. Never throws; on any
+   * failure the original body is used.
+   */
+  async function compressRequest(body: Record<string, unknown>, compressionMode: GatewaySettings["compressionMode"], settings: GatewaySettings, startedAt: number) {
+    const result: { outgoing: Record<string, unknown>; saved: number | null; measured: { before: number; after: number } | null;
+      detail: GatewayRequestLogInsert["compressionDetail"] } = { outgoing: body, saved: null, measured: null, detail: null };
+    if (compressionMode === "OFF" || !options.compression) return result;
+    try {
+      const outcome = await compressResponsesBodyAsync(body, { run: options.compression.run, cache: options.compression.cache,
+        timeBudgetMs: settings.compressionTimeBudgetMs, codeText: settings.compressionCodeText, profile: settings.compressionProfile });
+      if (outcome.tokensBefore > 0) result.measured = { before: outcome.tokensBefore, after: outcome.tokensAfter };
+      if (compressionMode === "ON" && outcome.modified) {
+        result.outgoing = outcome.body;
+        result.saved = outcome.tokensBefore - outcome.tokensAfter;
+      }
+      void options.compression.record(compressionRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "CODEX" }))
+        .catch(() => undefined);
+      void options.compression.recordSignals?.(compressionSignalRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "CODEX" }))
+        .catch(() => undefined);
+      result.detail = compressionDetail(outcome);
+    } catch {
+      // Compression never blocks a request: the original body goes upstream.
+    }
+    return result;
+  }
+
+  /** Settles a finished request against its key and writes its log entry. */
+  function finishRequest(input: { key: { id: string }; account: GatewayAccountRecord; inspector: ResponseStreamInspector; firstTokenAt: number | null;
+    forcedError: string | null; policy: PolicyResult; startedAt: number; baseLog: Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage">;
+    compressionSaved: number | null }) {
+    const { account, inspector, firstTokenAt, forcedError, policy, startedAt } = input;
+    const outcome = inspector.outcome;
+    const ok = forcedError === null && outcome.status === "success";
+    const cost = costUsd(outcome.usage, outcome.model ?? policy.model, outcome.serviceTier ?? policy.serviceTier);
+    if (outcome.usage && options.settleKeyUsage) {
+      void options.settleKeyUsage(input.key.id, {
+        inputTokens: outcome.usage.inputTokens ?? 0, outputTokens: outcome.usage.outputTokens ?? 0, costMicros: Math.round((cost ?? 0) * 1e6),
+        model: outcome.model ?? policy.model, at: new Date(startedAt).toISOString()
+      }).catch(() => undefined);
+    }
+    options.logs.add({
+      ...input.baseLog, accountId: account.id, planType: account.planType, model: outcome.model ?? policy.model ?? "unknown",
+      serviceTier: outcome.serviceTier ?? policy.serviceTier, status: ok ? "success" : "error",
+      errorCode: forcedError ?? (ok ? null : outcome.errorCode ?? outcome.status), errorMessage: ok ? null : outcome.errorMessage,
+      latencyMs: now() - startedAt, firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
+      inputTokens: outcome.usage?.inputTokens ?? null, cachedInputTokens: outcome.usage?.cachedInputTokens ?? null,
+      outputTokens: outcome.usage?.outputTokens ?? null, reasoningTokens: outcome.usage?.reasoningTokens ?? null,
+      costUsd: cost, compressionTokensSaved: input.compressionSaved
+    });
+    void options.pool.touch(account.id, new Date(startedAt).toISOString()).catch(() => undefined);
+  }
+
+  /**
+   * Upstream transport for a request from an HTTP client: WebSocket when the setting asks for it and no recent
+   * WebSocket failure turned it off (codex-lb's 60 s cooldown); HTTP otherwise, and always by default.
+   */
+  const promoteToWebSocket = (settings: GatewaySettings) => settings.upstreamStreamTransport === "WEBSOCKET" && !webSocketHealth.coolingDown();
+
+  /** A request that names no speed gets its model's default; "fast" then goes upstream as priority. */
+  async function withSpeedDefault(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (!options.speedDefaults || body.service_tier !== undefined || typeof body.model !== "string") return body;
+    const defaults = await options.speedDefaults().catch(() => ({} as Record<string, string>));
+    return defaults[body.model] === "fast" ? { ...body, service_tier: "fast" } : body;
+  }
 
   /**
    * The account for one attempt: the continuation owner when there is one, else the sticky thread's account while
@@ -122,7 +224,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     return { account: accounts.find((candidate) => candidate.id === result.account!.accountId) };
   }
 
-  async function handle(request: FastifyRequest, reply: FastifyReply, dialect: "responses" | "chat") {
+  async function handle(request: FastifyRequest, reply: FastifyReply, dialect: "responses" | "v1-responses" | "chat") {
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
@@ -134,7 +236,8 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     let policy: PolicyResult;
     const chatBody = dialect === "chat" ? input as Record<string, unknown> : null;
     try {
-      const responsesBody = chatBody ? chatToResponses(chatBody) : input as Record<string, unknown>;
+      const responsesBody = await withSpeedDefault(chatBody ? chatToResponses(chatBody)
+        : normalizeResponsesRequest(input as Record<string, unknown>, { openAiStyle: dialect === "v1-responses" }));
       policy = applyRequestPolicy(responsesBody, key);
       checkKeyLimits(key, policy.model, new Date(startedAt).toISOString());
     } catch (error) {
@@ -146,23 +249,10 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const includeUsage = Boolean((chatBody?.stream_options as { include_usage?: unknown } | undefined)?.include_usage);
     const settings = await options.settings();
     const compressionMode = header(request, "x-space-gateway-compression")?.toLowerCase() === "off" ? "OFF" : key.compressionOverride ?? settings.compressionMode;
-    let compressionSaved: number | null = null;
-    let outgoing = policy.body;
-    if (compressionMode !== "OFF" && options.compression) {
-      try {
-        const outcome = await compressResponsesBodyAsync(policy.body, { run: options.compression.run, cache: options.compression.cache,
-          timeBudgetMs: settings.compressionTimeBudgetMs });
-        if (compressionMode === "ON" && outcome.modified) {
-          outgoing = outcome.body;
-          compressionSaved = outcome.tokensBefore - outcome.tokensAfter;
-        }
-        void options.compression.record(compressionRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "CODEX" }))
-          .catch(() => undefined);
-      } catch {
-        // Compression never blocks a request: the original body goes upstream.
-      }
-    }
+    const compressed = await compressRequest(policy.body, compressionMode, settings, startedAt);
+    const { outgoing, saved: compressionSaved, measured: compressionMeasured, detail } = compressed;
     const upstreamBody = JSON.stringify({ ...outgoing, stream: true });
+    let upstreamTransport: "http" | "websocket" = "http";
     const previousResponseId = typeof policy.body.previous_response_id === "string" ? policy.body.previous_response_id : null;
     const ownerAccountId = previousResponseId ? await responseOwners.get(hashKey(`codex-response:${previousResponseId}`)) ?? null : null;
     const stickySource = typeof policy.body.prompt_cache_key === "string" ? "prompt_cache_key"
@@ -173,14 +263,17 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const tried = new Set<string>();
     const controller = new AbortController();
     request.raw.once("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
+    const origin = requestOrigin(request);
 
     const baseLog = (): Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage"> => ({
       requestId, requestedAt: new Date(startedAt).toISOString(), provider: "CODEX", accountId: null, apiKeyId: key.id,
       model: policy.model ?? "unknown", reasoningEffort: policy.reasoningEffort, requestedServiceTier: policy.requestedServiceTier,
-      serviceTier: policy.serviceTier, transport: "http", upstreamTransport: "http", latencyMs: null, firstTokenMs: null, inputTokens: null,
+      serviceTier: policy.serviceTier, transport: "http", upstreamTransport, latencyMs: null, firstTokenMs: null, inputTokens: null,
       cachedInputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null, compressionTokensSaved: null,
       stickyKeySource: stickySource, stickyKind: ownerAccountId ? "CONTINUATION" : stickyHash ? "STICKY_THREAD" : null,
-      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null
+      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, ...origin,
+      compressionTokensBefore: compressionMeasured?.before ?? null, compressionTokensAfter: compressionMeasured?.after ?? null,
+      compressionDetail: detail
     });
 
     let lastFailure: UpstreamFailure | null = null;
@@ -196,7 +289,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         break;
       }
       tried.add(account.id);
-      options.pool.markSelected(account.id);
+      options.pool.markSelected(account.id, reply.raw);
 
       let credentials;
       try {
@@ -208,29 +301,42 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         continue;
       }
 
-      let upstream: Response;
-      try {
-        upstream = await fetchImpl(upstreamUrl, {
-          method: "POST", body: upstreamBody, signal: controller.signal,
-          headers: buildCodexUpstreamHeaders(request.headers, credentials.accessToken, credentials.upstreamAccountId)
-        });
-      } catch (error) {
-        if (controller.signal.aborted) return reply;
-        options.pool.markTransientError(account.id);
-        lastFailure = { kind: "transient", status: 502, code: "upstream_unavailable", message: error instanceof Error ? error.message : "Upstream unavailable",
-          error: {}, body: null };
-        if (ownerAccountId) break;
-        continue;
+      const upstreamHeaders = buildCodexUpstreamHeaders(request.headers, credentials.accessToken, credentials.upstreamAccountId);
+      let upstream: Response | null = null;
+      upstreamTransport = "http";
+      if (promoteToWebSocket(settings)) {
+        // HTTP to WebSocket promotion: the same events, carried over a one-request upstream WebSocket.
+        try {
+          const opened = await openWebSocket(upstreamWebSocketUrl(upstreamUrl), upstreamWebSocketHeaders(upstreamHeaders), { signal: controller.signal });
+          webSocketHealth.markSuccess();
+          recordPassiveUsage(account.id, handshakeHeaders(opened.headers));
+          upstream = webSocketResponse(opened, responseCreateFrame(outgoing));
+          upstreamTransport = "websocket";
+        } catch (error) {
+          if (controller.signal.aborted) return reply;
+          if (error instanceof UpstreamHandshakeError && accountHandshakeStatuses.has(error.status)) {
+            // About the account (codex-lb never falls back on 401, 404 or 429): handled like the same HTTP answer.
+            upstream = new Response(error.body ?? "", { status: error.status });
+            upstreamTransport = "websocket";
+          } else if (!(error instanceof UpstreamHandshakeError) || error.transport) {
+            // The transport failed, not the account: HTTP for this request and, for 60 s, every other one.
+            webSocketHealth.markFailure();
+          }
+        }
       }
-
-      const passive = readCodexRateLimitHeaders(upstream.headers);
-      const nowSeconds = now() / 1000;
-      void options.pool.recordUsage(account.id, {
-        primaryUsedPercent: passive.primaryUsedPercent, secondaryUsedPercent: passive.secondaryUsedPercent,
-        primaryResetAt: passive.primaryResetAfterSeconds !== null ? new Date((nowSeconds + passive.primaryResetAfterSeconds) * 1000).toISOString() : null,
-        secondaryResetAt: passive.secondaryResetAfterSeconds !== null ? new Date((nowSeconds + passive.secondaryResetAfterSeconds) * 1000).toISOString() : null,
-        primaryWindowMinutes: passive.primaryWindowMinutes, secondaryWindowMinutes: passive.secondaryWindowMinutes
-      }).catch(() => undefined);
+      if (!upstream) {
+        try {
+          upstream = await fetchImpl(upstreamUrl, { method: "POST", body: upstreamBody, signal: controller.signal, headers: upstreamHeaders });
+        } catch (error) {
+          if (controller.signal.aborted) return reply;
+          options.pool.markTransientError(account.id);
+          lastFailure = { kind: "transient", status: 502, code: "upstream_unavailable", message: error instanceof Error ? error.message : "Upstream unavailable",
+            error: {}, body: null };
+          if (ownerAccountId) break;
+          continue;
+        }
+        recordPassiveUsage(account.id, upstream.headers);
+      }
 
       if (!upstream.ok) {
         const failure = parseUpstreamError(await readBounded(upstream), upstream.status);
@@ -334,33 +440,8 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const status = failure.kind === "rate_limit" || failure.kind === "quota" ? 429 : failure.status >= 400 ? failure.status : 502;
     return reply.code(status).header("x-request-id", requestId).send(gatewayError(failure.code, failure.message, status === 429 ? "rate_limit_error" : "server_error"));
 
-    async function recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure) {
-      if (failure.kind === "rate_limit") await options.pool.markRateLimited(account, failure.error);
-      else if (failure.kind === "quota") await options.pool.markQuotaExceeded(account, failure.error);
-      else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, failure.code in permanentFailureCodes ? failure.code : "token_invalidated");
-      else options.pool.markTransientError(account.id);
-    }
-
     function finish(account: GatewayAccountRecord, inspector: ResponseStreamInspector, firstTokenAt: number | null, forcedError: string | null) {
-      const outcome = inspector.outcome;
-      const ok = forcedError === null && outcome.status === "success";
-      const cost = costUsd(outcome.usage, outcome.model ?? policy.model, outcome.serviceTier ?? policy.serviceTier);
-      if (outcome.usage && options.settleKeyUsage) {
-        void options.settleKeyUsage(key.id, {
-          inputTokens: outcome.usage.inputTokens ?? 0, outputTokens: outcome.usage.outputTokens ?? 0, costMicros: Math.round((cost ?? 0) * 1e6),
-          model: outcome.model ?? policy.model, at: new Date(startedAt).toISOString()
-        }).catch(() => undefined);
-      }
-      options.logs.add({
-        ...baseLog(), accountId: account.id, planType: account.planType, model: outcome.model ?? policy.model ?? "unknown",
-        serviceTier: outcome.serviceTier ?? policy.serviceTier, status: ok ? "success" : "error",
-        errorCode: forcedError ?? (ok ? null : outcome.errorCode ?? outcome.status), errorMessage: ok ? null : outcome.errorMessage,
-        latencyMs: now() - startedAt, firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt,
-        inputTokens: outcome.usage?.inputTokens ?? null, cachedInputTokens: outcome.usage?.cachedInputTokens ?? null,
-        outputTokens: outcome.usage?.outputTokens ?? null, reasoningTokens: outcome.usage?.reasoningTokens ?? null,
-        costUsd: cost, compressionTokensSaved: compressionSaved
-      });
-      void options.pool.touch(account.id, new Date(startedAt).toISOString()).catch(() => undefined);
+      finishRequest({ key, account, inspector, firstTokenAt, forcedError, policy, startedAt, baseLog: baseLog(), compressionSaved });
     }
   }
 
@@ -368,7 +449,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
    * Remote context compaction (`/responses/compact`), after codex-lb: a JSON request and reply, moved to another
    * account on rate limits, 5xx and dead credentials.
    */
-  async function compact(request: FastifyRequest, reply: FastifyReply) {
+  async function compact(request: FastifyRequest, reply: FastifyReply, openAiStyle: boolean) {
     if (!(await helpers.authenticate(request, reply))) return reply;
     const key = request.gatewayApiKey!;
     const startedAt = now();
@@ -379,10 +460,11 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     }
     let policy: PolicyResult;
     try {
-      policy = applyRequestPolicy(input as Record<string, unknown>, key);
+      policy = applyRequestPolicy(await withSpeedDefault(normalizeResponsesRequest(input as Record<string, unknown>, { openAiStyle, compact: true })), key);
       checkKeyLimits(key, policy.model, new Date(startedAt).toISOString());
     } catch (error) {
       if (error instanceof PolicyRejection) return reply.code(error.statusCode).send(error.envelope);
+      if (error instanceof ChatRequestError) return reply.code(400).send(gatewayError("invalid_request", error.message, "invalid_request_error"));
       throw error;
     }
     const settings = await options.settings();
@@ -398,7 +480,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
       reasoningEffort: policy.reasoningEffort, requestedServiceTier: policy.requestedServiceTier, serviceTier: policy.serviceTier, transport: "http",
       upstreamTransport: "http", latencyMs: now() - startedAt, firstTokenMs: null, inputTokens: null, cachedInputTokens: null, outputTokens: null,
       reasoningTokens: null, costUsd: null, compressionTokensSaved: null, stickyKeySource: null, stickyKind: stickyHash ? "STICKY_THREAD" : null,
-      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, errorMessage: null, ...fields
+      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, errorMessage: null, ...requestOrigin(request), ...fields
     });
     let lastFailure: UpstreamFailure | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -413,7 +495,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         break;
       }
       tried.add(account.id);
-      options.pool.markSelected(account.id);
+      options.pool.markSelected(account.id, reply.raw);
       let upstream: Response;
       try {
         const credentials = await options.pool.credentials(account);
@@ -430,10 +512,7 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         const failure = parseUpstreamError(await readBounded(upstream), upstream.status);
         lastFailure = failure;
         if (failure.kind === "surface") break;
-        if (failure.kind === "rate_limit") await options.pool.markRateLimited(account, failure.error);
-        else if (failure.kind === "quota") await options.pool.markQuotaExceeded(account, failure.error);
-        else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, failure.code in permanentFailureCodes ? failure.code : "token_invalidated");
-        else options.pool.markTransientError(account.id);
+        await recordFailure(account, failure);
         continue;
       }
       const text = await upstream.text();
@@ -462,9 +541,16 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     return reply.code(status).header("x-request-id", requestId).send(gatewayError(failure.code, failure.message, status === 429 ? "rate_limit_error" : "server_error"));
   }
 
-  app.post("/backend-api/codex/responses/compact", compact);
-  app.post("/v1/responses/compact", compact);
+  app.post("/backend-api/codex/responses/compact", (request, reply) => compact(request, reply, false));
+  app.post("/v1/responses/compact", (request, reply) => compact(request, reply, true));
   app.post("/backend-api/codex/responses", (request, reply) => handle(request, reply, "responses"));
-  app.post("/v1/responses", (request, reply) => handle(request, reply, "responses"));
+  app.post("/v1/responses", (request, reply) => handle(request, reply, "v1-responses"));
   app.post("/v1/chat/completions", (request, reply) => handle(request, reply, "chat"));
+
+  if (options.webSockets) {
+    registerCodexWebSocketRoutes(app, helpers, {
+      options, now, upstreamUrl, maxAttempts, bufferLimit, health: webSocketHealth, openWebSocket, registry: options.webSockets,
+      pickAccount, recordFailure, parseUpstreamError, recordPassiveUsage, withSpeedDefault, compressRequest, finishRequest, responseOwners, stickyAccounts
+    });
+  }
 }

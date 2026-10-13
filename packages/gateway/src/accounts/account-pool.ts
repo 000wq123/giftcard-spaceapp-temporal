@@ -115,7 +115,31 @@ export class AccountPool {
     return (await this.accounts()).filter((account) => !filter || filter(account)).map((account) => this.toBalancerState(account));
   }
 
-  markSelected(accountId: string) { this.state(accountId).lastSelectedAt = this.nowMs() / 1000; }
+  private readonly activeByAccount = new Map<string, number>();
+  private readonly activeResponses = new WeakMap<object, string>();
+
+  /**
+   * Records that an attempt chose this account. With the client's response, the request counts as in flight on the
+   * account until the response closes; a retry on another account moves it there.
+   */
+  markSelected(accountId: string, response?: { once(event: "close", listener: () => void): unknown }) {
+    this.state(accountId).lastSelectedAt = this.nowMs() / 1000;
+    if (!response) return;
+    const previous = this.activeResponses.get(response);
+    if (previous === accountId) return;
+    if (previous) this.release(previous);
+    else response.once("close", () => { const current = this.activeResponses.get(response); if (current) this.release(current); this.activeResponses.delete(response); });
+    this.activeResponses.set(response, accountId);
+    this.activeByAccount.set(accountId, (this.activeByAccount.get(accountId) ?? 0) + 1);
+  }
+
+  private release(accountId: string) {
+    const count = (this.activeByAccount.get(accountId) ?? 1) - 1;
+    if (count > 0) this.activeByAccount.set(accountId, count); else this.activeByAccount.delete(accountId);
+  }
+
+  /** Requests in flight per account. */
+  inFlight(): Record<string, number> { return Object.fromEntries(this.activeByAccount); }
 
   touch(accountId: string, usedAt: string) { return this.options.repository.touchAccounts([accountId], usedAt); }
 
@@ -133,7 +157,9 @@ export class AccountPool {
 
   async markSuccess(accountId: string) {
     const runtime = this.state(accountId);
-    const wasBlocked = runtime.status !== null && runtime.status !== "ACTIVE";
+    // The balancer lifts an expired block in memory only, so storage can still show a limit the account no longer has.
+    const stored = (await this.accounts()).find((account) => account.id === accountId)?.status;
+    const wasBlocked = (runtime.status !== null && runtime.status !== "ACTIVE") || stored === "RATE_LIMITED" || stored === "QUOTA_EXCEEDED";
     runtime.errorCount = 0;
     runtime.lastErrorAt = null;
     runtime.cooldownUntil = null;

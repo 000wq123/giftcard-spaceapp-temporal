@@ -20,8 +20,9 @@ import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space
  * The user connects a Google account (and a Microsoft account when this
  * server has an app registration) with incremental consent for exactly the
  * capabilities they choose. Tokens are encrypted at rest. Dots read mail and
- * calendars through gateway tools; sending mail and creating events always
- * wait for the user's approval. Disconnecting revokes access and deletes the
+ * calendars through gateway tools; sending mail and creating events wait for
+ * the user's approval while "Ask before sending email or creating events" is on (Settings → Dots, the default) or the
+ * session is set to Ask for approval. Disconnecting revokes access and deletes the
  * stored tokens. Message and event content is third-party data and is marked
  * as untrusted for the Dot.
  */
@@ -156,14 +157,18 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
         headers: { "content-type": "application/x-www-form-urlencoded" } }).catch(() => undefined);
     },
     async searchMail(token, query, limit) {
-      const list = await json(await fetchImpl(`${gmail}/messages?q=${encodeURIComponent(query)}&maxResults=${limit}`, authed(token)), "Gmail search");
+      // Without a query: the newest messages in the inbox (Gmail lists newest first).
+      const list = await json(await fetchImpl(`${gmail}/messages?q=${encodeURIComponent(query || "in:inbox")}&maxResults=${limit}`, authed(token)), "Gmail search");
       const ids = ((list.messages as Array<{ id: string }> | undefined) ?? []).slice(0, limit).map((item) => item.id);
       return Promise.all(ids.map(async (id) => {
         const message = await json(await fetchImpl(`${gmail}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
           authed(token)), "Gmail message lookup");
         const headers = (message.payload as { headers?: unknown } | undefined)?.headers;
+        // internalDate is when Gmail received the message; the Date header is whatever the sender wrote.
+        const received = Number(message.internalDate);
         return { messageId: id, threadId: message.threadId ?? null, from: bounded(header(headers, "From"), 300), subject: bounded(header(headers, "Subject"), 300),
-          date: header(headers, "Date"), snippet: bounded(typeof message.snippet === "string" ? message.snippet : null, 500) };
+          date: header(headers, "Date"), receivedAt: Number.isFinite(received) && received > 0 ? new Date(received).toISOString() : null,
+          snippet: bounded(typeof message.snippet === "string" ? message.snippet : null, 500) };
       }));
     },
     async readMail(token, messageId) {
@@ -242,11 +247,16 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
     // Microsoft has no token revocation endpoint for this flow; deleting the stored tokens ends Space's access.
     async revoke() { /* nothing to call */ },
     async searchMail(token, query, limit) {
-      const list = await json(await fetchImpl(`${graph}/messages?$search=${encodeURIComponent(`"${query.replace(/"/g, "")}"`)}&$top=${limit}&$select=id,conversationId,from,subject,receivedDateTime,bodyPreview`,
-        authed(token, { headers: { ConsistencyLevel: "eventual" } })), "Outlook search");
+      const select = "$select=id,conversationId,from,subject,receivedDateTime,bodyPreview";
+      // Without a query: the newest messages in the inbox. Graph cannot order $search results, so the two differ.
+      const list = query
+        ? await json(await fetchImpl(`${graph}/messages?$search=${encodeURIComponent(`"${query.replace(/"/g, "")}"`)}&$top=${limit}&${select}`,
+          authed(token, { headers: { ConsistencyLevel: "eventual" } })), "Outlook search")
+        : await json(await fetchImpl(`${graph}/mailFolders/inbox/messages?$orderby=${encodeURIComponent("receivedDateTime desc")}&$top=${limit}&${select}`,
+          authed(token)), "Outlook inbox");
       return ((list.value as Array<Record<string, unknown>> | undefined) ?? []).map((message) => ({ messageId: message.id, threadId: message.conversationId ?? null,
         from: bounded((message.from as { emailAddress?: { address?: string } } | undefined)?.emailAddress?.address, 300), subject: bounded(message.subject as string, 300),
-        date: message.receivedDateTime ?? null, snippet: bounded(message.bodyPreview as string, 500) }));
+        date: message.receivedDateTime ?? null, receivedAt: message.receivedDateTime ?? null, snippet: bounded(message.bodyPreview as string, 500) }));
     },
     async readMail(token, messageId) {
       const message = await json(await fetchImpl(`${graph}/messages/${encodeURIComponent(messageId)}?$select=id,conversationId,from,toRecipients,subject,receivedDateTime,body`,
@@ -375,7 +385,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       const base = { account: account.email, provider: account.provider };
       switch (toolId) {
         case "mail.search": {
-          const input = z.object({ query: z.string().trim().min(1).max(300), limit: z.number().int().min(1).max(25).default(10), account: z.string().optional() }).strict().parse(args);
+          const input = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).max(25).default(10), account: z.string().optional() }).strict().parse(args);
           return { status: "COMPLETED", result: { ...base, untrusted, messages: await api.searchMail(token, input.query, input.limit) } };
         }
         case "mail.read": {

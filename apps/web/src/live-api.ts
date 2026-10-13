@@ -1,4 +1,5 @@
 import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionControlRequest, PlanStageOverrideRequest } from "@space/contracts";
+import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { LiveRoomContext } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
@@ -72,6 +73,8 @@ import type {
   AppDiagnosticsSegmentMetadata,
   AppDiagnosticsStatus,
   DeployQueueReport,
+  ReleasesReport,
+  ReleaseActionResponse,
   AppDiagnosticsVideoLease,
   CollaborationMode,
   AgentRuntimeRegistry,
@@ -99,6 +102,24 @@ import type {
   BrowserFrameToken,
   BrowserRuntimeInput,
   BrowserHandoffRequestResponse,
+  JobApplication,
+  JobApplicationCreate,
+  JobApplicationStatus,
+  JobApplicationUpdate,
+  JobApplicationField,
+  JobApplyEvent,
+  JobApplyMemory,
+  JobApplyMemoryCreate,
+  JobApplyMemoryQuery,
+  JobApplyMemoryUpdate,
+  JobApplyReviewDecision,
+  JobApplyRunView,
+  JobApplyDiscoverRequest,
+  JobApplyDiscoverResult,
+  JobApplyMailboxInput,
+  JobApplyPaneMetadata,
+  JobApplyProfile,
+  JobApplyProfileUpdate,
   BrowserPageListResponse,
   BrowserPageSummary,
   BrowserSessionViewport,
@@ -191,6 +212,18 @@ import type {
   GatewayApiKeyList,
   GatewayApiKeyUpdateRequest,
   GatewayRequestLogList,
+  GatewayRequestLog,
+  GatewayRequestLogFacets,
+  GatewayRequestLogFilter,
+  GatewayDashboard,
+  GatewayDashboardRange,
+  GatewayHealth,
+  GatewayAccountDetail,
+  GatewayAccountUpdateRequest,
+  GatewayApiKeyDetail,
+  GatewayHeadroomHistory,
+  GatewayHeadroomLifetime,
+  GatewayHeadroomSession,
   GatewayReport,
   GatewayCompressionStats,
   GatewaySettings,
@@ -269,8 +302,6 @@ import type {
   Provider,
   ProviderSettings,
   UserSettings,
-  ProviderSwitchResponse,
-  ProviderSwitchTargets,
   ProviderValidationResult,
   CreateProviderInput,
   CreateBrowserCaptureJobRequest,
@@ -374,6 +405,8 @@ import {
   CLI_RUNTIME_VISIBILITY_EVENT,
   readCliRuntimeVisibilityChange
 } from "./cli-runtime-visibility-events.js";
+
+import { gatewayLogFilterParams } from "./features/space-gateway/gateway-log-query.js";
 
 export { SpaceApiError } from "./runtime/SpaceRuntime.js";
 
@@ -514,6 +547,8 @@ export interface AppVersionStatus {
   updateAvailable: boolean;
   behindCount: number;
   checkedAt: string | null;
+  /** Present only on public installations (run-spaceapp). */
+  updateCommand?: string | null;
 }
 
 export interface ServiceRestartResponse {
@@ -530,6 +565,8 @@ export interface McpPayload {
   gateway: McpGatewayStatus;
   servers: McpServer[];
   tools: McpTool[];
+  /** CLI agents' MCP dispatcher backends, from the inventory job; null until it has run. */
+  dispatcher?: { backendCount: number; staleIds: string[]; checkedAt: string | null } | null;
   pagination: Paginated<Capability>["pagination"];
 }
 
@@ -1141,6 +1178,8 @@ export const api = {
   ensureProject: (input: { name?: string; path?: string }) =>
     request<{ ok: boolean; path: string; name: string }>("/api/projects/ensure", { method: "POST", body: JSON.stringify(input) }),
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
+  reportClientError: (report: ClientErrorReport) =>
+    request<null>("/api/client-errors", { method: "POST", body: JSON.stringify(report) }),
   harnessHealth: () => singleFlightRequest("harness-health", () => request<HarnessHealth>("/api/harness/healthz")),
   harnessUrl: "/api/harness/",
   eventStreamUrl,
@@ -1599,15 +1638,34 @@ export const api = {
     request<GatewayApiKey>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteGatewayApiKey: (keyId: string) =>
     request<{ id: string; deleted: true }>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }),
-  gatewayRequestLogs: (query: { limit?: number; cursor?: string | null } = {}) => {
-    const params = new URLSearchParams();
+  gatewayRequestLogs: (query: { limit?: number; cursor?: string | null; filter?: GatewayRequestLogFilter } = {}) => {
+    const params = gatewayLogFilterParams(query.filter);
     if (query.limit) params.set("limit", String(query.limit));
     if (query.cursor) params.set("cursor", query.cursor);
     const suffix = params.toString();
     return request<GatewayRequestLogList>(`/api/admin/gateway/logs${suffix ? `?${suffix}` : ""}`);
   },
+  gatewayRequestLog: (logId: string) => request<GatewayRequestLog>(`/api/admin/gateway/logs/${encodeURIComponent(logId)}`),
+  gatewayRequestLogFacets: (range: { from?: string; to?: string } = {}) => {
+    const params = gatewayLogFilterParams(range);
+    const suffix = params.toString();
+    return request<GatewayRequestLogFacets>(`/api/admin/gateway/logs/facets${suffix ? `?${suffix}` : ""}`);
+  },
+  gatewayDashboard: (range: GatewayDashboardRange) => request<GatewayDashboard>(`/api/admin/gateway/dashboard?range=${encodeURIComponent(range)}`),
+  gatewayHealth: () => request<GatewayHealth>("/api/admin/gateway/health"),
+  gatewayAccountDetail: (accountId: string) => request<GatewayAccountDetail>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`),
+  updateGatewayAccount: (accountId: string, patch: GatewayAccountUpdateRequest) =>
+    request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  exportGatewayAccount: (accountId: string) => request<{ accountId: string; email: string | null; planType: string | null; status: string; authJson: string }>(
+    `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}/export`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
+  gatewayApiKeyDetail: (keyId: string) => request<GatewayApiKeyDetail>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}`),
+  regenerateGatewayApiKey: (keyId: string) =>
+    request<GatewayApiKeyCreatedResponse>(`/api/admin/gateway/keys/${encodeURIComponent(keyId)}/regenerate`, { method: "POST", body: JSON.stringify({}) }),
   gatewaySettings: () => request<GatewaySettings>("/api/admin/gateway/settings"),
   gatewayCompressionStats: (hours = 24) => request<GatewayCompressionStats>(`/api/admin/gateway/compression-stats?hours=${hours}`),
+  gatewayCompressionSession: () => request<GatewayHeadroomSession>("/api/admin/gateway/compression/session"),
+  gatewayCompressionLifetime: () => request<GatewayHeadroomLifetime>("/api/admin/gateway/compression/lifetime"),
+  gatewayCompressionHistory: () => request<GatewayHeadroomHistory>("/api/admin/gateway/compression/history"),
   gatewayReport: (from: string, to: string) =>
     request<GatewayReport>(`/api/admin/gateway/reports?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   startGatewayCodexDeviceSignIn: () => request<{ flowId: string; verificationUrl: string; userCode: string; intervalSeconds: number; expiresInSeconds: number }>(
@@ -1626,8 +1684,9 @@ export const api = {
     "/api/admin/gateway/antigravity/profiles"),
   importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
-  addGatewayOpenAiApiKey: (input: { apiKey?: string; useSpaceKey?: boolean; label?: string }) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
-    "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
+  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
+    request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
+      "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
   importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/codex/import", { method: "POST", body: JSON.stringify({ authJson }) }),
   refreshGatewayAccountUsage: (accountId: string) => request<{ status: string }>(
@@ -1640,6 +1699,7 @@ export const api = {
     `/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
   updateGatewaySettings: (patch: GatewaySettingsUpdateRequest) =>
     request<GatewaySettings>("/api/admin/gateway/settings", { method: "PATCH", body: JSON.stringify(patch) }),
+  reloadGateway: () => request<{ status: string }>("/api/admin/gateway/reload", { method: "POST", body: JSON.stringify({}) }),
   codexLbSpeedDefaults: () => request<CodexLbSpeedDefaultsResponse>("/api/admin/codex-lb-speed-defaults"),
   updateCodexLbSpeedDefault: (
     modelId: CodexLbSpeedDefaultsResponse["models"][number]["modelId"],
@@ -1669,11 +1729,6 @@ export const api = {
   ) => request<CliSessionCleanupResponse>("/api/admin/cli-session-cleanups", {
     method: "POST",
     body: JSON.stringify({ previewId, confirmation })
-  }),
-  toolbarProviderTargets: () => request<ProviderSwitchTargets>("/api/admin/provider-switch-targets"),
-  switchToolbarProvider: (providerId: string) => request<ProviderSwitchResponse>("/api/admin/provider-switches", {
-    method: "POST",
-    body: JSON.stringify({ providerId })
   }),
   restartCoreServices: () =>
     request<ServiceRestartResponse>("/api/admin/service-restarts", {
@@ -1911,6 +1966,21 @@ export const api = {
       { method: "POST", body: JSON.stringify({ action }) }),
   updateDot: (dotId: string, input: import("@space/contracts").UpdateDotProfile) =>
     request<{ dot: import("@space/contracts").DotProfile }>(`/api/dots/${encodeURIComponent(dotId)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  dotFeed: (dotId: string, page: { before?: string; after?: string; limit?: number; roomId?: string | null } = {}) => {
+    const params = new URLSearchParams();
+    if (page.before) params.set("before", page.before);
+    if (page.after) params.set("after", page.after);
+    if (page.limit) params.set("limit", String(page.limit));
+    if (page.roomId) params.set("roomId", page.roomId);
+    const query = params.toString();
+    return request<import("@space/contracts").DotFeed>(`/api/dots/${encodeURIComponent(dotId)}/feed${query ? `?${query}` : ""}`);
+  },
+  markDotFeedRead: (dotId: string, cursor: string, roomId?: string | null) =>
+    request<{ unread: number }>(`/api/dots/${encodeURIComponent(dotId)}/feed/read`, { method: "POST", body: JSON.stringify({ cursor, ...(roomId ? { roomId } : {}) }) }),
+  dotSettings: () => request<{ settings: import("@space/contracts").DotUserSettings }>("/api/dots/settings"),
+  updateDotSettings: (input: import("@space/contracts").UpdateDotUserSettings) =>
+    request<{ settings: import("@space/contracts").DotUserSettings }>("/api/dots/settings", { method: "PUT", body: JSON.stringify(input) }),
+  dotModels: () => request<import("@space/contracts").DotModelChoices>("/api/dots/models"),
   dotMemories: (dotId: string, query: { scope?: import("@space/contracts").DotMemoryScope; q?: string } = {}) => {
     const params = new URLSearchParams();
     if (query.scope) params.set("scope", query.scope);
@@ -2089,6 +2159,8 @@ export const api = {
   },
   cliAccountIdentities: (refresh = false) =>
     request<CliAccountIdentitiesResponse>(`/api/cli/account-identities${refresh ? "?refresh=1" : ""}`),
+  cliAccountBalance: (runtimeId: string) =>
+    request<import("@space/contracts").CliAccountBalance>(`/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-balance`),
   getCliAccountProfileDetails: (runtimeId: string, profileId: string) =>
     request<CliAccountProfileDetailsResponse>(
       `/api/cli/runtimes/${encodeURIComponent(runtimeId)}/account-profiles/${encodeURIComponent(profileId)}/details`
@@ -2107,6 +2179,7 @@ export const api = {
   saveToolRouting: (input: { expectedRevision: number; enabledRuntimeIds: string[]; overrides: import("@space/contracts").ToolRoutingOverride[] }) =>
     request<import("@space/contracts").ToolRoutingStateV1>("/api/agent-tools/policies", { method: "PUT", body: JSON.stringify(input) }),
   agentToolsCatalog: () => request<AgentToolsCatalogResponse>("/api/agent-tools/catalog"),
+  agentToolsUsage: () => request<import("./features/agent-tools/agent-tools-usage.js").AgentToolsUsage>("/api/agent-tools/usage"),
   updateAgentToolAssignment: (toolId: string, input: UpdateAgentToolAssignmentInput) =>
     request<AgentToolAssignment>(`/api/agent-tools/assignments/${encodeURIComponent(toolId)}`, {
       method: "PATCH",
@@ -2191,6 +2264,10 @@ export const api = {
   },
   appDiagnosticsStatus: () => request<AppDiagnosticsStatus>("/api/app-diagnostics"),
   deployQueue: () => request<DeployQueueReport>("/api/admin/deploy-queue", { cache: "no-store" }),
+  releases: () => request<ReleasesReport>("/api/admin/releases", { cache: "no-store" }),
+  promoteRelease: () => request<ReleaseActionResponse>("/api/admin/releases/promote", { method: "POST" }),
+  approveHotfix: (ticketId: string) =>
+    request<ReleaseActionResponse>(`/api/admin/releases/hotfixes/${encodeURIComponent(ticketId)}/approve`, { method: "POST" }),
   updateAppDiagnosticsStatus: (isEnabled: boolean) =>
     request<AppDiagnosticsStatus>("/api/admin/app-diagnostics", {
       method: "PATCH",
@@ -3486,6 +3563,72 @@ export const api = {
     request<T3CodeAdminResult>("/api/admin/t3code/enabled", { method: "PATCH", body: JSON.stringify(input) }),
   restartT3Code: (input: RestartT3CodeInput = {}) =>
     request<T3CodeAdminResult>("/api/admin/t3code/restart", { method: "POST", body: JSON.stringify(input) }),
+  // Job Applications pane: per-owner profile, mailbox and tracker; per-pane settings.
+  jobApplyProfile: () => request<{ profile: JobApplyProfile }>("/api/job-apply/profile", { cache: "no-store" }),
+  updateJobApplyProfile: (input: JobApplyProfileUpdate) =>
+    request<{ profile: JobApplyProfile }>("/api/job-apply/profile", { method: "PATCH", body: JSON.stringify(input) }),
+  importJobApplyCv: (input: { artifactId: string }) =>
+    request<{ profile: JobApplyProfile; coverage: string; textPreview: string }>("/api/job-apply/profile/cv", { method: "POST", body: JSON.stringify(input) }),
+  setJobApplyMailbox: (input: JobApplyMailboxInput) =>
+    request<{ profile: JobApplyProfile }>("/api/job-apply/mailbox", { method: "PUT", body: JSON.stringify(input) }),
+  testJobApplyMailbox: () =>
+    request<{ ok: true; verifiedAt: string; recent: Array<{ from: string; subject: string; receivedAt: string | null; snippet: string }> }>("/api/job-apply/mailbox/test", { method: "POST", body: "{}" }),
+  clearJobApplyMailbox: () => request<{ profile: JobApplyProfile }>("/api/job-apply/mailbox", { method: "DELETE" }),
+  jobApplications: (status?: JobApplicationStatus) =>
+    request<{ applications: JobApplication[] }>(`/api/job-apply/applications${status ? `?status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
+  createJobApplication: (input: JobApplicationCreate) =>
+    request<{ application: JobApplication; created: boolean }>("/api/job-apply/applications", { method: "POST", body: JSON.stringify(input) }),
+  updateJobApplication: (id: string, input: JobApplicationUpdate) =>
+    request<{ application: JobApplication }>(`/api/job-apply/applications/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  importJobApplyCsv: (input: { csv: string; paneId?: string | null }) =>
+    request<{ imported: number; skipped: number; duplicates: number }>("/api/job-apply/applications/import-csv", { method: "POST", body: JSON.stringify(input) }),
+  jobApplySettings: (paneId: string) =>
+    request<{ metadata: JobApplyPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/settings`, { cache: "no-store" }),
+  updateJobApplySettings: (paneId: string, metadata: JobApplyPaneMetadata) =>
+    request<{ metadata: JobApplyPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  // Job Copilot v2: run supervisor, queue, memory, fields, activity, questions and reviews.
+  jobApplyRun: (paneId: string) => request<JobApplyRunView>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/run`, { cache: "no-store" }),
+  startJobApplyRun: (paneId: string) =>
+    request<JobApplyRunView & { kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/run/start`, { method: "POST", body: "{}" }),
+  pauseJobApplyRun: (paneId: string) => request<JobApplyRunView>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/run/pause`, { method: "POST", body: "{}" }),
+  stopJobApplyRun: (paneId: string) => request<JobApplyRunView>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/run/stop`, { method: "POST", body: "{}" }),
+  addJobApplyQueue: (paneId: string, urls: string[]) =>
+    request<{ queued: JobApplication[]; existing: number; rejected: string[] }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/queue`, { method: "POST", body: JSON.stringify({ urls }) }),
+  discoverJobApplyPostings: (paneId: string, input: Partial<JobApplyDiscoverRequest>) =>
+    request<JobApplyDiscoverResult>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/discover`, { method: "POST", body: JSON.stringify(input) }),
+  reorderJobApplyQueue: (paneId: string, applicationIds: string[]) =>
+    request<{ queue: JobApplication[] }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/queue/order`, { method: "PUT", body: JSON.stringify({ applicationIds }) }),
+  removeJobApplication: (id: string) => request<{ removed: true }>(`/api/job-apply/applications/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  jobApplyFields: (applicationId: string) =>
+    request<{ fields: JobApplicationField[] }>(`/api/job-apply/applications/${encodeURIComponent(applicationId)}/fields`, { cache: "no-store" }),
+  editJobApplyField: (id: string, value: string | null) =>
+    request<{ field: JobApplicationField }>(`/api/job-apply/fields/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ value }) }),
+  jobApplyMemory: (query: Partial<JobApplyMemoryQuery> = {}) => {
+    const params = new URLSearchParams();
+    if (query.query) params.set("query", query.query);
+    if (query.site) params.set("site", query.site);
+    if (query.company) params.set("company", query.company);
+    if (query.kinds && query.kinds.length > 0) params.set("kinds", query.kinds.join(","));
+    if (query.pinnedOnly) params.set("pinnedOnly", "true");
+    if (query.limit) params.set("limit", String(query.limit));
+    const text = params.toString();
+    return request<{ memories: JobApplyMemory[]; total: number }>(`/api/job-apply/memory${text ? `?${text}` : ""}`, { cache: "no-store" });
+  },
+  rememberJobApplyMemory: (input: JobApplyMemoryCreate) =>
+    request<{ memory: JobApplyMemory }>("/api/job-apply/memory", { method: "POST", body: JSON.stringify(input) }),
+  updateJobApplyMemory: (id: string, input: JobApplyMemoryUpdate) =>
+    request<{ memory: JobApplyMemory }>(`/api/job-apply/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  forgetJobApplyMemory: (id: string) => request<{ forgotten: true }>(`/api/job-apply/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  jobApplyEvents: (query: { paneId?: string; applicationId?: string; runId?: string; since?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value !== undefined && value !== null) params.set(key, String(value));
+    const text = params.toString();
+    return request<{ events: JobApplyEvent[] }>(`/api/job-apply/events${text ? `?${text}` : ""}`, { cache: "no-store" });
+  },
+  answerJobApplyQuestion: (applicationId: string, input: { questionId: string; answer: string }) =>
+    request<{ memory: JobApplyMemory }>(`/api/job-apply/applications/${encodeURIComponent(applicationId)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  decideJobApplyReview: (applicationId: string, input: JobApplyReviewDecision) =>
+    request<{ decision: string }>(`/api/job-apply/applications/${encodeURIComponent(applicationId)}/review`, { method: "POST", body: JSON.stringify(input) }),
   launchReadiness: () => request<LaunchReadiness>("/api/admin/launch-readiness"),
   observability: () => request<ObservabilitySnapshot>("/api/admin/observability"),
   worker: () => request<WorkerReadiness>("/api/admin/worker"),

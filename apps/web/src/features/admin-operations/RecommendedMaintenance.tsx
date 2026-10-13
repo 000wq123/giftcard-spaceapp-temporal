@@ -7,6 +7,22 @@ export interface RecommendedMaintenanceClient {
   applyMaintenancePlan(planId: string, input: MaintenanceApplyRequest): Promise<AdminOperationRun>;
   listCliMaintenanceRuns(): Promise<{ data: AdminOperationRun[] }>;
 }
+/** Tolerates missing or partial entries; a malformed row must never take the view down. */
+function runtimeRows(run: AdminOperationRun): Array<{ runtimeId: string; displayName: string; status: string; summary: string }> {
+  const value = run.result.runtimes;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const row = entry as Record<string, unknown>;
+    const runtimeId = typeof row.runtimeId === "string" ? row.runtimeId : "runtime";
+    return [{
+      runtimeId,
+      displayName: typeof row.displayName === "string" ? row.displayName : runtimeId,
+      status: typeof row.status === "string" ? row.status : "UNKNOWN",
+      summary: typeof row.summary === "string" ? row.summary : ""
+    }];
+  });
+}
 export function RecommendedMaintenance({ client, onBusyChange }: { client: RecommendedMaintenanceClient; onBusyChange: (busy: boolean) => void }) {
   const requestGeneration = useRef(0);
   const initializedPlan = useRef<string | null>(null);
@@ -91,6 +107,6 @@ export function RecommendedMaintenance({ client, onBusyChange }: { client: Recom
       )) : <p>No automatic changes are recommended. Review any unavailable checks or login requirements below.</p>}
       <button type="button" disabled={busy || !selected.length} onClick={() => void apply()}>Confirm & run {selected.length} actions</button>
     </div>}
-    {run && <details><summary>Check details & results</summary><ul>{Array.isArray(run.result.runtimes) && (run.result.runtimes as Array<{runtimeId: string; displayName: string; summary: string; status: string}>).map(r => <li key={r.runtimeId}><strong>{r.displayName}</strong> · {r.status} · {r.summary}</li>)}</ul></details>}
+    {run && <details><summary>Check details & results</summary><ul>{runtimeRows(run).map((r, index) => <li key={`${r.runtimeId}-${index}`}><strong>{r.displayName}</strong> · {r.status} · {r.summary}</li>)}</ul></details>}
   </section>;
 }

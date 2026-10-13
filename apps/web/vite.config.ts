@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { retainOpenTabAssets } from "./vite.asset-retention.js";
 import react from "@vitejs/plugin-react";
@@ -40,6 +41,16 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    globals: true
+    globals: true,
+    // public-host runs many agents at once. With the default one worker per core, a full web run
+    // loaded the host so far that about 400 rendering tests passed the 5 s limit (2026-10-12);
+    // with 4 workers and 20 s the same files had no timeouts.
+    maxWorkers: 4,
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
+    setupFiles: ["./tests/setup-testing-library.ts"],
+    // Worktrees share node_modules with the live checkout, so tests pin the contracts package to
+    // this checkout's source (the API suite does the same); builds keep resolving the built package.
+    alias: [{ find: /^@space\/contracts$/, replacement: fileURLToPath(new URL("../../packages/contracts/src/index.ts", import.meta.url)) }]
   }
 });

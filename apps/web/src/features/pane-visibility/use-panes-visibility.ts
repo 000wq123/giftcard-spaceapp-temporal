@@ -3,6 +3,7 @@ import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   Bot,
   Boxes,
+  ClipboardList,
   Database,
   Eye,
   FolderPlus,
@@ -89,6 +90,13 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "T3 Code",
     description: "Supervise CLI agent execution with structured event streaming and visual diff review.",
     icon: Bot
+  },
+  {
+    id: "jobs",
+    actionId: "add-jobs",
+    label: "Job Copilot",
+    description: "A Claude Code agent and a live browser that find, fill and submit job applications from your CV.",
+    icon: ClipboardList
   }
 ];
 
@@ -106,7 +114,8 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-vnc": "vnc",
   "add-live": "live",
   "add-harness": "harness",
-  "add-t3code": "t3code"
+  "add-t3code": "t3code",
+  "add-jobs": "jobs"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -119,7 +128,8 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   vnc: "add-vnc",
   live: "add-live",
   harness: "add-harness",
-  t3code: "add-t3code"
+  t3code: "add-t3code",
+  jobs: "add-jobs"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";

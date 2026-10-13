@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { buildMemoryGraphSnapshot } from "./parser.js";
 import { createMemoryGraphSnapshotStore } from "./snapshot-store.js";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "./types.js";
+import { MONTHLY_MEMORY_FILE_PATTERN } from "./memory-files.js";
 
 export const ALL_MONTHS_SNAPSHOT_FILENAME = "snapshot-all-months.json";
-export const MONTHLY_MEMORY_FILE_PATTERN = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
 export async function listMonthlyMemorySourcePaths(memoryDir: string): Promise<string[]> {
   const entries = await readdir(memoryDir, { withFileTypes: true });

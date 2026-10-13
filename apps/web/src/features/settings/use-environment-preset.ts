@@ -501,6 +501,7 @@ export function useEnvironmentPreset(options?: {
         }
 
         const totalClis = targets.length;
+        const keptWithOpenWork: string[] = [];
         if (totalClis === 0) {
           setActivationProgress(95);
           setActivationStepLabel("Non-custom CLIs already disabled...");
@@ -518,6 +519,14 @@ export function useEnvironmentPreset(options?: {
               await withTimeout(
                 (async () => {
                   const preview = await (api as any).cliRuntimeDisablePreview?.(runtimeId);
+                  // A preset never closes open panes or stops running work; that CLI stays enabled.
+                  if (
+                    (preview?.openPaneCount ?? 0) + (preview?.activeSessionCount ?? 0) +
+                    (preview?.openChatPaneCount ?? 0) + (preview?.activeChatRunCount ?? 0) > 0
+                  ) {
+                    keptWithOpenWork.push(name);
+                    return;
+                  }
                   const token = preview?.confirmationToken || "CONFIRM";
                   await api.updateCliRuntimeSetting(runtimeId, {
                     enabled: false,
@@ -529,6 +538,10 @@ export function useEnvironmentPreset(options?: {
             } catch {
               // Ignore individual disable errors
             }
+          }
+          if (keptWithOpenWork.length > 0) {
+            setActivationStepLabel(`Kept ${keptWithOpenWork.join(", ")} enabled: open panes are still using ${keptWithOpenWork.length === 1 ? "it" : "them"}.`);
+            await new Promise((resolve) => setTimeout(resolve, 1200));
           }
         }
 

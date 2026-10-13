@@ -58,7 +58,8 @@ export const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   FILES: FolderOpen,
   DATABASES: Database,
   DEMOS: Boxes,
-  T3CODE: Cpu
+  T3CODE: Cpu,
+  JOB_APPLY: ClipboardList
 };
 
 export function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
@@ -124,10 +125,15 @@ export const LazyDatabasesPane = lazy(() =>
 export const LazyT3CodePane = lazy(() =>
   import("../t3code-pane/T3CodePane.js").then((module) => ({ default: module.T3CodePane }))
 );
+export const LazyJobApplyPane = lazy(() =>
+  import("../job-apply-pane/JobCopilotPane.js").then((module) => ({ default: module.JobCopilotPane }))
+);
 
 export const agentPaneLoadingFallback = <div className="pane-copy" role="status">Loading chat pane…</div>;
 
 export const browserPaneLoadingFallback = <div className="pane-copy" role="status">Loading browser pane…</div>;
+
+export const terminalPaneLoadingFallback = <div className="pane-copy" role="status">Loading CLI pane…</div>;
 
 export const PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX = "space.paneToolbar.hiddenActionIds";
 
@@ -1723,7 +1729,7 @@ export const PaneCard = memo(function PaneCard({
       }
     ];
   }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE") {
+  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY") {
     rawPaneActions = [
       ...(!isTerminalLoginSession ? [{
         id: "add",
@@ -1848,7 +1854,7 @@ export const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -1856,7 +1862,7 @@ export const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic" || pane.mode === "YOUTUBE"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE"
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"
     ? []
     : (uiTheme !== "classic" || pane.mode === "YOUTUBE"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
@@ -2534,7 +2540,7 @@ export const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -2566,7 +2572,7 @@ export const PaneCard = memo(function PaneCard({
                   }}
                   onResetOrder={paneToolbar.resetOrder}
                   isOrderCustomized={paneToolbar.isOrderCustomized}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"}
                   preferPaneInside={pane.mode === "CHAT"}
                   primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
@@ -2649,6 +2655,7 @@ export const PaneCard = memo(function PaneCard({
             />
           </RecoverableSurface>
         ) : pane.mode === "TERMINAL" ? (
+          <RecoverableSurface fallback={terminalPaneLoadingFallback} resetKey={pane.id}>
           <TerminalPane
             pane={pane}
             terminalFontSize={terminalFontSize}
@@ -2673,6 +2680,7 @@ export const PaneCard = memo(function PaneCard({
             oskOpen={oskOpen}
             mobile={shellMode === "mobile" || isCoarsePointer}
           />
+          </RecoverableSurface>
         ) : pane.mode === "BROWSER" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyBrowserPane
@@ -2722,6 +2730,51 @@ export const PaneCard = memo(function PaneCard({
         ) : pane.mode === "DEMOS" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback}>
             <LazyDemosPane pane={pane} uiTheme={uiTheme} isVisible={isVisibleInShell} />
+          </RecoverableSurface>
+        ) : pane.mode === "JOB_APPLY" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazyJobApplyPane
+              pane={pane}
+              isVisible={isVisibleInShell}
+              terminal={(
+                <TerminalPane
+                  pane={pane}
+                  terminalFontSize={terminalFontSize}
+                  bootstrapBarrier={terminalBootstrapBarrier}
+                  shouldBootstrap={shouldBootstrapTerminal && !pane.id.startsWith("pane:optimistic-")}
+                  prefillInitialReplay={prefillInitialReplay}
+                  revealGeneration={revealGeneration}
+                  hideFloatingControls={hideCliFloats}
+                  isTarget={isTarget}
+                  isVisible={isTerminalOutputVisible}
+                  fullscreenLayout={isFullscreenLayout}
+                  cliDebugModeEnabled={cliDebugModeEnabled}
+                  observerOnly={terminalObserverOnly}
+                  maxImagePreviews={cliImagePreviewLimit}
+                  onCliDebugModeChange={onCliDebugModeChange}
+                  onSessionMetadataChange={setTerminalSessionMetadata}
+                  onActionAvailabilityChange={handleTerminalActionAvailabilityChange}
+                  onBootstrapped={handleTerminalBootstrapped}
+                  onPrefillReadyChange={handleTerminalPrefillReadyChange}
+                  onRevealReady={handleTerminalRevealReady}
+                  onWorkingStateChange={handleWorkingStateChange}
+                  oskOpen={oskOpen}
+                  mobile={shellMode === "mobile" || isCoarsePointer}
+                />
+              )}
+              browser={(
+                <RecoverableSurface fallback={browserPaneLoadingFallback}>
+                  <LazyBrowserPane
+                    mobile={shellMode === "mobile" || isCoarsePointer}
+                    isVisible={isVisibleInShell}
+                    pane={pane}
+                    agentNumber={agentNumber}
+                    observerOnly={browserObserverOnly}
+                    uiTheme={uiTheme}
+                  />
+                </RecoverableSurface>
+              )}
+            />
           </RecoverableSurface>
         ) : pane.mode === "T3CODE" ? (
           <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>

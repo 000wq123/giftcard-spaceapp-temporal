@@ -16,6 +16,8 @@ export interface DashboardActivityDetail {
   modelId?: string | null;
   /** native: the CLI's own state; screen: terminal heuristic; session/run: Space records. */
   source: "native" | "screen" | "session" | "run";
+  /** Fixed id of the screen rule that decided a screen status, for diagnostics; never screen text. */
+  rule?: string;
 }
 
 export type DashboardCliActivity = DashboardStatus | DashboardActivityDetail | null;
@@ -132,9 +134,62 @@ export function openCodeDashboardActivity(messages: unknown[]): DashboardActivit
 type ScreenState = "RUNNING" | "IDLE" | "WAITING_FOR_INPUT" | "UNKNOWN";
 interface NativeTurnLike { status: string; aborted?: boolean; timing: { startedAt: string | null; completedAt: string | null } }
 
+/**
+ * Screen rules for the dashboard, checked in order: a question for the operator, then a busy hint, then an
+ * empty composer. Busy hints win over the composer because several CLIs (Qwen, Qoder, Gemini) keep their input
+ * placeholder visible while a turn runs. Busy and idle hints are read only from the bottom of the screen, where
+ * every supported TUI draws its status line (Reasonix keeps six footer lines below it), so transcript text such as "- working tree clean" cannot hold an
+ * agent in Working.
+ */
+const screenRules: ReadonlyArray<{ id: string; state: ScreenState; lines: number; pattern: RegExp }> = [
+  { id: "approval", state: "WAITING_FOR_INPUT", lines: 24, pattern: /select (?:a |an )?(?:session|model|option)|enter to (?:confirm|select)|allow (?:once|always)|approve this|do you want to (?:proceed|allow|run|make this edit|create|apply)|\byes,? (?:allow|and don't ask|proceed)\b|waiting for (?:your )?(?:approval|confirmation|permission)|\((?:y\/n|y\/n\/a)\)|\[y\/n\]|\bpermission (?:required|request)\b/i },
+  // A menu waiting for a pick, e.g. Grok's plan upgrade question.
+  { id: "choice", state: "WAITING_FOR_INPUT", lines: 6, pattern: /↑\s*\/\s*↓\s*(?:to\s+)?navigate[^\n]*\benter\s*:?\s*(?:to\s+)?(?:submit|select|confirm)\b/i },
+  // Grok shows "Ctrl+c:cancel"; Gemini "esc to cancel"; Droid "Press ESC to stop"; OpenCode "esc interrupt".
+  { id: "busy-key", state: "RUNNING", lines: 16, pattern: /\b(?:esc|escape)\b\s*(?:to\s+)?(?:interrupt|cancel|stop|abort)\b|\bctrl\s*\+\s*c\s*[:\s]\s*(?:to\s+)?(?:interrupt|cancel|stop|abort)\b/i },
+  { id: "busy-thinking", state: "RUNNING", lines: 14, pattern: /\bthinking(?:\.{3}|…)|running\s+(?:background\s+)?(?:command|task|subagent|process)(?:\.{3}|…)/i },
+  // Oh My Pi shows "⎋ Working…" and a status rail that starts "⠹ 2s >" instead of its idle "π >"; Claude's
+  // spinner frames include "* Levitating…  24s" when its native status is unreadable.
+  { id: "busy-spinner", state: "RUNNING", lines: 14, pattern: /^[ \t]*[\u2800-\u28ff✶✻✽✢✳◐◓◑◒⎋][ \t]*\p{L}[^\n]{0,60}?(?:…|\.{3})|^[ \t]*[\u2800-\u28ff][ \t]*\d+(?:\.\d+)?s\b|^[ \t]*[*·][ \t]*\p{L}+…[ \t]+\d+s\b|^[ \t]*[\u2800-\u28ff•●*o|/\\-][ \t]*working[ \t]*(?:$|[.…(·•])|\bworking[ \t]*[(·•][ \t]*\d+[a-z]*/imu },
+  { id: "busy-task", state: "RUNNING", lines: 14, pattern: /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im },
+  { id: "composer", state: "IDLE", lines: 16, pattern: /ask (?:codex|opencode|gemini|claude)?(?:\s+to do)?\s+anything|ask anything|type (?:your )?message|send a message|try something|plan, search, build anything/i },
+  { id: "prompt", state: "IDLE", lines: 6, pattern: /(?:^|\n)\s*(?:[│┃|]\s*)?[❯›>→]\s*[^\n]*$/m },
+];
+
+/**
+ * A turn that stopped on the account's quota, plan or balance (Grok's upgrade menu, Cursor's usage limit and
+ * free-plan model refusal, Droid without a subscription, DeepSeek's insufficient balance). Qoder's "Credits exhausted" is only a notice: it keeps answering on a fallback model.
+ */
+const usageLimitPattern = /\bmonthly quota\b|\byou(?:'ve| have)? (?:hit|reached|exceeded|run out of) (?:your |the )?(?:free |daily |weekly |monthly )?(?:usage|rate|quota|credit)s?(?: limit)?\b|\b(?:usage|quota) limit (?:reached|exceeded)\b|\bquota (?:exceeded|exhausted)\b|\bupgrade (?:your )?plans? to continue\b|\bno active subscription\b|\binsufficient (?:balance|credits?|funds|quota)\b/i;
+
+const signInPattern = /\bsign in at\b|\bdevice (?:login|code)\b|\blogin code\b|\b(?:log|sign) in to continue\b/i;
+
+/** The CLI stopped on its account's quota, plan or balance and waits at its composer (the dashboard's "Usage limit"). */
+export function screenShowsAccountLimit(screen: string): boolean {
+  return dashboardScreenState(screen).reason === "Usage limit";
+}
+
+/** Classify a bounded room screen for the dashboard; returns the fixed id of the deciding rule. */
+export function dashboardScreenState(screen: string): { state: ScreenState; rule: string; reason?: string } {
+  // A finished background job keeps its "esc to interrupt" hint beside the idle composer.
+  const lines = screen.replace(/waiting for background terminal[^\n]*(?:esc(?:ape)? to interrupt|\/ps to view|\/stop to close)[^\n]*/gi, "")
+    .split("\n").filter(line => line.trim());
+  // A quota stop right above the composer means the agent cannot continue until the operator acts.
+  const limited = usageLimitPattern.test(lines.slice(-14).join("\n"));
+  // Muse and other device-code logins wait for the operator to approve a sign-in.
+  const signIn = signInPattern.test(lines.slice(-14).join("\n"));
+  for (const rule of screenRules) {
+    if (!rule.pattern.test(lines.slice(-rule.lines).join("\n"))) continue;
+    if (rule.state === "WAITING_FOR_INPUT") return { state: rule.state, rule: rule.id, ...(limited ? { reason: "Usage limit" } : signIn ? { reason: "Sign-in required" } : {}) };
+    if (rule.state === "IDLE" && limited) break;
+    return { state: rule.state, rule: rule.id };
+  }
+  return limited ? { state: "WAITING_FOR_INPUT", rule: "usage-limit", reason: "Usage limit" } : { state: "UNKNOWN", rule: "none" };
+}
+
 export interface CliDashboardActivityReaders {
-  /** Terminal heuristic from the bounded room screen; never starts or attaches a CLI. */
-  screenState(session: PaneCliSession): Promise<ScreenState>;
+  /** Bounded room screen text; never starts or attaches a CLI. */
+  screenText(session: PaneCliSession): Promise<string>;
   codexTurn(session: PaneCliSession): Promise<{ status: "PENDING" | "RUNNING" | "COMPLETED" | "ABORTED"; lastActivityAtMs?: number }>;
   /** Null when the OpenCode server is unavailable; `messages` holds at most the latest few. */
   openCode(session: PaneCliSession): Promise<{ busy: boolean; messages: () => Promise<unknown[]> } | null>;
@@ -142,15 +197,54 @@ export interface CliDashboardActivityReaders {
   claude(session: PaneCliSession): Promise<Parameters<typeof claudeDashboardActivity>[0] | null>;
 }
 
-const screenActivity = (state: ScreenState): DashboardActivityDetail =>
-  state === "RUNNING" ? { status: "working", source: "screen" }
-    : state === "WAITING_FOR_INPUT" ? { status: "waiting", reason: "Needs input", source: "screen" }
-      : { status: "idle", source: "screen" };
+const screenActivity = ({ state, rule, reason }: { state: ScreenState; rule: string; reason?: string }): DashboardActivityDetail =>
+  state === "RUNNING" ? { status: "working", source: "screen", rule }
+    : state === "WAITING_FOR_INPUT" ? { status: "waiting", reason: reason ?? "Needs input", source: "screen", rule }
+      : { status: "idle", source: "screen", rule };
+
+/** A screen that stops showing busy hints must stay quiet this long before the turn counts as finished. */
+export const DASHBOARD_SCREEN_SETTLE_MS = 4_000;
+const TRACKED_SESSION_TTL_MS = 6 * 60 * 60_000;
+
+interface TrackedActivity { status: DashboardStatus; since: string | null; settleSince: string | null; seenAt: number }
+
+/**
+ * Remembers each session's last status so every runtime reports when its current state began, and screen-only
+ * CLIs, which never announce completion, show Done once a turn they were seen working on goes quiet.
+ */
+function createActivityTracker(now: () => number) {
+  const tracked = new Map<string, TrackedActivity>();
+  return (sessionId: string, detail: DashboardActivityDetail): DashboardActivityDetail => {
+    const at = now();
+    if (tracked.size > 200) for (const [key, entry] of tracked) if (at - entry.seenAt > TRACKED_SESSION_TTL_MS) tracked.delete(key);
+    const previous = tracked.get(sessionId);
+    const atIso = new Date(at).toISOString();
+    if (detail.source === "screen" && detail.status === "idle" && (previous?.status === "working" || previous?.status === "done")) {
+      if (previous.status === "done") {
+        tracked.set(sessionId, { ...previous, seenAt: at });
+        return { ...detail, status: "done", since: previous.since };
+      }
+      const settleSince = previous.settleSince ?? atIso;
+      if (at - Date.parse(settleSince) < DASHBOARD_SCREEN_SETTLE_MS) {
+        tracked.set(sessionId, { ...previous, settleSince, seenAt: at });
+        return { ...detail, status: "working", since: previous.since };
+      }
+      tracked.set(sessionId, { status: "done", since: settleSince, settleSince: null, seenAt: at });
+      return { ...detail, status: "done", since: settleSince };
+    }
+    // Idle has no meaningful start; working and waiting start when first observed unless the CLI says otherwise.
+    const carried = previous?.status === detail.status ? previous.since : null;
+    const since = detail.since ?? carried ?? (detail.status === "working" || detail.status === "waiting" ? atIso : null);
+    tracked.set(sessionId, { status: detail.status, since, settleSince: null, seenAt: at });
+    return since ? { ...detail, since } : detail;
+  };
+}
 
 /** One status resolver for every CLI runtime: native state first, the room screen as fallback. */
-export function createCliDashboardActivityReader(read: CliDashboardActivityReaders) {
-  return async (session: PaneCliSession): Promise<DashboardActivityDetail> => {
-    const screen = async () => screenActivity(await read.screenState(session).catch(() => "UNKNOWN" as const));
+export function createCliDashboardActivityReader(read: CliDashboardActivityReaders, now: () => number = Date.now) {
+  const track = createActivityTracker(now);
+  const resolve = async (session: PaneCliSession): Promise<DashboardActivityDetail> => {
+    const screen = async () => screenActivity(dashboardScreenState(await read.screenText(session).catch(() => "")));
     if (session.runtimeId === "cli:codex") {
       const turn = await read.codexTurn(session);
       const at = iso(turn.lastActivityAtMs);
@@ -184,4 +278,5 @@ export function createCliDashboardActivityReader(read: CliDashboardActivityReade
     }
     return screen();
   };
+  return async (session: PaneCliSession): Promise<DashboardActivityDetail> => track(session.sessionId, await resolve(session));
 }

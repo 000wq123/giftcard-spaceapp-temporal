@@ -36,7 +36,9 @@ export async function routingStateWithLegacy(store: SpaceStore): Promise<ToolRou
   const state = await store.getToolRoutingState();
   const legacy = await store.listAgentToolAssignments();
   const overrides: ToolRoutingOverride[] = legacy.flatMap((entry) => {
-    const base = { toolId: entry.toolId === "mcp:mcp_dispatcher" ? "mcp:*" : entry.toolId, modelId: "*" };
+    // Autohand names the same dispatcher `mcpDispatcher`.
+    const dispatcher = entry.toolId === "mcp:mcp_dispatcher" || entry.toolId === "mcp:mcpDispatcher";
+    const base = { toolId: dispatcher ? "mcp:*" : entry.toolId, modelId: "*" };
     if (entry.scope === "NONE") return [{ ...base, runtimeId: "*", mode: "DISABLED" as const }];
     if (entry.scope === "COMMON") return [{ ...base, runtimeId: "*", mode: "AUTOMATIC" as const }];
     return [

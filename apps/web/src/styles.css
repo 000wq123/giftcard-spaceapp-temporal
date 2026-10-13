@@ -281,6 +281,75 @@ body:not([data-color-mode="light"]) img[data-terminal-runtime-brand="copilot"] {
   height: 0.8rem;
 }
 
+button.topbar-meta-update {
+  white-space: nowrap;
+  font: inherit;
+  font-size: 0.76rem;
+  line-height: 1;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #3f7d63;
+  background: transparent;
+  cursor: pointer;
+}
+
+.topbar-meta-update-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.topbar-update-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: min(380px, calc(100vw - 24px));
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #3f7d63;
+  border-radius: 8px;
+  background: #121516;
+  color: #d9d6cf;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  box-shadow: 0 14px 36px rgb(0 0 0 / 0.45);
+}
+
+.topbar-update-panel p {
+  margin: 0;
+}
+
+.topbar-update-command {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.45rem 0.4rem 0.6rem;
+  border: 1px solid #2b2e30;
+  border-radius: 6px;
+  background: #0b0d0e;
+}
+
+.topbar-update-command code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: #a7e8c4;
+  user-select: all;
+}
+
+.topbar-update-command button {
+  flex: 0 0 auto;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid #3f7d63;
+  border-radius: 5px;
+  background: #18322a;
+  color: #e6f4ec;
+  font: inherit;
+  cursor: pointer;
+}
+
 .brand span,
 .board-toolbar span,
 .room-list small,
@@ -6847,6 +6916,18 @@ body[data-color-mode="light"] .icon-action-manager {
   display: none;
 }
 
+/* PERF-001 (operator-approved fix, 2026-10-11): a dormant warm room keeps its computed style and
+   layout instead of discarding them, so revealing it does not restyle and lay out every pane
+   again. It is still not painted, focusable, hit-testable or searchable (inert + aria-hidden). */
+@supports (content-visibility: hidden) {
+  .room-runtime-layer[data-presentation-state="hidden"] {
+    display: grid;
+    content-visibility: hidden;
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
 .room-runtime-layer[data-presentation-state="preparing"] {
   z-index: 2;
   opacity: 0;
@@ -8272,15 +8353,38 @@ body[data-color-mode="light"] .icon-action-manager {
 }
 
 .browser-account-picker { position: relative; flex: 0 0 auto; }
-.browser-account-trigger { width: 2rem; height: 2rem; min-height: 2rem; padding: 0; display: grid; place-items: center; }
+.browser-account-trigger { position: relative; width: 2rem; height: 2rem; min-height: 2rem; padding: 0; display: grid; place-items: center; }
 .browser-account-trigger svg { width: 17px; height: 17px; }
-.browser-account-menu { position: absolute; inset: calc(100% + 6px) auto auto 0; z-index: 25; box-sizing: border-box; width: min(230px, calc(var(--browser-pane-width, 100vw) - 8px)); max-height: min(24rem, var(--browser-menu-height, 65vh)); overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--border, #35404b); border-radius: 8px; background: var(--surface, #17212b); box-shadow: 0 10px 28px #0006; }
-.browser-account-menu strong { padding: 4px 6px; font-size: 12px; }
-.browser-account-menu button { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 6px 8px; text-align: left; font-size: 12px; }
-.browser-account-menu button[aria-checked="true"] { border-color: var(--accent, #4ac6b2); }
-.browser-account-menu button svg { width: 14px; height: 14px; }
-.browser-account-menu small { padding: 5px 6px; font-size: 11px; line-height: 1.4; opacity: .75; }
-.browser-account-menu small.browser-account-group, .youtube-account-menu small.browser-account-group { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border, #35404b); }
+.browser-account-menu { position: absolute; inset: calc(100% + 6px) auto auto 0; z-index: 25; box-sizing: border-box; width: min(300px, calc(var(--browser-pane-width, 100vw) - 8px)); max-height: min(28rem, var(--browser-menu-height, 65vh)); overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border, #35404b); border-radius: 10px; background: var(--surface, #17212b); box-shadow: 0 12px 32px #0007; }
+
+/* Google account menu rows, shared by Browser (.browser-account-menu) and YouTube (.youtube-account-menu) panes. */
+:is(.browser-account-menu, .youtube-account-menu) { --account-ok: #5ccb8f; --account-attention: #f2b55a; scrollbar-width: thin; }
+:is(.browser-account-trigger, .youtube-account-trigger)[data-account-status]::after { content: ""; position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: #5ccb8f; box-shadow: 0 0 0 2px var(--surface, #17212b); pointer-events: none; }
+:is(.browser-account-trigger, .youtube-account-trigger)[data-account-status="attention"]::after { background: #f2b55a; }
+.account-menu-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 4px 6px 2px; }
+.account-menu-head strong { padding: 0; font-size: 12.5px; font-weight: 600; }
+.account-menu-alert { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--account-attention); }
+:is(.browser-account-menu, .youtube-account-menu) small.account-menu-group { margin-top: 6px; padding: 4px 6px 3px; font-size: 10px; font-weight: 600; letter-spacing: .06em; line-height: 1.2; text-transform: uppercase; opacity: .55; }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-item { flex-shrink: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr) 14px; align-items: center; column-gap: 9px; min-height: 42px; margin: 0; padding: 5px 7px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; text-align: left; font: inherit; font-size: 12px; }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-item:hover:not(:disabled),
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-item:focus-visible { background: rgb(255 255 255 / 5%); border-color: var(--border, #35404b); }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-item[aria-checked="true"] { background: color-mix(in srgb, var(--accent, #4ac6b2) 13%, transparent); border-color: color-mix(in srgb, var(--accent, #4ac6b2) 55%, transparent); }
+.account-menu-avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12.5px; font-weight: 600; color: hsl(var(--account-hue, 205) 90% 88%); background: hsl(var(--account-hue, 205) 42% 30%); }
+.account-menu-avatar.private { color: var(--text-muted, #a7a59e); background: rgb(255 255 255 / 7%); }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-avatar svg { width: 13px; height: 13px; }
+.account-menu-copy { min-width: 0; display: grid; gap: 2px; }
+.account-menu-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; line-height: 1.25; }
+.account-menu-meta { min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.25; }
+.account-menu-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .6; }
+.account-menu-status { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; }
+.account-menu-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.account-menu-status.ok { color: var(--account-ok); }
+.account-menu-status.attention { color: var(--account-attention); }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-check { width: 14px; height: 14px; color: var(--accent, #4ac6b2); }
+.account-menu-footer { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border, #35404b); display: grid; gap: 2px; }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-signin { min-height: 30px; padding: 5px 8px; border: 1px solid var(--border, #35404b); border-radius: 7px; background: var(--surface-muted, #171e25); color: inherit; cursor: pointer; font: inherit; font-size: 12px; font-weight: 500; }
+:is(.browser-account-menu, .youtube-account-menu) .account-menu-signin.attention { border-color: color-mix(in srgb, var(--account-attention) 70%, transparent); color: var(--account-attention); }
+.account-menu-footer small { padding: 4px 6px; font-size: 11px; line-height: 1.4; opacity: .65; }
 
 .browser-url-form {
   flex: 1 1 0;
@@ -8704,6 +8808,12 @@ body[data-color-mode="light"] .icon-action-manager {
   place-items: center;
   color: #85928f;
   pointer-events: none;
+}
+
+/* With no open tab the host still streams its blank window; keep the frame dark instead of
+   painting that letterboxed white page behind the "No open tabs" message. */
+.browser-frame-shell[data-empty="true"] .browser-canvas {
+  visibility: hidden;
 }
 
 .browser-frame-empty svg[data-lucide="loader-2"] {
@@ -10971,6 +11081,20 @@ body[data-color-mode="light"] .icon-action-manager {
   padding: 0.65rem;
   font-size: 0.82rem;
   line-height: 1.5;
+}
+
+.cli-runtime-disable-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.cli-runtime-disable-confirm input {
+  margin: 0;
+  accent-color: #c9604d;
 }
 
 .cli-runtime-disable-actions {
@@ -21649,9 +21773,12 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   gap: 12px;
 }
 
+/* The footer model picker shares the CLI shortcuts popover surface; the theme rules style both. */
 .terminal-model-popover-quick {
-  border-radius: 22px;
-  background: #303030;
+  border-radius: var(--shortcuts-popover-radius, 16px);
+  border-color: var(--room-border, #3c4541);
+  background: var(--room-surface-soft, var(--room-surface, #181b1d));
+  color: var(--room-text, #edf2ee);
   padding: 12px;
 }
 
@@ -21900,6 +22027,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 }
 
 .youtube-experience .youtube-toolbar .youtube-account-trigger {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -22099,12 +22227,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 .youtube-playback-footer small { flex-basis: 100%; font-size: 10px; }
 
 .youtube-account-picker { position: relative; flex-shrink: 0; }
-.youtube-account-menu { position: fixed; z-index: 1600; width: min(230px, calc(100vw - 16px)); box-sizing: border-box; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--border, #35404b); border-radius: 8px; background: var(--surface, #17212b); box-shadow: 0 10px 28px #0006; }
-.youtube-account-menu strong { padding: 4px 6px; font-size: 12px; }
-.youtube-account-menu button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 6px 8px; border: 1px solid var(--border, #35404b); border-radius: 5px; background: var(--surface-muted, #171e25); color: inherit; cursor: pointer; text-align: left; font: inherit; font-size: 12px; }
-.youtube-account-menu button[aria-checked="true"] { border-color: var(--accent, #4ac6b2); }
-.youtube-account-menu button svg { width: 14px; height: 14px; }
-.youtube-account-menu small { padding: 5px 6px; font-size: 11px; line-height: 1.4; opacity: .75; }
+.youtube-account-menu { position: fixed; z-index: 1600; width: min(300px, calc(100vw - 16px)); box-sizing: border-box; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border, #35404b); border-radius: 10px; background: var(--surface, #17212b); box-shadow: 0 12px 32px #0007; }
 
 /* Floating mini YouTube player */
 .pane-card.is-floating-mini-player {
@@ -22785,9 +22908,9 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
 
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-model-popover {
   border-color: #d2dce4;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.98);
   color: #17232d;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12), 0 0 1px #d2dce4;
 }
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"]) .terminal-model-popover-head strong {
   color: #17232d;
@@ -24266,3 +24389,28 @@ input[type="checkbox"]:not(.space-toggle input):not(.sr-only):not([aria-hidden="
 .room-dock-field-header .room-dock-choose-project-btn:hover:not(:disabled) { background: rgba(109, 183, 170, 0.24); }
 .room-dock-field-header .room-dock-choose-project-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .room-dock-project-source { margin: 0.2rem 0 0; font-size: 0.68rem; color: var(--room-muted, #8b949e); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Dev instance marker: a thin stripe on top of every screen plus a corner label. */
+.space-instance-badge {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: #e0a526;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+
+.space-instance-badge-label {
+  position: fixed;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  padding: 0.1rem 0.55rem 0.15rem;
+  border-radius: 0 0 6px 6px;
+  background: #e0a526;
+  color: #1b1405;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+}

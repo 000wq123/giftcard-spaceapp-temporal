@@ -1,17 +1,43 @@
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { FastifyInstance, RouteShorthandOptions } from "fastify";
+import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
 import {
   generateNativeOpenCodeTitle,
   nativeOpenCodeModelCatalog,
   resolveNativeOpenCodeRuntime,
 } from "./task-title-opencode.js";
 import { createDecisionsService } from "./decisions-service.js";
+import {
+  AgentArena,
+  ARENA_HEIGHT,
+  ARENA_MODES,
+  ARENA_PROTOCOL_VERSION,
+  ARENA_WIDTH,
+  DECISION_INTERVAL_TICKS,
+  ROUND_SECONDS,
+  ROUND_TICKS,
+  SCORING,
+  SHIP,
+  TICK_HZ,
+  generateScenario,
+  type ArenaMode,
+} from "./asteroids-arena/sim.js";
+import { MANEUVERS, buildSensorSnapshot, buildSystemPrompt } from "./asteroids-arena/protocol.js";
+import { BASELINE_MODEL_ID, CLAUDE_BENCHMARK_MODELS, CODEX_LB_BASE_URL, PROVIDER_PATHS, codexAuthHeaders, getCodexApiKey } from "./asteroids-arena/providers.js";
+import { ArenaBenchmarkRunner, ArenaRunError, isArenaModelId, type ArenaContestantInput } from "./asteroids-arena/runner.js";
+import { createArenaFileStore, isArenaRunId, leaderboardView, type ArenaStore } from "./asteroids-arena/store.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "./openrouter-benchmark-models.js";
 
 /**
- * Benchmark results API — read-only views over the published
- * space-model-benchmark results directory.
+ * Benchmark API.
+ *
+ * Asteroids Agent Arena (/api/asteroids/benchmark/*): the server runs every
+ * benchmark round itself (asteroids-arena/runner.ts) and is the only
+ * scorekeeper; browsers start runs, watch live frames and read leaderboards.
+ * /tactics and /live-directive stay for the arcade game's AI pilot.
+ *
+ * Model benchmark results (/api/benchmark/*): read-only views over the
+ * published space-model-benchmark results directory.
  *
  * Data source: directory of JSON files produced by
  * `space-model-benchmark.sh --publish` (leaderboard.json + <runId>.json).
@@ -24,14 +50,8 @@ const DEFAULT_RESULTS_DIR = "/opt/spaceapp/var/space-model-benchmark";
 const MAX_RUN_FILES = 50;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const RUN_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
-const CHAMPIONSHIP_FILE = "/opt/spaceapp/var/asteroids-championship.json";
-const CHAMPIONSHIP_FILES = {
-  championship: CHAMPIONSHIP_FILE,
-  duel: "/opt/spaceapp/var/asteroids-duel.json",
-  shared_arena: "/opt/spaceapp/var/asteroids-shared-arena.json",
-} as const;
-type AsteroidsBenchmarkMode = keyof typeof CHAMPIONSHIP_FILES;
 const GEMINI_MODELS_FILE = "/opt/spaceapp/var/gemini-models.last-good.json";
+const CODEX_MODELS_CACHE_FILE = "/var/lib/spaceapp-user/.codex/models_cache.json";
 const GITHUB_AUTO_MODEL = { id: "github/auto", displayName: "GitHub CLI · Auto", providerId: "github", status: "VERIFIED" };
 const JEV_MODEL = { id: "openrouter/typesafe/jev-1.13", displayName: "TypeSafe Jev 1.13", providerId: "openrouter", status: "VERIFIED" };
 
@@ -44,40 +64,6 @@ export interface TacticalDoctrine {
   tactic: string;
   latencyMs: number;
   source: "model" | "fallback";
-}
-
-export interface AsteroidsModelStats {
-  id: string;
-  displayName: string;
-  providerId: string;
-  wins: number;
-  gamesPlayed: number;
-  totalScore: number;
-  bestScore: number;
-  totalKills: number;
-  avgAccuracy: number;
-  totalSurvivalSeconds: number;
-  lastTactic?: string;
-  lastLatencyMs?: number;
-  lastSource?: "model" | "fallback";
-}
-
-export interface AsteroidsMatchRound {
-  game: number;
-  winner: string;
-  scores: Record<string, { score: number; kills: number; accuracy: number; survival: number; tactic?: string; source?: "model" | "fallback" }>;
-}
-
-export interface AsteroidsChampionship {
-  id: string;
-  status: "ready" | "running" | "completed";
-  startedAt: string;
-  completedAt?: string;
-  games: number;
-  currentGame: number;
-  models: AsteroidsModelStats[];
-  gamesPlayed: AsteroidsMatchRound[];
-  error?: string;
 }
 
 function modelSeed(id: string): number {
@@ -99,31 +85,14 @@ async function loadAntigravityModels(): Promise<Array<{ id: string; displayName:
   }
 }
 
-const CODEX_ENV_FILE = "/var/lib/spaceapp-user/.config/codex-lb-provider.env";
-const CODEX_KEY_FILE = process.env.SPACE_CODEX_LB_KEY_FILE ?? "/opt/spaceapp/secrets/space-codex-lb-provider.key";
-const CODEX_MODELS_CACHE_FILE = "/var/lib/spaceapp-user/.codex/models_cache.json";
-export const CODEX_LB_BASE_URL = "http://127.0.0.1:2458";
-
-export async function getCodexApiKey(): Promise<string | null> {
-  try {
-    const key = (await readFile(CODEX_KEY_FILE, "utf8")).trim();
-    if (key) return key;
-  } catch {}
-  try {
-    const content = await readFile(CODEX_ENV_FILE, "utf8");
-    const match = content.match(/CODEX_LB_API_KEY=["']?([^"'\r\n]+)/);
-    return match?.[1] ? match[1].trim() : null;
-  } catch {
-    return null;
-  }
-}
+export { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey };
 
 async function loadCodexModels(): Promise<Array<{ id: string; displayName: string; providerId: string; status: string }>> {
-  // 1. Try querying the live Codex-LB HTTP API endpoint
+  // 1. Try the live Codex catalog in Space Gateway
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: controller.signal });
+    const res = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: controller.signal, headers: await codexAuthHeaders() });
     clearTimeout(timer);
     if (res.ok) {
       const data = (await res.json()) as any;
@@ -172,35 +141,6 @@ async function loadCodexModels(): Promise<Array<{ id: string; displayName: strin
     { id: "codex/gpt-5.6-luna", displayName: "GPT-5.6-Luna", providerId: "codex", status: "VERIFIED" },
     { id: "codex/gpt-5.5", displayName: "GPT-5.5", providerId: "codex", status: "VERIFIED" },
   ];
-}
-
-function championshipFile(mode: AsteroidsBenchmarkMode): string {
-  return CHAMPIONSHIP_FILES[mode];
-}
-
-async function saveChampionship(state: AsteroidsChampionship, mode: AsteroidsBenchmarkMode): Promise<void> {
-  const file = championshipFile(mode);
-  await mkdir(join(file, ".."), { recursive: true });
-  await writeFile(file, JSON.stringify(state, null, 2), "utf8");
-}
-
-async function loadChampionship(mode: AsteroidsBenchmarkMode): Promise<AsteroidsChampionship | null> {
-  const file = championshipFile(mode);
-  try {
-    const state = JSON.parse(await readFile(file, "utf8")) as AsteroidsChampionship;
-    const hasInvalidRound = !Array.isArray(state.gamesPlayed) || state.gamesPlayed.some((round) =>
-      !round || typeof round.game !== "number" || !round.scores ||
-      Object.values(round.scores).some((score) => !score || score.source !== "model")
-    );
-    const hasInvalidModel = !Array.isArray(state.models) || state.models.some((model) =>
-      model.lastSource !== undefined && model.lastSource !== "model"
-    );
-    if (hasInvalidRound || hasInvalidModel) return null;
-    return state;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
 }
 
 function extractJson(text: string): unknown {
@@ -266,7 +206,7 @@ async function mapWithDeadline<T>(
 }
 
 /**
- * Shared parser for provider chat completions (Codex-LB, OpenRouter): turns a
+ * Shared parser for provider chat completions (Space Gateway, OpenRouter): turns a
  * model answer into a clamped combat doctrine, or null when it is not usable.
  */
 function doctrineFromModelJson(
@@ -686,47 +626,203 @@ async function loadRunFiles(dir: string): Promise<Array<{ runId: string; record:
   return runs;
 }
 
-export function registerBenchmarkRoutes(app: FastifyInstance, rateLimitOptions: RouteShorthandOptions): void {
-  app.get("/api/asteroids/benchmark/models", rateLimitOptions, async () => {
-    let opencodeModels: Array<{ id: string; displayName: string; providerId: string; status: string }> = [];
-    try {
-      const command = await resolveNativeOpenCodeRuntime();
-      if (command) {
-        const catalog = await nativeOpenCodeModelCatalog(command);
-        opencodeModels = Object.entries(catalog.providers.find((provider) => provider.id === "opencode")?.models ?? {})
-          .filter(([, raw]) => {
-            const model = raw as { cost?: { input?: number; output?: number }; status?: string };
-            return model.cost?.input === 0 && model.cost?.output === 0 && !model.status?.toLowerCase().includes("deprecated");
-          })
-          .map(([id]) => ({
-            id,
-            displayName: id,
-            providerId: "opencode",
-            status: "VERIFIED",
-          }))
-          .sort((left, right) => left.id.localeCompare(right.id));
-      }
-    } catch {}
-    const codexModels = await loadCodexModels();
-    const antigravityModels = await loadAntigravityModels();
-    const openRouterModels = await loadOpenRouterBenchmarkModels().catch(() => []);
-    const allModels = [
-      ...codexModels,
-      ...opencodeModels,
-      ...antigravityModels,
-      ...openRouterModels,
-      JEV_MODEL,
-      GITHUB_AUTO_MODEL,
-    ];
-    return { available: allModels.length > 0, models: [...new Map(allModels.map((model) => [model.id, model])).values()] };
+export interface BenchmarkModel {
+  id: string;
+  displayName: string;
+  providerId: string;
+  status: string;
+}
+
+const BASELINE_MODEL: BenchmarkModel = { id: BASELINE_MODEL_ID, displayName: "Scripted Baseline", providerId: "baseline", status: "VERIFIED" };
+
+function arenaMode(value: unknown): ArenaMode | undefined {
+  const mode = value === undefined || value === null || value === "" ? "championship" : value;
+  return typeof mode === "string" && (ARENA_MODES as readonly string[]).includes(mode) ? (mode as ArenaMode) : undefined;
+}
+
+function parseContestants(value: unknown): ArenaContestantInput[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) return null;
+  const contestants: ArenaContestantInput[] = [];
+  for (const entry of value) {
+    const raw = typeof entry === "string" ? { id: entry } : (entry as { id?: unknown; displayName?: unknown } | null);
+    if (!raw || !isArenaModelId(raw.id)) return null;
+    const displayName = typeof raw.displayName === "string" ? raw.displayName.replace(/[^\x20-\x7E\u00A0-\u024F]/g, "").trim().slice(0, 60) : "";
+    contestants.push(displayName ? { id: raw.id, displayName } : { id: raw.id });
+  }
+  return contestants;
+}
+
+const MODE_DESCRIPTIONS: Record<ArenaMode, { title: string; tests: string; timing: string }> = {
+  championship: {
+    title: "Championship",
+    tests: "Decision quality: every model flies an identical seeded gauntlet alone, so scores are directly comparable.",
+    timing: "Lockstep: the game pauses while the model thinks, so response time never changes the score.",
+  },
+  duel: {
+    title: "Real-Time Duel",
+    tests: "Decision quality under time pressure: the same gauntlet, but the game never waits for the model.",
+    timing: "Real time: a command applies when it arrives; slow models act on stale snapshots and get fewer decisions.",
+  },
+  shared_arena: {
+    title: "All-in-One Arena",
+    tests: "Multi-agent adversarial play: all models share one arena, can shoot each other, and score placement bonuses.",
+    timing: "Lockstep: all pilots decide simultaneously on the same tick, then the window plays out.",
+  },
+};
+
+export function arenaProtocolDescription() {
+  const sample = new AgentArena({ key: "sample", mode: "championship", scenario: generateScenario(7, "championship"), pilots: ["sample"] });
+  for (let tick = 0; tick < 12 * TICK_HZ; tick += 1) sample.step([null]);
+  return {
+    protocol: ARENA_PROTOCOL_VERSION,
+    tickHz: TICK_HZ,
+    roundSeconds: ROUND_SECONDS,
+    decisionIntervalS: DECISION_INTERVAL_TICKS / TICK_HZ,
+    decisionsPerRound: Math.ceil(ROUND_TICKS / DECISION_INTERVAL_TICKS),
+    decisionTimeoutS: 60,
+    realtimeDecisionTimeoutS: 30,
+    arena: { width: ARENA_WIDTH, height: ARENA_HEIGHT },
+    scoring: SCORING,
+    ship: SHIP,
+    maneuvers: MANEUVERS,
+    modes: Object.fromEntries(ARENA_MODES.map((mode) => [mode, { ...MODE_DESCRIPTIONS[mode], systemPrompt: buildSystemPrompt(mode) }])),
+    sampleSnapshot: buildSensorSnapshot(sample, 0, { decisionIndex: 8, decisionsTotal: 30 }),
+    providers: PROVIDER_PATHS,
+  };
+}
+
+/** Every model the arena can fly, grouped by provider (also used by the headless runner). */
+export async function loadArenaModelCatalog(): Promise<{ available: boolean; models: BenchmarkModel[]; providers: Array<{ id: string; path: string }> }> {
+  let opencodeModels: BenchmarkModel[] = [];
+  try {
+    const command = await resolveNativeOpenCodeRuntime();
+    if (command) {
+      const catalog = await nativeOpenCodeModelCatalog(command);
+      opencodeModels = Object.entries(catalog.providers.find((provider) => provider.id === "opencode")?.models ?? {})
+        .filter(([, raw]) => {
+          const model = raw as { cost?: { input?: number; output?: number }; status?: string };
+          return model.cost?.input === 0 && model.cost?.output === 0 && !model.status?.toLowerCase().includes("deprecated");
+        })
+        .map(([id]) => ({
+          id: `opencode/${id}`,
+          displayName: id,
+          providerId: "opencode",
+          status: "VERIFIED",
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    }
+  } catch {}
+  const [codexModels, antigravityModels, openRouterModels] = await Promise.all([
+    loadCodexModels(),
+    loadAntigravityModels(),
+    loadOpenRouterBenchmarkModels().catch(() => []),
+  ]);
+  const claudeModels = CLAUDE_BENCHMARK_MODELS.map((model) => ({ ...model, providerId: "claude", status: "VERIFIED" }));
+  const allModels: BenchmarkModel[] = [
+    ...codexModels,
+    ...claudeModels,
+    ...opencodeModels,
+    ...antigravityModels,
+    ...openRouterModels,
+    JEV_MODEL,
+    GITHUB_AUTO_MODEL,
+    BASELINE_MODEL,
+  ];
+  return {
+    available: allModels.length > 0,
+    models: [...new Map(allModels.map((model) => [model.id, model])).values()],
+    providers: Object.entries(PROVIDER_PATHS).map(([id, path]) => ({ id, path })),
+  };
+}
+
+/** Starting, stopping and resetting runs spends model quota: ADMIN or OPERATOR only (same rule as chess). */
+function canControlArena(request: FastifyRequest): boolean {
+  const role = request.user?.role;
+  return role === "ADMIN" || role === "OPERATOR";
+}
+
+export function registerBenchmarkRoutes(
+  app: FastifyInstance,
+  rateLimitOptions: RouteShorthandOptions,
+  arena: { store?: ArenaStore; runner?: ArenaBenchmarkRunner; claudeProfile?: () => Promise<string | null> } = {}
+): void {
+  const arenaStore = arena.store ?? createArenaFileStore();
+  const arenaRunner = arena.runner ?? new ArenaBenchmarkRunner({ store: arenaStore, ...(arena.claudeProfile ? { claudeProfile: arena.claudeProfile } : {}) });
+  app.get("/api/asteroids/benchmark/models", rateLimitOptions, async () => loadArenaModelCatalog());
+
+  app.get("/api/asteroids/benchmark/protocol", rateLimitOptions, async () => arenaProtocolDescription());
+
+  app.get<{ Querystring: { mode?: string } }>("/api/asteroids/benchmark/leaderboard", rateLimitOptions, async (request, reply) => {
+    const mode = arenaMode(request.query?.mode);
+    if (!mode) return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+    return leaderboardView(await arenaStore.loadLeaderboard(mode), mode);
   });
 
-  app.get<{ Querystring: { mode?: AsteroidsBenchmarkMode } }>("/api/asteroids/benchmark/championship", rateLimitOptions, async (request, reply) => {
-    const mode = request.query?.mode ?? "championship";
-    if (!Object.hasOwn(CHAMPIONSHIP_FILES, mode)) {
-      return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+  // Compatibility view for Room Agent telemetry (asteroids.control).
+  app.get<{ Querystring: { mode?: string } }>("/api/asteroids/benchmark/championship", rateLimitOptions, async (request, reply) => {
+    const mode = arenaMode(request.query?.mode);
+    if (!mode) return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+    return { mode, championship: leaderboardView(await arenaStore.loadLeaderboard(mode), mode), live: arenaRunner.liveSince(Number.MAX_SAFE_INTEGER).run };
+  });
+
+  app.post<{ Body: { mode?: string; models?: unknown; contestants?: unknown; rounds?: unknown; claudeAccount?: unknown } }>(
+    "/api/asteroids/benchmark/runs",
+    rateLimitOptions,
+    async (request, reply) => {
+      if (!canControlArena(request)) {
+        return reply.code(403).send({ error: { code: "FORBIDDEN", message: "Only an admin can start a benchmark run." } });
+      }
+      const body = request.body ?? {};
+      const mode = arenaMode(body.mode);
+      if (!mode) return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+      const contestants = parseContestants(body.contestants ?? body.models);
+      if (!contestants) {
+        return reply.code(400).send({ error: { code: "INVALID_RUN", message: "contestants must be a list of model ids." } });
+      }
+      const rounds = typeof body.rounds === "number" ? body.rounds : 3;
+      const claudeAccount = typeof body.claudeAccount === "string" && body.claudeAccount.trim() ? body.claudeAccount.trim() : undefined;
+      try {
+        const run = arenaRunner.start({ mode, contestants, rounds, ...(claudeAccount ? { claudeAccount } : {}), origin: "ui" });
+        return reply.code(202).send({ run });
+      } catch (error) {
+        if (error instanceof ArenaRunError) {
+          return reply.code(error.code === "RUN_ACTIVE" ? 409 : 400).send({ error: { code: error.code, message: error.message } });
+        }
+        throw error;
+      }
     }
-    return { mode, championship: await loadChampionship(mode) };
+  );
+
+  app.post("/api/asteroids/benchmark/runs/stop", rateLimitOptions, async (request, reply) => {
+    if (!canControlArena(request)) {
+      return reply.code(403).send({ error: { code: "FORBIDDEN", message: "Only an admin can stop a benchmark run." } });
+    }
+    return { stopped: arenaRunner.stop() };
+  });
+
+  app.get<{ Querystring: { after?: string } }>("/api/asteroids/benchmark/live", rateLimitOptions, async (request) => {
+    const after = Number(request.query?.after ?? -1);
+    return arenaRunner.liveSince(Number.isFinite(after) ? Math.trunc(after) : -1);
+  });
+
+  app.get<{ Querystring: { mode?: string; limit?: string } }>("/api/asteroids/benchmark/runs", rateLimitOptions, async (request, reply) => {
+    const modeInput = request.query?.mode;
+    const mode = modeInput === undefined || modeInput === "" ? null : arenaMode(modeInput);
+    if (mode === undefined) return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+    const limit = Math.max(1, Math.min(40, Number(request.query?.limit ?? 12) || 12));
+    const activeId = arenaRunner.active ? arenaRunner.liveSince(Number.MAX_SAFE_INTEGER).run?.id : null;
+    const runs = (await arenaStore.listRuns(mode, limit)).map((run) =>
+      run.status === "running" && run.id !== activeId ? { ...run, status: "interrupted" as const } : run
+    );
+    return { runs };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/asteroids/benchmark/runs/:id", rateLimitOptions, async (request, reply) => {
+    const id = request.params?.id;
+    if (!isArenaRunId(id)) return reply.code(400).send({ error: { code: "BAD_REQUEST", message: "Invalid run id." } });
+    const run = await arenaStore.loadRun(id);
+    if (!run) return reply.code(404).send({ error: { code: "NOT_FOUND", message: "Benchmark run not found." } });
+    return run;
   });
 
   app.post<{ Body: { modelId?: string; models?: string[]; situation?: unknown } }>(
@@ -787,132 +883,13 @@ export function registerBenchmarkRoutes(app: FastifyInstance, rateLimitOptions: 
     }
   );
 
-  app.post<{
-    Body: {
-      round: number;
-      totalRounds: number;
-      mode: AsteroidsBenchmarkMode;
-      winnerId: string;
-      results: Array<{
-        modelId: string;
-        displayName: string;
-        providerId: string;
-        score: number;
-        kills: number;
-        accuracy: number;
-        survival: number;
-        tactic?: string;
-        latencyMs?: number;
-        source: "model";
-      }>;
-    };
-  }>("/api/asteroids/benchmark/record-match", rateLimitOptions, async (request, reply) => {
-    const { round, totalRounds, mode, winnerId, results } = request.body ?? {};
-    if (!Object.hasOwn(CHAMPIONSHIP_FILES, mode)) {
-      return reply.code(400).send({ error: { code: "INVALID_MODE", message: "A valid benchmark mode is required." } });
+  app.post<{ Body: { mode?: string } }>("/api/asteroids/benchmark/championship/reset", rateLimitOptions, async (request, reply) => {
+    if (!canControlArena(request)) {
+      return reply.code(403).send({ error: { code: "FORBIDDEN", message: "Only an admin can reset the leaderboard." } });
     }
-    if (!Array.isArray(results) || results.length === 0) {
-      return reply.code(400).send({ error: { code: "INVALID_RESULTS", message: "Results array is required." } });
-    }
-    if (!Number.isInteger(round) || round < 1 || !Number.isInteger(totalRounds) || totalRounds < round || totalRounds > 20) {
-      return reply.code(400).send({ error: { code: "INVALID_ROUND", message: "Round values are invalid." } });
-    }
-    if (results.length < 2 || results.some((result) =>
-      !result || typeof result.modelId !== "string" || result.source !== "model" ||
-      !Number.isFinite(result.score) || result.score < 0 ||
-      !Number.isFinite(result.kills) || result.kills < 0 ||
-      !Number.isFinite(result.accuracy) || result.accuracy < 0 || result.accuracy > 100 ||
-      !Number.isFinite(result.survival) || result.survival < 0 || result.survival > 3600
-    )) {
-      return reply.code(400).send({ error: { code: "INVALID_METRICS", message: "Only finite model-backed metrics are accepted." } });
-    }
-
-    const existing = (await loadChampionship(mode)) ?? {
-      id: `asteroids-${Date.now()}`,
-      status: "running",
-      startedAt: new Date().toISOString(),
-      games: totalRounds || round || 1,
-      currentGame: round || 1,
-      models: [],
-      gamesPlayed: [],
-    };
-
-    existing.currentGame = round || existing.currentGame + 1;
-    existing.games = Math.max(existing.games, totalRounds || existing.currentGame);
-    if (existing.currentGame >= existing.games) {
-      existing.status = "completed";
-      existing.completedAt = new Date().toISOString();
-    } else {
-      existing.status = "running";
-    }
-
-    // Map existing stats by id
-    const statsMap = new Map<string, AsteroidsModelStats>(
-      existing.models.map((m) => [m.id, m])
-    );
-
-    const roundScores: Record<string, { score: number; kills: number; accuracy: number; survival: number; tactic?: string; source?: "model" | "fallback" }> = {};
-
-    for (const res of results) {
-      if (!res.modelId) continue;
-      const prev = statsMap.get(res.modelId) ?? {
-        id: res.modelId,
-        displayName: res.displayName || res.modelId,
-        providerId: res.providerId || "opencode",
-        wins: 0,
-        gamesPlayed: 0,
-        totalScore: 0,
-        bestScore: 0,
-        totalKills: 0,
-        avgAccuracy: 0,
-        totalSurvivalSeconds: 0,
-      };
-
-      const isWinner = res.modelId === winnerId;
-      prev.wins += isWinner ? 1 : 0;
-      prev.gamesPlayed += 1;
-      prev.totalScore += Math.max(0, Math.round(res.score || 0));
-      prev.bestScore = Math.max(prev.bestScore, Math.round(res.score || 0));
-      prev.totalKills += Math.max(0, Math.round(res.kills || 0));
-      prev.totalSurvivalSeconds += Math.max(0, Math.round(res.survival || 0));
-      prev.avgAccuracy = Math.round(((prev.avgAccuracy * (prev.gamesPlayed - 1) + res.accuracy) / prev.gamesPlayed) * 100) / 100;
-      if (res.tactic) prev.lastTactic = res.tactic;
-      if (res.latencyMs !== undefined) prev.lastLatencyMs = res.latencyMs;
-      prev.lastSource = res.source;
-
-      statsMap.set(res.modelId, prev);
-      roundScores[res.modelId] = {
-        score: Math.round(res.score || 0),
-        kills: Math.round(res.kills || 0),
-        accuracy: res.accuracy,
-        survival: Math.round(res.survival || 0),
-        tactic: res.tactic,
-        source: res.source,
-      };
-    }
-
-    existing.models = [...statsMap.values()].sort((a, b) => b.totalScore - a.totalScore || b.wins - a.wins);
-    existing.gamesPlayed.push({
-      game: round || existing.gamesPlayed.length + 1,
-      winner: winnerId || "",
-      scores: roundScores,
-    });
-
-    await saveChampionship(existing, mode);
-    return { recorded: true, mode, championship: existing };
-  });
-
-  app.post<{ Body: { mode?: AsteroidsBenchmarkMode } }>("/api/asteroids/benchmark/championship/reset", rateLimitOptions, async (request, reply) => {
-    const mode = request.body?.mode ?? "championship";
-    if (!Object.hasOwn(CHAMPIONSHIP_FILES, mode)) {
-      return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
-    }
-    const file = championshipFile(mode);
-    try {
-      await unlink(file);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const mode = arenaMode(request.body?.mode);
+    if (!mode) return reply.code(400).send({ error: { code: "INVALID_MODE", message: "Unknown benchmark mode." } });
+    await arenaStore.resetLeaderboard(mode);
     return { reset: true, mode };
   });
 

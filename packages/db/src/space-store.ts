@@ -1,4 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, type JobApplyPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
 import { managedPlanExecutionSchema } from "@space/contracts";
@@ -732,6 +733,7 @@ type PaneRow = {
   titleSource: Pane["titleSource"];
   taskMetadata?: Pane["taskMetadata"];
   t3CodeMetadata?: Pane["t3CodeMetadata"];
+  jobApplyMetadata?: Pane["jobApplyMetadata"];
   paneName?: string | null;
   mode: Pane["mode"];
   status: Pane["status"];
@@ -1686,6 +1688,7 @@ const paneSelect = `
     title_source AS "titleSource",
     task_metadata AS "taskMetadata",
     t3code_metadata AS "t3CodeMetadata",
+    job_apply_metadata AS "jobApplyMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -2839,6 +2842,7 @@ function mapPane(row: PaneRow): Pane {
     titleSource: row.titleSource ?? "auto",
     taskMetadata: row.taskMetadata ?? null,
     t3CodeMetadata: row.t3CodeMetadata ?? null,
+    jobApplyMetadata: row.jobApplyMetadata ?? null,
     paneName: row.paneName ?? null,
     mode: row.mode,
     status: row.status,
@@ -3877,6 +3881,12 @@ function codexFinalResponseFromMetadata(metadata: Record<string, unknown> | unde
 
 function orderValue(rows: OrderRow[]): number {
   return Number.parseInt(String(rows[0]?.nextOrder ?? 0), 10);
+}
+
+/** Short jittered pause between deadlock retries so the competing transaction can finish. */
+function waitBeforeDeadlockRetry(attempt: number): Promise<void> {
+  const delayMs = Math.min(250, 25 * 2 ** attempt) + Math.floor(Math.random() * 25);
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 export class PostgresSpaceStore implements SpaceStore {
@@ -6430,7 +6440,7 @@ export class PostgresSpaceStore implements SpaceStore {
       );
       await client.query("UPDATE rooms SET room_order = -room_order - 1");
       return room;
-    }, { deadlockRetries: 1 });
+    }, { deadlockRetries: 3 });
   }
 
   async listPanes(roomId: string, includeClosed = false): Promise<Pane[]> {
@@ -7577,6 +7587,17 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async updateJobApplyMetadata(paneId: string, metadata: JobApplyPaneMetadata): Promise<Pane> {
+    const parsed = jobApplyPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "JOB_APPLY" || pane.isClosed) throw new SpaceConflictError("An open Job Applications pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET job_apply_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, jobApplyMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
     return this.withTransaction(async (client) => {
       const current = await this.getPaneForUpdate(client, paneId);
@@ -7622,7 +7643,7 @@ export class PostgresSpaceStore implements SpaceStore {
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
         terminalRuntimeId:
-          (input.mode ?? current.mode) === "TERMINAL"
+          ["TERMINAL", "JOB_APPLY"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId
               : input.terminalRuntimeId
@@ -7667,6 +7688,7 @@ export class PostgresSpaceStore implements SpaceStore {
             title_source AS "titleSource",
     task_metadata AS "taskMetadata",
     t3code_metadata AS "t3CodeMetadata",
+    job_apply_metadata AS "jobApplyMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -8990,6 +9012,15 @@ export class PostgresSpaceStore implements SpaceStore {
       ) {
         throw new SpaceConflictError("Space agent completion records do not belong to the same run.");
       }
+      // A replayed completion (unchanged response after a lost acknowledgement) still records
+      // what it carries, but returns the run's original TURN_COMPLETED event instead of a second one.
+      const replayedEventRow = currentRun.status === "COMPLETED" && currentMessage.status === "COMPLETED" &&
+        currentMessage.content === input.responseContent
+        ? (await client.query<EventRow>(
+            `${eventSelect} WHERE pane_id = $1 AND event_type = 'TURN_COMPLETED' AND payload->>'runId' = $2 ORDER BY created_at DESC LIMIT 1`,
+            [currentRun.paneId, currentRun.runId]
+          )).rows[0]
+        : undefined;
       const roomAgentTaskTitle = normalizeTelegramTaskTitle(promptMessage?.content ?? "", "Room Agent task");
 
       if (input.roomAgentOutcome) await client.query(`
@@ -9062,7 +9093,7 @@ export class PostgresSpaceStore implements SpaceStore {
         `,
         [input.sessionId, input.codexThreadId, input.completedAt, keepActive]
       );
-      const event = await this.appendEvent(client, {
+      const event = replayedEventRow ? mapEvent(replayedEventRow) : await this.appendEvent(client, {
         roomId: currentRun.roomId,
         paneId: currentRun.paneId,
         turnId: null,
@@ -10027,8 +10058,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "TERMINAL") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL panes.`);
+      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL or JOB_APPLY panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -10929,8 +10960,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER or YOUTUBE panes.`);
+      if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE or JOB_APPLY panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -12272,6 +12303,14 @@ export class PostgresSpaceStore implements SpaceStore {
   async listAuditEvents(): Promise<AuditEvent[]> {
     const result = await this.pool.query<AuditEventRow>(`${auditEventSelect} ORDER BY created_at DESC LIMIT 500`);
     return result.rows.map(mapAuditEvent);
+  }
+
+  async findLatestAuditEvent(input: { action: string; targetType: string; targetId: string }): Promise<AuditEvent | null> {
+    const result = await this.pool.query<AuditEventRow>(
+      `${auditEventSelect} WHERE action = $1 AND target_type = $2 AND target_id = $3 ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [input.action, input.targetType, input.targetId]
+    );
+    return result.rows[0] ? mapAuditEvent(result.rows[0]) : null;
   }
 
   // Structurally matches SpaceStore.listTraceRecords (ListTraceRecordsOptions/TraceRecords in @space/runtime).
@@ -15926,6 +15965,7 @@ export class PostgresSpaceStore implements SpaceStore {
         if (!isDeadlock || attempt >= deadlockRetries) {
           throw error;
         }
+        await waitBeforeDeadlockRetry(attempt);
       } finally {
         // Never hand a client whose ROLLBACK failed back to the pool.
         client.release?.(rollbackFailure ? true : undefined);

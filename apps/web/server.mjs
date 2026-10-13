@@ -10,6 +10,11 @@ const host = process.env.SPACE_WEB_HOST ?? "0.0.0.0";
 const port = Number.parseInt(process.env.SPACE_WEB_PORT ?? "4911", 10);
 const distDir = path.resolve(process.env.SPACE_WEB_DIST ?? path.join(__dirname, "dist"));
 const apiOrigin = new URL(process.env.SPACE_API_ORIGIN ?? "http://127.0.0.1:4910");
+// The dev instance must never serve on stable's port or proxy to stable's API.
+if (process.env.SPACE_INSTANCE === "dev" && (port === 4911 || !process.env.SPACE_API_ORIGIN || apiOrigin.port === "4910")) {
+  console.error("Refusing to start the dev web server: SPACE_WEB_PORT and SPACE_API_ORIGIN must point at the dev instance.");
+  process.exit(1);
+}
 const proxyPrefixes = ["/api", "/plugins", "/healthz", "/livez", "/readyz", "/version"];
 const proxyPaths = new Set(["/plugins/events", "/logout"]);
 const retryableProxyMethods = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -88,9 +93,17 @@ function sendJson(response, statusCode, payload, extraHeaders = {}) {
   response.end(JSON.stringify(payload));
 }
 
+/** The public legal pages' contact address; anything but a plain email address is dropped. */
+function safeContactEmail(value) {
+  if (typeof value !== "string") return null;
+  const email = value.trim();
+  return /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,24}$/.test(email) ? email : null;
+}
+
 function sendHomepageConfig(request, response) {
   const body = `window.__SPACE_PUBLIC_CONFIG__=${JSON.stringify({
-    discordUrl: safeDiscordInvite(process.env.SPACE_PUBLIC_DISCORD_URL)
+    discordUrl: safeDiscordInvite(process.env.SPACE_PUBLIC_DISCORD_URL),
+    contactEmail: safeContactEmail(process.env.SPACE_PUBLIC_CONTACT_EMAIL)
   })};\n`;
   response.writeHead(200, {
     "cache-control": "no-store",

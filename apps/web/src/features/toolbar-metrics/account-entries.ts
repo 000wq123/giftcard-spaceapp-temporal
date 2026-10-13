@@ -44,6 +44,7 @@ export function claudeStatusLabel(account: ClaudeUsageAccount): string {
     case "NOT_CONNECTED": return "Not signed in";
     case "EXPIRED": return "Sign-in expired";
     case "API_KEY": return "API key";
+    case "GATEWAY": return "Space Gateway";
     default: return "Unavailable";
   }
 }
@@ -52,7 +53,8 @@ export function claudeStatusHint(account: ClaudeUsageAccount): string {
   switch (account.status) {
     case "NOT_CONNECTED": return "Sign in from a Claude pane that uses this profile.";
     case "EXPIRED": return "Open a Claude pane on this profile to renew the sign-in.";
-    case "API_KEY": return "Billed per token through an API key; no plan limits apply.";
+    case "API_KEY": return "Paid per token through an API key; never chosen automatically.";
+    case "GATEWAY": return "Space Gateway picks one of its pooled Claude accounts for each request.";
     default: return "Usage is temporarily unavailable.";
   }
 }
@@ -101,8 +103,28 @@ export function codexAccountEntries(
   }));
 }
 
+// The gateway profile is as available as the best account in its pool; without pool data it stays a plain label.
+function claudeGatewayEntry(account: ClaudeUsageAccount, pool: NonNullable<ClaudeUsageAccount["pool"]>, clock: number): AccountQuotaEntry {
+  const usable = pool.filter((member) => !member.signInRequired);
+  const states = usable.map((member) => classifyQuota(member, clock));
+  const ready = states.filter((state) => state.state === "available").length;
+  return {
+    id: account.id,
+    title: account.label,
+    details: details(pool.length ? `Pools ${pool.map((member) => member.label).join(", ")}` : null),
+    availability: usable.length ? bestAvailability(states) : offline,
+    offlineLabel: pool.length ? "Sign-in required" : "No accounts",
+    hint: pool.length
+      ? `${ready} of ${pool.length} pooled ${pool.length === 1 ? "account" : "accounts"} available now.`
+      : "Space Gateway has no Claude accounts to route to.",
+    rows: [],
+    capacity: quotaCapacity(usable),
+  };
+}
+
 export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: number): AccountQuotaEntry[] {
   return accounts.map((account) => {
+    if (account.status === "GATEWAY" && account.pool) return claudeGatewayEntry(account, account.pool, clock);
     const connected = account.status === "CONNECTED";
     return {
       id: account.id,

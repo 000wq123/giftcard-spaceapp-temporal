@@ -25,6 +25,8 @@ apps/mobile/release/*.apk
 apps/mobile/release/*.idsig
 apps/web/public/downloads/*.apk
 apps/web/dist/downloads/*.apk
+# Python bytecode from vendored agent-skill scripts run on the live host.
+agent-skills/**/__pycache__/
 
 # Live/deploy-adjacent runtime state. Do not delete with blanket git clean.
 secrets/

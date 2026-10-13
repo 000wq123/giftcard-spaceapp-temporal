@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual, type ScryptOptions } from "node:crypto";
-import { authUserSchema, type AuthUser, type LoginInput } from "@space/contracts";
+import { authUserSchema, resolveSpaceInstance, sessionCookieNameFor, type AuthUser, type LoginInput } from "@space/contracts";
 import { persistentOperatorSessionTtlSeconds, signPersistentOperatorSessionToken, signSessionTokenWithTtl } from "@space/runtime";
 import { ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET } from "./antigravity-usage-services.js";
 
-const SESSION_COOKIE = "space_session";
+// A dev instance on another port of the same host must not overwrite the stable session cookie.
+const SESSION_COOKIE = sessionCookieNameFor(resolveSpaceInstance(process.env));
 const CSRF_HEADER = "x-space-csrf-token";
 const DEV_OPERATOR_EMAIL = "space@space.local";
 const SCRYPT_MAXMEM_BYTES = 128 * 1024 * 1024;
@@ -67,7 +68,11 @@ export function getAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
       }
     } catch {}
   }
-  if (!googleClientId && env.SPACE_GOOGLE_AUTH_DISABLED !== "true") {
+  // The Antigravity OAuth client is shared with every Antigravity install, so an ID
+  // token minted for any of them would satisfy the audience check. Google login
+  // therefore needs an installation-specific client unless the shared one is
+  // explicitly opted into (SPACE_GOOGLE_SHARED_CLIENT=true).
+  if (!googleClientId && env.SPACE_GOOGLE_AUTH_DISABLED !== "true" && env.SPACE_GOOGLE_SHARED_CLIENT === "true") {
     googleClientId = ANTIGRAVITY_CLIENT_ID;
     googleClientSecret = ANTIGRAVITY_CLIENT_SECRET;
   }
@@ -407,46 +412,6 @@ export function buildGoogleAuthUrl(input: {
   return url.toString();
 }
 
-export function decodeGoogleIdToken(idToken: string, expectedClientId?: string): GoogleAuthUserInfo {
-  const parts = idToken.split(".");
-  if (parts.length < 2 || !parts[1]) throw new Error("Invalid ID token format.");
-  let payload: {
-    email?: string;
-    sub?: string;
-    name?: string;
-    picture?: string;
-    aud?: string;
-    iss?: string;
-    exp?: number;
-    email_verified?: boolean | string;
-  };
-  try {
-    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-  } catch {
-    throw new Error("Malformed Google ID token payload.");
-  }
-  if (!payload.email || !payload.sub) {
-    throw new Error("Google ID token missing required email or sub claim.");
-  }
-  if (payload.iss && payload.iss !== "https://accounts.google.com" && payload.iss !== "accounts.google.com") {
-    throw new Error("Google token issuer mismatch.");
-  }
-  if (expectedClientId && payload.aud && payload.aud !== expectedClientId) {
-    throw new Error("Google token audience mismatch.");
-  }
-  if (payload.exp && payload.exp <= Math.floor(Date.now() / 1000)) {
-    throw new Error("Google token has expired.");
-  }
-  if (payload.email_verified !== undefined && payload.email_verified !== true && payload.email_verified !== "true") {
-    throw new Error("Google email address is not verified.");
-  }
-  return {
-    email: payload.email,
-    sub: payload.sub,
-    name: payload.name,
-    picture: payload.picture
-  };
-}
 
 export async function exchangeGoogleCode(input: {
   code: string;
@@ -467,6 +432,7 @@ export async function exchangeGoogleCode(input: {
   if (input.codeVerifier) body.set("code_verifier", input.codeVerifier);
 
   const res = await fetchImpl("https://oauth2.googleapis.com/token", {
+    signal: AbortSignal.timeout(10_000),
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body
@@ -483,7 +449,9 @@ export async function verifyGoogleIdToken(input: {
   fetchImpl?: typeof fetch;
 }): Promise<GoogleAuthUserInfo> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const res = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(input.idToken)}`);
+  const res = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(input.idToken)}`, {
+    signal: AbortSignal.timeout(10_000)
+  });
   if (!res.ok) {
     throw new Error("Google token verification failed.");
   }

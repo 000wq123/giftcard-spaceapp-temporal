@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { WorktreeError } from "./worktree-service.js";
+import { WorktreeError } from "./worktree-error.js";
 
 const execFileAsync = promisify(execFile);
 

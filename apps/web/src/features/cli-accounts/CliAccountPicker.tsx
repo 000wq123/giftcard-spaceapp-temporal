@@ -9,6 +9,7 @@ import {
   type CliAccountRuntimeId,
 } from "./cli-account-availability.js";
 import { accountColorStyle, CliAccountAvatar, CliAccountColorLegend, CliAccountMeter } from "./CliAccountVisuals.js";
+import { useCliAccountBalance } from "./cli-account-balance.js";
 import { useCliAccountSignals } from "./use-cli-account-signals.js";
 
 interface CliAccountPickerProps {
@@ -23,6 +24,9 @@ interface CliAccountPickerProps {
   onSelect: (profileId: string) => void;
   // The pane's active model; Antigravity judges each account by that model group's quota.
   modelId?: string | null;
+  // Session-level balancing: Auto starts the pane on the account with the most room and moves it on when that
+  // account runs out. Present for CLIs Space balances.
+  auto?: { active: boolean; onSelect: () => void };
 }
 
 const minimumMenuHeightPx = 150;
@@ -39,13 +43,20 @@ export function CliAccountPicker({
   disabled = false,
   onSelect,
   modelId = null,
+  auto,
 }: CliAccountPickerProps) {
   const [open, setOpen] = useState(false);
   const [menuMaxHeight, setMenuMaxHeight] = useState<number | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const { quota, identities, load } = useCliAccountSignals();
+  const { quota, identities, load: loadSignals } = useCliAccountSignals();
+  // CLIs Space balances (those offering Auto) report each account's quota and Auto's next pick through the balance.
+  const { balance, load: loadBalance } = useCliAccountBalance(auto ? runtimeId : null);
+  const load = (options?: Parameters<typeof loadSignals>[0]) => {
+    loadSignals(options);
+    loadBalance();
+  };
   const menuId = useId();
   const label = `${providerLabel} account for ${paneTitle}`;
 
@@ -57,13 +68,18 @@ export function CliAccountPicker({
       profile,
       email: identity?.email ?? null,
       login: identity?.login ?? null,
-      plan: cliAccountPlan(runtimeId, profile.profileId, quota),
-      availability: cliAccountAvailability({ runtimeId, profileId: profile.profileId, quota, identity, clock, modelGroup }),
+      plan: cliAccountPlan(runtimeId, profile.profileId, quota, balance),
+      availability: cliAccountAvailability({ runtimeId, profileId: profile.profileId, quota, identity, clock, modelGroup, balance }),
     };
-  }), [clock, identities, modelGroup, profiles, quota, runtimeId]);
-  const activeIndex = Math.max(0, rows.findIndex((row) => row.profile.profileId === selectedProfileId));
-  const active = rows[activeIndex];
+  }), [balance, clock, identities, modelGroup, profiles, quota, runtimeId]);
+  const activeRow = Math.max(0, rows.findIndex((row) => row.profile.profileId === selectedProfileId));
+  const active = rows[activeRow];
+  // The Auto entry, when offered, comes first in the menu; item refs and keyboard moves count it.
+  const offset = auto ? 1 : 0;
+  const itemCount = rows.length + offset;
+  const activeIndex = auto?.active ? 0 : activeRow + offset;
   const readyCount = rows.filter((row) => row.availability.tone === "ready" || row.availability.tone === "neutral").length;
+  const autoNext = auto && balance?.runtimeId === runtimeId ? rows.find((row) => row.profile.profileId === balance.next) ?? null : null;
 
   useEffect(() => {
     if (!open) return;
@@ -129,13 +145,13 @@ export function CliAccountPicker({
     const focusedIndex = itemRefs.current.findIndex((item) => item === document.activeElement);
     const move = (index: number) => {
       event.preventDefault();
-      itemRefs.current[(index + rows.length) % rows.length]?.focus();
+      itemRefs.current[(index + itemCount) % itemCount]?.focus();
     };
     switch (event.key) {
       case "ArrowDown": move(focusedIndex < 0 ? activeIndex : focusedIndex + 1); break;
       case "ArrowUp": move(focusedIndex < 0 ? activeIndex : focusedIndex - 1); break;
       case "Home": move(0); break;
-      case "End": move(rows.length - 1); break;
+      case "End": move(itemCount - 1); break;
       case "Tab":
         closeMenu(false);
         break;
@@ -145,7 +161,12 @@ export function CliAccountPicker({
   }
 
   const triggerAvailability: CliAccountAvailability | undefined = active?.availability;
-  const activeName = active?.profile.displayName ?? "Select account";
+  const activeName = `${auto?.active ? "Auto, now " : ""}${active?.profile.displayName ?? "Select account"}`;
+
+  function chooseAuto() {
+    closeMenu(true);
+    if (!auto?.active) auto?.onSelect();
+  }
 
   return (
     <div ref={pickerRef} className="terminal-gemini-account-picker cli-account-picker" data-runtime-id={runtimeId}>
@@ -190,8 +211,40 @@ export function CliAccountPicker({
             </span>
           </div>
           <div className="cli-account-menu-list" style={menuMaxHeight ? { maxHeight: `${menuMaxHeight - 82}px` } : undefined}>
-            {rows.map((row, index) => {
+            {auto ? (
+              <button
+                ref={(element) => {
+                  itemRefs.current[0] = element;
+                }}
+                type="button"
+                role="menuitemradio"
+                aria-checked={auto.active}
+                className={`cli-account-menu-item cli-account-auto-item${auto.active ? " is-active" : ""}`}
+                data-tone="neutral"
+                title="Space starts this pane on the account with the most room and moves it to another account when this one runs out"
+                tabIndex={auto.active ? 0 : -1}
+                onClick={chooseAuto}
+              >
+                <span className="cli-account-auto-mark" aria-hidden="true">A</span>
+                <span className="cli-account-menu-item-main">
+                  <span className="cli-account-menu-item-name">
+                    <strong>Auto (Space Gateway)</strong>
+                    {auto.active ? <span className="cli-account-active-pill">Active</span> : null}
+                  </span>
+                  <small className="cli-account-menu-item-detail">
+                    {auto.active && active
+                      ? `Now on ${active.profile.displayName}; moves on when it runs out`
+                      : autoNext
+                        ? `Would start on ${autoNext.profile.displayName}, the most room; moves on when it runs out`
+                        : "Most room first; moves on when an account runs out"}
+                  </small>
+                </span>
+              </button>
+            ) : null}
+            {rows.map((row, rowIndex) => {
+              const index = rowIndex + offset;
               const isActive = index === activeIndex;
+              const inUse = Boolean(auto?.active) && rowIndex === activeRow;
               return (
                 <button
                   key={row.profile.profileId}
@@ -214,6 +267,7 @@ export function CliAccountPicker({
                       <strong>{row.profile.displayName}</strong>
                       {row.plan ? <span className="cli-account-plan-badge" title={`Plan: ${row.plan}`}>{row.plan}</span> : null}
                       {isActive ? <span className="cli-account-active-pill">Active</span> : null}
+                      {inUse ? <span className="cli-account-active-pill">In use</span> : null}
                     </span>
                     <small className="cli-account-menu-item-detail" data-sensitive-masked={row.email || row.login ? "manual" : undefined}>
                       {row.email ?? (row.login ? `@${row.login}` : row.availability.description)}

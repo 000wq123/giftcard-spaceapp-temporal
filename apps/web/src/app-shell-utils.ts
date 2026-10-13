@@ -55,7 +55,8 @@ export const streamEventTypes: SpaceEvent["type"][] = [
   "REVIEW_DIFF_RECORDED",
   "REVIEW_DECISION_CREATED",
   "BROWSER_HANDOFF_REQUESTED",
-  "ROOM_WATCHDOG_ALERT"
+  "ROOM_WATCHDOG_ALERT",
+  "JOB_APPLY_UPDATED"
 ];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

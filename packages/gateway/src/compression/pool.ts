@@ -1,19 +1,19 @@
 import { Worker } from "node:worker_threads";
-import type { BlockAction } from "./engine.js";
+import type { BlockAction, BlockAnalysis, BlockOptions, BlockResult } from "./engine.js";
 import type { TokenizerKind } from "./tokenizer.js";
 
-export type BlockResult = { replacement: string | null; action: BlockAction };
-export interface BlockRunOptions {
+export type { BlockResult };
+export interface BlockRunOptions extends BlockOptions {
   tokenizer?: TokenizerKind;
   /** Receives a result that arrives after the deadline, so the next request can use it (results are deterministic). */
   onLate?: (result: BlockResult) => void;
 }
 export type BlockRunner = (text: string, deadline: number, options?: BlockRunOptions) => Promise<BlockResult | null>;
 
-/** A worker gets jobs only once it reports ready (tokenizer loaded), so a new worker never inherits a deadline it cannot meet. */
+/** A worker gets jobs only once it reports ready (tokenizer and grammars loaded), so a new worker never inherits a deadline it cannot meet. */
 interface Slot { worker: Worker; busy: boolean; ready: boolean }
 interface Job {
-  id: number; text: string; deadline: number; tokenizer: TokenizerKind; settled: boolean;
+  id: number; text: string; deadline: number; tokenizer: TokenizerKind; block: BlockOptions; settled: boolean;
   resolve: (value: BlockResult | null) => void; onLate?: (result: BlockResult) => void;
 }
 
@@ -25,6 +25,8 @@ interface Job {
 export class CompressionPool {
   private slots: Slot[] = [];
   private queue: Job[] = [];
+  /** Compression jobs waiting for a worker. */
+  queued() { return this.queue.length; }
   private running = new Map<number, { job: Job; slot: Slot; soft: NodeJS.Timeout; hard: NodeJS.Timeout }>();
   private nextId = 1;
   private closed = false;
@@ -42,7 +44,7 @@ export class CompressionPool {
   private spawn(): Slot {
     const slot: Slot = { worker: new Worker(this.workerUrl), busy: false, ready: false };
     slot.worker.unref();
-    slot.worker.on("message", (message: { id?: number; ready?: boolean; replacement?: string | null; action?: BlockAction; failure?: string }) => {
+    slot.worker.on("message", (message: { id?: number; ready?: boolean; replacement?: string | null; action?: BlockAction; analysis?: BlockAnalysis; failure?: string }) => {
       if (message.ready) {
         slot.ready = true;
         this.pump();
@@ -55,7 +57,7 @@ export class CompressionPool {
       clearTimeout(entry.hard);
       this.running.delete(message.id);
       slot.busy = false;
-      const result = message.action ? { replacement: message.replacement ?? null, action: message.action } : null;
+      const result = message.action ? { replacement: message.replacement ?? null, action: message.action, ...(message.analysis ? { analysis: message.analysis } : {}) } : null;
       if (entry.job.settled) {
         if (result) entry.job.onLate?.(result);
       } else {
@@ -94,13 +96,14 @@ export class CompressionPool {
       soft.unref();
       hard.unref();
       this.running.set(current.id, { job: current, slot, soft, hard });
-      slot.worker.postMessage({ id: current.id, text: current.text, tokenizer: current.tokenizer });
+      slot.worker.postMessage({ id: current.id, text: current.text, tokenizer: current.tokenizer, ...current.block });
     }
   }
 
   readonly run: BlockRunner = (text, deadline, options = {}) => new Promise((resolve) => {
     if (this.closed || deadline <= Date.now()) { resolve(null); return; }
-    const job: Job = { id: this.nextId++, text, deadline, tokenizer: options.tokenizer ?? "o200k", settled: false, resolve, onLate: options.onLate };
+    const block: BlockOptions = options.codeText ? { codeText: options.codeText, lossy: options.lossy ?? false } : {};
+    const job: Job = { id: this.nextId++, text, deadline, tokenizer: options.tokenizer ?? "o200k", block, settled: false, resolve, onLate: options.onLate };
     this.queue.push(job);
     // A job still waiting for a free worker at its deadline gives up, so callers never wait past the budget.
     const expiry = setTimeout(() => {

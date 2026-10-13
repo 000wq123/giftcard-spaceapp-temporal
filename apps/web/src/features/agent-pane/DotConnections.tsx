@@ -35,7 +35,7 @@ export function DotConnections({ read = api.connectors, disconnect = api.disconn
     ? current.filter((item) => item !== capability) : [...current, capability]);
   return <section className="dots-connections" aria-label="Connected accounts">
     <h4>Connected accounts</h4>
-    <p className="dots-panel-hint">Dots read and draft email and check calendars only through accounts you connect here. Sending email and creating events always wait for your approval.</p>
+    <p className="dots-panel-hint">Dots read and draft email and check calendars only through accounts you connect here. Sending email and creating events wait for your approval unless you turn that off in Settings → Dots.</p>
     {status.accounts.length ? <ul className="dots-records">{status.accounts.map((account) => <li key={account.accountId}>
       <strong>{account.email}</strong>
       <span>{providerLabels[account.provider]} · {account.capabilities.length ? account.capabilities.map((capability) => capabilityLabels[capability]).join(", ") : "No permissions granted"}</span>

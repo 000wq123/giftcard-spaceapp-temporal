@@ -115,7 +115,11 @@ export function watchedQuota(
       ? antigravityAccountEntries(cache?.agy?.data ?? [], clock, { proOnly: options.proOnly, geminiOnly: true })
         .map((entry) => ({ entry, provider: "Gemini" }))
       : []),
-    ...(watchClaude ? claudeAccountEntries(cache?.claude?.data ?? [], clock).map((entry) => ({ entry, provider: "Claude" })) : []),
+    // The Space Gateway profile routes to accounts already listed here; counting it would count them twice.
+    ...(watchClaude
+      ? claudeAccountEntries((cache?.claude?.data ?? []).filter((account) => account.status !== "GATEWAY"), clock)
+        .map((entry) => ({ entry, provider: "Claude" }))
+      : []),
   ].filter(({ entry }) => entry.availability.state !== "offline" && entry.availability.state !== "unknown");
   const available = watched.filter(({ entry }) => entry.availability.state === "available");
   return {

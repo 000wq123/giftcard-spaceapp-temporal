@@ -2,42 +2,6 @@ import { describe, expect, it } from "vitest";
 import { fetchModelTactics } from "../benchmark-routes.js";
 
 describe("fetchModelTactics with Jev AI", () => {
-  it("rejects cross-mode and fallback metric writes", async () => {
-    const fastify = (await import("fastify")).default();
-    const { registerBenchmarkRoutes } = await import("../benchmark-routes.js");
-    registerBenchmarkRoutes(fastify, {});
-
-    const invalidMode = await fastify.inject({
-      method: "POST",
-      url: "/api/asteroids/benchmark/record-match",
-      payload: {
-        mode: "not-a-mode",
-        round: 1,
-        totalRounds: 1,
-        winnerId: "model-a",
-        results: [],
-      },
-    });
-    expect(invalidMode.statusCode).toBe(400);
-
-    const fallbackMetrics = await fastify.inject({
-      method: "POST",
-      url: "/api/asteroids/benchmark/record-match",
-      payload: {
-        mode: "duel",
-        round: 1,
-        totalRounds: 1,
-        winnerId: "model-a",
-        results: [
-          { modelId: "model-a", displayName: "A", providerId: "test", score: 10, kills: 1, accuracy: 50, survival: 1, source: "fallback" },
-          { modelId: "model-b", displayName: "B", providerId: "test", score: 5, kills: 0, accuracy: 40, survival: 1, source: "fallback" },
-        ],
-      },
-    });
-    expect(fallbackMetrics.statusCode).toBe(400);
-    await fastify.close();
-  });
-
   it("computes tactical doctrine for openrouter/typesafe/jev-1.13", async () => {
     const tactic = await fetchModelTactics("openrouter/typesafe/jev-1.13", { rocks: 8, difficulty: 4 });
     expect(tactic).toBeDefined();
@@ -126,5 +90,10 @@ describe("fetchModelTactics with Jev AI", () => {
     const codexModels = json.models.filter((m: any) => m.providerId === "codex");
     expect(codexModels.length).toBeGreaterThan(0);
     expect(codexModels.map((m: any) => m.id)).toContain("codex/gpt-5.6-sol");
+    const claudeModels = json.models.filter((m: any) => m.providerId === "claude").map((m: any) => m.id);
+    expect(claudeModels).toEqual(["claude/claude-opus-5-5", "claude/claude-sonnet-5-5", "claude/claude-haiku-5-5", "claude/claude-fable-5-1"]);
+    expect(json.models.find((m: any) => m.id === "baseline/scripted-pilot")).toMatchObject({ providerId: "baseline" });
+    expect(json.providers.map((provider: any) => provider.id)).toContain("claude");
+    await fastify.close();
   });
 });

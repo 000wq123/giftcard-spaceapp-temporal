@@ -49,11 +49,54 @@ function redactExportString(value: string): string {
   return typeof redacted.value === "string" ? redacted.value : "[REDACTED]";
 }
 
+const runtimeSummaryKeys = [
+  "runtimeId", "displayName", "installedVersion", "availableVersion", "status", "code", "summary",
+  "outcome", "authRequired", "rollback", "customPreserved", "customReinstalled", "errorMessage"
+] as const;
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * Redacts each runtime result and plan action on its own budget. One shared
+ * budget for eleven CLIs with nested checks ran out and returned null entries,
+ * which crashed the maintenance view; the per-check detail stays in the events.
+ */
+function redactRunResult(result: Record<string, unknown>): Record<string, unknown> {
+  const { runtimes, plan, ...rest } = result;
+  const redacted: Record<string, unknown> = redactCliMaintenanceDiagnostics(rest);
+  if (Array.isArray(runtimes)) {
+    redacted.runtimes = runtimes.slice(0, 64).flatMap((entry) => {
+      const runtime = plainRecord(entry);
+      if (!runtime) return [];
+      const summary = Object.fromEntries(runtimeSummaryKeys.filter((key) => key in runtime).map((key) => [key, runtime[key]]));
+      return [redactCliMaintenanceDiagnostics(summary)];
+    });
+  }
+  const planRecord = plainRecord(plan);
+  if (planRecord) {
+    const { actions, ...planRest } = planRecord;
+    redacted.plan = {
+      ...redactCliMaintenanceDiagnostics(planRest),
+      actions: Array.isArray(actions)
+        ? actions.slice(0, 64).flatMap((action) => {
+            const record = plainRecord(action);
+            return record ? [redactCliMaintenanceDiagnostics(record)] : [];
+          })
+        : []
+    };
+  } else if (plan !== undefined) {
+    redacted.plan = plan;
+  }
+  return redacted;
+}
+
 function redactRun(run: AdminOperationRun): AdminOperationRun {
   return {
     ...run,
     summary: redactExportString(run.summary),
-    result: redactCliMaintenanceDiagnostics(run.result)
+    result: redactRunResult(run.result)
   };
 }
 

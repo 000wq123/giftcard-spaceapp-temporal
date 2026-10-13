@@ -51,6 +51,8 @@ const modelPickerLoadingFallback = (
 );
 
 export interface CodexComposerProps {
+  /** "dot": the Dot pane's composer (+, message, mic, send); its model and permissions come from Settings → Dots. */
+  variant?: "full" | "dot";
   snapshotRef?: { current: (() => string) | null };
   paneTitle: string;
   onShortcut?: (command: OskCliCommand) => void;
@@ -108,6 +110,7 @@ function attachmentKind(attachment: CodexComposerAttachment): "image" | "video" 
 }
 
 export function CodexComposer({
+  variant = "full",
   snapshotRef,
   paneTitle,
   onShortcut,
@@ -609,7 +612,7 @@ export function CodexComposer({
   }
 
   return (
-    <form className="codex-composer" onSubmit={submit} title={disabledTitle} onKeyDown={(event) => { if (event.key === "Escape") { setAddMenuOpen(false); } }}>
+    <form className="codex-composer" data-variant={variant} onSubmit={submit} title={disabledTitle} onKeyDown={(event) => { if (event.key === "Escape") { setAddMenuOpen(false); } }}>
       {attachments.length ? (
         <div className="codex-attachments" aria-label={"Attachments " + paneTitle}>
           {attachments.map((artifact) => {
@@ -752,7 +755,7 @@ export function CodexComposer({
         onKeyUp={checkVariableToken}
         onSelect={checkVariableToken}
         onKeyDown={handlePromptKeyDown}
-        placeholder="Ask anything, or give me a goal…"
+        placeholder={variant === "dot" ? "Send a message" : "Ask anything, or give me a goal…"}
         rows={1}
         autoComplete="off"
         autoCorrect="off"
@@ -814,7 +817,7 @@ export function CodexComposer({
           </button>
         ) : null}
         {onShortcut ? <CliShortcutsMenu active={isVisible} disabled={isDisabled || pending || isRunning} onCommand={onShortcut} commands={OSK_CHAT_MODE_COMMANDS} /> : null}
-        <PromptVariablesMenu
+        {variant !== "dot" || variablesManagerOpen ? <PromptVariablesMenu
           disabled={isDisabled || pending}
           active={isVisible}
           paneTitle={paneTitle}
@@ -837,10 +840,10 @@ export function CodexComposer({
               textarea.focus();
             }
           }}
-        />
+        /> : null}
         <div className="codex-composer-spacer" />
         <VoiceInputButton label={paneTitle} active={voiceActive} disabled={voiceDisabled || isDisabled} onClick={onVoice} onPrewarm={onVoicePrewarm} />
-        {modelSettings ? (
+        {variant === "dot" ? null : modelSettings ? (
           <span title={disabledTitle}>
             <Suspense fallback={modelPickerLoadingFallback}>
               <LazyCodexModelPicker compact settings={modelSettings} providers={modelProviders} disabled={isDisabled || pending || isRunning || !canSelectModel} allowSelectionWithoutCurrent onRefreshCatalog={onRefreshModelCatalog} onSwitch={switchModel} />

@@ -39,6 +39,7 @@ import type { PromptVariable } from "@space/contracts";
 import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
 import { ClaudeIcon } from "../ui-theme/ClaudeIcon.js";
 import { CliAccountPicker } from "../cli-accounts/CliAccountPicker.js";
+import { cliAccountProfileForPane, isNewCliPane, NEW_PANE_WINDOW_MS } from "../cli-accounts/cli-account-default.js";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import type { IDisposable, Terminal as XtermTerminal } from "@xterm/xterm";
@@ -53,6 +54,7 @@ import {
   type CliAccountProfile,
   type CliTerminalClientEventInput,
   type ClipboardItem,
+  type ListCliAccountProfilesResponse,
   type Pane,
   type PaneCliModelSettings,
   type PaneCliTerminalControlState,
@@ -78,6 +80,7 @@ import {
   isNonMutatingTerminalProtocolResponse,
   type TerminalInputSegment
 } from "./terminal-input-tokenizer.js";
+import { createOsc52ClipboardScanner } from "./terminal-osc52-clipboard.js";
 import {
   createTerminalOutputCoordinator,
   recordTerminalStressXtermWrite,
@@ -371,6 +374,7 @@ const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
 const TERMINAL_CONTROL_REPLAY_NOTICE = "Terminal control lease expired. Re-sending your last input.";
 const GEMINI_ACCOUNT_PROFILE_STORAGE_KEY = "space.gemini.lastAccountProfileId";
+const NEW_PANE_ACCOUNT_WAIT_MS = 3_000;
 const HIDDEN_INPUT_ECHO_TTL_MS = 5_000;
 const PASTE_INPUT_GUARD_MS = 2_500;
 const TURN_STOP_SETTLE_MS = 1_000;
@@ -449,6 +453,39 @@ function readLastCursorAccountProfileId(): string {
 function writeLastCursorAccountProfileId(profileId: string): void {
   try {
     getSpaceRuntime().platform.localStorage.setItem("space.cli.cursor.account-profile", profileId);
+  } catch {
+    void 0;
+  }
+}
+
+/** Copilot, Cursor and Kimi panes may run on Auto (Space picks and moves the account); new panes follow the last choice. */
+function readLastAutoAccountMode(runtimeId: string): boolean {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem(`space.cli.${runtimeId.replace(/^cli:/, "")}.account-mode`) === "AUTO";
+  } catch {
+    return false;
+  }
+}
+
+function writeLastAutoAccountMode(runtimeId: string, auto: boolean): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem(`space.cli.${runtimeId.replace(/^cli:/, "")}.account-mode`, auto ? "AUTO" : "PROFILE");
+  } catch {
+    void 0;
+  }
+}
+
+function readLastKimiAccountProfileId(): string {
+  try {
+    return getSpaceRuntime().platform.localStorage.getItem("space.cli.kimi.account-profile") || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function writeLastKimiAccountProfileId(profileId: string): void {
+  try {
+    getSpaceRuntime().platform.localStorage.setItem("space.cli.kimi.account-profile", profileId);
   } catch {
     void 0;
   }
@@ -865,7 +902,7 @@ export function isRetryableCliReconnectError(error: unknown): boolean {
 export function buildTerminalCliSessionRequest(
   pane: Pick<Pane, "reasoningEffort" | "cwd">,
   runtimeId: string,
-  input: { accountProfileId?: string | null; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
+  input: { accountProfileId?: string | null; accountMode?: "AUTO"; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
   automaticReconnect = false
 ) {
   return {
@@ -874,7 +911,8 @@ export function buildTerminalCliSessionRequest(
       ? {}
       : {
           ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
-          ...(input.accountProfileId !== undefined ? { accountProfileId: input.accountProfileId } : {}),
+          ...(input.accountMode === "AUTO" ? { accountMode: "AUTO" as const }
+            : input.accountProfileId !== undefined ? { accountProfileId: input.accountProfileId } : {}),
           reasoningEffort: input.reasoningEffort ?? (runtimeId === "cli:gemini" && (!pane.reasoningEffort || pane.reasoningEffort === "medium") ? "high" : pane.reasoningEffort),
           cwd: pane.cwd,
           ...(input.forceRestart ? { forceRestart: true } : {}),
@@ -2023,7 +2061,7 @@ export const TerminalPane = memo(function TerminalPane({
     };
   });
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: string; appSelection?: boolean } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const voiceInputRef = useRef(voiceInput);
   voiceInputRef.current = voiceInput;
@@ -2326,6 +2364,8 @@ export const TerminalPane = memo(function TerminalPane({
   const clipboardPasteAttemptRef = useRef<ClipboardPasteAttempt | null>(null);
   const clipboardAttemptTimerRef = useRef<number | null>(null);
   const lastTerminalIntentAtRef = useRef(0);
+  // Last selection a mouse-capturing CLI (Claude Code fullscreen, opencode) copied with OSC 52.
+  const terminalAppSelectionRef = useRef("");
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const wasAtBottomRef = useRef(true);
@@ -2356,13 +2396,22 @@ export const TerminalPane = memo(function TerminalPane({
   const isGeminiRuntime = selectedRuntimeId === "cli:gemini";
   const isCopilotRuntime = selectedRuntimeId === "cli:copilot";
   const isCursorRuntime = selectedRuntimeId === "cli:cursor";
+  const isKimiRuntime = selectedRuntimeId === "cli:kimi";
   const isClaudeRuntime = selectedRuntimeId === "cli:claude";
   const [copilotAccountProfiles, setCopilotAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedCopilotAccountProfileId, setSelectedCopilotAccountProfileId] = useState(readLastCopilotAccountProfileId);
   const [cursorAccountProfiles, setCursorAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedCursorAccountProfileId, setSelectedCursorAccountProfileId] = useState(readLastCursorAccountProfileId);
+  const [kimiAccountProfiles, setKimiAccountProfiles] = useState<CliAccountProfile[]>([]);
+  const [selectedKimiAccountProfileId, setSelectedKimiAccountProfileId] = useState(readLastKimiAccountProfileId);
+  // Copilot and Cursor panes on Auto: Space picks the account with the most room and moves the pane when it runs out.
+  const [autoAccountMode, setAutoAccountMode] = useState(false);
+  const autoAccountModeRef = useRef(false);
+  autoAccountModeRef.current = autoAccountMode;
   const [claudeAccountProfiles, setClaudeAccountProfiles] = useState<CliAccountProfile[]>([]);
   const [selectedClaudeAccountProfileId, setSelectedClaudeAccountProfileId] = useState(readLastClaudeAccountProfileId);
+  // The latest account profile list of this pane's CLI; a new pane waits for it before it starts its CLI.
+  const accountProfilesLoadRef = useRef<{ runtimeId: string; result: Promise<ListCliAccountProfilesResponse> } | null>(null);
   const selectedUploadPreviewIndex = useMemo(
     () => uploadPreviews.findIndex((preview) => preview.id === selectedUploadPreviewId),
     [selectedUploadPreviewId, uploadPreviews]
@@ -3517,13 +3566,13 @@ export const TerminalPane = memo(function TerminalPane({
     if (!isGeminiRuntime || observerOnly) return;
     let cancelled = false;
     const loadAccountProfiles = () => {
-      void api.listCliAccountProfiles("cli:gemini").then((result) => {
+      const load = api.listCliAccountProfiles("cli:gemini");
+      accountProfilesLoadRef.current = { runtimeId: "cli:gemini", result: load };
+      void load.then((result) => {
         if (cancelled) return;
         setGeminiAccountProfiles(result.profiles);
         setSelectedGeminiAccountProfileId((current) => {
-          const profileId = result.profiles.some((profile) => profile.profileId === current)
-            ? current
-            : result.profiles[0]?.profileId ?? "main";
+          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
           writeLastGeminiAccountProfileId(profileId);
           return profileId;
         });
@@ -3537,18 +3586,19 @@ export const TerminalPane = memo(function TerminalPane({
       cancelled = true;
       window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     };
-  }, [isGeminiRuntime, observerOnly]);
+  }, [isGeminiRuntime, observerOnly, pane.createdAt]);
 
   useEffect(() => {
     if (!isCopilotRuntime || observerOnly) return;
     let cancelled = false;
     const loadAccountProfiles = () => {
-      void api.listCliAccountProfiles("cli:copilot").then((result) => {
+      const load = api.listCliAccountProfiles("cli:copilot");
+      accountProfilesLoadRef.current = { runtimeId: "cli:copilot", result: load };
+      void load.then((result) => {
         if (cancelled) return;
         setCopilotAccountProfiles(result.profiles);
         setSelectedCopilotAccountProfileId((current) => {
-          const profileId = result.profiles.some((profile) => profile.profileId === current)
-            ? current : result.profiles[0]?.profileId ?? "main";
+          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
           writeLastCopilotAccountProfileId(profileId);
           return profileId;
         });
@@ -3562,18 +3612,19 @@ export const TerminalPane = memo(function TerminalPane({
       cancelled = true;
       window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     };
-  }, [isCopilotRuntime, observerOnly]);
+  }, [isCopilotRuntime, observerOnly, pane.createdAt]);
 
   useEffect(() => {
     if (!isCursorRuntime || observerOnly) return;
     let cancelled = false;
     const loadAccountProfiles = () => {
-      void api.listCliAccountProfiles("cli:cursor").then((result) => {
+      const load = api.listCliAccountProfiles("cli:cursor");
+      accountProfilesLoadRef.current = { runtimeId: "cli:cursor", result: load };
+      void load.then((result) => {
         if (cancelled) return;
         setCursorAccountProfiles(result.profiles);
         setSelectedCursorAccountProfileId((current) => {
-          const profileId = result.profiles.some((profile) => profile.profileId === current)
-            ? current : result.profiles[0]?.profileId ?? "main";
+          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
           writeLastCursorAccountProfileId(profileId);
           return profileId;
         });
@@ -3587,18 +3638,45 @@ export const TerminalPane = memo(function TerminalPane({
       cancelled = true;
       window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     };
-  }, [isCursorRuntime, observerOnly]);
+  }, [isCursorRuntime, observerOnly, pane.createdAt]);
+
+  useEffect(() => {
+    if (!isKimiRuntime || observerOnly) return;
+    let cancelled = false;
+    const loadAccountProfiles = () => {
+      const load = api.listCliAccountProfiles("cli:kimi");
+      accountProfilesLoadRef.current = { runtimeId: "cli:kimi", result: load };
+      void load.then((result) => {
+        if (cancelled) return;
+        setKimiAccountProfiles(result.profiles);
+        setSelectedKimiAccountProfileId((current) => {
+          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
+          writeLastKimiAccountProfileId(profileId);
+          return profileId;
+        });
+      }).catch(() => {
+        if (!cancelled) setKimiAccountProfiles([]);
+      });
+    };
+    loadAccountProfiles();
+    window.addEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
+    };
+  }, [isKimiRuntime, observerOnly, pane.createdAt]);
 
   useEffect(() => {
     if (!isClaudeRuntime || observerOnly) return;
     let cancelled = false;
     const loadAccountProfiles = () => {
-      void api.listCliAccountProfiles("cli:claude").then((result) => {
+      const load = api.listCliAccountProfiles("cli:claude");
+      accountProfilesLoadRef.current = { runtimeId: "cli:claude", result: load };
+      void load.then((result) => {
         if (cancelled) return;
         setClaudeAccountProfiles(result.profiles);
         setSelectedClaudeAccountProfileId((current) => {
-          const profileId = result.profiles.some((profile) => profile.profileId === current)
-            ? current : result.profiles[0]?.profileId ?? "main";
+          const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
           writeLastClaudeAccountProfileId(profileId);
           return profileId;
         });
@@ -3612,7 +3690,7 @@ export const TerminalPane = memo(function TerminalPane({
       cancelled = true;
       window.removeEventListener(CLI_ACCOUNT_PROFILES_EVENT, loadAccountProfiles);
     };
-  }, [isClaudeRuntime, observerOnly]);
+  }, [isClaudeRuntime, observerOnly, pane.createdAt]);
 
   useEffect(() => {
     if (!uploadPreviews.length) {
@@ -3660,12 +3738,20 @@ export const TerminalPane = memo(function TerminalPane({
       const profileId = session.accountProfileId ?? "main";
       setSelectedCursorAccountProfileId(profileId);
       writeLastCursorAccountProfileId(profileId);
+    } else if (session?.runtimeId === "cli:kimi") {
+      const profileId = session.accountProfileId ?? "main";
+      setSelectedKimiAccountProfileId(profileId);
+      writeLastKimiAccountProfileId(profileId);
     } else if (session?.runtimeId === "cli:claude") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedClaudeAccountProfileId(profileId);
       writeLastClaudeAccountProfileId(profileId);
     }
   }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
+
+  useEffect(() => {
+    if (sessionResponse?.accountMode) setAutoAccountMode(sessionResponse.accountMode === "AUTO");
+  }, [sessionResponse?.accountMode, sessionResponse?.session.sessionId]);
 
   useEffect(
     () => () => {
@@ -3968,6 +4054,8 @@ export const TerminalPane = memo(function TerminalPane({
     const terminalTicket = ticket;
     const terminalHost = host;
     const terminalSessionResponse = currentSessionResponse;
+    terminalAppSelectionRef.current = "";
+    const osc52ClipboardScanner = createOsc52ClipboardScanner();
 
     let disposed = false;
     let terminal: XtermTerminal | null = null;
@@ -4567,12 +4655,19 @@ export const TerminalPane = memo(function TerminalPane({
       event.preventDefault();
       event.stopPropagation();
       markTerminalIntent();
-      const currentSelection = terminalRef.current?.getSelection?.() ?? "";
       setContextMenu({
         x: event.clientX,
         y: event.clientY,
-        selection: currentSelection
+        ...terminalContextMenuSelection()
       });
+    };
+
+    const nativeContextMenuMouseDownListener: EventListener = (event) => {
+      if (!(event instanceof MouseEvent) || event.button !== 2) return;
+      if (voiceInputRef.current.settings.terminalContextMenu === false) return;
+      if ((terminal?.modes?.mouseTrackingMode ?? "none") === "none") return;
+      // Right-click opens the Space menu. Reported to the CLI, it would drop the selection being copied.
+      event.stopPropagation();
     };
 
     const nativeReasonixShortcutListener: EventListener = (event) => {
@@ -4722,12 +4817,17 @@ export const TerminalPane = memo(function TerminalPane({
       const addNativeContextMenuTarget = (target: EventTarget | null | undefined) => {
         if (!target || nativeContextMenuTargets.includes(target)) return;
         target.addEventListener("contextmenu", nativeContextMenuListener, { capture: true });
+        target.addEventListener("mousedown", nativeContextMenuMouseDownListener, { capture: true });
         nativeContextMenuTargets.push(target);
       };
       const addTerminalIntentTarget = (target: EventTarget | null | undefined, type: string) => {
         if (!target) return;
-        const listener: EventListener = () => {
-          if (type === "pointerdown") markTerminalIntent();
+        const listener: EventListener = (event) => {
+          if (type === "pointerdown") {
+            markTerminalIntent();
+            // A new left click clears or replaces the CLI's own selection.
+            if (event instanceof MouseEvent && event.button === 0 && !event.ctrlKey) terminalAppSelectionRef.current = "";
+          }
           if (type === "focus" || type === "focusin") {
             terminal?.scrollToBottom();
             syncTerminalViewportEvidence(terminalHost, terminal);
@@ -5078,7 +5178,9 @@ export const TerminalPane = memo(function TerminalPane({
           }, socket, terminalSessionResponse.session.sessionId);
           if (message.controlState === "CONTROLLER" && terminal) {
             // A lease grant/state pair reconciles geometry once per identity.
-            // Forcing the same grid nudges the PTY and replays CLI history.
+            // The coordinator forces only the first frame of this socket, so the
+            // CLI repaints the whole screen into the rebuilt xterm once; later
+            // same-grid frames never nudge the PTY or replay CLI history.
             geometryCoordinator.requestRefit({ reason: "CONTROL" });
             geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
           }
@@ -5103,7 +5205,9 @@ export const TerminalPane = memo(function TerminalPane({
           }, socket, terminalSessionResponse.session.sessionId);
           if (terminal) {
             // A lease grant/state pair reconciles geometry once per identity.
-            // Forcing the same grid nudges the PTY and replays CLI history.
+            // The coordinator forces only the first frame of this socket, so the
+            // CLI repaints the whole screen into the rebuilt xterm once; later
+            // same-grid frames never nudge the PTY or replay CLI history.
             geometryCoordinator.requestRefit({ reason: "CONTROL" });
             geometryCoordinator.handleTerminalResize(terminal.cols, terminal.rows);
           }
@@ -5171,6 +5275,7 @@ export const TerminalPane = memo(function TerminalPane({
               queueTerminalReplay(visibleData, "PREFILL");
               return;
             }
+            for (const text of osc52ClipboardScanner.push(visibleData)) acceptTerminalAppClipboardWrite(text);
             const refreshArm = modelSettingsOutputRefreshArmRef.current;
             let refreshOutputToken: number | null = null;
             let refreshOutputRevision: number | null = null;
@@ -5562,6 +5667,7 @@ export const TerminalPane = memo(function TerminalPane({
       window.removeEventListener("keydown", nativeReasonixShortcutListener, { capture: true });
       for (const target of nativeContextMenuTargets) {
         target.removeEventListener("contextmenu", nativeContextMenuListener, { capture: true });
+        target.removeEventListener("mousedown", nativeContextMenuMouseDownListener, { capture: true });
       }
       for (const { target, type, listener } of terminalIntentTargets) {
         target.removeEventListener(type, listener, { capture: true });
@@ -5671,8 +5777,21 @@ export const TerminalPane = memo(function TerminalPane({
 
   // Remembers the account for the next pane of this CLI and restarts only this pane on it.
   // Gemini and Claude keep the active model and effort and continue the same conversation.
-  function switchCliAccountProfile(runtimeId: "cli:gemini" | "cli:copilot" | "cli:cursor" | "cli:claude", profileId: string) {
+  function switchCliAccountProfile(runtimeId: "cli:gemini" | "cli:copilot" | "cli:cursor" | "cli:kimi" | "cli:claude", profileId: string) {
     const currentProfileId = sessionResponseRef.current?.session.accountProfileId ?? "main";
+    if (runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") {
+      const leavingAuto = autoAccountModeRef.current;
+      setAutoAccountMode(false);
+      writeLastAutoAccountMode(runtimeId, false);
+      // Picking the account Auto already runs on only leaves Auto; the session keeps running.
+      if (leavingAuto && sessionResponseRef.current && profileId === currentProfileId) {
+        if (runtimeId === "cli:copilot") setSelectedCopilotAccountProfileId(profileId);
+        else if (runtimeId === "cli:kimi") setSelectedKimiAccountProfileId(profileId);
+        else setSelectedCursorAccountProfileId(profileId);
+        void requestCliSession({ accountProfileId: profileId });
+        return;
+      }
+    }
     if (runtimeId === "cli:gemini") {
       setSelectedGeminiAccountProfileId(profileId);
       writeLastGeminiAccountProfileId(profileId);
@@ -5682,6 +5801,9 @@ export const TerminalPane = memo(function TerminalPane({
     } else if (runtimeId === "cli:cursor") {
       setSelectedCursorAccountProfileId(profileId);
       writeLastCursorAccountProfileId(profileId);
+    } else if (runtimeId === "cli:kimi") {
+      setSelectedKimiAccountProfileId(profileId);
+      writeLastKimiAccountProfileId(profileId);
     } else {
       setSelectedClaudeAccountProfileId(profileId);
       writeLastClaudeAccountProfileId(profileId);
@@ -5709,8 +5831,15 @@ export const TerminalPane = memo(function TerminalPane({
     void requestCliSession({ accountProfileId: profileId, forceRestart: true, resume: hasActiveTask });
   }
 
+  // Auto keeps the running session on its account and starts every later session on the account with the most room.
+  function selectAutoAccount(runtimeId: "cli:copilot" | "cli:cursor" | "cli:kimi") {
+    setAutoAccountMode(true);
+    writeLastAutoAccountMode(runtimeId, true);
+    if (sessionResponseRef.current) void requestCliSession({ accountMode: "AUTO" });
+  }
+
   async function requestCliSession(
-    input: { accountProfileId?: string | null; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
+    input: { accountProfileId?: string | null; accountMode?: "AUTO"; modelId?: string | null; reasoningEffort?: Pane["reasoningEffort"]; forceRestart?: boolean; resume?: boolean } = {},
     options: { automaticReconnect?: boolean; expectedSocketGeneration?: number } = {}
   ): Promise<PaneCliSessionResponse | null> {
     if (pane.id.startsWith("pane:optimistic-")) return null;
@@ -5743,10 +5872,15 @@ export const TerminalPane = memo(function TerminalPane({
                 selectedRuntimeForRequest!.id,
                 selectedRuntimeForRequest!.id === "cli:gemini"
                   ? { ...input, accountProfileId: input.accountProfileId ?? selectedGeminiAccountProfileId }
+                  : (selectedRuntimeForRequest!.id === "cli:copilot" || selectedRuntimeForRequest!.id === "cli:cursor" || selectedRuntimeForRequest!.id === "cli:kimi") &&
+                      (input.accountMode === "AUTO" || (input.accountProfileId === undefined && autoAccountModeRef.current))
+                    ? { ...input, accountProfileId: undefined, accountMode: "AUTO" as const }
                   : selectedRuntimeForRequest!.id === "cli:copilot"
                     ? { ...input, accountProfileId: input.accountProfileId ?? selectedCopilotAccountProfileId }
                     : selectedRuntimeForRequest!.id === "cli:cursor"
                       ? { ...input, accountProfileId: input.accountProfileId ?? selectedCursorAccountProfileId }
+                    : selectedRuntimeForRequest!.id === "cli:kimi"
+                      ? { ...input, accountProfileId: input.accountProfileId ?? selectedKimiAccountProfileId }
                       : selectedRuntimeForRequest!.id === "cli:claude"
                         ? { ...input, accountProfileId: input.accountProfileId ?? selectedClaudeAccountProfileId }
                   : input
@@ -5860,6 +5994,27 @@ export const TerminalPane = memo(function TerminalPane({
     await requestCliSession({}, options);
   }
 
+  // The account a new pane starts on, the same one its picker selects; undefined keeps the picker's selection
+  // (CLIs without account profiles, or a list that has not loaded within a few seconds).
+  async function newPaneAccountProfileId(): Promise<string | undefined> {
+    const runtimeId = selectedRuntime?.id;
+    const load = accountProfilesLoadRef.current;
+    if (!load || load.runtimeId !== runtimeId) return undefined;
+    const remembered = runtimeId === "cli:gemini" ? readLastGeminiAccountProfileId()
+      : runtimeId === "cli:copilot" ? readLastCopilotAccountProfileId()
+        : runtimeId === "cli:cursor" ? readLastCursorAccountProfileId()
+        : runtimeId === "cli:kimi" ? readLastKimiAccountProfileId()
+          : runtimeId === "cli:claude" ? readLastClaudeAccountProfileId() : null;
+    if (remembered === null) return undefined;
+    let timer: number | undefined;
+    const result = await Promise.race([
+      load.result.catch(() => null),
+      new Promise<null>((resolve) => { timer = window.setTimeout(() => resolve(null), NEW_PANE_ACCOUNT_WAIT_MS); })
+    ]);
+    window.clearTimeout(timer);
+    return result ? cliAccountProfileForPane(result, remembered, true) : undefined;
+  }
+
   function triggerTerminalSocketRecovery(source: string): void {
     if (reconnectInProgressRef.current) return;
     if (reconnectTimerRef.current !== null) return;
@@ -5952,7 +6107,6 @@ export const TerminalPane = memo(function TerminalPane({
         return;
       }
       const nowMs = Date.now();
-      const freshPaneWindowMs = 60 * 1000;
       const paneAgeMs = nowMs - new Date(pane.createdAt).getTime();
       const recentlyChecked = nowMs - lastActiveSessionCheckedMsRef.current < 5_000;
       const activeSession = recentlyChecked
@@ -5961,8 +6115,14 @@ export const TerminalPane = memo(function TerminalPane({
       if (activeSession && isRecoverableCliSession(activeSession.session) && activeSession.session.paneId === pane.id) {
         restoreActiveSession(activeSession);
       } else {
-        if (paneAgeMs <= freshPaneWindowMs) {
-          await startOrReconnect();
+        if (paneAgeMs <= NEW_PANE_WINDOW_MS) {
+          const runtimeId = selectedRuntime?.id ?? "";
+          if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId)) {
+            setAutoAccountMode(true);
+            await requestCliSession({ accountMode: "AUTO" });
+          } else {
+            await requestCliSession({ accountProfileId: await newPaneAccountProfileId() });
+          }
         } else {
           reportTerminalBootstrapped();
           settleTerminalPrefill();
@@ -6091,6 +6251,32 @@ export const TerminalPane = memo(function TerminalPane({
 
   function hasRecentTerminalIntent(nowMs = Date.now()): boolean {
     return nowMs - lastTerminalIntentAtRef.current <= TERMINAL_PASTE_RECENT_INTENT_MS;
+  }
+
+  function terminalContextMenuSelection(): { selection: string; appSelection: boolean } {
+    const terminal = terminalRef.current;
+    const selection = terminal?.getSelection?.() ?? "";
+    if (selection) return { selection, appSelection: false };
+    // While the CLI captures the mouse, its selection lives in the app, not in xterm.
+    const mouseCaptured = (terminal?.modes?.mouseTrackingMode ?? "none") !== "none";
+    const appSelection = mouseCaptured ? terminalAppSelectionRef.current : "";
+    return { selection: appSelection, appSelection: Boolean(appSelection) };
+  }
+
+  function acceptTerminalAppClipboardWrite(text: string) {
+    const host = xtermHostRef.current;
+    if (!host || host.closest("[inert]")) return;
+    if (!isVisibleRef.current || paneMinimizedRef.current || host.ownerDocument.visibilityState === "hidden") return;
+    const activeElement = host.ownerDocument.activeElement;
+    const terminalFocused = activeElement instanceof Node && host.contains(activeElement);
+    if (!terminalFocused && !hasRecentTerminalIntent()) return;
+    terminalAppSelectionRef.current = text;
+    // Copy-on-select, like a native terminal. The context menu Copy covers a refused write.
+    try {
+      void getSpaceRuntime().platform.clipboard?.writeText(text).catch(() => undefined);
+    } catch {
+      // Clipboard access can throw synchronously in restricted contexts.
+    }
   }
 
   function focusTerminal() {
@@ -8709,6 +8895,7 @@ export const TerminalPane = memo(function TerminalPane({
             selectedProfileId={selectedCopilotAccountProfileId}
             disabled={pending || observerOnly}
             onSelect={(profileId) => switchCliAccountProfile("cli:copilot", profileId)}
+            auto={{ active: autoAccountMode, onSelect: () => selectAutoAccount("cli:copilot") }}
           />
         ) : null}
         {isCursorRuntime && cursorAccountProfiles.length ? (
@@ -8721,6 +8908,20 @@ export const TerminalPane = memo(function TerminalPane({
             selectedProfileId={selectedCursorAccountProfileId}
             disabled={pending || observerOnly}
             onSelect={(profileId) => switchCliAccountProfile("cli:cursor", profileId)}
+            auto={{ active: autoAccountMode, onSelect: () => selectAutoAccount("cli:cursor") }}
+          />
+        ) : null}
+        {isKimiRuntime && kimiAccountProfiles.length > 1 ? (
+          <CliAccountPicker
+            runtimeId="cli:kimi"
+            providerLabel="Kimi"
+            icon={<TerminalIcon size={16} aria-hidden="true" />}
+            paneTitle={pane.title}
+            profiles={kimiAccountProfiles}
+            selectedProfileId={selectedKimiAccountProfileId}
+            disabled={pending || observerOnly}
+            onSelect={(profileId) => switchCliAccountProfile("cli:kimi", profileId)}
+            auto={{ active: autoAccountMode, onSelect: () => selectAutoAccount("cli:kimi") }}
           />
         ) : null}
         {isClaudeRuntime && claudeAccountProfiles.length ? (
@@ -8745,11 +8946,12 @@ export const TerminalPane = memo(function TerminalPane({
             if (voiceInput.settings.terminalContextMenu === false) return;
             event.preventDefault();
             event.stopPropagation();
-            const currentSelection = terminalRef.current?.getSelection?.() || (typeof window !== "undefined" ? window.getSelection()?.toString() ?? "" : "");
+            const terminalSelection = terminalContextMenuSelection();
             setContextMenu({
               x: event.clientX,
               y: event.clientY,
-              selection: currentSelection
+              selection: terminalSelection.selection || (typeof window !== "undefined" ? window.getSelection()?.toString() ?? "" : ""),
+              appSelection: terminalSelection.appSelection
             });
           }}
         >
@@ -9054,7 +9256,7 @@ export const TerminalPane = memo(function TerminalPane({
                 <span>Copy all contents</span>
               </div>
             </button>
-            {contextMenu.selection ? (
+            {contextMenu.selection && !contextMenu.appSelection ? (
               <button
                 type="button"
                 role="menuitem"

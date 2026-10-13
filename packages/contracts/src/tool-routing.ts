@@ -44,7 +44,7 @@ export type ToolRoutingOverride = z.infer<typeof toolRoutingOverrideSchema>;
 export type CapabilityName = z.infer<typeof capabilityNameSchema>;
 export interface ToolRoutingPolicyV1 {
   toolId: string;
-  category: "NATIVE_PREFERRED" | "FALLBACK_ONLY" | "SPACE_EXCLUSIVE" | "OPERATOR_OPT_IN";
+  category: "NATIVE_PREFERRED" | "FALLBACK_ONLY" | "SPACE_EXCLUSIVE" | "OPERATOR_OPT_IN" | "EXTERNAL_SERVICE";
   capability?: CapabilityName;
 }
 export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
@@ -54,7 +54,8 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
   { toolId: "mcp:scrapling", category: "NATIVE_PREFERRED", capability: "web" },
   { toolId: "mcp:summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
   { toolId: "mcp:capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
-  ...["space-control", "space_ops", "space_browser", "space_services", "olla", "mission_control"].map((id) => ({
+  { toolId: "mcp:context7", category: "EXTERNAL_SERVICE" },
+  ...["space-control", "space_ops", "space_browser", "playwright_pane", "space_jobapply", "space_services", "olla", "mission_control"].map((id) => ({
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
@@ -69,6 +70,8 @@ const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
   space_ops: "Tests and deploys are never available to Native agents.",
   "space-control": "Space Control is available through the Dot gateway with Dot attribution.",
   space_browser: "The managed browser is available through the Dot gateway with Dot attribution.",
+  playwright_pane: "Pane browser automation belongs to the CLI session that owns the pane.",
+  space_jobapply: "Job Applications tools belong to the CLI session of a Job Applications pane.",
   space_services: "Service restarts are operator operations.",
   olla: "Storefront administration is an operator tool.",
   mission_control: "Mission Control changes are operator operations."
@@ -132,6 +135,7 @@ export function resolveToolRoute(
   if (!options.taskNeedsTool) return result("ON_DEMAND", "Available only when the task needs this capability; no startup work.");
   if (policy.category === "OPERATOR_OPT_IN" && !options.explicitRequest && mode !== "ALLOW_FALLBACK") return result("UNAVAILABLE", "This workflow requires an explicit operator request.");
   if (policy.category === "SPACE_EXCLUSIVE") return result("ON_DEMAND", "Space-specific access; existing authentication and approval gates apply.");
+  if (policy.category === "EXTERNAL_SERVICE") return result("ON_DEMAND", "External service without a native equivalent; it starts only for a task that needs it.");
   if (native === "UNKNOWN" && mode !== "ALLOW_FALLBACK") return result("UNAVAILABLE", "Check active runtime tools first; fallback requires a verified gap or operator policy.");
   return result("ON_DEMAND", "Native capability unavailable; start only the requested backend.");
 }

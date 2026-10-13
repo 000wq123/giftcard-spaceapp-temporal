@@ -264,7 +264,7 @@ export async function executeLightweightRoomChat(input: ExecuteLightweightRoomCh
         : modelSelection.modelId;
       let apiKey: string | null = null;
       try {
-        const keyFile = process.env.SPACE_CODEX_LB_KEY_FILE ?? "/opt/spaceapp/secrets/space-codex-lb-provider.key";
+        const keyFile = process.env.SPACE_GATEWAY_KEY_FILE || process.env.SPACE_CODEX_LB_KEY_FILE || "/opt/spaceapp/secrets/space-gateway-internal.key";
         const keyContent = await import("node:fs/promises").then((fs) => fs.readFile(keyFile, "utf8"));
         apiKey = keyContent.trim() || null;
       } catch {}

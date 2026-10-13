@@ -61,32 +61,43 @@ export function VncPane({ pane, observerOnly = false }: VncPaneProps) {
       try {
         const url = await api.vncStreamWebSocketUrl(pane.id, connectionTarget.host, connectionTarget.port);
         if (cancelled) return;
+        // Connecting to a new target while a session is open must not leave the
+        // old socket and canvas alive in the same container.
+        rfbRef.current?.disconnect();
         const rfb = new RFB(screenContainer, url, {
           credentials: connectionTarget.password ? { password: connectionTarget.password } : undefined
         });
+        rfbRef.current = rfb;
+        // Events from a superseded session must not touch the current one.
+        const isCurrent = () => rfbRef.current === rfb;
         rfb.viewOnly = observerOnly;
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
         rfb.focusOnClick = true;
         rfb.addEventListener("connect", () => {
+          if (!isCurrent()) return;
           setState("connected");
           setStatusMessage(null);
         });
         rfb.addEventListener("disconnect", (event) => {
+          if (!isCurrent()) return;
           setState("closed");
           setStatusMessage(event.detail.message || (event.detail.clean ? "Disconnected." : "Connection closed."));
           rfbRef.current = null;
         });
         rfb.addEventListener("credentialsrequired", () => {
+          if (!isCurrent()) return;
           setState("error");
           setStatusMessage("Password required. Reconnect with the VNC password.");
         });
         rfb.addEventListener("securityfailure", (event) => {
+          if (!isCurrent()) return;
           setState("error");
           setStatusMessage(event.detail.reason || "VNC security failure.");
         });
-        rfb.addEventListener("desktopname", (event) => setDesktopName(event.detail.name));
-        rfbRef.current = rfb;
+        rfb.addEventListener("desktopname", (event) => {
+          if (isCurrent()) setDesktopName(event.detail.name);
+        });
       } catch {
         if (cancelled) return;
         rfbRef.current = null;

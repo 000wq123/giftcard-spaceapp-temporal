@@ -2,13 +2,14 @@ import type { CliAccountIdentity, CliAccountProfile } from "@space/contracts";
 import type { CliAccountRuntimeId } from "./cli-account-availability.js";
 import { normalizeAccountEmail } from "./cli-account-identities.js";
 
-export const CLI_ACCOUNT_RUNTIME_IDS: readonly CliAccountRuntimeId[] = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"];
+export const CLI_ACCOUNT_RUNTIME_IDS: readonly CliAccountRuntimeId[] = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor", "cli:kimi"];
 
 export const CLI_ACCOUNT_RUNTIME_LABELS: Record<CliAccountRuntimeId, string> = {
   "cli:gemini": "Gemini",
   "cli:claude": "Claude Code",
   "cli:copilot": "GitHub Copilot",
   "cli:cursor": "Cursor",
+  "cli:kimi": "Kimi Code",
 };
 
 export interface CliAccountSuggestion {

@@ -24,7 +24,9 @@ export const historicalPrefixCollisions: ReadonlySet<string> = new Set([
   "0148_dot_delegations.sql",
   "0148_repository_providers.sql",
   "0154_session_revocations.sql",
-  "0154_space_gateway_reauth_status.sql"
+  "0154_space_gateway_reauth_status.sql",
+  "0157_job_apply_pane_metadata.sql",
+  "0157_space_gateway_speed_defaults.sql"
 ]);
 
 export interface MigrationIdentityIssue {

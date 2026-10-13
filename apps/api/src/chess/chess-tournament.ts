@@ -91,6 +91,8 @@ export interface ChessGame {
   lastNote: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Per-side move statistics of an unfinished game; committed to the standings when it ends. */
+  stats?: { w: SideStats; b: SideStats };
 }
 
 export interface ChessTournamentState {
@@ -156,6 +158,8 @@ const ELO_K = 24;
 const RECENT_GAMES = 30;
 const LIVE_SAN = 24;
 const PAIRING_BUDGET = 50_000;
+const PROGRESS_SAVE_MS = 10_000;
+const AUTO_RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
 const FALLBACK_PROVIDER_LIMIT = 2;
 const PROVIDER_RETRY_DELAY_MS = 750;
 
@@ -211,9 +215,14 @@ export function compareStandings(left: ChessStanding, right: ChessStanding): num
 export function swissPairings(
   standings: ChessStanding[],
   played: Set<string>,
-  round: number
+  round: number,
+  /** Order among equal scores; a per-tournament shuffle keeps one provider's models from meeting each other. */
+  tiebreak: (id: string) => number = () => 0
 ): { pairs: Array<[string, string]>; bye: string | null } {
-  const ranked = [...standings].sort((left, right) => right.points - left.points || right.elo - left.elo || left.seed - right.seed);
+  const ranked = [...standings].sort(
+    (left, right) =>
+      right.points - left.points || right.elo - left.elo || tiebreak(left.id) - tiebreak(right.id) || left.seed - right.seed
+  );
   const byId = new Map(ranked.map((standing) => [standing.id, standing]));
   let pool = ranked.map((standing) => standing.id);
   let bye: string | null = null;
@@ -259,10 +268,32 @@ export function eloAfter(rating: number, opponent: number, score: number): numbe
   return rating + ELO_K * (score - expected);
 }
 
+export function stableHash(text: string): number {
+  let value = 2166136261;
+  for (const char of text) value = Math.imul(value ^ char.charCodeAt(0), 16777619);
+  return value >>> 0;
+}
+
+/**
+ * The next game for a free worker: the one whose providers are least busy, so every provider
+ * plays at once instead of one provider's games waiting in line for its few slots.
+ */
+export function pickGameIndex<T>(games: T[], load: (game: T) => number, scanLimit = 400): number {
+  let best = 0;
+  let bestLoad = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < Math.min(games.length, scanLimit); index += 1) {
+    const value = load(games[index]!);
+    if (value < bestLoad) {
+      best = index;
+      bestLoad = value;
+      if (value <= 0) break;
+    }
+  }
+  return best;
+}
+
 function seededRandom(seedText: string): () => number {
-  let state = 2166136261;
-  for (const char of seedText) state = Math.imul(state ^ char.charCodeAt(0), 16777619);
-  state >>>= 0;
+  let state = stableHash(seedText);
   return () => {
     state = Math.imul(state ^ (state >>> 15), 1 | state);
     state ^= state + Math.imul(state ^ (state >>> 7), 61 | state);
@@ -348,10 +379,32 @@ function newGame(id: string, round: number, white: string, black: string | null)
 }
 
 function resetGame(game: ChessGame): void {
+  delete game.stats;
   Object.assign(game, newGame(game.id, game.round, game.white, game.black));
 }
 
-interface SideStats {
+/** An unfinished game waits for the next run with its moves, strikes and statistics kept. */
+function pauseGame(game: ChessGame): void {
+  game.status = "pending";
+  game.thinking = null;
+  game.queued = false;
+}
+
+/** Rebuilds a paused game's position from its moves; null when they no longer replay. */
+function replayGame(game: ChessGame): { position: ChessPosition; seen: Map<string, number> } | null {
+  let position = parseFen(START_FEN);
+  const seen = new Map<string, number>([[positionKey(position), 1]]);
+  for (const uci of game.uci) {
+    const move = legalMoves(position).find((candidate) => moveToUci(candidate) === uci);
+    if (!move) return null;
+    position = makeMove(position, move);
+    const key = positionKey(position);
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+  }
+  return game.san.length === game.uci.length ? { position, seen } : null;
+}
+
+export interface SideStats {
   modelMoves: number;
   illegalReplies: number;
   fallbackMoves: number;
@@ -427,8 +480,10 @@ export class ChessTournamentRunner {
   private controller: AbortController | null = null;
   private loop: Promise<void> | null = null;
   private saving: Promise<void> = Promise.resolve();
+  private lastProgressSave = 0;
   private readonly now: () => number;
   private readonly slots = new Map<string, ProviderSlots>();
+  private readonly runningGames = new Map<string, number>();
 
   constructor(private readonly deps: ChessTournamentDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -449,7 +504,7 @@ export class ChessTournamentRunner {
       const state = JSON.parse(await readFile(this.deps.stateFile, "utf8")) as ChessTournamentState;
       if (state?.version !== 1 || !Array.isArray(state.games) || !state.standings || !Array.isArray(state.contestants)) return null;
       if (state.status === "running") state.status = "interrupted";
-      for (const game of state.games) if (game.status === "running") resetGame(game);
+      for (const game of state.games) if (game.status === "running") pauseGame(game);
       this.state = state;
     } catch {
       this.state = null;
@@ -462,7 +517,7 @@ export class ChessTournamentRunner {
     if (!state) return null;
     const contestants = new Map(state.contestants.map((contestant) => [contestant.id, contestant]));
     const summary = (game: ChessGame): ChessGameSummary => {
-      const { san, uci, ...rest } = game;
+      const { san, uci, stats: _stats, ...rest } = game;
       return { ...rest, plies: san.length, recentSan: san.slice(-LIVE_SAN), lastUci: uci[uci.length - 1] ?? null };
     };
     const finished = state.games.filter((game) => game.status === "finished");
@@ -587,6 +642,27 @@ export class ChessTournamentRunner {
     });
   }
 
+  /** Saves running games' progress at most every PROGRESS_SAVE_MS, so a restart loses little. */
+  private persistSoon(): void {
+    this.touch();
+    if (this.now() - this.lastProgressSave < PROGRESS_SAVE_MS) return;
+    this.lastProgressSave = this.now();
+    void this.persist();
+  }
+
+  /**
+   * Continues a tournament an API restart interrupted (deploys restart the API often). A tournament
+   * someone stopped stays stopped, and one idle for a day is left alone.
+   */
+  async resumeIfInterrupted(): Promise<boolean> {
+    const state = await this.load();
+    if (!state || state.status !== "interrupted" || this.active) return false;
+    if (this.now() - Date.parse(state.updatedAt) > AUTO_RESUME_WINDOW_MS) return false;
+    await this.resume();
+    this.deps.log?.("chess_tournament_auto_resumed", { id: state.id });
+    return true;
+  }
+
   private touch(): void {
     if (this.state) this.state.updatedAt = this.iso();
   }
@@ -633,7 +709,7 @@ export class ChessTournamentRunner {
     } catch (error) {
       state.error = error instanceof Error ? error.message : String(error);
       state.status = "stopped";
-      for (const game of state.games) if (game.status === "running") resetGame(game);
+      for (const game of state.games) if (game.status === "running") pauseGame(game);
       await this.persist();
       this.deps.log?.("chess_tournament_failed", { id: state.id, error: state.error });
     }
@@ -644,7 +720,7 @@ export class ChessTournamentRunner {
     const played = new Set(
       state.games.filter((game) => game.black !== null).map((game) => pairKey(game.white, game.black!))
     );
-    const { pairs, bye } = swissPairings(Object.values(state.standings), played, round);
+    const { pairs, bye } = swissPairings(Object.values(state.standings), played, round, (id) => stableHash(`${state.id}:${id}`));
     pairs.forEach(([white, black], index) => state.games.push(newGame(`r${round}-g${index + 1}`, round, white, black)));
     if (bye) {
       const game = newGame(`r${round}-bye`, round, bye, null);
@@ -664,13 +740,33 @@ export class ChessTournamentRunner {
   private async runPool(games: ChessGame[], signal: AbortSignal): Promise<void> {
     const queue = [...games];
     const workers = Array.from({ length: Math.max(1, Math.min(this.state!.settings.concurrency, queue.length)) }, async () => {
-      while (!signal.aborted) {
-        const game = queue.shift();
-        if (!game) return;
-        await this.playGame(game, signal);
+      while (!signal.aborted && queue.length > 0) {
+        const [game] = queue.splice(pickGameIndex(queue, (candidate) => this.gameLoad(candidate)), 1);
+        const providers = this.gameProviders(game!);
+        for (const provider of providers) this.runningGames.set(provider, (this.runningGames.get(provider) ?? 0) + 1);
+        try {
+          await this.playGame(game!, signal);
+        } finally {
+          for (const provider of providers) this.runningGames.set(provider, (this.runningGames.get(provider) ?? 1) - 1);
+        }
       }
     });
     await Promise.all(workers);
+  }
+
+  private gameProviders(game: ChessGame): Set<string> {
+    const providerOf = (id: string | null) => (id ? this.state!.contestants.find((contestant) => contestant.id === id)?.providerId : undefined);
+    return new Set([providerOf(game.white), providerOf(game.black)].filter((provider): provider is string => Boolean(provider)));
+  }
+
+  /** How busy a game's busiest provider is: its running games over the moves it takes at once. */
+  private gameLoad(game: ChessGame): number {
+    let load = 0;
+    for (const provider of this.gameProviders(game)) {
+      const limit = this.deps.providerLimits?.[provider] ?? PROVIDER_REQUEST_LIMITS[provider] ?? FALLBACK_PROVIDER_LIMIT;
+      load = Math.max(load, (this.runningGames.get(provider) ?? 0) / Math.max(1, limit));
+    }
+    return load;
   }
 
   private providerSlots(group: string): ProviderSlots {
@@ -709,13 +805,15 @@ export class ChessTournamentRunner {
   private async playGame(game: ChessGame, signal: AbortSignal): Promise<void> {
     const settings = this.state!.settings;
     const players = { w: this.contestant(game.white), b: this.contestant(game.black!) };
-    const stats = { w: emptySideStats(), b: emptySideStats() };
-    const random = seededRandom(`${this.state!.id}:${game.id}`);
-    resetGame(game);
+    const random = seededRandom(`${this.state!.id}:${game.id}:${game.uci.length}`);
+    // A game paused by a restart or Stop continues from its last move.
+    const resumed = game.uci.length > 0 ? replayGame(game) : null;
+    if (!resumed) resetGame(game);
+    const stats = (game.stats ??= { w: emptySideStats(), b: emptySideStats() });
     game.status = "running";
-    game.startedAt = this.iso();
-    let position = parseFen(START_FEN);
-    const seen = new Map<string, number>([[positionKey(position), 1]]);
+    game.startedAt ??= this.iso();
+    let position = resumed?.position ?? parseFen(START_FEN);
+    const seen = resumed?.seen ?? new Map<string, number>([[positionKey(position), 1]]);
 
     try {
       for (;;) {
@@ -754,11 +852,11 @@ export class ChessTournamentRunner {
         game.fen = toFen(position);
         const key = positionKey(position);
         seen.set(key, (seen.get(key) ?? 0) + 1);
-        this.touch();
+        this.persistSoon();
       }
     } catch (error) {
       if (signal.aborted) {
-        resetGame(game);
+        pauseGame(game);
         return;
       }
       throw error;
@@ -843,6 +941,7 @@ export class ChessTournamentRunner {
     game.thinking = null;
     game.queued = false;
     game.finishedAt = this.iso();
+    delete game.stats;
 
     const white = state.standings[game.white]!;
     const black = state.standings[game.black!]!;

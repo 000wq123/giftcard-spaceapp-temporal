@@ -33,13 +33,11 @@ function userParts(content: unknown): Json[] {
   return parts;
 }
 
-/** Rewrites a Chat Completions request into a Responses request for the Codex backend. */
-export function chatToResponses(body: Json): Json {
-  if (typeof body.model !== "string" || !body.model.trim()) throw new ChatRequestError("'model' is required.");
-  if (!Array.isArray(body.messages) || body.messages.length === 0) throw new ChatRequestError("'messages' must be a non-empty array.");
+/** Chat-style messages as Responses input: system and developer text becomes instructions. */
+function messagesToInput(messages: unknown[]): { instructions: string[]; input: Json[] } {
   const instructions: string[] = [];
   const input: Json[] = [];
-  for (const raw of body.messages) {
+  for (const raw of messages) {
     const message = obj(raw);
     const role = str(message?.role);
     if (!message || !role) throw new ChatRequestError("Each message must include a string 'role'.");
@@ -63,7 +61,14 @@ export function chatToResponses(body: Json): Json {
       throw new ChatRequestError(`Unsupported message role: ${role}`);
     }
   }
+  return { instructions, input };
+}
 
+/** Rewrites a Chat Completions request into a Responses request for the Codex backend. */
+export function chatToResponses(body: Json): Json {
+  if (typeof body.model !== "string" || !body.model.trim()) throw new ChatRequestError("'model' is required.");
+  if (!Array.isArray(body.messages) || body.messages.length === 0) throw new ChatRequestError("'messages' must be a non-empty array.");
+  const { instructions, input } = messagesToInput(body.messages);
   const out: Json = { model: body.model, instructions: instructions.join("\n\n"), input, stream: true, store: false };
   const tools = Array.isArray(body.tools) ? body.tools.map(obj).filter((tool): tool is Json => Boolean(tool)) : [];
   if (tools.length > 0) {
@@ -89,6 +94,38 @@ export function chatToResponses(body: Json): Json {
   if (effort) out.reasoning = { effort };
   if (typeof body.service_tier === "string") out.service_tier = body.service_tier;
   if (typeof body.prompt_cache_key === "string") out.prompt_cache_key = body.prompt_cache_key;
+  return out;
+}
+
+const UNSUPPORTED_UPSTREAM_FIELDS = ["max_output_tokens", "metadata", "prompt_cache_retention", "safety_identifier", "temperature", "top_p", "truncation", "user"];
+
+/**
+ * Responses requests as the Codex backend takes them, after codex-lb's request models: fields it rejects are dropped,
+ * `store` is always false, a string `input` becomes one user message, and on `/v1` (OpenAI-style clients) `messages`
+ * are accepted in place of `input` and missing `instructions` are empty.
+ */
+export function normalizeResponsesRequest(body: Json, options: { openAiStyle: boolean; compact?: boolean }): Json {
+  const out: Json = { ...body };
+  // The Codex backend rejects these OpenAI API fields (codex-lb `_UNSUPPORTED_UPSTREAM_FIELDS`).
+  for (const field of UNSUPPORTED_UPSTREAM_FIELDS) delete out[field];
+  delete out.prompt_cache_options;
+  if (!options.compact) out.store = false;
+  if (typeof out.input === "string") out.input = [{ role: "user", content: [{ type: "input_text", text: out.input }] }];
+  if (!options.openAiStyle) return out;
+  if (out.messages !== undefined) {
+    if (!Array.isArray(out.messages)) throw new ChatRequestError("'messages' must be an array.");
+    if (Array.isArray(out.input) ? out.input.length > 0 : out.input !== undefined && out.input !== null) {
+      throw new ChatRequestError("Provide either 'input' or 'messages', not both.");
+    }
+    const { instructions, input } = messagesToInput(out.messages);
+    const existing = typeof out.instructions === "string" && out.instructions ? [out.instructions] : [];
+    out.instructions = [...existing, ...instructions].join("\n");
+    out.input = input;
+    delete out.messages;
+  }
+  if (out.input === undefined || out.input === null) throw new ChatRequestError("Provide either 'input' or 'messages'.");
+  if (!Array.isArray(out.input)) throw new ChatRequestError("'input' must be a string or an array.");
+  if (typeof out.instructions !== "string") out.instructions = "";
   return out;
 }
 

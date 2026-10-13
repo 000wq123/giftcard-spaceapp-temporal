@@ -47,6 +47,7 @@ const providerLabels: Record<CliAccountRuntimeId, string> = {
   "cli:claude": "Claude",
   "cli:copilot": "GitHub",
   "cli:cursor": "Cursor",
+  "cli:kimi": "Kimi",
 };
 
 const maxSuggestions = 8;

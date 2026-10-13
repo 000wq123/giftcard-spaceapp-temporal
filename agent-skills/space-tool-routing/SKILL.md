@@ -14,8 +14,9 @@ Read the current model AND runtime input capabilities. Model names do not prove
 that browser tools or image attachments are available in this session.
 
 For a routing explanation, use the existing Settings panel or the bounded
-`space-capability plan` command. Neither starts an MCP backend. Read only one
-backend's schema with `space-capability info <server>` when needed.
+`space-capability plan` command. Neither starts an MCP backend. List one
+backend's tools with `space-capability info <server>` (names and summaries), then
+read the input schema of the tool you need with `space-capability info <server> <tool>`.
 
 Operator overrides select Automatic, Native only, Allow fallback or Disabled.
 Allow fallback does not authorize sending native-vision images to another model.

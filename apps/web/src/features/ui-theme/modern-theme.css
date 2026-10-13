@@ -2159,7 +2159,8 @@ body[data-ui-theme="modern"] .vibe-music-error {
 
 /* Modern Theme CLI Shortcuts Popover */
 .terminal-shortcuts-popover[data-ui-theme="modern"],
-[data-ui-theme="modern"] .terminal-shortcuts-popover {
+[data-ui-theme="modern"] .terminal-shortcuts-popover,
+[data-ui-theme="modern"] .terminal-model-popover-quick {
   --shortcuts-popover-radius: 18px;
   --shortcuts-btn-radius: 10px;
   border-color: var(--modern-border, var(--room-border, #3c4541));

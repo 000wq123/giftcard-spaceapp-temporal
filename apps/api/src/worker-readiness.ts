@@ -21,7 +21,12 @@ interface TemporalTaskQueueDescription {
   stats?: TemporalTaskQueueStats | null;
 }
 
-export type WorkerReadinessChecker = () => Promise<WorkerReadiness>;
+export type WorkerReadinessChecker = (() => Promise<WorkerReadiness>) & {
+  /** Closes the cached Temporal connection; safe to call more than once. */
+  dispose?: () => Promise<void>;
+};
+
+const staleConnectionCloseDelayMs = 60_000;
 
 function longishToNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.trunc(value));
@@ -88,14 +93,45 @@ async function describeTaskQueue(input: {
 }
 
 export function createWorkerReadinessChecker(config: SpaceApiConfig): WorkerReadinessChecker {
-  return async () => {
-    const checkedAt = new Date().toISOString();
-    let connection: Connection | null = null;
-    try {
-      connection = await Connection.connect({
-        address: config.temporalAddress,
-        connectTimeout: "2s"
+  // One connection is reused across checks. Closing a connection right after a
+  // failed call is unsafe: @temporalio/client's retry interceptor re-issues the
+  // call from a timer and throws "Channel has been shut down" outside any
+  // promise chain, which took the whole API down while Temporal restarted.
+  // Failed connections are therefore retired and only closed after a delay.
+  let current: Promise<Connection> | null = null;
+  const pendingCloses = new Set<NodeJS.Timeout>();
+
+  const openConnection = (): Promise<Connection> => {
+    if (!current) {
+      const attempt = Connection.connect({ address: config.temporalAddress, connectTimeout: "2s" });
+      current = attempt;
+      attempt.catch(() => {
+        if (current === attempt) {
+          current = null;
+        }
       });
+    }
+    return current;
+  };
+
+  const retireConnection = (attempt: Promise<Connection>): void => {
+    if (current === attempt) {
+      current = null;
+    }
+    const timer = setTimeout(() => {
+      pendingCloses.delete(timer);
+      void attempt.then((connection) => connection.close()).catch(() => undefined);
+    }, staleConnectionCloseDelayMs);
+    timer.unref();
+    pendingCloses.add(timer);
+  };
+
+  const checker: WorkerReadinessChecker = async () => {
+    const checkedAt = new Date().toISOString();
+    let attempt: Promise<Connection> | null = null;
+    try {
+      attempt = openConnection();
+      const connection = await attempt;
       const [workflow, activity] = await connection.withDeadline(Date.now() + readinessDeadlineMs, () =>
         Promise.all([
           describeTaskQueue({
@@ -143,6 +179,9 @@ export function createWorkerReadinessChecker(config: SpaceApiConfig): WorkerRead
         checkedAt
       });
     } catch (error) {
+      if (attempt) {
+        retireConnection(attempt);
+      }
       const message = error instanceof Error ? error.message : "Unknown Temporal worker readiness error.";
       return workerReadinessSchema.parse({
         id: "space-worker",
@@ -161,8 +200,18 @@ export function createWorkerReadinessChecker(config: SpaceApiConfig): WorkerRead
         lastPollerAccessAt: null,
         checkedAt
       });
-    } finally {
-      await connection?.close();
     }
   };
+  checker.dispose = async () => {
+    for (const timer of pendingCloses) {
+      clearTimeout(timer);
+    }
+    pendingCloses.clear();
+    const open = current;
+    current = null;
+    if (open) {
+      await open.then((connection) => connection.close()).catch(() => undefined);
+    }
+  };
+  return checker;
 }

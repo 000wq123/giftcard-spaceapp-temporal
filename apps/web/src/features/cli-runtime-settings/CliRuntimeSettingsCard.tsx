@@ -222,6 +222,8 @@ function DisableRuntimeDialog({
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  // Closing open work needs its own confirmation, renewed whenever the reviewed impact changes.
+  const [acknowledgedToken, setAcknowledgedToken] = useState<string | null>(null);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => cancelRef.current?.focus());
@@ -235,7 +237,7 @@ function DisableRuntimeDialog({
       return;
     }
     if (event.key !== "Tab") return;
-    const buttons = Array.from(bodyRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+    const buttons = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled)") ?? []);
     const first = buttons[0];
     const last = buttons.at(-1);
     if (!first || !last) {
@@ -254,6 +256,10 @@ function DisableRuntimeDialog({
   const sessions = dialog.preview.activeSessionCount;
   const panes = dialog.preview.openPaneCount;
   const isCodexMaster = dialog.preview.runtimeId === "cli:codex";
+  const closingPanes = panes + dialog.preview.openChatPaneCount;
+  const stoppingWork = sessions + dialog.preview.activeChatRunCount + dialog.preview.activeRoomAgentMissionCount;
+  const requiresAcknowledgement = closingPanes + stoppingWork > 0;
+  const acknowledged = !requiresAcknowledgement || acknowledgedToken === dialog.preview.confirmationToken;
   return createPortal(
     <div className="cli-runtime-disable-backdrop" onClick={() => { if (!pending) onCancel(); }}>
       <div
@@ -290,13 +296,26 @@ function DisableRuntimeDialog({
           </p>
         )}
         <p className="cli-runtime-disable-note">
-          Saved task history and transcripts stay intact. Enabling the runtime later will not reopen these sessions or panes.
+          Saved task history and transcripts stay intact. Enabling {dialog.runtimeName} again reopens the CLI panes closed here and resumes their tasks.
         </p>
+        {requiresAcknowledgement ? (
+          <label className="cli-runtime-disable-confirm">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              disabled={pending}
+              onChange={(event) => setAcknowledgedToken(event.target.checked ? dialog.preview.confirmationToken : null)}
+            />
+            <span>{closingPanes > 0
+              ? `Close ${closingPanes} open ${closingPanes === 1 ? "pane" : "panes"} and stop their work`
+              : `Stop ${stoppingWork} active ${stoppingWork === 1 ? "task" : "tasks"}`}</span>
+          </label>
+        ) : null}
         {dialog.notice ? <DockNotice tone="warning" className="cli-runtime-notice" onDismiss={onDismissNotice}>{dialog.notice}</DockNotice> : null}
         {dialog.error ? <DockNotice className="cli-runtime-notice" onDismiss={onDismissError}>{dialog.error}</DockNotice> : null}
         <div className="cli-runtime-disable-actions">
           <button ref={cancelRef} type="button" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button className="is-danger" type="button" onClick={onConfirm} disabled={pending}>
+          <button className="is-danger" type="button" onClick={onConfirm} disabled={pending || !acknowledged}>
             {pending ? <Loader2 className="spin" aria-hidden="true" /> : null}
             Disable {dialog.runtimeName}
           </button>
@@ -586,7 +605,9 @@ export function CliRuntimeSettingsCard({
         ? `${displayName} is disabled, but cleanup remains unresolved: ${unresolvedSessions} CLI sessions, ${unresolvedPanes} panes, ${unresolvedChatRuns} Chat runs/panes, and ${unresolvedRoomAgentMissions} Room Agent missions.`
         : hasUnresolvedCleanup
           ? `${displayName} is disabled, but ${unresolvedSessions} sessions and ${unresolvedPanes} panes remain unresolved.`
-          : `${displayName} is now ${result.setting.enabled ? "enabled" : "disabled"}.`);
+          : result.restoredPaneIds?.length
+            ? `${displayName} is now enabled. Reopening ${result.restoredPaneIds.length} ${result.restoredPaneIds.length === 1 ? "pane" : "panes"} it closed.`
+            : `${displayName} is now ${result.setting.enabled ? "enabled" : "disabled"}.`);
     }
   }
 

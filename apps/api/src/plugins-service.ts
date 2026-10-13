@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, symlink, unlink, lstat, realpath, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, symlink, unlink, lstat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -46,291 +46,6 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     mcpArgs: ["-y", "@modelcontextprotocol/server-github"]
   },
   {
-    id: "slack",
-    displayName: "Slack",
-    description: "Read channels and messages, post updates, and inspect threads.",
-    overview: "Official Model Context Protocol server for Slack. Allows AI agents to interact with Slack workspaces: reading channel histories, posting messages, listing members, and replying in threads via a Bot User OAuth Token.",
-    category: "communication",
-    icon: "MessageSquare",
-    authType: "api_key",
-    authFields: [
-      { key: "botToken", label: "Bot User OAuth Token", type: "password", required: true, placeholder: "xoxb-...", description: "Slack Bot token with chat and channels scopes." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://slack.com",
-    docsUrl: "https://api.slack.com",
-    githubUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
-    installedVersion: "2025.4.25",
-    latestVersion: "2025.4.25",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-slack"]
-  },
-  {
-    id: "supabase",
-    displayName: "Supabase",
-    description: "Inspect and change database tables, run queries, and manage projects.",
-    overview: "PostgreSQL & Supabase MCP bridge. Allows agents to inspect database schemas, run parameterized queries, list tables, and execute migrations directly from conversation contexts.",
-    category: "database",
-    icon: "Database",
-    authType: "api_key",
-    authFields: [
-      { key: "url", label: "Project URL", type: "url", required: true, placeholder: "https://xyzcompany.supabase.co", description: "Supabase project API URL." },
-      { key: "serviceRoleKey", label: "Service Role Key", type: "password", required: true, placeholder: "eyJ...", description: "Secret service role key for database actions." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://supabase.com",
-    docsUrl: "https://supabase.com/docs",
-    githubUrl: "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
-    installedVersion: "0.6.2",
-    latestVersion: "0.6.2",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-postgres"]
-  },
-  {
-    id: "linear",
-    displayName: "Linear",
-    description: "Linear workspace, issues, projects, cycles, and roadmaps.",
-    overview: "Model Context Protocol server for Linear project tracking. Enables agents to search issues, create tickets, update project status, assign cycles, and manage team roadmaps.",
-    category: "productivity",
-    icon: "Layers",
-    authType: "api_key",
-    authFields: [
-      { key: "apiKey", label: "Personal API Key", type: "password", required: true, placeholder: "lin_api_...", description: "Linear personal API key." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://linear.app",
-    docsUrl: "https://developers.linear.app",
-    githubUrl: "https://github.com/jerhadf/linear-mcp-server",
-    installedVersion: "1.0.0",
-    latestVersion: "1.0.0",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-linear"]
-  },
-  {
-    id: "fal",
-    displayName: "fal",
-    description: "fal.ai — 11 tools for generative media, image synthesis, and fast inference.",
-    overview: "High-speed AI inference and generative media MCP server. Provides 11 multimodal tools for image synthesis, FLUX generation, background removal, and video model execution.",
-    category: "creative",
-    icon: "Sparkles",
-    authType: "api_key",
-    authFields: [
-      { key: "apiKey", label: "fal.ai Key", type: "password", required: true, placeholder: "fal_...", description: "fal.ai API key." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://fal.ai",
-    docsUrl: "https://fal.ai/docs",
-    githubUrl: "https://github.com/fal-ai/fal-mcp",
-    installedVersion: "1.2.0",
-    latestVersion: "1.2.0",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-fal"]
-  },
-  {
-    id: "stripe",
-    displayName: "Stripe",
-    description: "Read customers, invoices, subscriptions, payouts, and payment intents.",
-    overview: "Stripe official agent toolkit and MCP server. Lets agents query customers, inspect payment intents, manage subscription billing, search invoices, and retrieve financial balance summaries.",
-    category: "finance",
-    icon: "CreditCard",
-    authType: "api_key",
-    authFields: [
-      { key: "secretKey", label: "Restricted API Key", type: "password", required: true, placeholder: "rk_live_...", description: "Stripe restricted key with read/write permissions." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://stripe.com",
-    docsUrl: "https://docs.stripe.com",
-    githubUrl: "https://github.com/stripe/agent-toolkit",
-    installedVersion: "0.9.0",
-    latestVersion: "0.9.0",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-stripe"]
-  },
-  {
-    id: "vercel",
-    displayName: "Vercel",
-    description: "Manage projects, deployments, domains, and environment variables.",
-    overview: "Vercel MCP integration. Allows agents to inspect deployment statuses, retrieve build logs, query project environments, and trigger redeployments securely.",
-    category: "infra",
-    icon: "Cpu",
-    authType: "api_key",
-    authFields: [
-      { key: "token", label: "Vercel Access Token", type: "password", required: true, placeholder: "...", description: "Personal or team access token." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://vercel.com",
-    docsUrl: "https://vercel.com/docs",
-    githubUrl: "https://github.com/vercel/mcp",
-    installedVersion: "0.1.4",
-    latestVersion: "0.1.4",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-vercel"]
-  },
-  {
-    id: "sentry",
-    displayName: "Sentry",
-    description: "Search errors, issues, releases, and inspect crash telemetry.",
-    overview: "Sentry crash and error tracking MCP server. Enables agents to inspect recent crashes, query issue stack traces, view release health, and correlate frontend/backend anomalies.",
-    category: "developer",
-    icon: "Activity",
-    authType: "api_key",
-    authFields: [
-      { key: "authToken", label: "Auth Token", type: "password", required: true, placeholder: "sntrys_...", description: "Sentry user or integration auth token." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://sentry.io",
-    docsUrl: "https://docs.sentry.io",
-    githubUrl: "https://github.com/getsentry/mcp-server-sentry",
-    installedVersion: "0.1.2",
-    latestVersion: "0.1.2",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-sentry"]
-  },
-  {
-    id: "notion",
-    displayName: "Notion",
-    description: "Search, read, and create database items, wiki pages, and notes.",
-    overview: "Notion MCP server for team workspaces. Enables querying Notion databases, reading documentation pages, creating new notes, and editing wiki blocks.",
-    category: "productivity",
-    icon: "BookOpen",
-    authType: "api_key",
-    authFields: [
-      { key: "internalIntegrationSecret", label: "Internal Integration Secret", type: "password", required: true, placeholder: "ntn_...", description: "Notion internal integration secret." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://notion.so",
-    docsUrl: "https://developers.notion.com",
-    githubUrl: "https://github.com/michaellatman/mcp-server-notion",
-    installedVersion: "0.1.3",
-    latestVersion: "0.1.3",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-notion"]
-  },
-  {
-    id: "resend",
-    displayName: "Resend",
-    description: "Send transactional emails, manage verified sender domains, and audit delivery.",
-    overview: "Modern email delivery MCP server by Resend. Allows agents to dispatch transactional emails, manage verified sender domains, and query deliverability logs.",
-    category: "communication",
-    icon: "Send",
-    authType: "api_key",
-    authFields: [
-      { key: "apiKey", label: "API Key", type: "password", required: true, placeholder: "re_...", description: "Resend API key." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://resend.com",
-    docsUrl: "https://resend.com/docs",
-    githubUrl: "https://github.com/resend/mcp-server-resend",
-    installedVersion: "1.0.1",
-    latestVersion: "1.0.1",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-resend"]
-  },
-  {
-    id: "cloudflare",
-    displayName: "Cloudflare",
-    description: "Manage Workers, DNS records, KV namespaces, and domain routing.",
-    overview: "Cloudflare Developer Platform MCP. Enables managing Workers, KV namespaces, D1 databases, DNS zones, and edge routing configurations directly.",
-    category: "infra",
-    icon: "Globe",
-    authType: "api_key",
-    authFields: [
-      { key: "apiToken", label: "API Token", type: "password", required: true, placeholder: "...", description: "Cloudflare API token with Zone and Worker permissions." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://cloudflare.com",
-    docsUrl: "https://developers.cloudflare.com",
-    githubUrl: "https://github.com/cloudflare/mcp-server-cloudflare",
-    installedVersion: "0.2.0",
-    latestVersion: "0.2.0",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@cloudflare/mcp-server-cloudflare"]
-  },
-  {
-    id: "apollo",
-    displayName: "Apollo",
-    description: "Apollo workspace, lead discovery, enrichment, and prospect sequences.",
-    overview: "Apollo.io B2B lead generation and intelligence MCP server. Empowers agents to search leads, enrich prospect profiles, and inspect sales outreach sequences.",
-    category: "communication",
-    icon: "Compass",
-    authType: "api_key",
-    authFields: [
-      { key: "apiKey", label: "API Key", type: "password", required: true, placeholder: "...", description: "Apollo.io API key." }
-    ],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://apollo.io",
-    docsUrl: "https://apolloio.github.io/apollo-api-docs",
-    githubUrl: "https://github.com/modelcontextprotocol/servers",
-    installedVersion: "0.1.0",
-    latestVersion: "0.1.0",
-    hasUpdate: false,
-    mcpCommand: "npx",
-    mcpArgs: ["-y", "@modelcontextprotocol/server-apollo"]
-  },
-  {
-    id: "blender",
-    displayName: "Blender",
-    description: "Inspect the open 3D scene, generate procedural geometry, and render frames.",
-    overview: "Procedural 3D bridge for Blender. Allows agents to execute Python scripts inside the active Blender scene, inspect mesh geometry, adjust materials, and render frames.",
-    category: "creative",
-    icon: "Box",
-    authType: "none",
-    authFields: [],
-    preview: false,
-    defaultEnabled: true,
-    websiteUrl: "https://blender.org",
-    docsUrl: "https://docs.blender.org",
-    githubUrl: "https://github.com/blender/blender",
-    installedVersion: "1.0.0",
-    latestVersion: "1.0.0",
-    hasUpdate: false,
-    mcpCommand: "python3",
-    mcpArgs: ["/opt/spaceapp/scripts/mcp-blender-bridge.py"]
-  },
-  {
-    id: "x",
-    displayName: "X",
-    description: "Post, reply, inspect timelines, and search public posts.",
-    overview: "X (Twitter) Developer API integration. Enables agents to post updates, reply to mentions, search recent tweets, and analyze public sentiment.",
-    category: "communication",
-    icon: "Share2",
-    authType: "api_key",
-    authFields: [
-      { key: "bearerToken", label: "Bearer Token", type: "password", required: true, placeholder: "...", description: "X Developer portal Bearer Token." }
-    ],
-    preview: true,
-    defaultEnabled: false,
-    websiteUrl: "https://x.com",
-    docsUrl: "https://developer.x.com",
-    githubUrl: "https://github.com/xdevplatform",
-    installedVersion: "0.1.0",
-    latestVersion: "0.1.0",
-    hasUpdate: false,
-    mcpCommand: null,
-    mcpArgs: []
-  },
-  {
     id: "superpowers",
     displayName: "Superpowers",
     description: "Systematic agent development skills: brainstorming, TDD, debugging, verification, and code review.",
@@ -344,8 +59,8 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     websiteUrl: "https://github.com/obra/superpowers",
     docsUrl: "https://github.com/obra/superpowers#readme",
     githubUrl: "https://github.com/obra/superpowers",
-    installedVersion: "6.4.2",
-    latestVersion: "6.4.2",
+    installedVersion: "f5f6953",
+    latestVersion: "f5f6953",
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
@@ -364,8 +79,8 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     websiteUrl: "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
     docsUrl: "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill#readme",
     githubUrl: "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
-    installedVersion: "2.9.0",
-    latestVersion: "2.9.0",
+    installedVersion: "09170ee",
+    latestVersion: "09170ee",
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
@@ -384,8 +99,8 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     websiteUrl: "https://github.com/Leonxlnx/taste-skill",
     docsUrl: "https://github.com/Leonxlnx/taste-skill#readme",
     githubUrl: "https://github.com/Leonxlnx/taste-skill",
-    installedVersion: "1.1.0",
-    latestVersion: "1.1.0",
+    installedVersion: "ce26fc2",
+    latestVersion: "ce26fc2",
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
@@ -404,30 +119,254 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     websiteUrl: "https://github.com/petergyang/no-ai-slop",
     docsUrl: "https://github.com/petergyang/no-ai-slop#readme",
     githubUrl: "https://github.com/petergyang/no-ai-slop",
-    installedVersion: "1.0.0",
-    latestVersion: "1.0.0",
+    installedVersion: "000650b",
+    latestVersion: "000650b",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "karpathy-guidelines",
+    displayName: "Karpathy Guidelines",
+    description: "Four coding principles: think before coding, simplicity first, surgical changes, and goal-driven execution.",
+    overview: "Behavioral guidelines derived from Andrej Karpathy's observations on LLM coding pitfalls. Agents state assumptions before coding, write the minimum code that solves the problem, change only what the request needs, and turn tasks into verifiable success criteria.",
+    category: "developer",
+    icon: "Compass",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/multica-ai/andrej-karpathy-skills",
+    docsUrl: "https://github.com/multica-ai/andrej-karpathy-skills#readme",
+    githubUrl: "https://github.com/multica-ai/andrej-karpathy-skills",
+    installedVersion: "2c60614",
+    latestVersion: "2c60614",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "mattpocock-skills",
+    displayName: "Matt Pocock Skills",
+    description: "Handoff documents between agents and CLIs, and Claude Code hooks that block destructive git commands.",
+    overview: "Two skills by Matt Pocock. Handoff compacts the current work into a document another agent, pane, or CLI can continue from. Git Guardrails installs a Claude Code hook that blocks git push, reset --hard, clean, branch -D, and checkout/restore of the whole tree.",
+    category: "productivity",
+    icon: "Send",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/mattpocock/skills",
+    docsUrl: "https://github.com/mattpocock/skills#readme",
+    githubUrl: "https://github.com/mattpocock/skills",
+    installedVersion: "49dd158",
+    latestVersion: "49dd158",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "context7",
+    displayName: "Context7",
+    description: "Current, version-specific library documentation and code examples for every CLI agent, on demand.",
+    overview: "Upstash Context7 MCP server (resolve-library-id, query-docs) behind the Space MCP dispatcher. It starts only when a task needs library documentation and stops when idle. Queries go to the Context7 cloud, so agents send library names and questions only, never secrets or private code. Turning the plugin off blocks Context7 calls from every CLI.",
+    category: "developer",
+    icon: "BookOpen",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://context7.com",
+    docsUrl: "https://github.com/upstash/context7#readme",
+    githubUrl: "https://github.com/upstash/context7",
+    installedVersion: "4.3.0",
+    latestVersion: "4.3.0",
+    hasUpdate: false,
+    mcpCommand: "npx",
+    mcpArgs: ["-y", "@upstash/context7-mcp@4.3.0"]
+  },
+  {
+    id: "planning-with-files",
+    displayName: "Planning with Files",
+    description: "Persistent task_plan.md, findings.md and progress.md so a restarted CLI or another agent can pick up the work.",
+    overview: "Manus-style working memory on disk by Ahmad Adi. Agents keep the plan, findings, errors and progress in three files and re-read them before decisions. In Space the files live in the task's scratch directory, never in the repository, and recover the task after a CLI restart, a pane-host restart or a handoff.",
+    category: "productivity",
+    icon: "Layers",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/OthmanAdi/planning-with-files",
+    docsUrl: "https://github.com/OthmanAdi/planning-with-files#readme",
+    githubUrl: "https://github.com/OthmanAdi/planning-with-files",
+    installedVersion: "ff349eb",
+    latestVersion: "ff349eb",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "anthropic-skills",
+    displayName: "Anthropic Skills",
+    description: "Skill Creator for building, evaluating and tuning skills, and MCP Builder for well-designed MCP servers.",
+    overview: "Two Apache-2.0 skills from Anthropic. Skill Creator drafts a skill, runs test prompts with and without it, grades and benchmarks the results, and tunes the description so the skill triggers reliably. MCP Builder guides tool design, schemas, pagination, errors and evaluations for MCP servers in TypeScript or Python.",
+    category: "developer",
+    icon: "Cpu",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/anthropics/skills",
+    docsUrl: "https://github.com/anthropics/skills#readme",
+    githubUrl: "https://github.com/anthropics/skills",
+    installedVersion: "dbd4588",
+    latestVersion: "dbd4588",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "gstack",
+    displayName: "gstack",
+    description: "Garry Tan's office hours, CEO and engineering plan reviews, weekly retro, test-suite audit and release documentation audit.",
+    overview: "Six workflow skills from gstack: office hours before any code, CEO-level and engineering plan reviews, a weekly engineering retrospective, a test value audit and a release documentation audit. Space ships them without gstack's preamble, telemetry, update checks or browser tools; outputs go to the reports directory and nothing commits, pushes or deploys on its own.",
+    category: "developer",
+    icon: "Activity",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/garrytan/gstack",
+    docsUrl: "https://github.com/garrytan/gstack#readme",
+    githubUrl: "https://github.com/garrytan/gstack",
+    installedVersion: "e23f7b8",
+    latestVersion: "e23f7b8",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "wshobson-skills",
+    displayName: "wshobson Skills",
+    description: "Specialist skills for TypeScript and Node.js, threat modeling and SAST, incident runbooks and postmortems, and observability.",
+    overview: "Seventeen skills from four wshobson/agents plugins: javascript-typescript (advanced types, modern patterns, Node.js backends, testing), security-scanning (STRIDE, attack trees, security requirements, mitigations, SAST setup), incident-response (runbooks, on-call handoffs, postmortems, connectivity triage) and observability-monitoring (Prometheus, Grafana, tracing, SLOs). Skills only; the plugins' agents and commands are not installed.",
+    category: "developer",
+    icon: "Box",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/wshobson/agents",
+    docsUrl: "https://github.com/wshobson/agents#readme",
+    githubUrl: "https://github.com/wshobson/agents",
+    installedVersion: "46891e7",
+    latestVersion: "46891e7",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "huashu-design",
+    displayName: "Huashu Design",
+    description: "High-fidelity HTML prototypes, slide decks, motion design and design critique, starting from three design directions.",
+    overview: "The huashu-design skill: clickable app prototypes and mockups, slide decks with PDF/PPTX export, motion design with MP4/GIF export, infographics and a five-dimension design critique. Every new design starts with three directions to choose from. Space ships it without its audio and showcase media; its ByteDance cloud helpers (video review, TTS) run only with the operator's consent and keys.",
+    category: "creative",
+    icon: "Palette",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/alchaincyf/huashu-design",
+    docsUrl: "https://github.com/alchaincyf/huashu-design#readme",
+    githubUrl: "https://github.com/alchaincyf/huashu-design",
+    installedVersion: "0830494",
+    latestVersion: "0830494",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "impeccable",
+    displayName: "Impeccable",
+    description: "Frontend design quality: shaping, critique and audits, polish, typography, color, layout, motion, UX copy and live browser iteration.",
+    overview: "The impeccable skill (version 4.5.2) with its pinned 0.1.14 engine: new-surface shaping, redesigns, critique and audits, polish, typography, color, layout, motion, UX copy, hardening and accessibility, plus live browser iteration on UI elements. Space preinstalls the engine with telemetry and update checks off; hooks and installers stay off without operator consent.",
+    category: "creative",
+    icon: "Palette",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://impeccable.style",
+    docsUrl: "https://github.com/pbakaus/impeccable#readme",
+    githubUrl: "https://github.com/pbakaus/impeccable",
+    installedVersion: "4.5.2",
+    latestVersion: "4.5.2",
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
   }
 ];
 
-export const BUILTIN_SKILLS_MAP: Record<string, { folder: string; aliases: string[] }> = {
+// One skill folder name per bundle (its frontmatter name). retiredAliases are the
+// unprefixed names earlier releases also linked; the sync removes those links.
+export const BUILTIN_SKILLS_MAP: Record<string, { folder: string; aliases: string[]; retiredAliases?: string[] }> = {
   superpowers: {
     folder: "space-superpowers",
-    aliases: ["superpowers", "space-superpowers"]
+    aliases: ["space-superpowers"],
+    retiredAliases: ["superpowers"]
   },
   "ui-ux-pro-max": {
     folder: "space-ui-ux-pro-max",
-    aliases: ["ui-ux-pro-max", "space-ui-ux-pro-max"]
+    aliases: ["space-ui-ux-pro-max"],
+    retiredAliases: ["ui-ux-pro-max"]
   },
   "taste-skill": {
     folder: "space-taste-skill",
-    aliases: ["taste-skill", "space-taste-skill"]
+    aliases: ["space-taste-skill"],
+    retiredAliases: ["taste-skill"]
   },
   "no-ai-slop": {
     folder: "space-no-ai-slop",
-    aliases: ["no-ai-slop", "space-no-ai-slop"]
+    aliases: ["space-no-ai-slop"],
+    retiredAliases: ["no-ai-slop"]
+  },
+  "karpathy-guidelines": {
+    folder: "space-karpathy-guidelines",
+    aliases: ["space-karpathy-guidelines"],
+    retiredAliases: ["karpathy-guidelines"]
+  },
+  "mattpocock-skills": {
+    folder: "space-mattpocock-skills",
+    aliases: ["space-mattpocock-skills"],
+    retiredAliases: ["mattpocock-skills"]
+  },
+  "planning-with-files": {
+    folder: "space-planning-with-files",
+    aliases: ["space-planning-with-files"],
+    retiredAliases: ["planning-with-files"]
+  },
+  "anthropic-skills": {
+    folder: "space-anthropic-skills",
+    aliases: ["space-anthropic-skills"],
+    retiredAliases: ["anthropic-skills"]
+  },
+  gstack: {
+    folder: "space-gstack",
+    aliases: ["space-gstack"],
+    retiredAliases: ["gstack"]
+  },
+  "wshobson-skills": {
+    folder: "space-wshobson-skills",
+    aliases: ["space-wshobson-skills"],
+    retiredAliases: ["wshobson-skills"]
+  },
+  "huashu-design": {
+    folder: "space-huashu-design",
+    aliases: ["space-huashu-design"]
+  },
+  impeccable: {
+    folder: "space-impeccable",
+    aliases: ["space-impeccable"]
   }
 };
 
@@ -456,16 +395,21 @@ export interface StoredPluginConnection {
   connectedAt: string | null;
   lastHealthCheckAt: string | null;
   accountLabel: string | null;
-  toolCount: number;
-  installedVersion: string | null;
-  latestVersion: string | null;
-  hasUpdate: boolean;
   error: string | null;
-  credentials: Record<string, string>;
+  // Fields below exist only in files written by earlier releases; they are ignored and dropped on save.
+  toolCount?: number;
+  installedVersion?: string | null;
+  latestVersion?: string | null;
+  hasUpdate?: boolean;
+  credentials?: Record<string, string>;
 }
 
 export class PluginsService {
-  constructor(private readonly storageDirectory = PLUGINS_DIR, private readonly syncSkills = true) {}
+  constructor(
+    private readonly storageDirectory = PLUGINS_DIR,
+    private readonly syncSkills = true,
+    private readonly skillDirs: readonly string[] = SKILL_DIRS
+  ) {}
   private get connectionsFile() { return join(this.storageDirectory, "connections.json"); }
   private get agentConfigsFile() { return join(this.storageDirectory, "agent-configs.json"); }
   private async ensureDir(): Promise<void> {
@@ -490,7 +434,8 @@ export class PluginsService {
 
   private async saveConnections(connections: Map<string, StoredPluginConnection>): Promise<void> {
     await this.ensureDir();
-    const list = Array.from(connections.values());
+    const list = Array.from(connections.values()).map(({ pluginId, status, connectedAt, lastHealthCheckAt, accountLabel, error }) =>
+      ({ pluginId, status, connectedAt, lastHealthCheckAt, accountLabel, error }));
     await writeFile(this.connectionsFile, JSON.stringify(list, null, 2), "utf-8");
   }
 
@@ -515,24 +460,19 @@ export class PluginsService {
   }
 
   private static readonly DEFAULT_TOOL_COUNTS: Record<string, number> = {
-    github: 14,
-    slack: 8,
-    supabase: 6,
-    linear: 10,
-    fal: 11,
-    stripe: 9,
-    vercel: 7,
-    sentry: 5,
-    notion: 8,
-    resend: 4,
-    cloudflare: 12,
-    apollo: 6,
-    blender: 5,
-    x: 3,
     superpowers: 15,
-    "ui-ux-pro-max": 67,
-    "taste-skill": 1,
-    "no-ai-slop": 1
+    "ui-ux-pro-max": 1,
+    "taste-skill": 13,
+    "no-ai-slop": 1,
+    "karpathy-guidelines": 1,
+    "mattpocock-skills": 2,
+    context7: 2,
+    "planning-with-files": 1,
+    "anthropic-skills": 2,
+    gstack: 6,
+    "wshobson-skills": 17,
+    "huashu-design": 1,
+    impeccable: 1
   };
 
   async syncSkillSymlinks(): Promise<void> {
@@ -544,29 +484,33 @@ export class PluginsService {
       const sourceDir = findSkillSourceDir(meta.folder);
       if (!sourceDir) continue;
 
-      for (const root of SKILL_DIRS) {
+      for (const root of this.skillDirs) {
         if (!existsSync(root)) continue;
         for (const alias of meta.aliases) {
           const symlinkPath = join(root, alias);
-          if (isConnected) {
-            try {
-              const current = await realpath(symlinkPath).catch(() => null);
-              if (current !== sourceDir) {
-                const stat = await lstat(symlinkPath).catch(() => null);
-                if (stat) {
-                  await unlink(symlinkPath).catch(() => rm(symlinkPath, { force: true, recursive: true }));
-                }
-                await symlink(sourceDir, symlinkPath);
-              }
-            } catch {}
-          } else {
-            try {
-              const stat = await lstat(symlinkPath).catch(() => null);
-              if (stat) {
-                await unlink(symlinkPath).catch(() => rm(symlinkPath, { force: true, recursive: true }));
-              }
-            } catch {}
-          }
+          try {
+            const stat = await lstat(symlinkPath).catch(() => null);
+            // Only symbolic links are managed here. A real directory or file under an
+            // alias name belongs to someone else and is never removed.
+            if (stat && !stat.isSymbolicLink()) continue;
+            const current = stat ? await realpath(symlinkPath).catch(() => null) : null;
+            if (isConnected) {
+              if (current === sourceDir) continue;
+              if (stat) await unlink(symlinkPath);
+              await symlink(sourceDir, symlinkPath);
+            } else if (stat && (current === null || current === sourceDir)) {
+              await unlink(symlinkPath);
+            }
+          } catch {}
+        }
+        for (const retired of meta.retiredAliases ?? []) {
+          const retiredPath = join(root, retired);
+          try {
+            const stat = await lstat(retiredPath).catch(() => null);
+            if (!stat?.isSymbolicLink()) continue;
+            const current = await realpath(retiredPath).catch(() => null);
+            if (current === null || current === sourceDir) await unlink(retiredPath);
+          } catch {}
         }
       }
     }
@@ -584,59 +528,44 @@ export class PluginsService {
 
   async isSkillEnabled(skillName: string): Promise<boolean> {
     for (const [pluginId, meta] of Object.entries(BUILTIN_SKILLS_MAP)) {
-      if (meta.aliases.includes(skillName)) {
+      if (meta.aliases.includes(skillName) || meta.retiredAliases?.includes(skillName)) {
         return await this.isPluginConnected(pluginId);
       }
     }
     return true;
   }
 
+  /** Version (pinned upstream commit) and skill count always come from the catalog, never from stored state. */
+  private catalogFacts(item: PluginCatalogItem) {
+    const version = item.installedVersion ?? null;
+    return { installedVersion: version, latestVersion: version, hasUpdate: false, toolCount: PluginsService.DEFAULT_TOOL_COUNTS[item.id] ?? 1 };
+  }
+
+  private connectionState(item: PluginCatalogItem, conn: StoredPluginConnection | undefined): PluginConnectionState {
+    const facts = this.catalogFacts(item);
+    const isDefaultActive = item.authType === "none" && item.defaultEnabled;
+    const connected = conn ? conn.status === "CONNECTED" : isDefaultActive;
+    return {
+      pluginId: item.id,
+      status: conn ? conn.status : connected ? "CONNECTED" : "NOT_CONNECTED",
+      connectedAt: conn ? conn.connectedAt : connected ? new Date(0).toISOString() : null,
+      lastHealthCheckAt: conn?.lastHealthCheckAt ?? null,
+      accountLabel: conn ? conn.accountLabel : connected ? "Built-in (Active)" : null,
+      toolCount: connected ? facts.toolCount : 0,
+      installedVersion: facts.installedVersion,
+      latestVersion: facts.latestVersion,
+      hasUpdate: false,
+      error: conn?.error ?? null
+    };
+  }
+
   async getPlugins(): Promise<PluginWithState[]> {
     const connections = await this.loadConnections();
     return DEFAULT_PLUGIN_CATALOG.map((item) => {
       const conn = item.id === "github" || item.id === "gitea" ? undefined : connections.get(item.id);
-      const installedVersion = conn?.installedVersion ?? item.installedVersion ?? "1.0.0";
-      const latestVersion = conn?.latestVersion ?? item.latestVersion ?? "1.0.0";
-      const hasUpdate = conn?.hasUpdate ?? (installedVersion !== latestVersion);
-      if (conn) {
-        return {
-          ...item,
-          installedVersion,
-          latestVersion,
-          hasUpdate,
-          connection: {
-            pluginId: item.id,
-            status: conn.status,
-            connectedAt: conn.connectedAt,
-            lastHealthCheckAt: conn.lastHealthCheckAt,
-            accountLabel: conn.accountLabel,
-            toolCount: conn.toolCount,
-            installedVersion,
-            latestVersion,
-            hasUpdate,
-            error: conn.error
-          }
-        };
-      }
-      const isDefaultActive = item.authType === "none" && item.defaultEnabled;
-      return {
-        ...item,
-        installedVersion,
-        latestVersion,
-        hasUpdate,
-        connection: {
-          pluginId: item.id,
-          status: isDefaultActive ? "CONNECTED" : "NOT_CONNECTED",
-          connectedAt: isDefaultActive ? new Date(0).toISOString() : null,
-          lastHealthCheckAt: null,
-          accountLabel: isDefaultActive ? "Built-in (Active)" : null,
-          toolCount: isDefaultActive ? (PluginsService.DEFAULT_TOOL_COUNTS[item.id] ?? 1) : 0,
-          installedVersion,
-          latestVersion,
-          hasUpdate,
-          error: null
-        }
-      };
+      const facts = this.catalogFacts(item);
+      return { ...item, installedVersion: facts.installedVersion ?? undefined, latestVersion: facts.latestVersion ?? undefined, hasUpdate: false,
+        connection: this.connectionState(item, conn) };
     });
   }
 
@@ -645,86 +574,42 @@ export class PluginsService {
     if (!catalogItem) {
       throw new Error(`Plugin ${input.pluginId} not found in catalog.`);
     }
-
-    // Validate required fields
     for (const field of catalogItem.authFields) {
       if (field.required && !input.credentials?.[field.key]?.trim()) {
         throw new Error(`Missing required field: ${field.label}`);
       }
     }
-
     const connections = await this.loadConnections();
     const now = new Date().toISOString();
-    const toolCount = PluginsService.DEFAULT_TOOL_COUNTS[input.pluginId] ?? 5;
-    const installedVersion = catalogItem.installedVersion ?? "1.0.0";
-    const latestVersion = catalogItem.latestVersion ?? "1.0.0";
-
-    const stored: StoredPluginConnection = {
+    // Credentials are never stored here: no installation plugin uses them, and
+    // personal repository providers keep theirs in the source-control broker.
+    connections.set(input.pluginId, {
       pluginId: input.pluginId,
       status: "CONNECTED",
       connectedAt: now,
       lastHealthCheckAt: now,
       accountLabel: input.accountLabel?.trim() || (catalogItem.authType === "none" ? "Built-in (Active)" : "Default workspace"),
-      toolCount,
-      installedVersion,
-      latestVersion,
-      hasUpdate: false,
-      error: null,
-      credentials: input.credentials ?? {}
-    };
-
-    connections.set(input.pluginId, stored);
+      error: null
+    });
     await this.saveConnections(connections);
     await this.syncSkillSymlinks().catch(() => {});
-
-    return {
-      pluginId: stored.pluginId,
-      status: stored.status,
-      connectedAt: stored.connectedAt,
-      lastHealthCheckAt: stored.lastHealthCheckAt,
-      accountLabel: stored.accountLabel,
-      toolCount: stored.toolCount,
-      installedVersion: stored.installedVersion,
-      latestVersion: stored.latestVersion,
-      hasUpdate: stored.hasUpdate,
-      error: stored.error
-    };
+    return this.connectionState(catalogItem, connections.get(input.pluginId));
   }
 
   async disconnectPlugin(pluginId: string): Promise<PluginConnectionState> {
     const connections = await this.loadConnections();
     const catalogItem = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
-    const stored: StoredPluginConnection = {
-      pluginId,
-      status: "NOT_CONNECTED",
-      connectedAt: null,
-      lastHealthCheckAt: null,
-      accountLabel: null,
-      toolCount: 0,
-      installedVersion: catalogItem?.installedVersion ?? null,
-      latestVersion: catalogItem?.latestVersion ?? null,
-      hasUpdate: false,
-      error: null,
-      credentials: {}
-    };
-    connections.set(pluginId, stored);
+    connections.set(pluginId, { pluginId, status: "NOT_CONNECTED", connectedAt: null, lastHealthCheckAt: null, accountLabel: null, error: null });
     await this.saveConnections(connections);
     await this.syncSkillSymlinks().catch(() => {});
-
-    return {
-      pluginId,
-      status: "NOT_CONNECTED",
-      connectedAt: null,
-      lastHealthCheckAt: null,
-      accountLabel: null,
-      toolCount: 0,
-      installedVersion: stored.installedVersion,
-      latestVersion: stored.latestVersion,
-      hasUpdate: stored.hasUpdate,
-      error: null
-    };
+    if (!catalogItem) {
+      return { pluginId, status: "NOT_CONNECTED", connectedAt: null, lastHealthCheckAt: null, accountLabel: null, toolCount: 0,
+        installedVersion: null, latestVersion: null, hasUpdate: false, error: null };
+    }
+    return this.connectionState(catalogItem, connections.get(pluginId));
   }
 
+  /** A real local check: a skill bundle's files, or the dispatcher backend's registration. */
   async testConnection(pluginId: string): Promise<{
     ok: boolean;
     message: string;
@@ -734,34 +619,38 @@ export class PluginsService {
     hasUpdate?: boolean;
   }> {
     const connections = await this.loadConnections();
-    const conn = connections.get(pluginId);
     const catalogItem = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
-    const isDefaultActive = !conn && catalogItem?.authType === "none" && catalogItem?.defaultEnabled;
-    const isConnected = conn ? conn.status === "CONNECTED" : isDefaultActive;
-
-    if (!isConnected) {
-      return { ok: false, message: "Plugin is not connected.", toolCount: 0 };
+    if (!catalogItem) return { ok: false, message: "Plugin is not in the catalog.", toolCount: 0 };
+    const state = this.connectionState(catalogItem, connections.get(pluginId));
+    if (state.status !== "CONNECTED") return { ok: false, message: "Plugin is not connected.", toolCount: 0 };
+    const version = state.installedVersion ?? undefined;
+    const meta = BUILTIN_SKILLS_MAP[pluginId];
+    let ok = true;
+    let message = `${catalogItem.displayName} is enabled.`;
+    if (meta) {
+      const sourceDir = findSkillSourceDir(meta.folder);
+      ok = Boolean(sourceDir && existsSync(join(sourceDir, "SKILL.md")));
+      message = ok
+        ? `${catalogItem.displayName}: ${state.toolCount} skill${state.toolCount === 1 ? "" : "s"} installed from ${sourceDir}${version ? `, upstream ${version}` : ""}.`
+        : `${catalogItem.displayName}: the skill bundle ${meta.folder} is missing from this installation.`;
+    } else if (pluginId === "context7") {
+      message = "Context7 is enabled for agents. It starts on demand through the MCP dispatcher; this check does not contact the Context7 service.";
     }
-
-    const toolCount = conn?.toolCount ?? PluginsService.DEFAULT_TOOL_COUNTS[pluginId] ?? 1;
-    const installedVersion = conn?.installedVersion ?? catalogItem?.installedVersion ?? "1.0.0";
-    const latestVersion = conn?.latestVersion ?? catalogItem?.latestVersion ?? "1.0.0";
-    const hasUpdate = installedVersion !== latestVersion;
-    const now = new Date().toISOString();
+    const conn = connections.get(pluginId);
     if (conn) {
-      conn.lastHealthCheckAt = now;
+      conn.lastHealthCheckAt = new Date().toISOString();
       await this.saveConnections(connections);
     }
-    return {
-      ok: true,
-      message: `Successfully verified handshake for ${catalogItem?.displayName ?? pluginId}.`,
-      toolCount,
-      installedVersion,
-      latestVersion,
-      hasUpdate
-    };
+    return { ok, message, toolCount: state.toolCount, installedVersion: version, latestVersion: version, hasUpdate: false };
   }
 
+  private pinnedMessage(item: PluginCatalogItem | undefined): string {
+    return item?.installedVersion
+      ? `${item.displayName} is pinned to ${item.installedVersion} and updates with SpaceApp releases.`
+      : `${item?.displayName ?? "This plugin"} updates with SpaceApp releases.`;
+  }
+
+  // Built-in plugins are pinned in the repository; there is nothing to update from here.
   async updatePlugin(pluginId: string): Promise<{
     ok: boolean;
     message: string;
@@ -769,49 +658,10 @@ export class PluginsService {
     latestVersion: string;
     hasUpdate: boolean;
   }> {
-    const catalogItem = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
-    if (!catalogItem) {
-      throw new Error(`Plugin ${pluginId} not found in catalog.`);
-    }
-
-    const connections = await this.loadConnections();
-    let conn = connections.get(pluginId);
-    const now = new Date().toISOString();
-    const targetVersion = catalogItem.latestVersion || "1.0.0";
-
-    if (!conn) {
-      const isDefaultActive = catalogItem.authType === "none" && catalogItem.defaultEnabled;
-      conn = {
-        pluginId,
-        status: isDefaultActive ? "CONNECTED" : "NOT_CONNECTED",
-        connectedAt: isDefaultActive ? now : null,
-        lastHealthCheckAt: now,
-        accountLabel: catalogItem.authType === "none" ? "Built-in (Active)" : "Default workspace",
-        toolCount: PluginsService.DEFAULT_TOOL_COUNTS[pluginId] ?? 1,
-        error: null,
-        credentials: {},
-        installedVersion: targetVersion,
-        latestVersion: targetVersion,
-        hasUpdate: false
-      };
-    } else {
-      conn.installedVersion = targetVersion;
-      conn.latestVersion = targetVersion;
-      conn.hasUpdate = false;
-      conn.lastHealthCheckAt = now;
-    }
-
-    connections.set(pluginId, conn);
-    await this.saveConnections(connections);
-    await this.syncSkillSymlinks().catch(() => {});
-
-    return {
-      ok: true,
-      message: `Successfully upgraded ${catalogItem.displayName} to version ${targetVersion}.`,
-      installedVersion: targetVersion,
-      latestVersion: targetVersion,
-      hasUpdate: false
-    };
+    const item = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
+    if (!item) throw new Error(`Plugin ${pluginId} not found in catalog.`);
+    const version = item.installedVersion ?? "";
+    return { ok: true, message: this.pinnedMessage(item), installedVersion: version, latestVersion: version, hasUpdate: false };
   }
 
   async checkPluginUpdate(pluginId: string): Promise<{
@@ -821,27 +671,10 @@ export class PluginsService {
     hasUpdate: boolean;
     message: string;
   }> {
-    const catalogItem = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
-    if (!catalogItem) {
-      throw new Error(`Plugin ${pluginId} not found in catalog.`);
-    }
-
-    const connections = await this.loadConnections();
-    const conn = connections.get(pluginId);
-
-    const installedVersion = conn?.installedVersion ?? catalogItem.installedVersion ?? "1.0.0";
-    const latestVersion = catalogItem.latestVersion ?? installedVersion;
-    const hasUpdate = installedVersion !== latestVersion;
-
-    return {
-      ok: true,
-      installedVersion,
-      latestVersion,
-      hasUpdate,
-      message: hasUpdate
-        ? `New version ${latestVersion} is available for ${catalogItem.displayName} (currently ${installedVersion}).`
-        : `${catalogItem.displayName} is up to date (version ${installedVersion}).`
-    };
+    const item = DEFAULT_PLUGIN_CATALOG.find((p) => p.id === pluginId);
+    if (!item) throw new Error(`Plugin ${pluginId} not found in catalog.`);
+    const version = item.installedVersion ?? "";
+    return { ok: true, installedVersion: version, latestVersion: version, hasUpdate: false, message: this.pinnedMessage(item) };
   }
 
   async upgradeAllPlugins(): Promise<{
@@ -850,33 +683,7 @@ export class PluginsService {
     upgraded: Array<{ id: string; displayName: string; fromVersion: string; toVersion: string }>;
     message: string;
   }> {
-    const connections = await this.loadConnections();
-    const upgraded: Array<{ id: string; displayName: string; fromVersion: string; toVersion: string }> = [];
-
-    for (const item of DEFAULT_PLUGIN_CATALOG) {
-      const conn = connections.get(item.id);
-      const installedVersion = conn?.installedVersion ?? item.installedVersion ?? "1.0.0";
-      const targetVersion = item.latestVersion ?? installedVersion;
-
-      if (installedVersion !== targetVersion) {
-        await this.updatePlugin(item.id);
-        upgraded.push({
-          id: item.id,
-          displayName: item.displayName,
-          fromVersion: installedVersion,
-          toVersion: targetVersion
-        });
-      }
-    }
-
-    return {
-      ok: true,
-      upgradedCount: upgraded.length,
-      upgraded,
-      message: upgraded.length > 0
-        ? `Successfully upgraded ${upgraded.length} plugins: ${upgraded.map((u) => `${u.displayName} (${u.fromVersion} -> ${u.toVersion})`).join(", ")}.`
-        : "All plugins are already up to date."
-    };
+    return { ok: true, upgradedCount: 0, upgraded: [], message: "Built-in plugins are pinned and update with SpaceApp releases." };
   }
 
   async getAgentConfig(paneId: string): Promise<AgentPluginConfig> {

@@ -8,7 +8,7 @@ body:has(.desktop-window-titlebar):not(:fullscreen):not([data-browser-fullscreen
 
 /* .dock-panel scrolls by itself; on the kit the toolbar stays put and only the body scrolls. */
 .source-control-dock.dock-kit-dock { display: flex; overflow: hidden; scrollbar-gutter: auto; color: var(--dock-text); font-size: var(--dock-font-sm); }
-.source-control-body { min-width: 0; min-height: 0; flex: 1 1 0; display: grid; grid-auto-rows: max-content; align-content: start; gap: .75rem; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; }
+.source-control-body { container: source-control / inline-size; min-width: 0; min-height: 0; flex: 1 1 0; display: grid; grid-auto-rows: max-content; align-content: start; gap: .75rem; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; }
 .source-control-open-project span { font-size: var(--dock-font-sm); }
 @media (max-width: 420px) { .source-control-open-project span { display: none; } }
 
@@ -25,10 +25,14 @@ body:has(.desktop-window-titlebar):not(:fullscreen):not([data-browser-fullscreen
 .source-control-body p { margin: 0; }
 
 /* Branch and project details */
-.source-control-branch { display: flex; align-items: center; gap: .5rem; min-width: 0; overflow: hidden; font-weight: 600; }
-.source-control-branch > svg { flex: 0 0 auto; color: var(--dock-muted); }
-.source-control-branch span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.source-control-branch span:last-child { margin-left: auto; flex-shrink: 0; color: var(--dock-muted); font-weight: 500; }
+.source-control-branch { display: flex; align-items: center; gap: .5rem; min-width: 0; min-height: 2rem; padding: 0 .15rem; overflow: hidden; font-weight: 650; }
+.source-control-branch > svg { flex: 0 0 auto; color: var(--dock-accent); }
+.source-control-branch > span:first-of-type { min-width: 0; overflow: hidden; font-family: ui-monospace, monospace; font-size: .8rem; text-overflow: ellipsis; white-space: nowrap; }
+.source-control-branch > span:last-child { margin-left: auto; flex-shrink: 0; color: var(--dock-muted); font-weight: 500; }
+.source-control-sync { display: inline-flex; gap: .25rem; }
+.source-control-sync > span { padding: .05rem .4rem; border: 1px solid var(--dock-border); border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font: 650 .68rem ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.source-control-sync > span.is-ahead { border-color: color-mix(in srgb, var(--dock-accent) 45%, transparent); background: var(--dock-accent-soft); color: var(--dock-accent); }
+.source-control-sync > span.is-behind { border-color: color-mix(in srgb, var(--dock-warning) 45%, transparent); background: var(--dock-warning-soft); color: var(--dock-warning); }
 .source-control-meta-card { display: flex; flex-direction: column; gap: .45rem; min-width: 0; padding: .55rem .7rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); font-size: .74rem; }
 .source-control-meta-row { display: flex; align-items: center; gap: .45rem; min-width: 0; overflow: hidden; flex-wrap: wrap; }
 .source-control-meta-label { flex-shrink: 0; color: var(--dock-muted); font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
@@ -63,23 +67,57 @@ body:has(.desktop-window-titlebar):not(:fullscreen):not([data-browser-fullscreen
 .source-control-comparison .source-control-file-name { min-height: 2.25rem; align-items: center; }
 
 /* Change groups */
-.source-control-dock .source-control-changes { display: grid; gap: .2rem; min-width: 0; padding-top: .5rem; border-top: 1px solid var(--dock-border); }
-.source-control-changes h3 { display: flex; align-items: center; gap: .5rem; min-width: 0; margin: 0 0 .25rem; color: var(--dock-text); font-size: .76rem; font-weight: 650; }
-.source-control-changes h3 > span { color: var(--dock-muted); font-weight: 500; }
+.source-control-dock .source-control-changes { display: grid; gap: .2rem; min-width: 0; padding-top: .6rem; border-top: 1px solid var(--dock-border); }
+.source-control-changes h3 { display: flex; align-items: center; gap: .45rem; min-width: 0; min-height: 1.6rem; margin: 0 0 .2rem; color: var(--dock-muted); font-size: .7rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.source-control-changes h3 > span { padding: 0 .45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: .66rem; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.source-control-changes h3 > .dock-kit-button { letter-spacing: 0; text-transform: none; }
+.source-control-changes > small { margin-bottom: .2rem; font-size: .7rem; }
 .source-control-changes h3 > .dock-kit-button { margin-left: auto; min-height: 1.6rem; padding: 0 .5rem; }
 .source-control-comparison > .dock-kit-button { justify-self: start; }
 
+/* Collapsible sections (Worktrees) */
+.source-control-worktrees { display: grid; min-width: 0; border: 1px solid var(--dock-border); border-radius: var(--dock-radius); background: var(--dock-raised); overflow: hidden; }
+.source-control-section-toggle { display: flex; align-items: center; gap: .45rem; min-width: 0; min-height: 2.35rem; padding: .4rem .65rem; border: 0; background: transparent; color: var(--dock-text); font: inherit; text-align: left; cursor: pointer; }
+.source-control-section-toggle:hover { background: var(--dock-soft); }
+.source-control-section-toggle:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: -2px; }
+.source-control-section-chevron { flex: none; color: var(--dock-muted); transition: transform .15s ease; }
+.source-control-worktrees.is-open .source-control-section-chevron { transform: rotate(90deg); }
+.source-control-section-title { font-size: .7rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.source-control-count { padding: 0 .45rem; border-radius: 999px; background: var(--dock-soft); color: var(--dock-muted); font-size: .66rem; font-weight: 650; }
+.source-control-section-hint { margin-left: auto; color: var(--dock-muted); font-size: .68rem; }
+.source-control-section-toggle .dock-kit-badge { display: inline-block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.source-control-worktree-item > .dock-kit-badge { justify-self: start; }
+
 /* Worktrees */
-.source-control-worktree-list { display: grid; gap: .4rem; }
-.source-control-worktree-item { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: .5rem .6rem; }
-.source-control-worktree-info { display: grid; gap: 2px; min-width: 0; }
-.source-control-worktree-branch { display: flex; align-items: center; gap: .35rem; min-width: 0; color: var(--dock-accent); font-family: ui-monospace, monospace; font-size: .76rem; word-break: break-all; }
-.source-control-worktree-meta { color: var(--dock-muted); font-size: .7rem; }
-.source-control-worktree-dirty { color: var(--dock-warning); font-weight: 600; }
+.source-control-worktree-panel { display: grid; gap: .5rem; min-width: 0; padding: 0 .55rem .55rem; }
+.source-control-worktree-tools { display: grid; gap: .4rem; min-width: 0; }
+.source-control-worktree-list { display: grid; gap: .3rem; min-width: 0; max-height: min(28rem, 60vh); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.source-control-worktree-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; min-width: 0; padding: .45rem .55rem; border: 1px solid var(--dock-border); border-left: 3px solid var(--dock-border-strong); border-radius: var(--dock-radius-sm); background: var(--dock-surface); transition: border-color .12s ease; }
+.source-control-worktree-item:hover { border-color: var(--dock-border-strong); }
+.source-control-worktree-item.is-dirty { border-left-color: var(--dock-warning); }
+.source-control-worktree-item.is-primary { border-left-color: var(--dock-accent); }
+.source-control-worktree-info { display: grid; gap: .15rem; min-width: 0; }
+.source-control-worktree-branch { display: flex; align-items: center; gap: .35rem; min-width: 0; color: var(--dock-accent); font-family: ui-monospace, monospace; font-size: .76rem; }
+.source-control-worktree-branch > svg { flex: none; }
+.source-control-worktree-branch strong { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.source-control-worktree-meta { display: flex; flex-wrap: wrap; gap: .1rem .55rem; color: var(--dock-muted); font-size: .68rem; }
+.source-control-worktree-dirty { color: var(--dock-warning); font-weight: 650; }
+.source-control-worktree-ahead { color: var(--dock-accent); }
+.source-control-worktree-actions { display: flex; align-items: center; justify-content: flex-end; gap: .3rem; }
+.source-control-worktree-actions .dock-kit-button { min-height: 1.75rem; padding: 0 .55rem; font-size: .72rem; }
+.source-control-worktree-actions .dock-kit-icon-button { width: 1.75rem; height: 1.75rem; min-height: 1.75rem; }
+/* A narrow dock puts the actions under the branch, so the branch name keeps the full width. */
+@container source-control (max-width: 340px) {
+  .source-control-worktree-item { grid-template-columns: minmax(0, 1fr); }
+  .source-control-worktree-actions { justify-content: flex-start; }
+  .source-control-section-hint { display: none; }
+}
 
 /* Commit and sync */
 .source-control-commit label { color: var(--dock-muted); }
-.source-control-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.source-control-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.4rem, 1fr)); gap: .35rem; }
+.source-control-actions .dock-kit-button { justify-content: center; }
+.source-control-body small.source-control-footnote { margin-top: -.35rem; font-size: .68rem; }
 
 /* Default repository */
 .source-control-default-repo-row { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; min-width: 0; }

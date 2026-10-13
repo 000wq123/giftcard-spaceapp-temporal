@@ -111,7 +111,9 @@ export function HealthDock({
           icon={ShieldCheck}
           label="MCP"
           value={mcp?.gateway.status ?? pending}
-          detail={mcp ? `${mcp.gateway.serverCount} servers / ${mcp.gateway.toolCount} tools` : "MCP snapshot loading"}
+          detail={mcp ? `Chat gateway ${mcp.gateway.serverCount} servers / ${mcp.gateway.toolCount} tools${mcp.dispatcher
+            ? ` · CLI dispatcher ${mcp.dispatcher.backendCount} backends${mcp.dispatcher.staleIds.length ? `, ${mcp.dispatcher.staleIds.length} stale (${mcp.dispatcher.staleIds.join(", ")})` : ""}`
+            : ""}` : "MCP snapshot loading"}
           meta={latestSmoke?.code ? readableCode(latestSmoke.code) : "Smoke not run"}
           tone={statusTone(mcp?.gateway.status ?? latestSmoke?.status ?? "")}
         />

@@ -133,6 +133,8 @@ export interface DotToolGatewayDeps {
   /** `channel.slack.send` / `channel.teams.send` (Stage 6): messages the owner or posts into the thread linked to this conversation. */
   channelTool?(session: { sessionId: string; dotId: string; roomId: string }, owner: string, toolId: string, args: Record<string, unknown>):
     Promise<{ status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string }>;
+  /** Stage 8, Settings → Dots: sending email and creating events wait for the owner's approval (default on). */
+  confirmExternalActions?(owner: string): Promise<boolean>;
   /** True while the conversation runs an evaluation case (Stage 7); its writes then always wait for approval. */
   evaluationSession?(sessionId: string): Promise<boolean>;
   /** Starts the Dot's next turn after its owner decides an approval. */
@@ -427,9 +429,12 @@ export async function executeDotGatewayCall(deps: DotToolGatewayDeps, request: F
         return sent.status === "COMPLETED" ? { status: "COMPLETED", statusReason: null, toolId: entry.id, result: bounded(sent.result) } : blocked(entry.id, sent.statusReason);
       }
       if (!deps.connectorTool) return blocked(entry.id, "Email and calendar connectors are unavailable.");
-      // Sending mail and creating events bind the user: they always wait for approval. Drafts follow the session's mode.
+      // Operator decisions 2026-10-12: sending mail and creating events follow the session's permission mode like drafts,
+      // and, while "Ask before sending email or creating events" is on in Settings → Dots (the default), always wait for
+      // approval. Proactive work stays read-only above.
       const binding = entry.id === "mail.send" || entry.id === "calendar.create";
-      if (needsDotApproval(binding ? "SENSITIVE" : entry.risk === "READ" ? "READ" : "WRITE", mode)) {
+      const confirm = binding && (deps.confirmExternalActions ? await deps.confirmExternalActions(resolved.actor.id).catch(() => true) : true);
+      if (needsDotApproval(confirm ? "SENSITIVE" : entry.risk === "READ" ? "READ" : "WRITE", mode)) {
         return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "connector", tool: entry.id, arguments: args });
       }
       const outcome = await deps.connectorTool(resolved.actor.id, entry.id, args);

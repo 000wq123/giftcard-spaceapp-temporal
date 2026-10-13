@@ -203,7 +203,7 @@ export async function validateProviderCredential(
     options = (providerOrOptions ?? {}) as ProviderValidationOptions;
   }
   const backingProviderId = provider?.backingProviderId ?? providerId;
-  const isCodexLbBacked = backingProviderId === "codex-lb" || provider?.type === "CODEX_LB";
+  const isCodexLbBacked = backingProviderId === "codex-lb" || provider?.type === "CODEX_LB" || provider?.type === "SPACE_GATEWAY";
   if (!isCodexLbBacked) {
     return disabledResult({
       providerId,

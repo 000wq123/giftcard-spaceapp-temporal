@@ -17,7 +17,7 @@ import {
   type AgentToolsCatalogResponse,
   type ApplyAgentToolsResult
 } from "@space/contracts";
-import type { SpaceStore } from "@space/runtime";
+import { parseSkillFrontmatter, type SpaceStore } from "@space/runtime";
 import { cliRuntimeDescriptors } from "./cli-runtime-descriptors.js";
 
 export interface AgentToolsOptions {
@@ -771,7 +771,12 @@ function buildToolId(kind: "MCP" | "SKILL", name: string): string {
 async function readSkillDescription(path: string): Promise<string> {
   try {
     const raw = await readFile(path, "utf8");
-    const first = raw.split(/\r?\n/).find((line) => line.trim().length > 0) ?? "";
+    const description = parseSkillFrontmatter(raw).description?.trim();
+    if (description) return description.slice(0, 500);
+    // No frontmatter description: use the first body line, never the `---` fence.
+    const frontmatterEnd = raw.startsWith("---") ? raw.indexOf("\n---", 3) : -1;
+    const body = frontmatterEnd >= 0 ? raw.slice(frontmatterEnd + 4) : raw;
+    const first = body.split(/\r?\n/).find((line) => line.trim().length > 0) ?? "";
     return first.replace(/^#+\s*/, "").trim().slice(0, 500) || `Skill at ${path}`;
   } catch {
     return `Skill at ${path}`;

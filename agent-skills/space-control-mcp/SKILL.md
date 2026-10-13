@@ -1,8 +1,8 @@
 ---
 name: space-control-mcp
-description: Comprehensive directory and operational manual for all Space Control MCP tools, resources, inspect sections, debug incident diagnostics, and step-by-step 1-by-1 tool health verification.
+description: "Manual for the Space Control MCP tools (space-control backend): room and pane control, inspect sections, schedules, watches, debug incidents and the one-by-one tool health check. Use when operating Space rooms or panes through Space Control, or when the operator asks to check its tools."
 metadata:
-  category: SYSTEM_CONTROL
+  category: TOOL_ADAPTER
 ---
 
 # Space Control MCP Guide & Verification Manual
@@ -18,8 +18,8 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 - **Output**: JSON payload with `version`, `supportedActions`, `limits` (maxPanesAllowed, maxActionsPerRequest), and `runtimes` catalog.
 
 ### 2. `space_inspect`
-- **Purpose**: Authoritative inspection across 19 system and room domains.
-- **Parameters**: `section` (enum of 19 sections), `roomId` (optional), `paneId` (optional), `query` (optional), `offset` (int), `limit` (int).
+- **Purpose**: Authoritative inspection across 20 system and room domains.
+- **Parameters**: `section` (enum of 20 sections), `roomId` (optional), `paneId` (optional), `query` (optional), `offset` (int), `limit` (int).
 - **Available Sections**:
   - `STATE`: Authoritative room state, open panes, positions, category colors, and active clients.
   - `CONTENT`: Terminal or chat pane output, activity logs, and turn status.
@@ -40,18 +40,23 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
   - `LINKS`: Workspace bookmark links and metadata.
   - `TASKS`: Task items, objectives, completion status, and room linkages.
   - `AUDIT`: Audit trail of recent Space Control actions and mutations.
+  - `TERMINAL_RENDER`: Numeric browser render observations per pane (geometry and freshness only; no content). See `space-cli-render-diagnostics`.
 
 ### 3. `space_execute`
 - **Purpose**: Applies validated atomic batches of Space controls.
 - **Parameters**: `roomId`, `requestId`, `actions` (array of action objects), `dryRun` (boolean), `waitForCompletion` (boolean).
 - **Supported Operations**:
-  - `panes.open`: Open any of the 17 supported pane types (codex, opencode, gemini, claude, qwen, kimi, grok, deepseek, cursor, copilot, hermes, autohand, browser, youtube, vnc, chat, harness). Supports batching and `debug: true`.
+  - `panes.open`: Open any supported pane type (CLI runtimes, browser, chat, media and the other pane kinds). Call `space_describe_pane_types` for the current open keys and their availability instead of relying on a fixed list. Supports batching and `debug: true`.
   - `pane` operations: `close`, `restart`, `start`, `resume`, `stop`, `cancel`, `continue`, `prompt`, `minimize`, `maximize`, `restore`, `color`.
   - `layout` operations: `sort`, `apply`, `tree`, `save`, `restore`.
   - `playback` operations: `play`, `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `unmute`.
   - `clipboard` operations: `save`, `complete`, `delete`.
   - `ui.theme`: Change room UI theme.
   - `ui.scale`: Adjust zoom and terminal font size.
+
+### 3a. `space_describe_pane_types`
+- **Purpose**: Lists every pane type with its open key and live availability, so `panes.open` targets a type that exists and can start now.
+- **Parameters**: `roomId` (optional).
 
 ### 4. `space_screenshot`
 - **Purpose**: Captures full-screen visual state of SpaceApp for Vision AI analysis.
@@ -83,30 +88,14 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 - **Parameters**: `roomId`, `operation`, `paneId`, `query`.
 - **Output**: Detailed root-cause diagnosis and `agentHandoffPrompt`.
 
-### 11. `space-cli-render-diagnostics` (Companion Skill & Tool)
-- **Purpose**: Operational skill and automated audit tool for CLI terminal graphical rendering, stream integrity, partial screen coverage detection, dimension stress (down to minimal 20x8), dynamic in-flight resizing, and >50k token long-task verification.
-- **Reference**: See [space-cli-render-diagnostics](../space-cli-render-diagnostics/SKILL.md) and script `/opt/spaceapp/scripts/space-cli-render-audit.mjs`.
-
-### 12. `space-superpowers` (Companion Workflow Skill)
-- **Purpose**: Complete software development methodology for coding agents: test-driven development (TDD), 4-phase systematic debugging, verification before completion, implementation planning, brainstorming, and subagent-driven development.
-- **Reference**: See [space-superpowers](../space-superpowers/SKILL.md).
-
-### 13. `space-ui-ux-pro-max` (Companion Design Intelligence Skill)
-- **Purpose**: UI/UX design intelligence across web, mobile, and desktop: 79 searchable UI styles, 192 product palettes, 74 font pairings, 119 UX guidelines, resilient text layout, accessibility, and 22 technology stacks.
-- **Reference**: See [space-ui-ux-pro-max](../space-ui-ux-pro-max/SKILL.md).
-
-### 14. `space-taste-skill` (Companion Frontend Aesthetic Skill)
-- **Purpose**: Anti-slop frontend design framework for web and mobile interfaces. Enforces modern typography, contrast, spacing, and micro-interactions, stopping AI agents from generating templated interfaces.
-- **Reference**: See [space-taste-skill](../space-taste-skill/SKILL.md).
-
-### 15. `space-no-ai-slop` (Companion Content Refinement Skill)
-- **Purpose**: Editorial and writing refinement skill for documentation, release notes, and technical writing. Detects and eliminates 20+ AI slop clichés and robotic patterns while preserving the writer's authentic voice.
-- **Reference**: See [space-no-ai-slop](../space-no-ai-slop/SKILL.md).
+### 11. Companion skills
+- `space-cli-render-diagnostics` covers terminal render evidence (`TERMINAL_RENDER`, render proofs); `space-app-diagnostics` covers `APP_DEBUG` captures.
+- Workflow skills (Superpowers, UI/UX Pro Max, Taste Skill, gstack and the others) are listed with descriptions by `space_inspect` section `SKILLS` and by the dispatcher's `list_skills`; this manual does not repeat them.
 
 ---
 
 ## 1-by-1 Tool Health Verification Procedure
-When asked: *"έλεγξε όλα τα εργαλεία του mcp ένα προς ένα και δες για προβλήματα"* (check all MCP tools one by one and check for problems):
+When the operator asks to check all Space Control MCP tools one by one for problems (in any language):
 
 1. **Invoke `space_test_mcp_tools`**:
    The tool automatically runs non-destructive tests across all 16 core functions:
@@ -130,7 +119,7 @@ When asked: *"έλεγξε όλα τα εργαλεία του mcp ένα προ
 2. **Evaluate Results**:
    - Each test returns `status: "PASS" | "FAIL" | "WARN"` with measured latency.
    - If any test fails, an incident is registered in `/opt/spaceapp/var/live-voice-logs/debug-incidents.jsonl` with an `agentHandoffPrompt`.
-   - The assistant replies in fluent Greek summarizing the number of passed tests, any failures, and the exact reason.
+   - Reply in the operator's language with the number of passed tests, any failures and the exact reason. UI text stays English.
 
 3. **Developer Agent Handoff**:
    - The `agentHandoffPrompt` in the incident record contains the exact error, operation, room, and recommended fix, allowing an agent to quickly repair the underlying issue.

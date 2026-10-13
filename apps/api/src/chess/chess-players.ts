@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { CODEX_LB_BASE_URL, getCodexApiKey } from "../benchmark-routes.js";
+import { CODEX_LB_BASE_URL, codexAuthHeaders, getCodexApiKey } from "../benchmark-routes.js";
 import { loadOpenRouterBenchmarkModels, requestOpenRouterDoctrine } from "../openrouter-benchmark-models.js";
 import { nativeOpenCodeModelCatalog } from "../task-title-opencode.js";
 import {
@@ -8,14 +8,14 @@ import {
   cliModelEfforts,
   currentOpenCodeBinary,
   parseCliModelCatalog,
-  runCliAgentChat,
+  type CliMoveRunner,
   type ChessCliModel,
   type ChessCliProviderSpec,
 } from "./chess-cli.js";
 
 /**
  * Chess contestants are model x reasoning level pairs taken from the live
- * catalogs of every SpaceApp provider with a one-shot move path: Codex-LB
+ * catalogs of every SpaceApp provider with a one-shot move path: Space Gateway
  * (every supported reasoning level), the CLI runtimes with an agent-chat mode
  * (Claude Code, Gemini, DeepSeek, GitHub Copilot, Grok, Cursor, Qwen, Hermes,
  * Kimi, Autohand, OpenCode; see chess-cli.ts) and OpenRouter.
@@ -75,7 +75,7 @@ export interface ChessMoveReply {
 export type ChessMoveRequester = (request: ChessMoveRequest) => Promise<ChessMoveReply>;
 
 /**
- * Requests in flight per provider. The shared Codex-LB pool answers a burst
+ * Requests in flight per provider. The shared Codex pool answers a burst
  * quickly and then queues or returns 503 (measured 2026-10-12: 6 parallel
  * requests went from 3 s to 10-60 s); free OpenRouter and OpenCode models
  * rate-limit sooner. Games beyond the limit wait before their move clock starts.
@@ -171,7 +171,7 @@ export function codexContestantsFromCatalog(payload: unknown): ChessContestant[]
 
 async function loadCodexContestants(): Promise<ChessContestant[]> {
   try {
-    const response = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: AbortSignal.timeout(2_500) });
+    const response = await fetch(`${CODEX_LB_BASE_URL}/v1/models`, { signal: AbortSignal.timeout(2_500), headers: await codexAuthHeaders() });
     if (response.ok) {
       const contestants = codexContestantsFromCatalog(await response.json());
       if (contestants.length > 0) return contestants;
@@ -347,7 +347,7 @@ export function createChessCatalog(options: ChessCatalogOptions = {}): (request?
 
 async function requestCodexMove(request: ChessMoveRequest): Promise<ChessMoveReply> {
   const apiKey = await getCodexApiKey();
-  if (!apiKey) throw new Error("Codex-LB key is unavailable.");
+  if (!apiKey) throw new Error("The Space Gateway key is unavailable.");
   const { contestant: player } = request;
   const response = await fetch(`${CODEX_LB_BASE_URL}/v1/chat/completions`, {
     method: "POST",
@@ -363,13 +363,13 @@ async function requestCodexMove(request: ChessMoveRequest): Promise<ChessMoveRep
       max_tokens: moveTokenBudget(player.reasoningEffort),
     }),
   });
-  if (!response.ok) throw new Error(`Codex-LB HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`Space Gateway HTTP ${response.status}`);
   const payload = (await response.json()) as {
     choices?: Array<{ message?: { content?: unknown } }>;
     usage?: { total_tokens?: unknown };
   };
   const text = payload.choices?.[0]?.message?.content;
-  if (typeof text !== "string") throw new Error("Codex-LB returned no text.");
+  if (typeof text !== "string") throw new Error("Space Gateway returned no text.");
   const tokens = Number(payload.usage?.total_tokens);
   return { text, ...(Number.isFinite(tokens) ? { tokens } : {}) };
 }
@@ -391,6 +391,8 @@ async function requestOpenRouterMove(request: ChessMoveRequest): Promise<ChessMo
 export interface ChessMoveRequesterOptions {
   /** Claude account profile with the most quota left, or null for the main account. */
   claudeProfile?: () => Promise<string | null>;
+  /** Runs a CLI move in the worker; without it CLI providers cannot play. */
+  runCliMove?: CliMoveRunner;
 }
 
 /** Signed-in Claude account with the most quota left (min of 5 h and weekly), as T3 Code chooses. */
@@ -409,8 +411,9 @@ export function createChessMoveRequester(options: ChessMoveRequesterOptions = {}
   const requestCliMove = async (request: ChessMoveRequest): Promise<ChessMoveReply> => {
     const spec = CHESS_CLI_PROVIDERS.find((provider) => provider.id === request.contestant.providerId)!;
     const effort = request.contestant.reasoningEffort;
+    if (!options.runCliMove) throw new Error("CLI moves need the Space worker.");
     const claudeProfile = spec.id === "claude" && options.claudeProfile ? await options.claudeProfile().catch(() => null) : null;
-    const text = await runCliAgentChat({
+    const text = await options.runCliMove({
       runtimeId: spec.runtimeId,
       model: cliModelArgument(request.contestant),
       effort: effort === "default" ? null : effort,

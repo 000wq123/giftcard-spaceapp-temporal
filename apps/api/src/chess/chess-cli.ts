@@ -1,13 +1,12 @@
-import { spawn } from "node:child_process";
-import { access, constants, mkdir } from "node:fs/promises";
+import { access, constants } from "node:fs/promises";
+import { request } from "node:http";
 
 /**
- * SpaceApp CLI runtimes as chess players. One move is one `agent-chat` turn:
- * the same isolated path Chat panes use (sudo -> space-cli-vpn-broker ->
- * runtime network namespace -> the CLI wrapper as the operator account), with
- * the model and reasoning effort passed through SPACE_AGENT_CHAT_MODEL and
- * SPACE_AGENT_CHAT_REASONING_EFFORT. Catalogs come from each wrapper's
- * `models` action (TSV: id, name, efforts, default effort).
+ * SpaceApp CLI runtimes as chess players. One move is one `agent-chat` turn,
+ * run by the worker (apps/worker/src/chess-cli-move.ts, over its Unix socket) on the same isolated
+ * path Chat panes use, with the model and reasoning effort passed through
+ * SPACE_AGENT_CHAT_MODEL and SPACE_AGENT_CHAT_REASONING_EFFORT. Catalogs come
+ * from each wrapper's `models` action (TSV: id, name, efforts, default effort).
  */
 
 export interface ChessCliProviderSpec {
@@ -25,7 +24,7 @@ export interface ChessCliProviderSpec {
 }
 
 /**
- * Runtimes with an agent-chat one-shot mode. Codex plays through Codex-LB.
+ * Runtimes with an agent-chat one-shot mode. Codex plays through Space Gateway.
  * Muse (no sign-in) and Droid (no subscription) cannot answer yet and have no
  * agent-chat mode.
  */
@@ -83,14 +82,9 @@ export function cliModelEfforts(spec: ChessCliProviderSpec, model: ChessCliModel
   return ["default"];
 }
 
-const BROKER = "/opt/spaceapp/bin/space-cli-vpn-broker";
 const OPENCODE_CURRENT = "/opt/spaceapp/var/cli-versions/opencode/current/node_modules/.bin/opencode";
-/** Empty directory the CLIs start in; the operator account can read it but not write to it. */
-export const CHESS_CLI_WORKSPACE = "/opt/spaceapp/var/chess-benchmark/workspace";
-const MAX_OUTPUT_BYTES = 64 * 1024;
-const CLAUDE_PROFILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const PROVIDER_FAILURE = /RESOURCE_EXHAUSTED|quota|rate.?limit|\b429\b|unauthori[sz]ed|authentication fail|invalid api key|no available tokens/i;
-const PATH_ENV = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/** The worker's own limit for one move; the tournament's move clock aborts sooner. */
+const WORKER_MOVE_TIMEOUT_MS = 180_000;
 
 /** The current OpenCode runtime, used only to list its free models. */
 export async function currentOpenCodeBinary(): Promise<string | null> {
@@ -100,20 +94,6 @@ export async function currentOpenCodeBinary(): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function stripTerminalCodes(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-}
-
-/** First printable line of a CLI failure, short enough for a status note. */
-export function cliFailureSummary(stderr: string, fallback: string): string {
-  const line = stripTerminalCodes(stderr)
-    .split("\n")
-    .map((value) => value.replace(/[^\x20-\x7E]/g, " ").trim())
-    .find((value) => value.length > 0);
-  return (line ?? fallback).slice(0, 180);
 }
 
 export interface CliAgentChatInput {
@@ -126,64 +106,64 @@ export interface CliAgentChatInput {
   signal: AbortSignal;
 }
 
-export async function runCliAgentChat(input: CliAgentChatInput): Promise<string> {
-  input.signal.throwIfAborted();
-  await mkdir(CHESS_CLI_WORKSPACE, { recursive: true, mode: 0o755 });
-  return new Promise((resolve, reject) => {
-    const child = spawn("/usr/bin/sudo", ["-n", BROKER, "exec", input.runtimeId, "agent-chat"], {
-      cwd: CHESS_CLI_WORKSPACE,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        PATH: PATH_ENV,
-        LANG: "C.UTF-8",
-        SPACE_CLI_WORKSPACE: CHESS_CLI_WORKSPACE,
-        ...(input.model ? { SPACE_AGENT_CHAT_MODEL: input.model } : {}),
-        ...(input.effort ? { SPACE_AGENT_CHAT_REASONING_EFFORT: input.effort } : {}),
-        ...(input.runtimeId === "cli:claude" && input.claudeProfile && CLAUDE_PROFILE_PATTERN.test(input.claudeProfile) && input.claudeProfile !== "main"
-          ? { SPACE_CLAUDE_ACCOUNT_PROFILE: input.claudeProfile }
-          : {}),
-      },
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finish = (error: Error | null) => {
-      if (settled) return;
-      settled = true;
-      input.signal.removeEventListener("abort", onAbort);
-      if (error) reject(error);
-      else resolve(stripTerminalCodes(stdout));
-    };
-    const onAbort = () => {
-      try {
-        child.kill("SIGTERM");
-      } catch {}
-      finish(new DOMException("The move was aborted.", "AbortError"));
-    };
-    input.signal.addEventListener("abort", onAbort, { once: true });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      if (stdout.length > MAX_OUTPUT_BYTES) {
-        try {
-          child.kill("SIGKILL");
-        } catch {}
-        finish(new Error("CLI answer exceeded the output limit."));
+/** Runs one CLI move and returns the answer text. */
+export type CliMoveRunner = (input: CliAgentChatInput) => Promise<string>;
+
+/** Where the worker takes chess moves (apps/worker/src/chess-cli-move.ts). */
+export const CHESS_MOVE_SOCKET = "/opt/spaceapp/var/chess-benchmark/worker.sock";
+
+/**
+ * CLI moves run in the worker: CLI processes must never live in the space-api cgroup. The worker
+ * listens on a Unix socket only the space account can open; aborting a move closes the request,
+ * which stops the CLI there.
+ */
+export function createWorkerCliMoveRunner(socketPath = CHESS_MOVE_SOCKET): CliMoveRunner {
+  return (input) =>
+    new Promise<string>((resolve, reject) => {
+      if (input.signal.aborted) {
+        reject(new DOMException("The move was aborted.", "AbortError"));
+        return;
       }
+      const body = JSON.stringify({
+        runtimeId: input.runtimeId,
+        model: input.model,
+        effort: input.effort,
+        claudeProfile: input.claudeProfile ?? null,
+        prompt: input.prompt,
+        timeoutMs: WORKER_MOVE_TIMEOUT_MS,
+      });
+      let settled = false;
+      const finish = (error: Error | null, text?: string) => {
+        if (settled) return;
+        settled = true;
+        input.signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve(text ?? "");
+      };
+      const call = request(
+        { socketPath, path: "/move", method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } },
+        (response) => {
+          let data = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => {
+            data += chunk;
+          });
+          response.on("end", () => {
+            let payload: { text?: unknown; error?: unknown } = {};
+            try {
+              payload = JSON.parse(data) as typeof payload;
+            } catch {}
+            if (response.statusCode === 200 && typeof payload.text === "string") finish(null, payload.text);
+            else finish(new Error(typeof payload.error === "string" ? payload.error : `Worker answered HTTP ${response.statusCode ?? 0}.`));
+          });
+        }
+      );
+      const onAbort = () => {
+        call.destroy();
+        finish(new DOMException("The move was aborted.", "AbortError"));
+      };
+      input.signal.addEventListener("abort", onAbort, { once: true });
+      call.on("error", (error) => finish(input.signal.aborted ? new DOMException("The move was aborted.", "AbortError") : new Error(`Space worker unavailable: ${error.message}`)));
+      call.end(body);
     });
-    child.stderr.on("data", (chunk: string) => {
-      if (stderr.length < 8_192) stderr += chunk.slice(0, 8_192 - stderr.length);
-    });
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => {
-      // Some CLIs print the answer and then exit non-zero for terminal reasons; the answer still counts,
-      // unless what they printed is a provider failure (quota, rate limit, authentication).
-      const printedFailure = stdout.trim() !== "" && PROVIDER_FAILURE.test(stdout);
-      if (code === 0 || (stdout.trim() && !printedFailure)) finish(null);
-      else finish(new Error(cliFailureSummary(printedFailure ? stdout : stderr, `${input.runtimeId} exited with code ${code ?? "unknown"}.`)));
-    });
-    child.stdin.on("error", () => {});
-    child.stdin.end(input.prompt);
-  });
 }

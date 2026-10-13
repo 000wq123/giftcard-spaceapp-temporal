@@ -20,7 +20,7 @@ const availabilityLabels: Record<DotToolSummary["availability"], string> = { AVA
   NEEDS_CONNECTION: "Needs connection", FORBIDDEN: "Not allowed" };
 const riskLabels: Record<DotToolSummary["risk"], string> = { READ: "Read", WRITE: "Changes state", DESTRUCTIVE: "Destructive" };
 interface ToolsResult { key: string; state: "loading" | "ready" | "unavailable"; tools: DotToolSummary[]; receipts: DotToolInvocation[] }
-function DotToolsPanel({ dot, roomId, readTools, readReceipts }: { dot: DotProfile | null; roomId: string | null;
+export function DotToolsPanel({ dot, roomId, readTools, readReceipts }: { dot: DotProfile | null; roomId: string | null;
   readTools: (dotId: string, roomId?: string | null) => Promise<{ dotId: string; tools: DotToolSummary[] }>;
   readReceipts: (dotId: string) => Promise<{ dotId: string; items: DotToolInvocation[] }> }) {
   const [retry, setRetry] = useState(0);
@@ -91,9 +91,11 @@ function DotGoalList({ dot, readGoals }: { dot: DotProfile; readGoals: (dotId: s
     <time dateTime={goal.updatedAt}>{goal.updatedAt}</time>
   </li>)}</ul></>;
 }
-export function DotPanels({ tab, dot, session, roomId = null, visible = true, read = api.dotCollection, readTools = api.dotTools, readReceipts = api.dotToolInvocations,
-  readGoals = api.dotGoals }: {
+export function DotPanels({ tab, dot, session, sessionId: sessionIdOverride, roomId = null, visible = true, read = api.dotCollection, readTools = api.dotTools,
+  readReceipts = api.dotToolInvocations, readGoals = api.dotGoals }: {
   tab: Exclude<DotTab, "Chat">; dot: DotProfile | null; session: AgentPaneSession | null; roomId?: string | null; visible?: boolean;
+  /** Settings → Dots: the Dot's latest conversation, where new reminders run. */
+  sessionId?: string | null;
   readGoals?: (dotId: string) => Promise<{ dotId: string; items: DotGoal[] }>;
   read?: (dotId: string, resource: DotResource) => Promise<DotCollection>;
   readTools?: (dotId: string, roomId?: string | null) => Promise<{ dotId: string; tools: DotToolSummary[] }>;
@@ -114,7 +116,8 @@ export function DotPanels({ tab, dot, session, roomId = null, visible = true, re
     }).catch(() => { if (current) setResult({ key, state: "unavailable", items: [] }); });
     return () => { current = false; };
   }, [key, retry, read]);
-  if (tab === "Computer") return <DotComputer key={dot?.dotId ?? "none"} dot={dot} roomId={roomId} visible={visible} sessionId={dot && session?.dotId === dot.dotId ? session.binding.sessionId ?? null : null} />;
+  const dotSessionId = sessionIdOverride !== undefined ? sessionIdOverride : dot && session?.dotId === dot.dotId ? session.binding.sessionId ?? null : null;
+  if (tab === "Computer") return <DotComputer key={dot?.dotId ?? "none"} dot={dot} roomId={roomId} visible={visible} sessionId={dotSessionId} />;
   if (tab === "Tools") return <DotToolsPanel dot={dot} roomId={roomId} readTools={readTools} readReceipts={readReceipts} />;
   const state = result.key === key ? result.state : "loading";
   return <section className="dots-panel" aria-label={`${tab} for ${dot?.name ?? "selected Dot"}`}>
@@ -123,7 +126,7 @@ export function DotPanels({ tab, dot, session, roomId = null, visible = true, re
     {tab === "Memory" ? <><h4>Space memory attributed to {dot?.name ?? "this Dot"}</h4>
       <p className="dots-panel-hint">Read-only Space memory linked to this Dot. Source labels reflect recorded attribution.</p></> : null}
     {tab === "Tasks" && dot ? <><DotGoalList dot={dot} readGoals={readGoals} />
-      <DotSchedules dot={dot} sessionId={session?.dotId === dot.dotId ? session.binding.sessionId ?? null : null} /></> : null}
+      <DotSchedules dot={dot} sessionId={dotSessionId} /></> : null}
     {state === "loading" ? <p role="status">Loading {tab.toLowerCase()}…</p> : state === "unavailable" ? <div role="status"><p>{tab} unavailable.</p>
       <button type="button" onClick={() => setRetry(value => value + 1)}>Retry</button></div> : !result.items.length ? <p>{emptyText[tab]}</p> :
       <ul className="dots-records">{result.items.map((item, i) => <li key={`${item.id ?? item.runId ?? item.sessionId ?? i}:${i}`}>

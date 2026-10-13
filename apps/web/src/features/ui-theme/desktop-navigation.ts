@@ -40,7 +40,7 @@ export const desktopActionDescriptions: Record<string, string> = {
   "add-chat": "Start a conversation with an AI assistant.",
   "add-browser": "Browse the web inside this room.",
   "add-harness": "Open a DeepSeek Harness coding session.",
-  "add-live": "Start a live audio conversation with Gemini memory access.",
+  "add-live": "Start a live audio conversation with Space Memory access.",
   "add-youtube": "Watch a video alongside your work.",
   "add-vnc": "Connect to a remote desktop.",
   "add-root-admin-cli": "Open a terminal with host administrator access.",

@@ -6,7 +6,7 @@ export interface ConnectorResultMessage { tone: "notice" | "error"; text: string
 
 const retry = "Open a Dot's Tools view and connect again.";
 const messages: Record<string, ConnectorResultMessage> = {
-  connected: { tone: "notice", text: "Account connected. Your Dots can use it from now on; sending email and creating events still wait for your approval." },
+  connected: { tone: "notice", text: "Account connected. Your Dots can use it from now on. Each email and event waits for your approval unless you turn that off in Settings → Dots." },
   cancelled: { tone: "error", text: `The account was not connected: the sign-in was cancelled or the provider refused it. ${retry}` },
   expired: { tone: "error", text: `The sign-in took too long or was started in another tab. ${retry}` },
   session: { tone: "error", text: "The sign-in finished in a different Space session than the one that started it. Connect again from this window." },

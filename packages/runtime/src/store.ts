@@ -1,4 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, type JobApplyPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
@@ -1009,6 +1010,7 @@ export interface SpaceStore {
   deleteRoom(roomId: string): MaybePromise<Room>;
   getPane(paneId: string): MaybePromise<Pane>;
   compareAndSetT3CodeMetadata(paneId: string, expectedRevision: number, metadata: T3CodePaneMetadata): MaybePromise<Pane | null>;
+  updateJobApplyMetadata(paneId: string, metadata: JobApplyPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -1219,6 +1221,8 @@ export interface SpaceStore {
   listEventChanges(input: ListEventChangesInput): MaybePromise<EventChange[]>;
   recordAuditEvent(input: CreateAuditEventInput): MaybePromise<AuditEvent>;
   listAuditEvents(): MaybePromise<AuditEvent[]>;
+  /** The newest audit event for one action on one target. Optional so partial test stores keep compiling. */
+  findLatestAuditEvent?(input: { action: string; targetType: string; targetId: string }): MaybePromise<AuditEvent | null>;
   /**
    * Durable records that carry one Space trace id (the API request id):
    * events (for example TURN_QUEUED/TURN_FAILED with payload.reasonCode),
@@ -1377,7 +1381,7 @@ export function redactMemoryText(value: string): string {
   return redactPersistedTranscriptContent(value)
     .replace(/\b((?:creds|credentials)\s*:\s*[^\s]+@[^\s]+\s*\/\s*)[^\s·;,]+/gi, "$1[REDACTED]")
     .replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
-    .replace(/\b(space_session=)[^;\s]+/gi, "$1[REDACTED]");
+    .replace(/\b(space_session(?:_dev)?=)[^;\s]+/gi, "$1[REDACTED]");
 }
 
 const cliMaintenanceSensitiveKeyPattern =
@@ -1385,7 +1389,7 @@ const cliMaintenanceSensitiveKeyPattern =
 const cliMaintenanceSensitiveValuePatterns = [
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
-  /\bspace_session=[^;\s]+/gi
+  /\bspace_session(?:_dev)?=[^;\s]+/gi
 ];
 
 function redactCliMaintenanceString(value: string): string {
@@ -2072,7 +2076,7 @@ function titleFromSkillId(value: string): string {
     .join(" ");
 }
 
-function parseSkillFrontmatter(markdown: string): Record<string, string> {
+export function parseSkillFrontmatter(markdown: string): Record<string, string> {
   if (!markdown.startsWith("---")) return {};
   const end = markdown.indexOf("\n---", 3);
   if (end < 0) return {};
@@ -2188,15 +2192,16 @@ export function createStaticCatalog(options: StaticCatalogOptions = {}) {
   const providers: Provider[] = [
     {
       id: "codex-lb",
-      displayName: "Codex-LB",
-      type: "CODEX_LB",
+      displayName: "Space Gateway",
+      type: "SPACE_GATEWAY",
       status: "DISABLED",
       statusReason: codexConfigured
-        ? "Codex-LB config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
-        : "Dedicated Space Codex-LB key has not been verified yet.",
+        ? "Space Gateway config is present, but Space keeps the provider disabled until an explicit credential smoke passes."
+        : "Dedicated Space Gateway key has not been verified yet.",
       healthCheckedAt: null,
       maskedKeyPrefix: null,
-      baseUrl: options.codexLbBaseUrl ?? "http://127.0.0.1:2458/v1",
+      // codex-lb (and its :2458 route proxy) is retired; the provider id stays for existing references.
+      baseUrl: options.codexLbBaseUrl ?? "http://127.0.0.1:4920/v1",
       routeProfile: "custom",
       backingProviderId: null,
       credentialRef: null,
@@ -4717,6 +4722,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateJobApplyMetadata(paneId: string, metadata: JobApplyPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "JOB_APPLY" || current.isClosed) throw new SpaceConflictError("An open Job Applications pane is required.");
+    const parsed = jobApplyPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, jobApplyMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -4758,7 +4772,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        (input.mode ?? current.mode) === "TERMINAL"
+        ["TERMINAL", "JOB_APPLY"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -5517,6 +5531,14 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!currentMessage || currentMessage.sessionId !== input.sessionId || currentMessage.messageId !== currentRun.responseMessageId) {
       throw new SpaceNotFoundError(`Space agent response message ${input.responseMessageId} was not found.`);
     }
+    // A replayed completion (unchanged response after a lost acknowledgement) still records
+    // what it carries, but returns the run's original TURN_COMPLETED event instead of a second one.
+    const replayedEvent = currentRun.status === "COMPLETED" && currentMessage.status === "COMPLETED" &&
+      currentMessage.content === input.responseContent
+      ? [...this.events].reverse().find((candidate) =>
+          candidate.type === "TURN_COMPLETED" && candidate.paneId === currentRun.paneId &&
+          (candidate.payload as { runId?: unknown } | null)?.runId === currentRun.runId)
+      : undefined;
     const responseMessage = this.updateSpaceAgentMessage(input.responseMessageId, {
       content: input.responseContent,
       status: "COMPLETED"
@@ -5542,7 +5564,7 @@ export class InMemorySpaceStore implements SpaceStore {
       lastSyncedAt: input.completedAt,
       isActive: currentSession.isActive && (!paneClosed || this.roomAgentPaneIds.get(currentSession.roomId) === currentSession.paneId || hasOtherRunningRun)
     }, false);
-    const event = this.appendEvent({
+    const event = replayedEvent ?? this.appendEvent({
       roomId: run.roomId,
       paneId: run.paneId,
       turnId: null,
@@ -6057,8 +6079,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL or JOB_APPLY panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -6601,8 +6623,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER or YOUTUBE panes.`);
+    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE or JOB_APPLY panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -7280,6 +7302,12 @@ export class InMemorySpaceStore implements SpaceStore {
 
   listAuditEvents(): AuditEvent[] {
     return [...this.auditEvents].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  findLatestAuditEvent(input: { action: string; targetType: string; targetId: string }): AuditEvent | null {
+    return this.auditEvents.findLast((event) =>
+      event.action === input.action && event.targetType === input.targetType && event.targetId === input.targetId
+    ) ?? null;
   }
 
   listTraceRecords(traceId: string, options: ListTraceRecordsOptions = {}): TraceRecords {

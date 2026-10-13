@@ -38,8 +38,6 @@ import type {
   Pane,
   Provider,
   ProviderSettings,
-  ProviderSwitchResponse,
-  ProviderSwitchTargets,
   Room,
   Skill,
   StorageReadiness,
@@ -93,8 +91,6 @@ export type DemoFixture = {
   cliSessionReap: CliSessionReapResponse;
   hostMemoryDetails: HostMemoryDetails;
   memoryReclaim: MemoryReclaimResponse;
-  providerSwitchTargets: ProviderSwitchTargets;
-  providerSwitch: ProviderSwitchResponse;
   codexLbSpeedDefaults: CodexLbSpeedDefaultsResponse;
   adminDiagnostics: {
     mcpGateway: McpGatewayStatus;
@@ -326,38 +322,38 @@ function createDemoMemoryWorkspace(): DemoFixture["memoryWorkspace"] {
     recordId: null,
     position: { clustered: { x: 14, y: -12 }, relations: { x: 22, y: -8 } }
   };
-  const juneSourcePath = "/demo/memory/gemini_history_2026-06.md";
-  const julySourcePath = "/demo/memory/gemini_history_2026-07.md";
+  const juneSourcePath = "/demo/memory/space_memory_2026-06.md";
+  const julySourcePath = "/demo/memory/space_memory_2026-07.md";
   const juneSourceNode = {
-    id: "source:demo-gemini-history-2026-06",
+    id: "source:demo-space-memory-2026-06",
     type: "SOURCE" as const,
-    label: "gemini_history_2026-06.md",
+    label: "space_memory_2026-06.md",
     sourcePath: juneSourcePath,
     recordId: null,
     position: { clustered: { x: -34, y: -26 }, relations: { x: -40, y: -20 } }
   };
   const julySourceNode = {
-    id: "source:demo-gemini-history-2026-07",
+    id: "source:demo-space-memory-2026-07",
     type: "SOURCE" as const,
-    label: "gemini_history_2026-07.md",
+    label: "space_memory_2026-07.md",
     sourcePath: julySourcePath,
     recordId: null,
     position: { clustered: { x: 30, y: 18 }, relations: { x: 36, y: 16 } }
   };
   const juneMemoryNode = {
-    id: "memory:demo-gemini-history-2026-06",
+    id: "memory:demo-space-memory-2026-06",
     type: "MEMORY" as const,
     label: "June canonical memory",
     sourcePath: juneSourcePath,
-    recordId: "memory:demo-gemini-history-2026-06",
+    recordId: "memory:demo-space-memory-2026-06",
     position: { clustered: { x: -28, y: -18 }, relations: { x: -30, y: -14 } }
   };
   const julyMemoryNode = {
-    id: "memory:demo-gemini-history-2026-07",
+    id: "memory:demo-space-memory-2026-07",
     type: "MEMORY" as const,
     label: "July canonical memory",
     sourcePath: julySourcePath,
-    recordId: "memory:demo-gemini-history-2026-07",
+    recordId: "memory:demo-space-memory-2026-07",
     position: { clustered: { x: 24, y: 12 }, relations: { x: 28, y: 10 } }
   };
   const edges = [
@@ -954,7 +950,7 @@ export function createDemoFixture(): DemoFixture {
       codexHome: "/demo/codex-home",
       stateDbPath: "/demo/codex-home/state.sqlite",
       config: {
-        modelProvider: "codex-lb",
+        modelProvider: "space-gateway",
         model: "gpt-5.6-sol",
         reasoningEffort: "high"
       },
@@ -966,8 +962,8 @@ export function createDemoFixture(): DemoFixture {
       lbUsage: {
         allAccountsRemainingPercent: 84,
         activeAccountsRemainingPercent: 91,
-        routeMode: "direct",
-        routeTargetMode: "primary",
+        routeMode: null,
+        routeTargetMode: null,
         upstream: "demo-local",
         source: "deterministic-fixture",
         error: null,
@@ -1062,7 +1058,7 @@ export function createDemoFixture(): DemoFixture {
     },
     codexResetCredits: {
       data: [{ accountId: "account:demo-public", availableCreditCount: 2 }],
-      source: "vm214-codex-lb",
+      source: "space-gateway",
       isStale: false,
       error: null,
       checkedAt: DEMO_FIXED_AT
@@ -1236,36 +1232,6 @@ export function createDemoFixture(): DemoFixture {
         reclaimableBytes: 2_147_483_648
       },
       completedAt: DEMO_FIXED_AT
-    },
-    providerSwitchTargets: {
-      data: [
-        {
-          providerId: "demo-direct-primary",
-          displayName: "Direct demo route",
-          isCurrent: true,
-          canSwitch: true,
-          health: "HEALTHY",
-          reason: "Deterministic local route fixture."
-        },
-        {
-          providerId: "demo-headroom",
-          displayName: "Headroom demo route",
-          isCurrent: false,
-          canSwitch: true,
-          health: "HEALTHY",
-          reason: "Selection is simulated locally and does not change a production route."
-        }
-      ],
-      pagination: { page: 1, pageSize: 2, totalItems: 2, totalPages: 1 },
-      checkedAt: DEMO_FIXED_AT
-    },
-    providerSwitch: {
-      status: "NOOP",
-      previousProviderId: "demo-direct-primary",
-      currentProviderId: "demo-direct-primary",
-      routeMode: "direct",
-      routeTargetMode: "primary",
-      switchedAt: DEMO_FIXED_AT
     },
     codexLbSpeedDefaults: {
       models: [

@@ -5,6 +5,23 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-13
+
+- A CLI pane in a room without a project starts in its own `/workspaces/<room>`
+  directory, so a first prompt such as "build me a page" can write files.
+- The app shows "Update available: vX" when a newer release exists and opens the
+  update command with a Copy button.
+- The setup wizard's Ready step offers three first prompts to copy.
+- Browser errors are reported to the installation's own API (error name and
+  bundle location only) so they appear in its logs.
+- Opt-in `first_answer` telemetry: with telemetry Yes, one anonymous event is sent
+  the first time an agent finishes an answer (event, random id, version, CPU
+  architecture, date). Nothing is sent with telemetry No.
+- Quieter request logs; `fast-uri` 4 for fastify's JSON serializer.
+- The application is updated to the current SpaceApp source (sanitized export of
+  aa53bc0a8d). The core image now includes the Space Gateway tree-sitter grammars
+  (MIT, listed in THIRD_PARTY_NOTICES.md).
+
 ## [1.1.3] - 2026-10-12
 
 - The first OpenCode task no longer stops at a "/tmp" permission prompt: the first

@@ -52,6 +52,11 @@
   box-shadow: none;
 }
 
+.cli-account-avatar[data-tone="off"] {
+  background: color-mix(in srgb, var(--cli-account-color) 18%, transparent);
+  box-shadow: none;
+}
+
 .cli-account-avatar-check {
   position: absolute;
   right: -0.28rem;
@@ -304,7 +309,8 @@
 }
 
 .cli-account-menu-item[data-tone="pending"] .cli-account-menu-item-status,
-.cli-account-menu-item[data-tone="neutral"] .cli-account-menu-item-status {
+.cli-account-menu-item[data-tone="neutral"] .cli-account-menu-item-status,
+.cli-account-menu-item[data-tone="off"] .cli-account-menu-item-status {
   font-weight: 600;
 }
 
@@ -714,4 +720,22 @@
 
 body:not([data-color-mode="light"]) img[data-cli-account-brand="copilot"] {
   filter: brightness(0) invert(1);
+}
+
+/* Auto (session-level balancing): the first menu entry, marked in the accent colour rather than an account's. */
+.cli-account-auto-mark {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 1.95rem;
+  height: 1.95rem;
+  border-radius: 6px;
+  border: 2px dashed var(--cli-account-accent);
+  color: var(--cli-account-accent);
+  font: 700 0.7rem/1 Inter, system-ui, sans-serif;
+}
+
+.cli-account-auto-item {
+  margin-bottom: 0.3rem;
+  border-color: var(--cli-account-border);
 }

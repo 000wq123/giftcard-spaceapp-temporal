@@ -1,14 +1,23 @@
 import { createHash } from "node:crypto";
 import {
-  PANE_TYPES, PANE_CATALOG_VERSION, roomPaneCommandSchema, isAgentRuntimeReady,
+  CLI_PANE_TYPES, PANE_TYPES, PANE_CATALOG_VERSION, roomPaneCommandSchema, isAgentRuntimeReady,
   type AgentRuntimeRegistry, type CreatePaneInput, type PaneBatchClaim,
   type PaneType, type RoomPaneBatchItem, type RoomPaneCommand
 } from "@space/contracts";
 import { SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { WorktreeService } from "./worktrees/worktree-service.js";
-import { T3_WORKTREE_REPOSITORY } from "./t3code/worktree-workspace.js";
+import { defaultWorktreeBaseBranch } from "./worktrees/default-base-branch.js";
 
 export interface SkippedPaneType { typeId: string; label: string; reason: string }
+
+/**
+ * Job Copilot runs long, tool-heavy application loops; Claude Code (native MCP, skills, account
+ * profiles) is its default agent when ready. Otherwise the first ready CLI in catalog order.
+ */
+export const JOB_APPLY_PREFERRED_RUNTIME_ID = "cli:claude";
+export function defaultJobApplyRuntimeId(readyCliRuntimeIds: readonly string[]): string | undefined {
+  return readyCliRuntimeIds.includes(JOB_APPLY_PREFERRED_RUNTIME_ID) ? JOB_APPLY_PREFERRED_RUNTIME_ID : readyCliRuntimeIds[0];
+}
 
 export interface RoomPaneCatalogEntry {
   definition: PaneType;
@@ -35,6 +44,10 @@ export function createRoomPaneCommands(options: {
     ]);
     const runtimes = new Map(registry.data.map(runtime => [runtime.id, runtime]));
     const enabled = new Set(enabledIds);
+    const readyCliRuntimeIds = CLI_PANE_TYPES.map(type => type.id).filter(id => {
+      const runtime = runtimes.get(id);
+      return enabled.has(id) && !!runtime?.capabilities.includes("CLI") && isAgentRuntimeReady(runtime);
+    });
     return PANE_TYPES.map(definition => {
       let reason: string | null = null;
       if (definition.runtimeId) {
@@ -46,14 +59,17 @@ export function createRoomPaneCommands(options: {
           reason = ("reason" in geminiQuota && geminiQuota.reason) ? geminiQuota.reason : "Google account quota is exhausted.";
       } else if (definition.mode === "CHAT" && !enabled.has("cli:codex")) reason = "Chat runtime is disabled.";
       else if (definition.mode === "HARNESS" && !harness) reason = "DeepSeek Harness is unavailable.";
+      else if (definition.mode === "JOB_APPLY" && readyCliRuntimeIds.length === 0) reason = "No AI CLI runtime is available.";
       return { definition, available: reason === null, reason, preparedCount: 0 };
     });
   }
 
   async function resolve(roomId: string, items: RoomPaneBatchItem[]): Promise<CreatePaneInput[]> {
-    const needGemini = items.some((item) => item.mode === "TERMINAL" && item.terminalRuntimeId === "cli:gemini");
+    const needGemini = items.some((item) => (item.mode === "TERMINAL" || item.mode === "JOB_APPLY") && item.terminalRuntimeId === "cli:gemini");
     const needHarness = items.some((item) => item.mode === "HARNESS");
     const entries = await catalog({ needGemini, needHarness });
+    const readyCliRuntimeIds: string[] = entries.flatMap(({ definition, available }) =>
+      definition.mode === "TERMINAL" && available && definition.runtimeId ? [definition.runtimeId] : []);
     let roomCwd = "/etc";
     try {
       const targetRoom = await options.store.getRoom(roomId);
@@ -69,6 +85,9 @@ export function createRoomPaneCommands(options: {
         (item.mode !== "TERMINAL" || definition.runtimeId === item.terminalRuntimeId));
       if (!entry) throw new SpaceConflictError("Pane type is not in the room command catalog.");
       if (!entry.available) throw new SpaceConflictError(`${entry.definition.label}: ${entry.reason}`);
+      if (item.mode === "JOB_APPLY" && item.terminalRuntimeId && !readyCliRuntimeIds.includes(item.terminalRuntimeId)) {
+        throw new SpaceConflictError(`${entry.definition.label}: ${item.terminalRuntimeId} is not available.`);
+      }
 
       return {
         roomId,
@@ -76,6 +95,8 @@ export function createRoomPaneCommands(options: {
           ? `${entry.definition.label} CLI` : item.mode === "HARNESS" ? "Harness" : entry.definition.label,
         mode: item.mode,
         ...(item.mode === "TERMINAL" ? { terminalRuntimeId: item.terminalRuntimeId, cwd: roomCwd } : {}),
+        // No cwd: the agent gets a managed per-session workspace with the Space bootstrap.
+        ...(item.mode === "JOB_APPLY" ? { terminalRuntimeId: item.terminalRuntimeId ?? defaultJobApplyRuntimeId(readyCliRuntimeIds) } : {}),
         ...(item.mode === "FILES" || item.mode === "DATABASES" ? { cwd: roomCwd !== "/etc" ? roomCwd : undefined } : {}),
         ...(item.mode === "VNC" && item.vncTarget ? { vncTarget: item.vncTarget } : {})
       };
@@ -89,15 +110,13 @@ export function createRoomPaneCommands(options: {
         const item = items[index];
         if (!item) return;
         if ((item.mode !== "TERMINAL" && item.mode !== "T3CODE") || !item.useWorktree || !options.worktreeService) continue;
-        const repoPath = roomCwd && roomCwd !== "/etc" ? roomCwd : "/opt/spaceapp";
-        // T3 Code can write only the Space repository; other projects keep its pane-owned project.
-        if (item.mode === "T3CODE" && repoPath.replace(/\/+$/, "") !== T3_WORKTREE_REPOSITORY) continue;
         try {
+          const repoPath = roomCwd && roomCwd !== "/etc" ? roomCwd : "/opt/spaceapp";
           const wt = await options.worktreeService.createWorktree({
             repoPath,
             roomId,
             branchName: item.mode === "TERMINAL" ? item.worktreeBranch : undefined,
-            baseBranch: "main",
+            baseBranch: defaultWorktreeBaseBranch(repoPath),
             linkModules: true
           });
           result[index]!.cwd = wt.worktreePath;

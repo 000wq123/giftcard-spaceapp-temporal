@@ -11,12 +11,11 @@ import {
   type CodexAppServerStdioProcessFactory,
   type CodexAppServerTurnSessionState
 } from "@space/codex-app-server";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename, isAbsolute, resolve, sep } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { promisify } from "node:util";
 import type { Artifact, DummyTurnInput, DummyTurnResult, Provider, RoomAgentRoomInventory, RoomAgentTurnOutcome, TurnWorkflowResult } from "@space/contracts";
 import {
   DOT_TOOL_GATEWAY_VERSION,
@@ -49,9 +48,9 @@ import { Context } from "@temporalio/activity";
 import { continuationEvidence, prepareBackgroundContinuation, discardSupervisorTurn, supervisorTurnState, finishSupervisorTurn } from "./room-background-continuation.js";
 import { DEFAULT_ROOM_AGENT_MAX_PASSES, ROOM_AGENT_PASS_LIMIT, roomAgentLimitsFromEnv } from "./room-agent-limits.js";
 import {
-  createCanonicalGeminiMemoryBridge,
+  createCanonicalSpaceMemoryBridge,
   redactMemoryText,
-  resolveCanonicalGeminiMemoryPaths,
+  resolveCanonicalSpaceMemoryPaths,
   SpaceNotFoundError,
   type CanonicalMemoryBridge,
   type SpaceStore
@@ -79,7 +78,6 @@ import { dotGatewayDeveloperInstructions, dotGatewayDynamicTools, dotGatewayIden
 import { openCodeTurnUsage, openCodeTurnUsageSource, type OpenCodeTurnUsage } from "./opencode-turn-usage.js";
 
 let cachedStore: PostgresSpaceStore | null = null;
-const execFileAsync = promisify(execFile);
 
 export interface CodexAppServerTurnActivityConfig {
   enableCodexTurns: boolean;
@@ -93,8 +91,6 @@ export interface CodexAppServerTurnActivityConfig {
   keyFile: string | null;
   keyEnv: string;
   model: string | null;
-  routeCommand: string;
-  routeSwitchEnabled: boolean;
   turnTimeoutMs?: number;
   artifactRoot: string;
   browserToolBridgeEnabled: boolean;
@@ -118,19 +114,12 @@ export interface RunCodexAppServerTurnOptions {
   browserActionFetch?: typeof fetch;
   spawnProcess?: CodexAppServerStdioProcessFactory;
   canonicalMemory?: CanonicalMemoryBridge;
-  routeSwitcher?: CodexRouteSwitcher;
   abortSignal?: AbortSignal;
   heartbeat?: (details?: unknown) => void;
   heartbeatIntervalMs?: number;
 }
 
 type StdioTurnExecutor = NonNullable<RunCodexAppServerTurnOptions["executeStdioTurn"]>;
-type CodexRouteMode = "headroom" | "primary" | "auto" | "fallback";
-type CodexRouteSwitcher = (
-  mode: CodexRouteMode,
-  config: CodexAppServerTurnActivityConfig,
-  env: NodeJS.ProcessEnv
-) => Promise<void>;
 
 export interface CodexAppServerTurnRuntime {
   modelProvider?: string;
@@ -437,11 +426,9 @@ export function getCodexAppServerTurnActivityConfig(env: NodeJS.ProcessEnv = pro
     allowTurnExecution: env.SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION === "true",
     cwd: env.SPACE_CODEX_APP_SERVER_CWD || process.cwd(),
     home: env.SPACE_CODEX_APP_SERVER_HOME || "/var/lib/spaceapp-user/.codex",
-    keyFile: env.SPACE_CODEX_APP_SERVER_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || null,
+    keyFile: env.SPACE_CODEX_APP_SERVER_KEY_FILE || env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || null,
     keyEnv: env.SPACE_CODEX_APP_SERVER_KEY_ENV || "OPENAI_API_KEY",
     model: env.SPACE_CODEX_APP_SERVER_MODEL || null,
-    routeCommand: env.SPACE_CODEX_ROUTE_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
-    routeSwitchEnabled: env.SPACE_CODEX_ROUTE_SWITCH_ENABLED !== "false",
     turnTimeoutMs: positiveIntegerEnvMs(env.SPACE_CODEX_APP_SERVER_TURN_TIMEOUT_MS, 240_000),
     artifactRoot: env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts",
     browserToolBridgeEnabled: env.SPACE_BROWSER_TOOL_BRIDGE_ENABLED === "true",
@@ -547,9 +534,12 @@ export async function finishRoomAgentSupervisorTurn(input: Parameters<typeof fin
 function canonicalMemoryBridgeFromEnv(env: NodeJS.ProcessEnv | undefined): CanonicalMemoryBridge | undefined {
   const source = env ?? process.env;
   if (source.SPACE_CANONICAL_MEMORY_BRIDGE_ENABLED === "false") return undefined;
-  const explicitPaths = Boolean(source.SPACE_GEMINI_MEMORY_INDEX_PATH || source.SPACE_GEMINI_MEMORY_MONTHLY_PATH);
+  const explicitPaths = Boolean(
+    source.SPACE_MEMORY_INDEX_PATH || source.SPACE_MEMORY_MONTHLY_PATH ||
+    source.SPACE_GEMINI_MEMORY_INDEX_PATH || source.SPACE_GEMINI_MEMORY_MONTHLY_PATH
+  );
   if (env && !explicitPaths && source.SPACE_CANONICAL_MEMORY_BRIDGE_ENABLED !== "true") return undefined;
-  return createCanonicalGeminiMemoryBridge(resolveCanonicalGeminiMemoryPaths(source));
+  return createCanonicalSpaceMemoryBridge(resolveCanonicalSpaceMemoryPaths(source));
 }
 
 function buildCodexAppServerTurnEnv(
@@ -617,7 +607,6 @@ async function defaultStdioTurnExecutor(
   runtime: CodexAppServerTurnRuntime,
   spawnProcess?: CodexAppServerStdioProcessFactory,
   env: NodeJS.ProcessEnv = process.env,
-  routeSwitcher?: CodexRouteSwitcher,
   signal?: AbortSignal,
   recovery?: {
     turnId: string | null;
@@ -634,7 +623,6 @@ async function defaultStdioTurnExecutor(
   const turnConfig = targetWorkspace ? { ...baseTurnConfig, cwd: targetWorkspace } : baseTurnConfig;
   const modelProvider = runtime.modelProvider;
   const proactive = nativeChat && input.dotWorkMode === "PROACTIVE";
-  await applyCodexProviderRoute(runtime, turnConfig, env, routeSwitcher);
   const turnEnv = buildCodexAppServerTurnEnv(turnConfig, env, targetWorkspace);
   const dotsRepository = nativeChat ? getDotsRepository(env) : null;
   const gateway = nativeChat && input.toolGateway === DOT_TOOL_GATEWAY_VERSION && dotGatewayIdentity(input) && dotsRepository
@@ -1818,58 +1806,6 @@ export function resolveSpaceArtifactPath(artifactRoot: string, storageUri: strin
   return artifactPath;
 }
 
-function codexRouteMode(route: CodexAppServerProviderRoute | null | undefined): CodexRouteMode | null {
-  if (!route) return null;
-  const backingProviderId = route.backingProviderId ?? "codex-lb";
-  if (backingProviderId !== "codex-lb") return null;
-  switch (route.routeProfile) {
-    case "headroom":
-      return "headroom";
-    case "direct-primary":
-      return "primary";
-    case "direct-auto":
-      return "auto";
-    case "direct-fallback":
-      return "fallback";
-    default:
-      return null;
-  }
-}
-
-async function defaultCodexRouteSwitcher(
-  mode: CodexRouteMode,
-  config: CodexAppServerTurnActivityConfig,
-  env: NodeJS.ProcessEnv
-): Promise<void> {
-  const command = config.routeCommand.trim();
-  if (!command) {
-    throw new Error("Codex-LB route switch failed: SPACE_CODEX_ROUTE_COMMAND is empty.");
-  }
-  await execFileAsync(command, [`route-${mode}`], {
-    cwd: config.cwd,
-    env: buildCodexAppServerTurnEnv(config, env),
-    timeout: 15_000,
-    maxBuffer: 32_000
-  });
-}
-
-async function applyCodexProviderRoute(
-  runtime: CodexAppServerTurnRuntime,
-  config: CodexAppServerTurnActivityConfig,
-  env: NodeJS.ProcessEnv,
-  routeSwitcher?: CodexRouteSwitcher
-): Promise<void> {
-  if (!config.routeSwitchEnabled) return;
-  const mode = codexRouteMode(runtime.providerRoute);
-  if (!mode) return;
-  try {
-    await (routeSwitcher ?? defaultCodexRouteSwitcher)(mode, config, env);
-  } catch (error) {
-    const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
-    throw new Error(`Codex-LB route switch failed for ${mode}.${detail}`);
-  }
-}
-
 function isCodexTurnImageAttachment(artifact: Artifact): boolean {
   return (artifact.kind === "IMAGE" || artifact.kind === "SCREENSHOT") && imageArtifactMimeTypeSchema.safeParse(artifact.mimeType).success;
 }
@@ -1981,13 +1917,6 @@ function classifyCodexExecutorFailure(error: unknown): { reasonCode: string; mes
       reasonCode: "SPACE_EXECUTION_STATE_UNAVAILABLE",
       message: "Required Space execution state was not found. Reconcile the task before retrying.",
       metadata: { executorFailure: { ...metadata.executorFailure, kind: "state_unavailable" } }
-    };
-  }
-  if (/route switch/i.test(rawMessage)) {
-    return {
-      reasonCode: "CODEX_PROVIDER_ROUTE_SWITCH_FAILED",
-      message: "Codex-LB route switch failed before the Space turn started. Verify the global provider route in Settings and the codex-lb-route wrapper.",
-      metadata: { executorFailure: { ...metadata.executorFailure, kind: "route_switch" } }
     };
   }
   if (/timed out|timeout/i.test(rawMessage)) {
@@ -2123,7 +2052,6 @@ async function runCodexAppServerTurnImplementation(
           runtime,
           options.spawnProcess,
           options.env,
-          options.routeSwitcher,
           abortSignal,
           undefined,
           options.completionStore
@@ -2136,7 +2064,6 @@ async function runCodexAppServerTurnImplementation(
           providerRuntime.runtime,
           options.spawnProcess,
           options.env,
-          options.routeSwitcher,
           abortSignal,
           {
             turnId: durableRun?.codexTurnId ?? null,

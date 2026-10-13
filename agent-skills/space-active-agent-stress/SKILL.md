@@ -2,7 +2,7 @@
 name: space-active-agent-stress
 description: Run and interpret the fixed authenticated Space active-agent warm-room stress benchmark on public-host. Use for BENCHMARK_ACTIVE_AGENT_ROOMS, 21-agent room-switch load, hard-reload warm hydration, hidden terminal-output gating, or mini/low model fail-closed proof.
 metadata:
-  category: WORKFLOW_OPT_IN
+  category: WORKFLOW
 ---
 
 # Space Active-Agent Stress

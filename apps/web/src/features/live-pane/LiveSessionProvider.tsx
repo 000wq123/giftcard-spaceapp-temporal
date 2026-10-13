@@ -24,7 +24,7 @@ function defaultOptions(): LiveSessionOptions {
     voice: cfg.voice, opening: cfg.opening, prompt: [cfg.prompt, cfg.voicePrompt].filter(Boolean).join("\n\n"),
     delegatedModel: cfg.delegatedModel, delegatedType: "responses", delegatedReasoningEffort: cfg.reasoningEffort ?? "minimal",
     delegatedWebSearch: cfg.webSearch, delegatedPrompt: cfg.delegatedPrompt, audioDeviceId: cfg.selectedDeviceId,
-    enableGeminiMemory: cfg.geminiMemoryEnabled, timeZone: cfg.timeZone,
+    enableSpaceMemory: cfg.spaceMemoryEnabled, timeZone: cfg.timeZone,
     enableMcpTools: cfg.enableMcpTools, enableProfileMemory: cfg.enableProfileMemory
   };
 }

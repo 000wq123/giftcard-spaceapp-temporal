@@ -17,7 +17,8 @@ export async function controlSkills(name?: string) {
   const entries: Array<{ name: string; root: string }> = [];
   for (const root of skillRoots) {
     for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
-      if (!/^space[-a-z0-9]*$/.test(entry.name) && entry.name !== "run-spaceapp-devtest") continue;
+      // Space skills, plus the Space-native skills whose names predate the space- prefix.
+      if (!/^space[-a-z0-9]*$/.test(entry.name) && !["run-spaceapp-devtest", "job-applications"].includes(entry.name)) continue;
       if (!entries.some((e) => e.name === entry.name)) entries.push({ name: entry.name, root });
     }
   }
@@ -39,7 +40,8 @@ export async function controlSkills(name?: string) {
   ];
   if (!allowed.some((root) => path.startsWith(resolve(root) + sep))) throw new SpaceConflictError("Installed skill target is outside approved roots.");
   const text = await readFile(path, "utf8");
-  if (text.length > 100_000) throw new SpaceConflictError("Skill exceeds the content limit.");
+  // Same limit as readSkill in deploy/space-skill-reader.mjs.
+  if (Buffer.byteLength(text, "utf8") > 128 * 1024) throw new SpaceConflictError("Skill exceeds the 128 KiB size limit.");
   return { name, content: text, source: "installed Space skill" };
 }
 export type ResourceAction=Extract<ControlAction,{kind:"resource"}>;

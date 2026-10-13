@@ -68,6 +68,7 @@ export function CliUpdateAllPanel({
     setError(null);
     try {
       const detectionValue = await client.detectCliUpdateAll();
+      if (!Array.isArray(detectionValue?.cliTypes)) throw new Error("Update detection returned no CLI list.");
       if (mountedRef.current) setDetection(detectionValue);
     } catch (reason) {
       if (mountedRef.current) setError(errorMessage(reason, "Custom procedure detection could not be loaded."));
@@ -100,6 +101,11 @@ export function CliUpdateAllPanel({
     [detection]
   );
   const updatesAvailableCount = updatesAvailableList.length;
+  // What the one-click update installs: managed, already installed, newer version available.
+  const pendingUpdates = useMemo(
+    () => updatesAvailableList.filter((entry) => entry.managed && entry.installedVersion),
+    [updatesAvailableList]
+  );
 
   const presentCustomCount = useMemo(
     () => customTypes.flatMap((entry) => entry.custom).filter((item) => item.present).length,
@@ -149,14 +155,14 @@ export function CliUpdateAllPanel({
     });
   }
 
-  async function runUpdateAll(keys: string[]) {
+  async function runUpdateAll(keys: string[], forceReinstall = false) {
     if (running) return;
     setRunning(true);
     setRunStartedAt(new Date().toISOString());
     setResult(null);
     setError(null);
     try {
-      const input: CliUpdateAllRequest = reinstall ? { reinstall: true } : {};
+      const input: CliUpdateAllRequest = reinstall || forceReinstall ? { reinstall: true } : {};
       if (keys.length > 0) input.keys = keys as NonNullable<CliUpdateAllRequest["keys"]>;
       const updateAllResult = await client.runCliUpdateAll(input);
       if (mountedRef.current) {
@@ -176,16 +182,47 @@ export function CliUpdateAllPanel({
 
   return (
     <div className="admin-operation-panel update-all-panel">
-      {/* Top Banner Callout */}
-      <div className="admin-operation-callout">
-        <ShieldCheck aria-hidden="true" />
-        <p>
-          Detects all 13 Space CLI types and updates all 11 managed types, including the ones that are disabled in
-          Settings, while preserving each detected custom procedure. Choose <strong>Update all</strong> to refresh every
-          managed CLI type, or select individual types below and use <strong>Update selected</strong> for a one-at-a-time
-          run. Enable <strong>reinstall custom</strong> to re-apply each detected patch/installer on top after the update.
+      {/* One-click recommended update */}
+      <section className="cli-update-recommended" aria-label="Recommended update" aria-busy={running}>
+        {!detection ? (
+          <p role="status">{loading ? "Checking every CLI for updates…" : "Update status is unavailable."}</p>
+        ) : pendingUpdates.length > 0 ? (
+          <>
+            <div>
+              <strong>{pendingUpdates.length === 1 ? "1 update available" : `${pendingUpdates.length} updates available`}</strong>
+              <small>{pendingUpdates.map((entry) => `${entry.displayName} ${entry.installedVersion} → ${entry.availableVersion}`).join(" · ")}</small>
+            </div>
+            <button
+              type="button"
+              className="admin-operation-primary"
+              disabled={loading || running}
+              onClick={() => void runUpdateAll(pendingUpdates.map((entry) => entry.key), true)}
+            >
+              {running ? <Loader2 className="spin" aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
+              {running ? "Updating…" : `Update ${pendingUpdates.length} CLI${pendingUpdates.length === 1 ? "" : "s"}`}
+            </button>
+          </>
+        ) : (
+          <>
+            <div>
+              <strong>All managed CLIs are up to date</strong>
+              <small>Checked {new Date(detection.detectedAt).toLocaleTimeString()}</small>
+            </div>
+            <button type="button" disabled={loading || running} onClick={() => void load()}>
+              {loading ? <Loader2 className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+              Check again
+            </button>
+          </>
+        )}
+        <p className="cli-update-recommended-note">
+          <ShieldCheck aria-hidden="true" />
+          <span>
+            Custom code stays: tracked patches, installers and Space config are fingerprinted before and after, Space
+            settings and MCP are re-applied, patched CLIs only receive their patched line, and a failed update rolls back
+            to the previous version.
+          </span>
         </p>
-      </div>
+      </section>
 
       {/* Summary KPI Stats Bar */}
       <div className="cli-update-stats-bar" aria-label="CLI statistics">
@@ -511,8 +548,7 @@ export function CliUpdateAllPanel({
         <p className="admin-operation-alert note" role="status">
           These custom procedures are preserved during every update. Enabling the <strong>reinstall</strong>{" "}
           toggle above re-applies each patch and config overlay on top after each update completes.
-          Only managed CLI types can be individually updated. Non-managed types (Hermes Agent, DeepSeek Harness)
-          are listed for detection.
+          Only managed CLI types can be individually updated. DeepSeek Harness is listed for detection only.
         </p>
       </section>
 

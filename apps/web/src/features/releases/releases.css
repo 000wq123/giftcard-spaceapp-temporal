@@ -1,0 +1,92 @@
+.releases-instances {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+
+.releases-instance {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.releases-instance a {
+  font-size: 0.85rem;
+  color: var(--room-accent, #58a6ff);
+}
+
+.releases-instances .deploy-queue-refresh {
+  margin-left: auto;
+}
+
+.releases-pending {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 1.1rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.releases-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.releases-actions button,
+.releases-hotfix button {
+  padding: 6px 12px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--room-text, #f4efe5);
+  cursor: pointer;
+}
+
+.releases-actions button:disabled,
+.releases-hotfix button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.releases-actions .releases-primary {
+  border-color: var(--room-accent, #58a6ff);
+  color: var(--room-accent, #58a6ff);
+  font-weight: 600;
+}
+
+.releases-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d9a441;
+  border-radius: 6px;
+}
+
+.releases-confirm p,
+.releases-promotion,
+.releases-message {
+  margin: 0;
+}
+
+.releases-promotion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.releases-hotfix {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--room-border, #343638);
+  border-radius: 6px;
+}

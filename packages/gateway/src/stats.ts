@@ -42,7 +42,22 @@ export async function buildHeadroomStats(input: { repository: GatewayRepository;
   compressionMode: string }) {
   const now = (input.now ?? (() => new Date()))();
   const since = new Date(now.getTime() - input.hours * 3_600_000).toISOString();
-  const [requests, compression] = await Promise.all([input.repository.requestStatsSince(since), input.repository.compressionSince(since)]);
+  const [requests, compression, signals] = await Promise.all([input.repository.requestStatsSince(since), input.repository.compressionSince(since),
+    input.repository.compressionSignalsSince(since)]);
+  const waste: Record<string, number> = {};
+  const pipeline: Record<string, { average_ms: number; max_ms: number; count: number }> = {};
+  for (const row of signals) {
+    if (row.kind === "waste") waste[row.name] = (waste[row.name] ?? 0) + Math.round(row.value);
+    else if (row.name !== "cache_hit") {
+      const entry = pipeline[row.name] ?? { average_ms: 0, max_ms: 0, count: 0 };
+      const total = entry.average_ms * entry.count + row.value;
+      entry.count += row.count;
+      entry.average_ms = entry.count > 0 ? total / entry.count : 0;
+      entry.max_ms = Math.max(entry.max_ms, row.maxValue);
+      pipeline[row.name] = entry;
+    }
+  }
+  for (const entry of Object.values(pipeline)) { entry.average_ms = round2(entry.average_ms); entry.max_ms = round2(entry.max_ms); }
   const applied = totals(compression, "ON");
   const shadow = totals(compression, "SHADOW");
   // Request-log input is what the provider billed, after compression; adding the savings back gives the input before it.
@@ -80,7 +95,7 @@ export async function buildHeadroomStats(input: { repository: GatewayRepository;
         description: "Tokens removed by Space Gateway compression." } }
     },
     requests: {
-      total: requests.total, cached: 0, rate_limited: requests.rateLimited, failed: requests.failed,
+      total: requests.total, cached: requests.cached, rate_limited: requests.rateLimited, failed: requests.failed,
       by_provider: requests.byProvider, by_model: requests.byModel, by_stack: {}
     },
     tokens: {
@@ -105,6 +120,10 @@ export async function buildHeadroomStats(input: { repository: GatewayRepository;
     overhead: { average_ms: overheadRequests > 0 ? round2((applied.overheadMs + shadow.overheadMs) / overheadRequests) : 0,
       max_ms: round2(Math.max(applied.maxOverheadMs, shadow.maxOverheadMs)) },
     ttfb: { average_ms: requests.ttfb.averageMs, min_ms: requests.ttfb.minMs, max_ms: requests.ttfb.maxMs },
+    waste_signals: waste,
+    pipeline_timing: pipeline,
+    prefix_cache: { totals: { cache_read_tokens: requests.cachedInputTokens, cache_write_tokens: requests.cacheCreationTokens,
+      hit_rate: percent(requests.cachedInputTokens, requests.inputTokens) } },
     compressions_by_strategy: byStrategy(compression, "ON", (row) => row.blocks),
     tokens_saved_by_strategy: byStrategy(compression, "ON", (row) => row.originalTokens - row.compressedTokens),
     savings_history: history.slice(-100),

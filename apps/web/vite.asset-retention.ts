@@ -2,8 +2,12 @@ import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { Plugin } from "vite";
 
-// Open tabs can request lazy chunks from the previous build for up to a week.
+// Open tabs can request lazy chunks from an earlier build for a while after a
+// deploy; stale-build loads already prompt a reload. With dozens of deploys a
+// day a 7-day window kept ~200 builds (1.5 GB) in dist/assets, so the default
+// is 48 hours (SPACE_WEB_ASSET_RETENTION_HOURS overrides it).
 export function retainOpenTabAssets(): Plugin {
+  const retentionHours = Number(process.env.SPACE_WEB_ASSET_RETENTION_HOURS ?? "") || 48;
   let outputDirectory = "";
   const currentAssets = new Set<string>();
   return {
@@ -16,7 +20,7 @@ export function retainOpenTabAssets(): Plugin {
     },
     async closeBundle() {
       const assetsDirectory = path.join(outputDirectory, "assets");
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
       const entries = await readdir(assetsDirectory, { withFileTypes: true }).catch(error => {
         if (error.code === "ENOENT") return [];
         throw error;

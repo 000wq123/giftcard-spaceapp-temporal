@@ -20,7 +20,12 @@ export interface AppVersionStatus {
   updateAvailable: boolean;
   behindCount: number;
   checkedAt: string | null;
+  /** How this installation updates itself; only the public installer (run-spaceapp) has one. */
+  updateCommand: string | null;
 }
+
+/** The public installer updates in place to the npm latest release. */
+export const PUBLIC_UPDATE_COMMAND = "npx --yes run-spaceapp@latest update";
 
 export interface SemverParts {
   major: number;
@@ -138,6 +143,7 @@ async function fetchLatestGithubRelease(repo: string): Promise<string | null> {
 
 export function createAppVersionReader(options: {
   appVersionEnv?: string;
+  publicDistribution?: boolean;
   githubRepo?: string;
   gitRoot?: string;
   now?: () => Date;
@@ -180,7 +186,8 @@ export function createAppVersionReader(options: {
         githubTagUrl: githubLatest ? `https://github.com/${repo}/releases/tag/${githubLatest}` : null,
         updateAvailable,
         behindCount: githubLatest ? semverOffsetRecent(appRelease, githubLatest) : 0,
-        checkedAt
+        checkedAt,
+        updateCommand: options.publicDistribution ? PUBLIC_UPDATE_COMMAND : null
       };
     }
   };

@@ -1,5 +1,6 @@
 import { layoutMemoryNetwork } from "./memory-network-layout.js";
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 
 export const ATLAS_COLORS = ["#57ccff", "#ff79bc", "#ab95ff", "#53e2ba", "#ffc56c", "#fa887e", "#a0df73", "#8caaff"];
 export type MemoryAtlasPosition = { x: number; y: number; color: string; hub: boolean; groupId: string; monthLabel?: string };
@@ -93,7 +94,7 @@ export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEd
       const hub = node.type === "SOURCE" || anchors.some(anchor => anchor.id === node.id);
       const position = networkPositions.get(node.id)!;
       const month = memorySourceMonth(node);
-      positions.set(node.id, { ...position, color: node.label === "gemini.md" ? "#fff0b0" : color, hub, groupId, ...(month ? { monthLabel: memoryMonthLabel(month) } : {}) });
+      positions.set(node.id, { ...position, color: isMemoryCoreLabel(node.label) ? "#fff0b0" : color, hub, groupId, ...(month ? { monthLabel: memoryMonthLabel(month) } : {}) });
     });
   });
   return {

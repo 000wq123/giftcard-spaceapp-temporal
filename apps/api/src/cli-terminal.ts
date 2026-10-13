@@ -85,6 +85,7 @@ import { findCliRunLifecycleAdapter } from "./cli-run-lifecycle-adapters.js";
 import { isCliRenderProofSession } from "./cli-render-proof-fixture.js";
 import { opencodeNativeSessionIdPattern } from "./opencode-native-session.js";
 import { reasonixNativeSessionRefPattern, resolveReasonixNativeSessionRef } from "./reasonix-native-session.js";
+import { recordCliHostHealth } from "./host-metrics.js";
 import { claudeNativeSessionIdPattern } from "./claude-native-turns.js";
 import { qwenNativeSessionIdPattern } from "./task-title-native.js";
 import {
@@ -114,6 +115,7 @@ const cliCredentialSmokeTimeoutMs = 190_000;
 const cliCredentialNotReadyObservation = "NOT_READY";
 const cliCredentialMissingObservation = "OBSERVATION:MISSING";
 const cliHostMainConnectionCount = 32;
+const cliHostMetricsIntervalMs = 30_000;
 const codexInputReadySettleMs = 100;
 const codexModelSelectionTimeoutMs = 8_000;
 const codexModelCommandSubmitDelayMs = 150;
@@ -595,6 +597,8 @@ export interface CliTerminalManagerOptions {
   loginTimeoutMs?: number;
   loginObservationIntervalMs?: number;
   codexBuildDefaultsProvider?: () => Promise<CodexCliModeDefaultPair>;
+  /** The account a pane started without a chosen account opens on (the CLI's Space Gateway profile when ready). */
+  newPaneAccountProfileId?: (runtimeId: string) => Promise<string | null>;
   onLoginSucceeded?: (
     loginSession: PaneCliSession,
     evidence?: CliLoginVerificationEvidence
@@ -973,6 +977,8 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env.SPACE_BROWSER_ACTION_ENDPOINT = `${apiBaseUrl}/api/cli/browser/actions`;
     env.SPACE_BROWSER_COMMAND_ENDPOINT = `${apiBaseUrl}/api/cli/browser/commands`;
     env.SPACE_BROWSER_ACTION_TOKEN = cliBrowserBridgeToken;
+    // Job Applications tools share the pane bridge token; the API decides what the pane may do.
+    env.SPACE_JOB_APPLY_ENDPOINT = `${apiBaseUrl}/api/cli/job-apply`;
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
@@ -1286,6 +1292,20 @@ export class CliTerminalManager {
       socketPath: options.config.cliAdminHostSocketPath,
       onTransportClosed: () => this.handleHostTransportClosed(-1)
     });
+    if (options.config.cliEnabled) {
+      // Host metrics for /metrics (host-metrics.ts); a failed check records the host as down.
+      this.hostMetricsTimer = setInterval(() => void this.sampleHostMetrics(), cliHostMetricsIntervalMs);
+      this.hostMetricsTimer.unref?.();
+    }
+  }
+
+  private hostMetricsTimer: ReturnType<typeof setInterval> | null = null;
+
+  async sampleHostMetrics(): Promise<void> {
+    recordCliHostHealth("cli-main", await this.hostHealth("cli:codex").catch(() => null));
+    if (this.options.config.cliRootEnabled) {
+      recordCliHostHealth("cli-admin", await this.hostHealth("cli:root").catch(() => null));
+    }
   }
 
   private reportTelemetry(
@@ -1330,6 +1350,16 @@ export class CliTerminalManager {
   async inspectSessionHost(session: PaneCliSession): Promise<CliHostSessionSummary | null> {
     const identity = await this.buildHostIdentity(session);
     return this.inspectHostSession(this.hostForRuntime(session.runtimeId, session.sessionId), identity);
+  }
+
+  /** The dev instance shares the host's memory with stable, so it starts only a few CLIs at a time. */
+  private async assertHostSessionCapacity(host: CliHostGateway): Promise<void> {
+    const limit = this.options.config.cliMaxRunningSessions;
+    if (!limit) return;
+    const running = (await host.health()).sessions.filter((session) => session.status === "RUNNING").length;
+    if (running >= limit) {
+      throw new SpaceConflictError(`This Space instance runs at most ${limit} CLI sessions at a time. Close a CLI pane to start another.`);
+    }
   }
 
   private async inspectHostSession(host: CliHostGateway, identity: CliHostIdentity): Promise<CliHostSessionSummary | null> {
@@ -1830,9 +1860,9 @@ export class CliTerminalManager {
   async ensurePaneTransportReady(
     pane: Pane,
     traceId: string,
-    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null } = {}
+    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -1896,10 +1926,12 @@ export class CliTerminalManager {
         agentId: runtime.agentId,
         modelId,
         reasoningEffort,
-        launchMode: "FRESH",
+        launchMode: selection.launchMode ?? "FRESH",
         cwd,
         codexThreadId: null,
-        accountProfileId: selection.accountProfileId ?? null,
+        accountProfileId: selection.accountProfileId !== undefined
+          ? selection.accountProfileId
+          : await this.options.newPaneAccountProfileId?.(runtime.id).catch(() => null) ?? null,
         status: "IDLE",
         statusReason: "CLI session allocated by Room Agent; preparing the independent pane host."
       }, traceId);
@@ -2007,7 +2039,7 @@ export class CliTerminalManager {
   async ensurePaneControlReady(
     pane: Pane,
     traceId: string,
-    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null } = {}
+    selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
     const session = await this.ensurePaneTransportReady(pane, traceId, selection);
     const managed = this.sessions.get(session.sessionId);
@@ -2333,6 +2365,8 @@ export class CliTerminalManager {
   }
 
   async closeAll(): Promise<void> {
+    if (this.hostMetricsTimer) clearInterval(this.hostMetricsTimer);
+    this.hostMetricsTimer = null;
     for (const timer of this.loginTimeoutTimers.values()) clearTimeout(timer);
     this.loginTimeoutTimers.clear();
     for (const timer of this.loginObservationTimers.values()) clearTimeout(timer);
@@ -2760,6 +2794,7 @@ export class CliTerminalManager {
         : undefined,
       afterSequence
     };
+    if (processLaunch) await this.assertHostSessionCapacity(hostClient);
     let replayContinuity: ManagedCliSessionAttach["replayContinuity"] = "COMPLETE";
     let hostAttach: CliHostAttachResult;
     try {

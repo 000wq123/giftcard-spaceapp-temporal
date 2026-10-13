@@ -13,7 +13,7 @@ import {
   executeCanonicalMemoryMutation,
   finalizeCanonicalMemoryMutationJournal,
   recoverCanonicalMemoryMutation,
-  resolveCanonicalGeminiMemoryPaths,
+  resolveCanonicalSpaceMemoryPaths,
   SpaceConflictError,
   type CanonicalMemoryMutationOptions
 } from "@space/runtime";
@@ -46,7 +46,7 @@ function mutationsEnabled(env: NodeJS.ProcessEnv | Record<string, string | undef
 }
 
 function defaultCoreOptions(env: NodeJS.ProcessEnv | Record<string, string | undefined>): CanonicalMemoryMutationOptions {
-  const { indexPath, monthlyPath, lockPath } = resolveCanonicalGeminiMemoryPaths(env);
+  const { indexPath, monthlyPath, lockPath } = resolveCanonicalSpaceMemoryPaths(env);
   const graphRoot = env.SPACE_MEMORY_GRAPH_ROOT || "/opt/spaceapp/var/memory-graph";
   return {
     sources: [

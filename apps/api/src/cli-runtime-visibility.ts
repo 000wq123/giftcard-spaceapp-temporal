@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { writeFile, rename } from "node:fs/promises";
+import { rename, rm, writeFile } from "node:fs/promises";
 import {
   cliRuntimeDisablePreviewSchema,
   cliToggleRuntimeIdSchema,
@@ -16,6 +16,7 @@ import {
   nowIso,
   type SpaceStore
 } from "@space/runtime";
+import type { CliRuntimePaneRestore } from "./cli-runtime-pane-restore.js";
 import type { RuntimeProcessSweepResult } from "./cli-runtime-process-sweeper.js";
 
 interface CliRuntimeImpact {
@@ -40,8 +41,22 @@ export interface CliRuntimeVisibilityPolicyOptions {
   killRuntimeProcesses?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<RuntimeProcessSweepResult>;
   countRuntimeProcesses?: (runtimeId: CliToggleRuntimeId) => Promise<number>;
   publishEvent?: (event: Event) => void;
+  /** Reopens the panes the runtime's last disable closed; their resumes continue in `done`. */
+  restoreClosedPanes?: (runtimeId: CliToggleRuntimeId, traceId: string) => Promise<CliRuntimePaneRestore>;
   now?: () => number;
   confirmationTtlMs?: number;
+  /**
+   * Where the enabled/disabled map is mirrored for tools outside the API; null skips the file.
+   * Defaults to the live path, except under tests, which must not overwrite it.
+   */
+  visibilityFile?: string | null;
+}
+
+export const defaultCliRuntimeVisibilityFile = "/opt/spaceapp/var/cli-runtime-visibility.json";
+
+export function resolveCliRuntimeVisibilityFile(option: string | null | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (option !== undefined) return option;
+  return env.NODE_ENV === "test" || env.VITEST === "true" ? null : defaultCliRuntimeVisibilityFile;
 }
 
 const defaultConfirmationTtlMs = 2 * 60 * 1000;
@@ -117,7 +132,13 @@ export class CliRuntimeVisibilityPolicy {
     const setting = await this.options.store.updateCliRuntimeSetting(parsedRuntimeId, { enabled: true }, updatedBy);
     this.publishVisibilityEvent(parsedRuntimeId, true, traceId, null);
     void this.syncVisibilityFile();
-    return updateCliRuntimeSettingResultSchema.parse({ setting, cleanup: null });
+    const restore = await this.options.restoreClosedPanes?.(parsedRuntimeId, traceId).catch(() => null);
+    void restore?.done.catch(() => undefined);
+    return updateCliRuntimeSettingResultSchema.parse({
+      setting,
+      cleanup: null,
+      ...(restore?.paneIds.length ? { restoredPaneIds: restore.paneIds } : {})
+    });
   }
 
   async disable(
@@ -298,18 +319,24 @@ export class CliRuntimeVisibilityPolicy {
   }
 
   async syncVisibilityFile(): Promise<void> {
+    let tmpPath: string | null = null;
     try {
       const settings = await this.options.store.listCliRuntimeSettings();
       const statusMap: Record<string, boolean> = {};
       for (const s of settings) {
         statusMap[s.runtimeId] = s.enabled;
       }
-      const targetPath = "/opt/spaceapp/var/cli-runtime-visibility.json";
-      const tmpPath = `${targetPath}.tmp.${Date.now()}`;
+      const targetPath = resolveCliRuntimeVisibilityFile(this.options.visibilityFile);
+      if (!targetPath) return;
+      // A unique temporary name per write, removed when the rename does not happen.
+      tmpPath = `${targetPath}.tmp.${process.pid}.${randomBytes(4).toString("hex")}`;
       await writeFile(tmpPath, JSON.stringify(statusMap, null, 2), "utf8");
       await rename(tmpPath, targetPath);
+      tmpPath = null;
     } catch {
       // Best-effort file sync
+    } finally {
+      if (tmpPath) await rm(tmpPath, { force: true }).catch(() => undefined);
     }
   }
 

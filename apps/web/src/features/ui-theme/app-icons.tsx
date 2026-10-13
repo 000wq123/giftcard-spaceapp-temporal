@@ -200,6 +200,9 @@ import {
   Highlighter as LucideHighlighter,
   ImagePlus as LucideImagePlus,
   PenLine as LucidePenLine,
+  Phone as LucidePhone,
+  Slack as LucideSlack,
+  SquarePen as LucideSquarePen,
   Redo2 as LucideRedo2,
   Type as LucideType,
   type LucideIcon,
@@ -672,6 +675,10 @@ export const ImagePlus = LucideImagePlus;
 export const PenLine = LucidePenLine;
 export const Redo2 = LucideRedo2;
 export const Type = LucideType;
+// Dot pane header and info card (Space Dots Stage 8).
+export const Phone = LucidePhone;
+export const Slack = LucideSlack;
+export const SquarePen = LucideSquarePen;
 
 const ChromeBrand = forwardRef<SVGSVGElement, LucideProps>(function ChromeBrand(props, ref) {
   return (

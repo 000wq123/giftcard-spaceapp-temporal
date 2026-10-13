@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { artifactContextClosings, artifactContextOpening } from "./attachment-context.js";
 import { copyFileSync, createReadStream, mkdtempSync, rmSync } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,12 +40,11 @@ const environmentInspectorMaxBuffer = 1024 * 1024;
 const lbUsageFetchTimeoutMs = 5000;
 const defaultEnvironmentCacheTtlMs = 30_000;
 const maxEnvironmentCacheTtlMs = 60_000;
-// `inspect-env` and `route-status` run the sudo parity wrapper (seconds of
-// CPU each) while their answers change only with Codex config or LB route
-// switches, so they are refreshed in the background at most this often.
+// `inspect-env` runs the sudo parity wrapper (seconds of CPU) while its answer
+// changes only with the Codex config, so it is refreshed in the background at
+// most this often.
 // The cheaper LB usage HTTP read keeps the short environment cache above.
 const defaultWrapperProbeCacheTtlMs = 5 * 60_000;
-const wrapperProbeFailureRetryMs = 30_000;
 const trustedChatBootstrapContextPattern = /# AGENTS\.md instructions for\s|<environment_context(?:>|\s)/iu;
 const canonicalBootstrapDocPattern = /\/(?:etc\/docs\/gemini(?:_core)?\.md|etc\/AGENTS\.md|srv\/space\/AGENTS\.md)\b/iu;
 const bootstrapDocReferencePattern = /\b(?:gemini(?:_core)?\.md|AGENTS\.md)\b/iu;
@@ -65,7 +65,6 @@ export interface CodexParityService {
   archiveThread(threadId: string): Promise<CodexHistoryItem>;
   getEnvironment(): Promise<CodexEnvironment>;
   /** Drops cached wrapper probes after a Codex-LB route switch. */
-  invalidateRouteStatus?(): void;
 }
 
 export interface CreateCodexParityServiceOptions {
@@ -75,9 +74,8 @@ export interface CreateCodexParityServiceOptions {
   threadRenameCommand?: string | null;
   codexLbBaseUrl?: string | null;
   codexLbKeyFile?: string | null;
-  codexRouteCommand?: string | null;
   environmentCacheTtlMs?: number;
-  /** Freshness of the `inspect-env`/`route-status` wrapper probes; 0 disables it. */
+  /** Freshness of the `inspect-env` wrapper probe; 0 disables it. */
   wrapperProbeCacheTtlMs?: number;
 }
 
@@ -226,12 +224,6 @@ interface CodexLbTarget {
   url: string;
 }
 
-interface CodexLbRouteStatus {
-  routeMode: NonNullable<CodexEnvironment["lbUsage"]>["routeMode"];
-  routeTargetMode: NonNullable<CodexEnvironment["lbUsage"]>["routeTargetMode"];
-  activeTargets: CodexLbTarget[];
-}
-
 function codexLbAllAccountsRemainingPercent(payload: Record<string, unknown>): number | null {
   const pooled = numberValue(payload.remaining_percent);
   if (pooled !== null) return pooled;
@@ -246,14 +238,6 @@ function codexLbActiveAccountsRemainingPercent(payload: Record<string, unknown>)
   return numberValue(payload.active_accounts_remaining_percent);
 }
 
-function codexLbRouteMode(value: unknown): NonNullable<CodexEnvironment["lbUsage"]>["routeMode"] {
-  return value === "direct" || value === "headroom" ? value : null;
-}
-
-function codexLbRouteTargetMode(value: unknown): NonNullable<CodexEnvironment["lbUsage"]>["routeTargetMode"] {
-  return value === "primary" || value === "fallback" || value === "auto" ? value : null;
-}
-
 function codexLbErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Codex LB request failed.";
   return safeText(message, 500) || "Codex LB request failed.";
@@ -265,16 +249,6 @@ function pushCodexLbTarget(targets: CodexLbTarget[], name: string, baseUrl: unkn
   const url = `${normalized}/api/codex/weekly-remaining`;
   if (targets.some((target) => target.url === url)) return;
   targets.push({ name, url });
-}
-
-function codexLbTargetsFromRouteStatus(routeStatus: CodexLbRouteStatus | null, codexLbBaseUrl: string | null): CodexLbTarget[] {
-  const targets: CodexLbTarget[] = [];
-  pushCodexLbTarget(targets, "proxy", codexLbBaseUrl);
-  for (const target of routeStatus?.activeTargets ?? []) {
-    if (targets.some((candidate) => candidate.url === target.url)) continue;
-    targets.push(target);
-  }
-  return targets;
 }
 
 function isoFromEpoch(value: unknown): string | null {
@@ -429,9 +403,6 @@ function safeChatText(value: unknown, maxLength: number): string {
     .slice(0, maxLength);
 }
 
-const artifactContextOpening = "Attached Space artifacts for this user message:";
-const artifactContextClosing =
-  "Use image artifacts directly when available. For other file kinds, use the artifact id/uri as the safe Space reference; do not guess raw file contents unless a mediated file-reading tool exposes them.";
 const clipboardContextOpening = "Space private clipboard tools selected:";
 const clipboardContextTail = [
   "Use these tools only when the operator explicitly asks to list, read, or save Space clipboard history or a designed plan. Never add clipboard history to an ordinary prompt.",
@@ -500,10 +471,12 @@ const codexGoalEnvelopeRequiredSections = [
 
 function isTrustedArtifactContext(value: string): boolean {
   const lines = value.split("\n");
-  const artifactLines = lines.slice(1, -1);
+  const closing = artifactContextClosings.find((candidate) => candidate.length < lines.length - 1
+    && candidate.every((line, index) => lines[lines.length - candidate.length + index] === line));
+  if (!closing) return false;
+  const artifactLines = lines.slice(1, -closing.length);
   return (
     lines[0] === artifactContextOpening &&
-    lines.at(-1) === artifactContextClosing &&
     artifactLines.length >= 1 &&
     artifactLines.length <= 8 &&
     artifactLines.every((line) =>
@@ -541,7 +514,8 @@ function isTrustedTaskContext(value: string): boolean {
   return lines.slice(2).join("\n") === taskContextTail.join("\n");
 }
 
-function stripTrustedSpacePromptWrapper(value: string): string {
+/** Removes Space's own prompt contexts from a user message; exported for its tests. */
+export function stripTrustedSpacePromptWrapper(value: string): string {
   const separator = "\n\nUser prompt:\n";
   const separatorIndex = value.indexOf(separator);
   const contexts = value.slice(0, separatorIndex < 0 ? undefined : separatorIndex).split("\n\n");
@@ -1094,71 +1068,22 @@ async function fetchJsonRecord(url: string, headers: Record<string, string>): Pr
   }
 }
 
-async function inspectCodexLbRouteStatus(command: string): Promise<CodexLbRouteStatus> {
-  const { stdout } = await execFileAsync(command, ["route-status"], {
-    timeout: environmentInspectorTimeoutMs,
-    maxBuffer: environmentInspectorMaxBuffer
-  });
-  const parsed = JSON.parse(stdout) as unknown;
-  const root = isRecord(parsed) ? parsed : {};
-  const route = isRecord(root.route) ? root.route : {};
-  const activeUpstreams = Array.isArray(root.active_upstreams) ? root.active_upstreams : [];
-  const routeMode = codexLbRouteMode(route.route_mode);
-  const routeTargetMode = codexLbRouteTargetMode(route.mode);
-  const activeTargets: CodexLbTarget[] = [];
-  for (const item of activeUpstreams) {
-    if (!isRecord(item)) continue;
-    const name = stringValue(item.name);
-    const baseUrl = normalizedBaseUrl(item.base_url);
-    if (!name || !baseUrl) continue;
-    pushCodexLbTarget(activeTargets, name, baseUrl);
-  }
-  if (activeTargets.length === 0) {
-    if (routeMode === "headroom") {
-      pushCodexLbTarget(activeTargets, "headroom", route.headroom_base_url);
-    }
-    if (routeTargetMode === "fallback") {
-      pushCodexLbTarget(activeTargets, "fallback", route.fallback_base_url);
-    } else if (routeTargetMode === "auto") {
-      pushCodexLbTarget(activeTargets, "primary", route.primary_base_url);
-      pushCodexLbTarget(activeTargets, "fallback", route.fallback_base_url);
-    } else {
-      pushCodexLbTarget(activeTargets, "primary", route.primary_base_url);
-    }
-  }
-  return {
-    routeMode,
-    routeTargetMode,
-    activeTargets
-  };
-}
-
 async function readCodexLbUsage(input: {
   codexLbBaseUrl: string | null;
   codexLbKeyFile: string | null;
-  codexRouteCommand: string | null;
-  readRouteStatus?: (command: string) => Promise<CodexLbRouteStatus>;
 }): Promise<NonNullable<CodexEnvironment["lbUsage"]> | null> {
-  if (!input.codexLbKeyFile && !input.codexLbBaseUrl && !input.codexRouteCommand) {
+  if (!input.codexLbKeyFile && !input.codexLbBaseUrl) {
     return null;
   }
 
   const checkedAt = new Date().toISOString();
-  let routeStatus: CodexLbRouteStatus | null = null;
-  if (input.codexRouteCommand) {
-    try {
-      routeStatus = await (input.readRouteStatus ?? inspectCodexLbRouteStatus)(input.codexRouteCommand);
-    } catch {
-      routeStatus = null;
-    }
-  }
 
   if (!input.codexLbKeyFile) {
     return {
       allAccountsRemainingPercent: null,
       activeAccountsRemainingPercent: null,
-      routeMode: routeStatus?.routeMode ?? null,
-      routeTargetMode: routeStatus?.routeTargetMode ?? null,
+      routeMode: null,
+      routeTargetMode: null,
       upstream: null,
       source: null,
       error: "Codex LB key file is not configured.",
@@ -1173,8 +1098,8 @@ async function readCodexLbUsage(input: {
     return {
       allAccountsRemainingPercent: null,
       activeAccountsRemainingPercent: null,
-      routeMode: routeStatus?.routeMode ?? null,
-      routeTargetMode: routeStatus?.routeTargetMode ?? null,
+      routeMode: null,
+      routeTargetMode: null,
       upstream: null,
       source: null,
       error: codexLbErrorMessage(error),
@@ -1185,8 +1110,8 @@ async function readCodexLbUsage(input: {
     return {
       allAccountsRemainingPercent: null,
       activeAccountsRemainingPercent: null,
-      routeMode: routeStatus?.routeMode ?? null,
-      routeTargetMode: routeStatus?.routeTargetMode ?? null,
+      routeMode: null,
+      routeTargetMode: null,
       upstream: null,
       source: null,
       error: "Codex LB key file is empty.",
@@ -1194,13 +1119,15 @@ async function readCodexLbUsage(input: {
     };
   }
 
-  const targets = codexLbTargetsFromRouteStatus(routeStatus, input.codexLbBaseUrl);
+  // The pooled quota comes from Space Gateway's codex-lb compatible endpoint; the codex-lb routes are retired.
+  const targets: CodexLbTarget[] = [];
+  pushCodexLbTarget(targets, "proxy", input.codexLbBaseUrl);
   if (!targets.length) {
     return {
       allAccountsRemainingPercent: null,
       activeAccountsRemainingPercent: null,
-      routeMode: routeStatus?.routeMode ?? null,
-      routeTargetMode: routeStatus?.routeTargetMode ?? null,
+      routeMode: null,
+      routeTargetMode: null,
       upstream: null,
       source: null,
       error: "Codex LB weekly remaining targets are not configured.",
@@ -1216,8 +1143,8 @@ async function readCodexLbUsage(input: {
       return {
         allAccountsRemainingPercent: codexLbAllAccountsRemainingPercent(payload),
         activeAccountsRemainingPercent: codexLbActiveAccountsRemainingPercent(payload),
-        routeMode: routeStatus?.routeMode ?? null,
-        routeTargetMode: routeStatus?.routeTargetMode ?? null,
+        routeMode: null,
+        routeTargetMode: null,
         upstream: stringValue(payload.upstream) ?? target.name,
         source: stringValue(payload.source),
         error: null,
@@ -1231,8 +1158,8 @@ async function readCodexLbUsage(input: {
   return {
     allAccountsRemainingPercent: null,
     activeAccountsRemainingPercent: null,
-    routeMode: routeStatus?.routeMode ?? null,
-    routeTargetMode: routeStatus?.routeTargetMode ?? null,
+    routeMode: null,
+    routeTargetMode: null,
     upstream: null,
     source: null,
     error: lastError,
@@ -1257,8 +1184,6 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
     options.threadRenameCommand === undefined ? environmentInspectorCommand : options.threadRenameCommand;
   const codexLbBaseUrl = normalizedBaseUrl(options.codexLbBaseUrl);
   const codexLbKeyFile = options.codexLbKeyFile ? resolve(options.codexLbKeyFile) : null;
-  const codexRouteCommand =
-    options.codexRouteCommand === undefined ? defaultEnvironmentInspectorCommand : options.codexRouteCommand;
   const environmentCacheTtlMs = boundedEnvironmentCacheTtl(options.environmentCacheTtlMs);
   let environmentCache: { value: CodexEnvironment; expiresAt: number } | null = null;
   let environmentInFlight: Promise<CodexEnvironment> | null = null;
@@ -1267,24 +1192,14 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
     freshMs: wrapperProbeCacheTtlMs,
     maxEntries: 4
   });
-  const routeStatusCache = createStaleWhileRevalidateCache<CodexLbRouteStatus>({
-    freshMs: wrapperProbeCacheTtlMs,
-    errorTtlMs: wrapperProbeFailureRetryMs,
-    maxEntries: 4
-  });
   const inspectEnvironment = (command: string): Promise<CodexEnvironment> => wrapperProbeCacheTtlMs > 0
     ? inspectedEnvironmentCache.get(command, () => inspectEnvironmentWithWrapper(command))
     : inspectEnvironmentWithWrapper(command);
-  const readRouteStatus = (command: string): Promise<CodexLbRouteStatus> => wrapperProbeCacheTtlMs > 0
-    ? routeStatusCache.get(command, () => inspectCodexLbRouteStatus(command))
-    : inspectCodexLbRouteStatus(command);
 
   async function withLbUsage(environment: CodexEnvironment): Promise<CodexEnvironment> {
     const lbUsage = await readCodexLbUsage({
       codexLbBaseUrl,
-      codexLbKeyFile,
-      codexRouteCommand,
-      readRouteStatus
+      codexLbKeyFile
     });
     return codexEnvironmentSchema.parse({
       ...environment,
@@ -1482,10 +1397,6 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
       return historyThread(threadId);
     },
 
-    getEnvironment,
-    invalidateRouteStatus() {
-      routeStatusCache.invalidate();
-      environmentCache = null;
-    }
+    getEnvironment
   };
 }

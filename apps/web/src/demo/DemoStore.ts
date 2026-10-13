@@ -1,6 +1,7 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
-import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath } from "@space/contracts";
+import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom } from "@space/contracts";
+import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
   MaintenanceAutopilotStatus,
   DotProfile,
@@ -206,6 +207,7 @@ export class DemoStore {
     cliToggleRuntimeIds.map((runtimeId) => [runtimeId, true])
   );
   private dotSessionRecords = new Map<string, DotCollectionItem>();
+  private demoDotSettings: DotUserSettings = dotUserSettingsFrom(null);
   private activeDotSession = new Map<string, string>();
   private demoSubmissions = new Map<string, { fingerprint: string; session: AgentPaneSession }>();
   private agentMessages = new Map<string, AgentPaneSession["messages"]>();
@@ -670,7 +672,7 @@ export class DemoStore {
     const nodes = base.nodes.filter((node) => {
       const record = node.recordId ? this.fixture.memoryWorkspace.nodeDetails[node.id]?.record : null;
       const expectedMonthPath = query.month && query.month !== "all"
-        ? `gemini_history_${query.month}.md`
+        ? `space_memory_${query.month}.md`
         : null;
       return (!needle || [node.label, node.sourcePath, record?.body].some((value) => value?.toLowerCase().includes(needle))) &&
         (!query.nodeType || node.type === query.nodeType) &&
@@ -931,7 +933,7 @@ export class DemoStore {
         dependencies: { store: "demo-local", runtimeStore: "demo-local", eventBus: "demo-local", temporal: "simulated", worker: "SIMULATED", cliHost: "SIMULATED", cliAdminHost: "SIMULATED", browserHost: "SIMULATED", browserHostBuildCommit: null, browserHostCaptureMetrics: null, codexTurns: "simulated", codexLb: "disconnected" }
       });
       case "deployQueue": return Promise.resolve({
-        available: false, daemonRunning: false, heartbeatAt: null, paused: null, current: null, active: [], recent: []
+        available: false, daemonRunning: false, heartbeatAt: null, paused: null, current: null, next: null, active: [], recent: []
       });
       case "appVersion": return Promise.resolve({
         appRelease: "v0.1.0",
@@ -1151,8 +1153,6 @@ export class DemoStore {
       case "reapToolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionReap));
       case "toolbarHostMemory": return Promise.resolve(structuredClone(this.fixture.hostMemoryDetails));
       case "reclaimToolbarMemory": return Promise.resolve(structuredClone(this.fixture.memoryReclaim));
-      case "toolbarProviderTargets": return Promise.resolve(structuredClone(this.fixture.providerSwitchTargets));
-      case "switchToolbarProvider": return Promise.resolve(structuredClone(this.fixture.providerSwitch));
       case "codexLbSpeedDefaults":
       case "updateCodexLbSpeedDefault": return Promise.resolve(structuredClone(this.fixture.codexLbSpeedDefaults));
       case "gatewayStatus": return Promise.resolve(this.demoGatewayStatus());
@@ -1164,6 +1164,21 @@ export class DemoStore {
       case "gatewayApiKeys":
       case "gatewayAntigravityProfiles": return Promise.resolve({ data: [] });
       case "gatewayRequestLogs": return Promise.resolve({ data: [], nextCursor: null });
+      case "reloadGateway": return Promise.resolve({ status: "RELOADING" });
+      case "gatewayCompressionSession": return Promise.resolve(this.demoHeadroomSession());
+      case "gatewayCompressionLifetime": return Promise.resolve(this.demoHeadroomLifetime());
+      case "gatewayCompressionHistory": return Promise.resolve({ generatedAt: DEMO_FIXED_AT,
+        lifetime: { savedTokens: 0, savedUsd: 0, activeDays: 0, averagePerDay: 0, averagePerWeek: 0, averagePerMonth: 0 },
+        series: { daily: [], weekly: [], monthly: [] }, models: [], retention: { requestLogDays: 30, rollups: "kept" as const } });
+      case "gatewayRequestLogFacets": return Promise.resolve({ models: [], providers: [], statuses: [], accounts: [], apiKeys: [], clients: [] });
+      case "gatewayDashboard": return Promise.resolve(this.demoGatewayDashboard(String(args[0] ?? "24h")));
+      case "gatewayHealth": return Promise.resolve({
+        generatedAt: DEMO_FIXED_AT,
+        signals: (["gateway", "database", "upstream", "lan", "internet", "compression"] as const).map((key) => ({
+          key, label: { gateway: "Gateway API", database: "Database", upstream: "Upstream providers", lan: "LAN listener", internet: "Internet", compression: "Compression workers" }[key],
+          status: "UNAVAILABLE" as const, nowMs: null, p50Ms: null, p95Ms: null, samples: 0, sparkline: [], warnMs: null, criticalMs: null,
+          detail: "Not measured in the demo.", updatedAt: null }))
+      });
       case "gatewayReport": {
         const empty = { key: "total", requests: 0, errors: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, reasoningReported: 0, costUsd: 0, compressionTokensSaved: 0 };
         return Promise.resolve({ from: String(args[0]), to: String(args[1]), days: [], models: [], accounts: [], totals: empty });
@@ -1272,6 +1287,34 @@ export class DemoStore {
       });
       case "listCliMaintenanceRuns":
       case "listReleaseRuns": return Promise.resolve({ data: [] });
+      case "detectCliUpdateAll": return Promise.resolve(this.demoCliUpdateDetection());
+      case "runCliUpdateAll": {
+        const input = (args[0] ?? {}) as { keys?: string[]; reinstall?: boolean };
+        const detection = this.demoCliUpdateDetection();
+        const selected = detection.cliTypes.filter((entry) => entry.managed && (!input.keys?.length || input.keys.includes(entry.key)));
+        this.demoCliUpdatesApplied = true;
+        return Promise.resolve({
+          mode: "UPDATE_ALL",
+          overallStatus: "PASS",
+          scope: input.keys?.length ? input.keys : "all",
+          reinstall: input.reinstall === true,
+          runtimes: selected.map((entry) => ({
+            runtimeId: entry.cliType,
+            displayName: entry.displayName,
+            installedVersion: entry.installedVersion ?? null,
+            availableVersion: entry.availableVersion ?? null,
+            status: "PASS",
+            code: entry.updateAvailable ? "UPDATED" : "CURRENT",
+            summary: DEMO_LOCAL_REPLY,
+            checks: [],
+            customPreserved: entry.hasCustom,
+            customReinstalled: entry.hasCustom && input.reinstall === true
+          })),
+          customSummary: selected.map((entry) => ({ key: entry.key, hasCustom: entry.hasCustom, custom: entry.custom })),
+          startedAt: DEMO_FIXED_AT,
+          finishedAt: DEMO_FIXED_AT
+        });
+      }
       case "maintenanceAutopilotStatus": return Promise.resolve(this.demoMaintenanceAutopilotStatus());
       case "startMaintenanceAutopilot": {
         const step = (id: "cleanup" | "memory" | "check" | "update") => ({ id, status: "DONE" as const, summary: DEMO_LOCAL_REPLY, startedAt: DEMO_FIXED_AT, finishedAt: DEMO_FIXED_AT });
@@ -1581,6 +1624,19 @@ export class DemoStore {
         return Promise.resolve({ dotId, tools: catalog.map(({ inputSchema: _schema, ...tool }) => tool), total: catalog.length,
           available: catalog.filter(tool => tool.availability === "AVAILABLE").length });
       }
+      case "dotFeed": {
+        const dotId = String(args[0]);
+        if (!this.demoDots().some(dot => dot.dotId === dotId)) throw new SpaceApiError("Dot not found.", { status: 404 });
+        return Promise.resolve({ dotId, scope: "DOT", items: [], nextBefore: null, latestCursor: null, lastActiveAt: null, unread: 0 });
+      }
+      case "markDotFeedRead": return Promise.resolve({ unread: 0 });
+      case "dotSettings": return Promise.resolve({ settings: structuredClone(this.demoDotSettings) });
+      case "updateDotSettings": {
+        const patch = args[0] as UpdateDotUserSettings;
+        this.demoDotSettings = { ...this.demoDotSettings, ...patch, proactive: { ...this.demoDotSettings.proactive, ...patch.proactive }, updatedAt: DEMO_FIXED_AT };
+        return Promise.resolve({ settings: structuredClone(this.demoDotSettings) });
+      }
+      case "dotModels": return Promise.resolve({ providers: [] });
       case "dotToolInvocations": return Promise.resolve({ dotId: String(args[0]), items: [], limit: 20, offset: 0 });
       case "dotApprovals": return Promise.resolve({ dotId: String(args[0]), items: [] });
       case "dotGoals": return Promise.resolve({ dotId: String(args[0]), items: [] });
@@ -2456,6 +2512,30 @@ export class DemoStore {
     };
   }
 
+  private demoCliUpdatesApplied = false;
+  private demoCliUpdateDetection() {
+    const updated = this.demoCliUpdatesApplied;
+    const entry = (key: string, displayName: string, installed: string, available: string, custom: Array<{ kind: string; path: string; label: string }> = []) => ({
+      key, cliType: `cli:${key}`, displayName, managed: true, updateKind: "npm", enabled: true,
+      hasCustom: custom.length > 0, custom: custom.map((item) => ({ ...item, present: true })),
+      installedVersion: updated ? available : installed, availableVersion: available, updateAvailable: !updated && installed !== available
+    });
+    return {
+      schemaVersion: "space.cli-update-all.detection.v1" as const,
+      detectedAt: DEMO_FIXED_AT,
+      cliTypes: [
+        entry("codex", "Codex CLI", "0.162.1", "0.162.1"),
+        entry("claude", "Claude Code CLI", "2.1.296", "2.1.300", [
+          { kind: "config", path: "/opt/spaceapp/deploy/claude-space-settings.json", label: "Claude Space settings overlay" },
+          { kind: "mcp", path: "/opt/spaceapp/deploy/claude-space-mcp.json", label: "Claude Space MCP config" }
+        ]),
+        entry("qwen", "Qwen Code CLI", "0.23.2-space.1", "0.23.2-space.1", [
+          { kind: "script", path: "/opt/spaceapp/scripts/patch-qwen-distribution.mjs", label: "Qwen Space patch (distribution)" }
+        ]),
+        { ...entry("hermes", "Hermes Agent CLI", "0.21.0", "0.21.0"), managed: false, updateKind: "not-managed" }
+      ]
+    };
+  }
   private demoMaintenanceSchedule: MaintenanceAutopilotStatus["schedule"] = { enabled: false, hour: 4, timeZone: "UTC", nextRunAt: null };
   private demoMaintenanceLastRun: MaintenanceAutopilotStatus["lastRun"] = null;
   private demoMaintenanceAutopilotStatus(): MaintenanceAutopilotStatus {
@@ -2463,9 +2543,48 @@ export class DemoStore {
   }
   private demoGatewaySettings = {
     routingStrategy: "CAPACITY_WEIGHTED" as const, stickyThreadsEnabled: true, preferEarlierReset: false, planPriority: ["plus", "prolite", "pro"],
-    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const,
-    compressionTimeBudgetMs: 250, requestLogRetentionDays: 30, updatedAt: DEMO_FIXED_AT
+    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "SHADOW" as const,
+    compressionTimeBudgetMs: 250, requestLogRetentionDays: 30, displayTimeFormat: "24H" as const, displayAccountWindows: "BOTH" as const,
+    displayBurnProjection: true, upstreamStreamTransport: "DEFAULT" as const, promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false,
+    warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100,
+    lanMode: "ENV" as const, lanHost: null, lanPort: null, lanAllowedSources: [] as string[], updatedAt: DEMO_FIXED_AT
   };
+
+  private demoHeadroomSession() {
+    const timing = { averageMs: null, p50Ms: null, p95Ms: null, minMs: null, maxMs: null, samples: 0 };
+    return {
+      since: DEMO_FIXED_AT, generatedAt: DEMO_FIXED_AT, compressionMode: "OFF" as const, sampled: false,
+      requests: { total: 0, completed: 0, failed: 0, rateLimited: 0, cached: 0 }, live: { activeRequests: 0, activeWebSockets: 0, relayTasks: 0, compressionQueue: 0 },
+      tokens: { input: 0, output: 0, cachedInput: 0, cacheWrites: 0, compressedBefore: 0, compressedAfter: 0, saved: 0, shadowSaved: 0, savingsPercent: 0, activeSavingsPercent: 0 },
+      performance: { overhead: timing, ttfb: timing, latency: timing, throughput: { forwardP50: null, forwardP95: null, generationP50: null, generationP95: null }, stages: [] },
+      waste: [], savingsOverTime: [],
+      prefixCache: { requests: 0, hitRequests: 0, readTokens: 0, writeTokens: 0, uncachedTokens: 0, hitRatePercent: 0, busts: 0, bustTokens: 0, savedUsd: 0, writePremiumUsd: 0,
+        netUsd: 0, byProvider: [], misses: { ttlExpiry: 0, accountSwitch: 0, prefixChange: 0 } },
+      compressionVsCache: { savedTokens: 0, lostToBustTokens: 0, netTokens: 0 }, agents: [], providers: [], models: [], recent: [], rateLimits: [], poolWeekly: null
+    };
+  }
+
+  private demoHeadroomLifetime() {
+    return {
+      since: null, generatedAt: DEMO_FIXED_AT, requests: { total: 0, completed: 0, failed: 0, rateLimited: 0, cached: 0 },
+      tokens: { input: 0, output: 0, attemptedInput: 0, saved: 0, shadowSaved: 0, savingsPercent: null },
+      cost: { apiCostUsd: 0, compressionSavedUsd: 0, cacheSavedUsd: 0, unpricedRequests: 0 },
+      prefixCache: { requests: 0, cachedRequests: 0, hitRatePercent: null, readTokens: 0, writeTokens: 0, busts: 0, bustTokens: 0, ttlMinutes: 5 },
+      misses: { ttlExpiry: 0, accountSwitch: 0, prefixChange: 0 }, waste: [], providers: [], clients: [], models: [], projects: []
+    };
+  }
+
+  private demoGatewayDashboard(range: string) {
+    const timing = { samples: 0, averageMs: null, p50Ms: null, p95Ms: null };
+    const totals = { key: "total", requests: 0, errors: 0, rateLimited: 0, inputTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0,
+      reasoningTokens: 0, costUsd: 0, compressionTokensSaved: 0, latency: timing, ttft: timing, lastAt: null };
+    const errors = (minutes: number) => ({ minutes, requests: 0, errors: 0, errorRate: null, topError: null });
+    return {
+      range, from: DEMO_FIXED_AT, to: DEMO_FIXED_AT, bucketSeconds: 3600, generatedAt: DEMO_FIXED_AT, totals,
+      perPeriod: { unit: "hour" as const, requests: 0, costUsd: 0, tokens: 0 }, errorRate: errors(1440), errorRate7d: errors(10_080), errorRate5m: errors(5),
+      trend: [], topKeys: [], topModels: [], latencyByModel: [], routes: [], pools: [], live: [], recent: []
+    };
+  }
 
   private demoGatewayStatus() {
     return {

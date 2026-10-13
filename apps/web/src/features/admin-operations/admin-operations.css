@@ -1266,3 +1266,47 @@
 :is([data-color-mode="light"], [data-ui-theme="modern"][data-color-mode="light"], body[data-color-mode="light"], html[data-color-mode="light"]) .unified-cli-standard-box {
   color: #5f707e;
 }
+
+/* One-click recommended update: only the CLIs that need it, custom code kept. */
+.cli-update-recommended {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #3f675d;
+  border-radius: 9px;
+  background: #13211e;
+}
+.cli-update-recommended > div { display: grid; gap: 0.25rem; min-width: 0; }
+.cli-update-recommended > div small { opacity: 0.75; overflow-wrap: anywhere; }
+.cli-update-recommended > p[role="status"] { grid-column: 1 / -1; margin: 0; }
+.cli-update-recommended > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.4rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #4d7b70;
+  border-radius: 8px;
+  background: #1a302b;
+  color: #d8f2ed;
+  font-weight: 650;
+  cursor: pointer;
+}
+.cli-update-recommended > button:disabled { cursor: default; opacity: 0.6; }
+.cli-update-recommended > button svg { width: 1rem; height: 1rem; }
+.cli-update-recommended-note {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.8;
+}
+.cli-update-recommended-note svg { flex-shrink: 0; width: 0.95rem; height: 0.95rem; margin-top: 0.1rem; }
+@media (max-width: 600px) {
+  .cli-update-recommended { grid-template-columns: 1fr; }
+  .cli-update-recommended > button { justify-content: center; }
+}

@@ -1,6 +1,8 @@
 ---
 name: space-cli-render-diagnostics
 description: Inspect numeric browser terminal geometry and run fixed authenticated CLI render proofs with owned synthetic PTY fixtures, bounded resize and long-stream checks. Use for suspected clipped terminal grids, rendering faults, or explicit CLI render stress tests in Space.
+metadata:
+  category: DOMAIN_POLICY
 ---
 
 # CLI Terminal Render Diagnostics

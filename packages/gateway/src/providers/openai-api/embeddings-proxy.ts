@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord } from "@space/db";
 import type { AccountPool, CredentialRefresher } from "../../accounts/account-pool.js";
+import { requestOrigin } from "../../client-detect.js";
 import { gatewayError, gatewayErrors } from "../../errors.js";
 import { checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { readBounded } from "../../proxy-util.js";
@@ -60,7 +61,8 @@ export function registerEmbeddingsRoute(app: FastifyInstance, helpers: GatewayRo
         requestId, requestedAt: new Date(startedAt).toISOString(), provider: "OPENAI_API", accountId: account?.id ?? null, apiKeyId: key.id, model,
         reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode, latencyMs: now() - startedAt,
         firstTokenMs: null, inputTokens, cachedInputTokens: null, outputTokens: inputTokens === null ? null : 0, reasoningTokens: null,
-        costUsd: inputTokens !== null && price !== undefined ? (inputTokens / 1e6) * price : null, compressionTokensSaved: null, stickyKind: null, stickyKeyHash: null
+        costUsd: inputTokens !== null && price !== undefined ? (inputTokens / 1e6) * price : null, compressionTokensSaved: null, stickyKind: null, stickyKeyHash: null,
+        ...requestOrigin(request)
       });
     };
     let last: { status: number; text: string } | null = null;
@@ -72,7 +74,7 @@ export function registerEmbeddingsRoute(app: FastifyInstance, helpers: GatewayRo
       const account = result.account ? accounts.find((item) => item.id === result.account!.accountId) : undefined;
       if (!account) break;
       tried.add(account.id);
-      options.pool.markSelected(account.id);
+      options.pool.markSelected(account.id, reply.raw);
       let upstream: Response;
       try {
         const credentials = await options.pool.credentials(account);

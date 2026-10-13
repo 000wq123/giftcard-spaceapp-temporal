@@ -11,16 +11,10 @@ import type {
 } from "@space/contracts";
 import { GIT_NOT_FOUND_EXIT_CODE, spawnGroupWritableGit } from "../group-writable-git.js";
 
-export class WorktreeError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly statusCode = 400
-  ) {
-    super(message);
-    this.name = "WorktreeError";
-  }
-}
+import { WorktreeError } from "./worktree-error.js";
+import { assertRemovableWorktreePath } from "./worktree-removal-guard.js";
+
+export { WorktreeError };
 
 export const WORKTREES_ROOT = process.env.SPACE_WORKTREES_ROOT || "/opt/spaceapp/var/worktrees";
 
@@ -331,18 +325,44 @@ export class WorktreeService {
     };
   }
 
+  /**
+   * Materialises a node_modules directory as per-entry symlinks into the
+   * source tree instead of one symlink to the directory itself. Package
+   * resolution is identical, but an npm run inside the worktree then rewrites
+   * the worktree's own directory and can no longer mutate the live tree (a
+   * worktree install replaced apps/api/node_modules/nanoid under the running
+   * API on 2026-10-11 and crash-looped it).
+   */
+  static async linkNodeModulesOverlay(sourceDir: string, targetDir: string): Promise<void> {
+    await mkdir(targetDir, { recursive: true });
+    const entries = await readdir(sourceDir, { withFileTypes: true });
+    await Promise.all(
+      entries.map(async (entry) => {
+        const source = join(sourceDir, entry.name);
+        const target = join(targetDir, entry.name);
+        try {
+          await symlink(source, target, entry.isDirectory() ? "dir" : "file");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+            throw error;
+          }
+        }
+      })
+    );
+  }
+
   private async linkDependenciesAndConfig(repoRoot: string, targetDir: string): Promise<void> {
-    // 1. Root node_modules symlink
+    // 1. Root node_modules overlay
     const rootNodeModules = join(repoRoot, "node_modules");
     const targetNodeModules = join(targetDir, "node_modules");
     try {
       const stat = await lstat(rootNodeModules);
       if (stat.isDirectory()) {
-        await symlink(rootNodeModules, targetNodeModules, "dir");
+        await WorktreeService.linkNodeModulesOverlay(rootNodeModules, targetNodeModules);
       }
     } catch {}
 
-    // 2. Monorepo apps and packages node_modules symlinks
+    // 2. Monorepo apps and packages node_modules overlays
     for (const subDir of ["apps", "packages"]) {
       const sourceSub = join(repoRoot, subDir);
       const targetSub = join(targetDir, subDir);
@@ -356,7 +376,7 @@ export class WorktreeService {
               const mStat = await lstat(pkgModules);
               if (mStat.isDirectory()) {
                 await mkdir(join(targetSub, entry.name), { recursive: true });
-                await symlink(pkgModules, targetPkgModules, "dir");
+                await WorktreeService.linkNodeModulesOverlay(pkgModules, targetPkgModules);
               }
             } catch {}
           }
@@ -695,7 +715,7 @@ export class WorktreeService {
         try {
           await this.removeWorktree(worktreePath, true);
         } catch {}
-        await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+        if (await this.removalAllowed(worktreePath)) await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
       }
       const shaRes = await execGit(repoRoot, ["rev-parse", "HEAD"]);
       const commitSha = wt.baseCommit || (shaRes.code === 0 ? shaRes.stdout.trim() : null);
@@ -752,7 +772,7 @@ export class WorktreeService {
         try {
           await this.removeWorktree(worktreePath, true);
         } catch {}
-        await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+        if (await this.removalAllowed(worktreePath)) await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
       }
       const shaRes = await execGit(repoRoot, ["rev-parse", "HEAD"]);
       const commitSha = shaRes.code === 0 ? shaRes.stdout.trim() : null;
@@ -822,7 +842,20 @@ export class WorktreeService {
     };
   }
 
+  /** True when the removal guard accepts the path (a linked worktree, a managed leftover or a missing path). */
+  private async removalAllowed(worktreePath: string): Promise<boolean> {
+    try {
+      await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async removeWorktree(worktreePath: string, force = false): Promise<void> {
+    // Defense in depth: the service deletes recursively, so it applies the route's guard
+    // itself (also with force) instead of trusting every caller to have done so.
+    await assertRemovableWorktreePath(worktreePath, WORKTREES_ROOT);
     const existing = await this.getRecordedWorktree(worktreePath);
     if (!existing || existing.status !== "MERGED") {
       await this.recordWorktree({

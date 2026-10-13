@@ -312,8 +312,15 @@ export function RoomPaneComposer({
           className="room-pane-composer-heading-copy"
           role="button"
           tabIndex={0}
+          aria-expanded={!collapsed}
           style={{ cursor: "pointer" }}
           onClick={toggleCollapsed}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              toggleCollapsed();
+            }
+          }}
         >
           <strong id="room-pane-composer-title">Add panes</strong>
           <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>

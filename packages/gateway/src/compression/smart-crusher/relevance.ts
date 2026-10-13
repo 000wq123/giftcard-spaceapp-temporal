@@ -60,6 +60,38 @@ export function itemMatchesAnchors(item: JsonValue, anchors: ReadonlySet<string>
 const TOKEN = regex(`${UUID}|${B}${D}{4,}${B}|[a-zA-Z0-9_]+`);
 const tokenize = (text: string) => (text ? [...text.toLowerCase().matchAll(TOKEN)].map(([m]) => m) : []);
 
+/**
+ * Plain BM25 (Headroom `BM25Scorer`, without the hybrid boost): k1 1.5, b 0.75, idf ln 2, divided by 10 and capped at
+ * 1, plus 0.3 when a matched term has 8+ bytes. TextCrusher scores sentences with it.
+ */
+export const bm25Scorer: RelevanceScorer = {
+  scoreBatch(items, context) {
+    const contextTokens = tokenize(context);
+    if (contextTokens.length === 0) return items.map(() => 0);
+    const queryFrequency = new Map<string, number>();
+    for (const token of contextTokens) queryFrequency.set(token, (queryFrequency.get(token) ?? 0) + 1);
+    const terms = [...queryFrequency.keys()].sort(compareCodePoints);
+    const documents = items.map(tokenize);
+    const avgLength = documents.reduce((sum, tokens) => sum + tokens.length, 0) / Math.max(items.length, 1);
+    return documents.map((tokens) => {
+      const docLength = tokens.length;
+      const avgdl = avgLength > 0 ? avgLength : docLength > 0 ? docLength : 1;
+      const docFrequency = new Map<string, number>();
+      for (const token of tokens) docFrequency.set(token, (docFrequency.get(token) ?? 0) + 1);
+      let raw = 0;
+      let longMatch = false;
+      for (const term of terms) {
+        const f = docFrequency.get(term);
+        if (f === undefined) continue;
+        if (Buffer.byteLength(term, "utf8") >= 8) longMatch = true;
+        raw += ((Math.LN2 * (f * 2.5)) / (f + 1.5 * (1 - 0.75 + (0.75 * docLength) / avgdl))) * queryFrequency.get(term)!;
+      }
+      const normalized = Math.min(raw / 10, 1);
+      return longMatch ? Math.min(normalized + 0.3, 1) : normalized;
+    });
+  }
+};
+
 /** BM25 (k1 1.5, b 0.75, idf ln 2, /10 normalization, +0.3 for 8+ byte matches) with the hybrid boost. */
 export const bm25HybridScorer: RelevanceScorer = {
   scoreBatch(items, context) {

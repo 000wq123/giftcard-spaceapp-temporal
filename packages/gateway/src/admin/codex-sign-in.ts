@@ -82,7 +82,22 @@ export function registerCodexSignInRoutes(app: FastifyInstance, options: CodexSi
     const externalAccountId = claims.chatgptUserId ? `${claims.accountId}:${claims.chatgptUserId}` : claims.accountId;
     const credentials = codexCredentialsFromTokens(tokens, claims);
     // On a re-sign-in the row keeps its id, so the envelope is bound to whichever id the upsert keeps.
-    const existing = (await options.repository.listAccounts()).find((account) => account.provider === "CODEX" && account.externalAccountId === externalAccountId);
+    const codexAccounts = (await options.repository.listAccounts()).filter((account) => account.provider === "CODEX");
+    const existing = codexAccounts.find((account) => account.externalAccountId === externalAccountId);
+    // Import with overwrite (codex-lb "import without overwrite" off): a single account with the same email takes this sign-in.
+    const sameEmail = !existing && source === "IMPORT_AUTH_JSON" && claims.email && !(await options.repository.getSettings()).importWithoutOverwrite
+      ? codexAccounts.filter((account) => account.email?.toLowerCase() === claims.email!.toLowerCase()) : [];
+    if (sameEmail.length > 1) throw new CodexOAuthError("import_conflict", "More than one account has this email. Remove one before importing.");
+    if (sameEmail.length === 1) {
+      const target = sameEmail[0]!;
+      const replaced = await options.repository.replaceAccountSignIn(target.id, {
+        email: claims.email, externalAccountId, planType: claims.planType, credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), target.id),
+        credentialsExpiresAt: credentials.accessExpiresAtMs ? new Date(credentials.accessExpiresAtMs).toISOString() : null, source, sourceRef: null,
+        lastRefreshAt: lastRefreshAt ?? new Date(now()).toISOString()
+      });
+      options.pool.invalidate();
+      if (replaced) return replaced;
+    }
     const boundId = existing?.id ?? accountId;
     const saved = await options.repository.upsertAccount({
       accountId: boundId, provider: "CODEX", label: claims.email ?? claims.workspaceLabel ?? "ChatGPT account", email: claims.email,

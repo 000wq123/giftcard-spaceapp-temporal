@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import type { AgentPaneSession, DotProfile } from "@space/contracts";
+import { ChevronDown, MoreHorizontal, PanelRight, Phone, Settings2, SquarePen } from "../ui-theme/app-icons.js";
 
 const artwork: Record<DotProfile["appearance"]["character"], string> = {
   astronaut: "orbit", star: "nova", robot: "byte", comet: "comet", moon: "luna", planet: "cosmo"
@@ -22,70 +23,105 @@ function statusTone(status: string): "ready" | "working" | "waiting" | "paused" 
   return status === "Ready" ? "ready" : status === "Working" ? "working" : status === "Waiting for approval" ? "waiting"
     : status === "Paused" ? "paused" : status === "Offline" ? "offline" : "unknown";
 }
-export function DotHeader({ dots, selected, status, blocked, motionActive, onSelect }: {
-  dots: DotProfile[]; selected: DotProfile | null; status: string; blocked: boolean;
-  motionActive: boolean; onSelect: (dot: DotProfile) => void;
-}) {
+
+export interface DotHeaderAction { label: string; onSelect: () => void; disabled?: boolean }
+
+/** Closes a popup menu on outside pointer, Escape or Tab, and returns focus to its trigger. */
+function usePopupMenu(triggerRef: RefObject<HTMLButtonElement | null>, menuRef: RefObject<HTMLDivElement | null>, focusSelector: string) {
   const [open, setOpen] = useState(false);
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const update = () => setDocumentVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
-  useEffect(() => {
-    if (blocked) setOpen(false);
-  }, [blocked]);
-  useEffect(() => {
-    if (open) menuRef.current?.querySelector<HTMLButtonElement>(`[aria-checked="true"]`)?.focus();
+    if (open) menuRef.current?.querySelector<HTMLButtonElement>(focusSelector)?.focus();
   }, [open]);
   useEffect(() => {
     if (!open) return;
     const dismissOutside = (event: PointerEvent) => {
-      if (event.target instanceof Node
-        && (menuRef.current?.contains(event.target) || triggerRef.current?.contains(event.target))) return;
+      if (event.target instanceof Node && (menuRef.current?.contains(event.target) || triggerRef.current?.contains(event.target))) return;
       setOpen(false);
     };
     document.addEventListener("pointerdown", dismissOutside);
     return () => document.removeEventListener("pointerdown", dismissOutside);
   }, [open]);
   function close() { setOpen(false); triggerRef.current?.focus(); }
-  function navigate(event: KeyboardEvent, index: number, menu: boolean) {
-    const moves: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: menu ? 3 : 1, ArrowUp: menu ? -3 : -1 };
-    if (event.key === "Escape" && menu) { event.preventDefault(); close(); return; }
-    if (event.key === "Tab" && menu) { close(); return; }
+  return { open, setOpen, close };
+}
+
+/**
+ * The Dot pane header, like ChatGPT dot: new conversation on the left, the Dot (and its menu of
+ * Dots) in the middle, more actions, call and the info card on the right. Settings live in SpaceApp.
+ */
+export function DotHeader({ dots, selected, status, blocked, motionActive, onSelect, onManage, onNewConversation, newConversationDisabled,
+  onCall, callDisabledReason, panelOpen, onTogglePanel, actions, unread = 0 }: {
+  dots: DotProfile[]; selected: DotProfile | null; status: string; blocked: boolean; motionActive: boolean;
+  onSelect: (dot: DotProfile) => void; onManage: () => void;
+  onNewConversation: () => void; newConversationDisabled: boolean;
+  onCall: () => void; callDisabledReason: string | null;
+  panelOpen: boolean; onTogglePanel: () => void;
+  actions: DotHeaderAction[]; unread?: number;
+}) {
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
+  const dotTrigger = useRef<HTMLButtonElement>(null);
+  const dotMenu = useRef<HTMLDivElement>(null);
+  const moreTrigger = useRef<HTMLButtonElement>(null);
+  const moreMenu = useRef<HTMLDivElement>(null);
+  const dotsPopup = usePopupMenu(dotTrigger, dotMenu, `[aria-checked="true"]`);
+  const morePopup = usePopupMenu(moreTrigger, moreMenu, "button:not(:disabled)");
+  useEffect(() => {
+    const update = () => setDocumentVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  useEffect(() => {
+    if (blocked) dotsPopup.setOpen(false);
+  }, [blocked]);
+  function navigate(event: KeyboardEvent, index: number, count: number, columns: number, popup: ReturnType<typeof usePopupMenu>, menu: RefObject<HTMLDivElement | null>) {
+    const moves: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: columns, ArrowUp: -columns };
+    if (event.key === "Escape") { event.preventDefault(); popup.close(); return; }
+    if (event.key === "Tab") { popup.close(); return; }
     const delta = moves[event.key];
     if (delta === undefined && !["Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const next = event.key === "Home" ? 0 : event.key === "End" ? dots.length - 1 : (index + (delta ?? 0) + dots.length) % dots.length;
-    const container = menu ? menuRef.current : event.currentTarget.parentElement;
-    container?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? count - 1 : (index + (delta ?? 0) + count) % count;
+    menu.current?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
   }
+  const name = selected?.name ?? "Dots";
   return <header className="dots-header">
-    <div className="dots-identity">
-      {selected ? <span className="dots-selected-mascot" data-motion-active={motionActive && documentVisible ? "true" : "false"}>
-        <img src={dotArtwork(selected)} alt="" width="36" height="36" />
-      </span> : null}
-      <div><strong>{selected?.name ?? "Dots"}</strong><span className="dots-status" role="status" data-status={statusTone(status)}>{status}</span></div>
+    <div className="dots-header-start">
+      <button type="button" className="dots-icon-button" aria-label="New conversation" title="New conversation" disabled={newConversationDisabled}
+        onClick={onNewConversation}><SquarePen aria-hidden="true" /></button>
     </div>
-    <div className="dots-wide-selector" role="group" aria-label="Choose Dot">
-      {dots.map((dot, i) => <button key={dot.dotId} type="button" aria-label={`Select ${dot.name}`} title={dot.name} aria-pressed={selected?.dotId === dot.dotId}
-        disabled={blocked} onKeyDown={e => navigate(e, i, false)} onClick={() => onSelect(dot)}>
-        <img src={dotArtwork(dot)} alt="" width="26" height="26" /><span className="dots-chip-label">{dot.name}</span>
-      </button>)}
+    <div className="dots-header-center">
+      <button ref={dotTrigger} type="button" className="dots-identity" aria-label={`Choose Dot (${name})`} aria-haspopup="menu" aria-expanded={dotsPopup.open}
+        title={blocked ? "Finish or stop the current action before switching Dots." : "Choose Dot"}
+        disabled={blocked || dots.length !== 6} onClick={() => dotsPopup.setOpen((value) => !value)}>
+        {selected ? <span className="dots-selected-mascot" data-motion-active={motionActive && documentVisible ? "true" : "false"}>
+          <img src={dotArtwork(selected)} alt="" width="32" height="32" />
+          {unread ? <span className="dots-unread" aria-hidden="true" /> : null}
+        </span> : null}
+        <span className="dots-identity-text"><strong>{name}</strong><span className="dots-status" data-status={statusTone(status)}>{status}</span></span>
+        <ChevronDown aria-hidden="true" />
+      </button>
+      <span className="sr-only" role="status">{`${name}: ${status}${unread ? `, ${unread} unread` : ""}`}</span>
+      {dotsPopup.open ? <div ref={dotMenu} className="dots-choice-menu" role="menu" aria-label="Dots">
+        {dots.map((dot, i) => <button key={dot.dotId} type="button" role="menuitemradio" aria-checked={selected?.dotId === dot.dotId} aria-label={`Select ${dot.name}`}
+          onKeyDown={(event) => navigate(event, i, dots.length + 1, 3, dotsPopup, dotMenu)} onClick={() => { dotsPopup.close(); onSelect(dot); }}>
+          <img src={dotArtwork(dot)} alt="" width="36" height="36" /><span>{dot.name}</span>
+        </button>)}
+        <button type="button" role="menuitem" className="dots-choice-manage" onKeyDown={(event) => navigate(event, dots.length, dots.length + 1, 3, dotsPopup, dotMenu)}
+          onClick={() => { dotsPopup.close(); onManage(); }}><Settings2 aria-hidden="true" /><span>Manage Dots in Settings</span></button>
+      </div> : null}
     </div>
-    <div className="dots-narrow-selector">
-      <button ref={triggerRef} type="button" aria-label="Choose Dot" aria-haspopup="menu" aria-expanded={open} disabled={blocked || dots.length !== 6}
-        onClick={() => setOpen(value => !value)}>{selected ? <img src={dotArtwork(selected)} alt="" width="22" height="22" /> : null}
-        <span>{selected?.name ?? "Choose Dot"}</span><span aria-hidden="true">⌄</span></button>
-      {open ? <div ref={menuRef} className="dots-choice-menu" role="menu" aria-label="Dots">
-          {dots.map((dot, i) => <button key={dot.dotId} type="button" role="menuitemradio" aria-checked={selected?.dotId === dot.dotId}
-            onKeyDown={e => navigate(e, i, true)} onClick={() => { close(); onSelect(dot); }}>
-            <img src={dotArtwork(dot)} alt="" width="36" height="36" /><span>{dot.name}</span>
-          </button>)}
-        </div> : null}
+    <div className="dots-header-end">
+      <button ref={moreTrigger} type="button" className="dots-icon-button" aria-label="More actions" title="More actions" aria-haspopup="menu"
+        aria-expanded={morePopup.open} onClick={() => morePopup.setOpen((value) => !value)}><MoreHorizontal aria-hidden="true" /></button>
+      {morePopup.open ? <div ref={moreMenu} className="dots-more-menu" role="menu" aria-label="More actions">
+        {actions.map((action, i) => <button key={action.label} type="button" role="menuitem" disabled={action.disabled}
+          onKeyDown={(event) => navigate(event, i, actions.length, 1, morePopup, moreMenu)}
+          onClick={() => { morePopup.close(); action.onSelect(); }}>{action.label}</button>)}
+      </div> : null}
+      <button type="button" className="dots-icon-button" aria-label={`Call ${name}`} title={callDisabledReason ?? `Call ${name}`}
+        disabled={Boolean(callDisabledReason)} onClick={onCall}><Phone aria-hidden="true" /></button>
+      <button type="button" className="dots-icon-button" aria-label={`${name} details`} title={panelOpen ? "Hide details" : "Show details"}
+        aria-pressed={panelOpen} onClick={onTogglePanel}><PanelRight aria-hidden="true" /></button>
     </div>
   </header>;
 }

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 export const T3_GATEWAY_SOCKET = "/run/space-t3code/transport.sock";
 export const T3_GATEWAY_OWNER = "user:operator";
@@ -11,7 +11,7 @@ export const T3_IMMUTABLE_CACHE = "private, max-age=31536000, immutable";
 // Authentic app needs same-origin scripts, workers, fonts and blob previews,
 // but cannot frame other origins or connect outside Space.
 export const T3_APP_CSP = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
-export const T3_ASSET_EXTENSION = /\.(?:js|css|woff2?|ttf|otf|wasm|json|svg|png|webp|gif|jpe?g|mp3|wav)$/;
+export const T3_ASSET_EXTENSION = /\.(?:js|css|woff2?|ttf|otf|wasm|json|svg|png|webp|gif|jpe?g|mp3|wav|glb)$/;
 const PANE = /^pane:[A-Za-z0-9_-]{6,80}$/;
 const PRIVATE_QUERY = /(?:token|ticket|secret|password|credential|authorization|csrf|^target$|^url$|^host$|^origin$)/i;
 
@@ -63,35 +63,43 @@ export function t3RedirectLocation(location: string, basePath: string, fromPath 
 }
 
 export interface T3HandleScope { sessionId: string; paneId: string }
-interface Handle extends T3HandleScope { upstreamPath: string; expiresAt: number; kind: "read" | "upload" }
+type HandleKind = "read" | "upload";
+const HANDLE_PATTERNS: Record<HandleKind, RegExp> = { read: /^\/api\/assets\/[A-Za-z0-9_.-]+\/[^/?#]+$/, upload: /^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/ };
+const HANDLE_PATH = /^\/__space\/(assets|uploads)\/([A-Za-z0-9_-]{40,3000})$/;
+// Handles are sealed (AES-256-GCM) with a key derived from the Space session
+// secret, so they survive API restarts: the browser keeps a read URL until the
+// upstream's 30 minute refresh, and an in-memory table lost every handle on
+// each deploy. The upstream path stays hidden; session, pane, kind and expiry
+// are bound in the seal, and every use is still authorized per request.
 export class T3AssetHandles {
-  private readonly entries = new Map<string, Handle>();
+  private readonly key: Buffer;
   private readonly now: () => number;
-  private readonly capacity: number;
-  constructor(options: { now?: () => number; capacity?: number } = {}) {
+  constructor(options: { secret?: string; now?: () => number } = {}) {
+    this.key = options.secret ? createHash("sha256").update("space-t3-asset-handle-v1\0" + options.secret).digest() : randomBytes(32);
     this.now = options.now ?? Date.now;
-    this.capacity = options.capacity ?? 4096;
   }
-  get size() { this.sweep(); return this.entries.size; }
-  private sweep() { for (const [key, value] of this.entries) if (value.expiresAt <= this.now()) this.entries.delete(key); }
-  issue(scope: T3HandleScope, upstreamPath: string, expiresAt: number, kind: Handle["kind"]) {
-    this.sweep();
-    const pattern = kind === "read" ? /^\/api\/assets\/[A-Za-z0-9_.-]+\/[^/?#]+$/ : /^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/;
-    if (!pattern.test(upstreamPath) || !Number.isFinite(expiresAt) || expiresAt <= this.now()) throw new T3GatewayError(502, "T3_ASSET_INVALID");
-    const owned = [...this.entries.values()].filter(value => value.sessionId === scope.sessionId && value.paneId === scope.paneId).length;
-    if (this.entries.size >= this.capacity || owned >= 512) throw new T3GatewayError(429, "T3_ASSET_LIMIT");
-    const path = `/__space/${kind === "read" ? "assets" : "uploads"}/${randomBytes(24).toString("hex")}`;
+  private aad(scope: T3HandleScope, kind: HandleKind) { return Buffer.from(`${kind}\n${scope.sessionId}\n${scope.paneId}`); }
+  issue(scope: T3HandleScope, upstreamPath: string, expiresAt: number, kind: HandleKind) {
+    if (!HANDLE_PATTERNS[kind].test(upstreamPath) || !Number.isFinite(expiresAt) || expiresAt <= this.now()) throw new T3GatewayError(502, "T3_ASSET_INVALID");
     // Upstream refreshes read URLs every 30 minutes and signs them for one
     // hour. Keep that lifetime while checking Space authorization every use.
-    this.entries.set(path, { ...scope, upstreamPath, expiresAt: Math.min(expiresAt, this.now() + (kind === "read" ? 3_600_000 : 600_000)), kind });
-    return path;
+    const expires = Math.min(expiresAt, this.now() + (kind === "read" ? 3_600_000 : 600_000));
+    const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    cipher.setAAD(this.aad(scope, kind));
+    const sealed = Buffer.concat([cipher.update(JSON.stringify({ p: upstreamPath, e: expires })), cipher.final()]);
+    return `/__space/${kind === "read" ? "assets" : "uploads"}/${Buffer.concat([iv, cipher.getAuthTag(), sealed]).toString("base64url")}`;
   }
   resolve(scope: T3HandleScope, path: string, method: string): string | null {
-    this.sweep();
-    const value = this.entries.get(path);
-    return value && value.paneId === scope.paneId && value.sessionId === scope.sessionId &&
-      (value.kind === "read" ? method === "GET" || method === "HEAD" : method === "POST") ? value.upstreamPath : null;
+    const match = HANDLE_PATH.exec(path);
+    if (!match) return null;
+    const kind: HandleKind = match[1] === "assets" ? "read" : "upload";
+    if (kind === "read" ? method !== "GET" && method !== "HEAD" : method !== "POST") return null;
+    try {
+      const bytes = Buffer.from(match[2]!, "base64url");
+      const decipher = createDecipheriv("aes-256-gcm", this.key, bytes.subarray(0, 12));
+      decipher.setAAD(this.aad(scope, kind)); decipher.setAuthTag(bytes.subarray(12, 28));
+      const value = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString("utf8")) as { p?: unknown; e?: unknown };
+      return typeof value.p === "string" && HANDLE_PATTERNS[kind].test(value.p) && typeof value.e === "number" && value.e > this.now() ? value.p : null;
+    } catch { return null; }
   }
-  revokeSession(sessionId: string) { for (const [key, value] of this.entries) if (value.sessionId === sessionId) this.entries.delete(key); }
-  clear() { this.entries.clear(); }
 }

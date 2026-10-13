@@ -220,6 +220,18 @@ export async function googleSignInCookieState(profilePath: string): Promise<{ ha
   return { hasSignInCookies: false, modifiedMs: null };
 }
 
+/**
+ * Selector state of a shared CLI-account profile (e.g. a Gemini account). There is
+ * no Google subject to verify it against, so it is read locally: SIGNED_IN when the
+ * profile holds a Google session, NOT_CONNECTED when it has no profile or no
+ * session, UNKNOWN when the cookie store cannot be read.
+ */
+export type CliAccountBrowserStatus = "SIGNED_IN" | "NOT_CONNECTED" | "UNKNOWN";
+export async function cliAccountBrowserStatus(profilePath: string): Promise<CliAccountBrowserStatus> {
+  try { return (await googleSignInCookieState(profilePath)).hasSignInCookies ? "SIGNED_IN" : "NOT_CONNECTED"; }
+  catch { return "UNKNOWN"; }
+}
+
 const adoptionProbeSchema = z.object({
   version: z.literal(1),
   cookiesModifiedMs: z.number(),

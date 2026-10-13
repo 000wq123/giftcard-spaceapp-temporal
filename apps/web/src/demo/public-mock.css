@@ -108,3 +108,14 @@
   font: 500 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   user-select: all;
 }
+
+/* Phones: buttons stay on one line; the intro text gives way first. */
+.public-mock-button,
+.public-mock-controls .public-mock-reset { white-space: nowrap; flex: 0 0 auto; }
+@media (max-width: 520px) {
+  .public-mock-controls { gap: 6px; padding: 5px 8px; }
+  .public-mock-intro { gap: 6px; }
+  .public-mock-intro > span { display: none; }
+  .public-mock-button,
+  .public-mock-controls .public-mock-reset { padding: 4px 9px; }
+}

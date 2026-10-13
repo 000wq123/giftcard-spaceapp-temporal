@@ -12,11 +12,17 @@ import type {
   MemoryGraphSource
 } from "./types.js";
 import { positionMemoryGraphNodes } from "./layout.js";
+import { memorySourceIdentityPath, monthOfMemoryFile } from "./memory-files.js";
 import { analyzeMemoryGraphSemantics } from "./semantics.js";
 
 const markerPattern = /<!--\s*space-memory:id=([a-zA-Z0-9:_-]{3,200})\s*-->/;
 const markerCandidatePattern = /<!--\s*space-memory:id=[\s\S]*?-->/;
 const datedHeadingPattern = /^(\d{4}-\d{2}-\d{2})(?:\s+(?:(\d{2}):(\d{2})\s+)?(EEST|EET|UTC))?(?:\s+follow-up)?\s*[-–—]\s*(.+)$/i;
+// Hand-written headings: "2026-09-28 ~10:28 EEST — T", "2026-09-16 (β') — T", "2026-09-29: T",
+// "2026-04-02 (T)", "2026-05-08 T", a bare "2026-02-04", or a range "2026-03-01 / 2026-03-02: T".
+const looseDatedHeadingPattern = /^(\d{4}-\d{2}-\d{2})(?:\s*\/\s*\d{4}-\d{2}-\d{2})?(?:\s+~?(\d{1,2}):(\d{2})(?:\s*[-–]\s*~?\d{1,2}:\d{2})?)?(?:\s+(EEST|EET|UTC))?(?:\s*\(([^)]*)\))?(?:\s*[-–—:]\s*|\s+)?(.*)$/i;
+// Collision-derived ids keep using the timestamp the original parser produced, so they stay stable.
+const legacyCreatedAt = new WeakMap<MemoryGraphRecord, string>();
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -97,6 +103,22 @@ function timestampFromHeading(value: string): { createdAt: string | null; title:
   return { createdAt: Number.isNaN(parsed.valueOf()) ? null : parsed.toISOString(), title: title.trim() };
 }
 
+function looseTimestampFromHeading(value: string): { createdAt: string | null; title: string } | null {
+  const match = looseDatedHeadingPattern.exec(value.trim());
+  if (!match) return null;
+  const [, date, hour, minute = "00", zone = "EEST", qualifier, rest] = match;
+  const offset = zone.toUpperCase() === "UTC" ? "+00:00" : zone.toUpperCase() === "EET" ? "+02:00" : "+03:00";
+  const parsed = new Date(`${date}T${(hour ?? "00").padStart(2, "0")}:${minute}:00${offset}`);
+  const calendarDay = new Date(`${date}T12:00:00Z`);
+  if (Number.isNaN(parsed.valueOf()) || Number.isNaN(calendarDay.valueOf()) || calendarDay.toISOString().slice(0, 10) !== date) return null;
+  return { createdAt: parsed.toISOString(), title: rest?.trim() || qualifier?.trim() || value.trim() };
+}
+
+function monthStartFromPath(path: string): string | null {
+  const month = monthOfMemoryFile(path);
+  return month ? new Date(`${month}-01T00:00:00+03:00`).toISOString() : null;
+}
+
 function normalizeTitle(value: string): string {
   return value.replace(/^Space canonical memory:\s*/i, "").trim();
 }
@@ -128,7 +150,7 @@ function claimCanonicalRecord(
     return record;
   }
   if (existing.contentHash === record.contentHash) return null;
-  const derivedId = `memory:${sha256(`${record.sourcePath}\n${record.createdAt}\n${record.title}\n${record.contentHash}`).slice(0, 24)}`;
+  const derivedId = `memory:${sha256(`${memorySourceIdentityPath(record.sourcePath)}\n${legacyCreatedAt.get(record) ?? record.createdAt}\n${record.title}\n${record.contentHash}`).slice(0, 24)}`;
   if (claimed.has(derivedId)) return null;
   const derived = { ...record, id: derivedId };
   claimed.set(derivedId, derived);
@@ -162,6 +184,7 @@ function isMemoryBlockHeading(node: RootContent): node is Heading {
 
 function parseMonthlySource(source: MemoryGraphSource): { records: MemoryGraphRecord[]; sections: Array<{ id: string; label: string }>; issues: MemoryGraphIssue[] } {
   const tree = fromMarkdown(source.content);
+  const identity = memorySourceIdentityPath(source.path);
   const records: MemoryGraphRecord[] = [];
   const sections: Array<{ id: string; label: string }> = [];
   const issues: MemoryGraphIssue[] = [];
@@ -193,30 +216,35 @@ function parseMonthlySource(source: MemoryGraphSource): { records: MemoryGraphRe
     const markerText = previous?.type === "html" ? previous.value : "";
     const explicitId = markerPattern.exec(markerText)?.[1] ?? markerPattern.exec(body)?.[1] ?? null;
     const invalidMarker = markerCandidatePattern.test(markerText || body) && explicitId === null;
-    const { createdAt, title } = timestampFromHeading(headingText);
-    const normalizedTitle = normalizeTitle(title);
-    const fallbackId = `memory:${sha256(`${source.path}\n${createdAt ?? headingText}\n${normalizedTitle}`).slice(0, 24)}`;
+    // Ids come from the original heading parser so existing references keep working.
+    const legacy = timestampFromHeading(headingText);
+    const loose = legacy.createdAt ? legacy : looseTimestampFromHeading(headingText);
+    const createdAt = loose?.createdAt ?? null;
+    const normalizedTitle = normalizeTitle(loose?.title ?? legacy.title);
+    const fallbackId = `memory:${sha256(`${identity}\n${legacy.createdAt ?? headingText}\n${normalizeTitle(legacy.title)}`).slice(0, 24)}`;
     const recordId = explicitId ?? fallbackId;
-    const sectionId = `section:${sha256(`${source.path}\n${headingText}`).slice(0, 24)}`;
+    const sectionId = `section:${sha256(`${identity}\n${headingText}`).slice(0, 24)}`;
     const metadata = parseMetadata(body);
 
     sections.push({ id: sectionId, label: normalizedTitle });
-    records.push({
+    const record: MemoryGraphRecord = {
       id: recordId,
       sourcePath: source.path,
       sectionId,
       title: normalizedTitle,
       body,
-      createdAt: createdAt ?? new Date(0).toISOString(),
+      createdAt: createdAt ?? monthStartFromPath(source.path) ?? new Date(0).toISOString(),
       ...metadata,
       contentHash: sha256(body),
       sourceStart: start,
       sourceEnd: end,
       markerId: explicitId
-    });
+    };
+    legacyCreatedAt.set(record, legacy.createdAt ?? new Date(0).toISOString());
+    records.push(record);
     if (invalidMarker) {
       issues.push({
-        id: `issue:${sha256(`INVALID_MARKER\n${source.path}\n${recordId}`).slice(0, 24)}`,
+        id: `issue:${sha256(`INVALID_MARKER\n${identity}\n${recordId}`).slice(0, 24)}`,
         type: "INVALID_MARKER",
         severity: "WARN",
         status: "OPEN",
@@ -228,7 +256,7 @@ function parseMonthlySource(source: MemoryGraphSource): { records: MemoryGraphRe
     }
     if (!createdAt) {
       issues.push({
-        id: `issue:${sha256(`MISSING_TIMESTAMP\n${source.path}\n${headingText}`).slice(0, 24)}`,
+        id: `issue:${sha256(`MISSING_TIMESTAMP\n${identity}\n${headingText}`).slice(0, 24)}`,
         type: "MISSING_TIMESTAMP",
         severity: "WARN",
         status: "OPEN",
@@ -249,18 +277,25 @@ function indexSections(source: MemoryGraphSource): Array<{ id: string; label: st
     .filter((node): node is Heading => node.type === "heading" && node.depth === 2)
     .map((heading) => {
       const label = textFromNode(heading).trim();
-      return { id: `section:${sha256(`${source.path}\n${label}`).slice(0, 24)}`, label };
+      return { id: `section:${sha256(`${memorySourceIdentityPath(source.path)}\n${label}`).slice(0, 24)}`, label };
     });
 }
 
 /** Parse retrieval records without graph layout or pairwise semantic analysis. */
 export function parseMemorySourceRecords(source: MemoryGraphSource, modifiedAt = new Date(0).toISOString()): MemoryGraphRecord[] {
-  if (source.kind === "MONTHLY") return parseMonthlySource(source).records;
+  if (source.kind === "MONTHLY") {
+    // Repeated headings share a fallback id; re-key later copies so recall does not hide them.
+    const claimed = new Map<string, MemoryGraphRecord>();
+    return parseMonthlySource(source).records.flatMap((record) => claimCanonicalRecord(record, claimed) ?? []);
+  }
   const tree = fromMarkdown(source.content);
+  const identity = memorySourceIdentityPath(source.path);
   let heading = basename(source.path, ".md");
+  // Ids hash the legacy file name, including the default heading taken from it.
+  let idHeading = basename(identity, ".md");
   const records: MemoryGraphRecord[] = [];
   for (const node of tree.children) {
-    if (node.type === "heading") { heading = textFromNode(node); continue; }
+    if (node.type === "heading") { heading = idHeading = textFromNode(node); continue; }
     if (node.type === "html" || node.type === "thematicBreak") continue;
     const blocks = node.type === "list" ? node.children : [node];
     for (const block of blocks) {
@@ -270,8 +305,8 @@ export function parseMemorySourceRecords(source: MemoryGraphSource, modifiedAt =
       if (!body) continue;
       const contentHash = sha256(body);
       records.push({
-        id: `memory_ref:${sha256(`${source.path}\n${heading}\n${body}`).slice(0, 24)}`,
-        sourcePath: source.path, sectionId: `section:${sha256(`${source.path}\n${heading}`).slice(0, 24)}`,
+        id: `memory_ref:${sha256(`${identity}\n${idHeading}\n${body}`).slice(0, 24)}`,
+        sourcePath: source.path, sectionId: `section:${sha256(`${identity}\n${idHeading}`).slice(0, 24)}`,
         title: `${heading}: ${textFromNode(block).slice(0, 120)}`, body,
         createdAt: modifiedAt, scope: "SYSTEM", roomId: null, provenance: source.path,
         contentHash, lifecycleStatus: "ACTIVE", sourceStart: start, sourceEnd: end, markerId: null
@@ -296,7 +331,7 @@ export function buildMemoryGraphSnapshot(input: {
   const claimedIssueIds = new Set<string>();
 
   for (const source of includedSources) {
-    const sourceId = `source:${sha256(source.path).slice(0, 24)}`;
+    const sourceId = `source:${sha256(memorySourceIdentityPath(source.path)).slice(0, 24)}`;
     addNode(nodes, { id: sourceId, type: "SOURCE", label: basename(source.path), sourcePath: source.path, recordId: null });
     const parsed = source.kind === "MONTHLY" ? parseMonthlySource(source) : { records: [], sections: indexSections(source), issues: [] };
     const sourceRecords: MemoryGraphRecord[] = [];

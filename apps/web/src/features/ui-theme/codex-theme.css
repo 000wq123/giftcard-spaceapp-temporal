@@ -48,7 +48,8 @@
 
 /* Codex LB CLI Shortcuts Popover */
 :root[data-interface-theme="codex"] .terminal-shortcuts-popover,
-.terminal-shortcuts-popover[data-interface-theme="codex"] {
+.terminal-shortcuts-popover[data-interface-theme="codex"],
+:root[data-interface-theme="codex"] .terminal-model-popover-quick {
   border-radius: 14px;
   border-color: #303030;
   background: rgba(20, 20, 20, 0.98);

@@ -13,6 +13,8 @@ interface Options extends Pick<PlanExecutionControllerOptions, 'resolve' | 'publ
     store: SpaceStore;
     target(owner: string, paneId: string, expectedSessionId?: string): Promise<ExecutionTarget>;
     assertStartControl(request: FastifyRequest, target: ExecutionTarget): Promise<void>;
+    /** False on a dev instance, whose copied executions belong to stable. */
+    autoStart?: boolean;
 }
 class ManagedPlanHttpError extends Error {
     constructor(message: string, readonly statusCode: number) { super(message); }
@@ -27,7 +29,7 @@ export function registerPlanExecutionRoutes(app: FastifyInstance, options: Optio
     const { store } = options;
     const controller = new PlanExecutionController({ ...options, repository: store.planExecutions,
         onError: error => app.log.error({ err: error }, 'Managed plan controller failed') });
-    app.addHook('onReady', async () => controller.start());
+    if (options.autoStart !== false) app.addHook('onReady', async () => controller.start());
     app.addHook('onClose', async () => controller.close());
     const owner = async (request: FastifyRequest) => {
         if (!request.user || request.user.role !== 'ADMIN' || request.user.automationScope)

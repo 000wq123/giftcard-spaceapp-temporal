@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import type { GatewayRepository, GatewayApiKeyRecord } from "@space/db";
 import { hashGatewayApiKey, readPresentedApiKey } from "./api-keys.js";
 import { gatewayErrors } from "./errors.js";
+import { lanDecision, type LanAccess } from "./lan-access.js";
 
 export interface GatewayRuntimeStatus {
   version: string;
@@ -9,7 +10,22 @@ export interface GatewayRuntimeStatus {
   inFlightRequests: number;
   draining: boolean;
   listen: string | null;
+  /** The LAN listener, when other internal machines may connect. */
+  lanListen: string | null;
   credentialKey: "PRESENT" | "MISSING";
+  /** Requests in flight per account (ids only). */
+  inFlightByAccount: Record<string, number>;
+  /** Headroom live activity: open client WebSockets, upstream relay tasks and queued compression jobs. */
+  activeWebSockets: number;
+  relayTasks: number;
+  compressionQueue: number;
+}
+
+export interface GatewayLiveActivity {
+  inFlightByAccount(): Record<string, number>;
+  activeWebSockets?(): number;
+  relayTasks?(): number;
+  compressionQueue?(): number;
 }
 
 export interface GatewayRouteHelpers {
@@ -24,6 +40,9 @@ export interface GatewayServerOptions {
   routes?: (app: FastifyInstance, helpers: GatewayRouteHelpers) => void;
   version: string;
   credentialKeyPresent: () => boolean;
+  /** Connections that do not arrive on loopback need this: an allowed source, and a proxy route. */
+  lan?: LanAccess | null;
+  live?: GatewayLiveActivity;
   now?: () => Date;
   logger?: boolean;
 }
@@ -35,6 +54,7 @@ export interface GatewayServer {
   startDraining(): void;
   inFlight(): number;
   setListen(address: string): void;
+  setLanListen(address: string | null): void;
 }
 
 /** Proxy route prefixes served by codex-lb today; Space Gateway answers on the same paths. */
@@ -53,9 +73,20 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   let inFlight = 0;
   let draining = false;
   let listen: string | null = null;
+  let lanListen: string | null = null;
 
-  app.addHook("onRequest", async () => { inFlight += 1; });
-  app.addHook("onResponse", async () => { inFlight = Math.max(0, inFlight - 1); });
+  // Counted until the response closes: onResponse never runs for a stream the client aborted. WebSocket upgrades
+  // are counted as live activity instead.
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.headers.upgrade?.toLowerCase() === "websocket") return;
+    inFlight += 1;
+    reply.raw.once("close", () => { inFlight = Math.max(0, inFlight - 1); });
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const decision = lanDecision(request.socket.localAddress, request.socket.remoteAddress, request.url, options.lan);
+    if (decision === "forbidden") return reply.code(403).header("connection", "close").send(gatewayErrors.sourceNotAllowed());
+    if (decision === "not_found") return reply.code(404).send(gatewayErrors.lanRouteNotFound());
+  });
 
   app.get("/health", async () => ({ status: draining ? "draining" : "ok" }));
 
@@ -74,7 +105,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     inFlightRequests: inFlight,
     draining,
     listen,
-    credentialKey: options.credentialKeyPresent() ? "PRESENT" : "MISSING"
+    lanListen,
+    credentialKey: options.credentialKeyPresent() ? "PRESENT" : "MISSING",
+    inFlightByAccount: options.live?.inFlightByAccount() ?? {},
+    activeWebSockets: options.live?.activeWebSockets?.() ?? 0,
+    relayTasks: options.live?.relayTasks?.() ?? 0,
+    compressionQueue: options.live?.compressionQueue?.() ?? 0
   });
 
   /** Non-sensitive runtime state for the Space API; it never includes keys, tokens or account data. */
@@ -120,6 +156,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     status,
     startDraining() { draining = true; },
     inFlight: () => inFlight,
-    setListen(address) { listen = address; }
+    setListen(address) { listen = address; },
+    setLanListen(address) { lanListen = address; }
   };
 }

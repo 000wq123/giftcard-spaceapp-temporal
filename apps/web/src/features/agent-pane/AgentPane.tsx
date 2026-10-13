@@ -1,6 +1,7 @@
-import { Activity, ArrowUp, Brain, Crosshair, ListTodo, MessageSquare, Monitor, PanelRight, Plus, RotateCw, Settings2, Wrench, X } from "../ui-theme/app-icons.js";
-import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent } from "react";
-import type { AgentPaneGoal, AgentPaneSession, Artifact, CodexEnvironment, CodexThreadResponse, CollaborationMode, Pane, PaneCliModelSettings, PermissionMode, DotProfile, DotCollectionItem, DotGoal } from "@space/contracts";
+import { ArrowUp, Crosshair, PanelRight, X } from "../ui-theme/app-icons.js";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent } from "react";
+import { projectDotFeedRow, type AgentPaneGoal, type AgentPaneSession, type Artifact, type CodexEnvironment, type CodexThreadResponse, type CollaborationMode,
+  type DotFeedItem, type Pane, type PaneCliModelSettings, type PermissionMode, type DotProfile, type DotGoal } from "@space/contracts";
 import { api } from "../../api.js";
 import { dispatchArtifactsUpdated } from "../../artifact-events.js";
 import { SPACE_CLIPBOARD_ITEM_MIME, SPACE_CLIPBOARD_ITEM_TITLE_MIME, captureClipboardText, writeClipboardText } from "../clipboard-dock/clipboard-events.js";
@@ -21,10 +22,12 @@ import { clearAgentPaneDraft, readAgentPaneDraft, writeAgentPaneDraft, type Agen
 import { readDotDraft, writeDotDraft, clearDotDraft } from "./dot-drafts.js";
 import { useDotSession } from "./useDotSession.js";
 import { DotHeader, dotArtwork, dotStatus } from "./DotHeader.js";
-import { DotPanels, dotTabs, type DotTab } from "./DotPanels.js";
 import { DotApprovals } from "./DotApprovals.js";
 import { DotGoalDialog, DotGoalStrip } from "./DotGoals.js";
-import { DotSettingsDialog } from "./DotSettings.js";
+import { DotFeed } from "./DotFeed.js";
+import { DotInfoCard } from "./DotInfoCard.js";
+import { useDotFeed } from "./useDotFeed.js";
+import { DOTS_UPDATED_EVENT, openDotSettings, requestDotCall } from "./dot-home-events.js";
 import "./dots-chat.css";
 import { readChatSubmission, writeChatSubmission, submissionWasRejected, type ChatSubmission } from "./chat-submission.js";
 import { DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
@@ -35,7 +38,7 @@ import { codexThreadNotWrittenYet, codexThreadPending } from "./codex-thread-rea
 import { TaskAcceptanceDialog } from "./TaskAcceptanceDialog.js";
 import { captureLiveVisual } from "../live-pane/live-visual-capture.js";
 import type { AgentPaneModelProvider } from "@space/contracts";
-import { CodexNotification, CodexTranscript, copyableCodexTranscript, visibleChatMessages } from "./CodexTranscript.js";
+import { CodexNotification, copyableCodexTranscript, visibleChatMessages, visibleCodexThreadItems } from "./CodexTranscript.js";
 import { useTranscriptScroll } from "./useTranscriptScroll.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
@@ -47,7 +50,13 @@ import { takePendingThreadOpen } from "../terminal-pane/cli-resume-intent.js";
 import { CLEAN_WORKTREE_PROMPT } from "../osk-keyboard/cli-shortcuts.js";
 import type { AgentPaneActionAvailability } from "./agent-action-availability.js";
 
-const dotTabIcons: Record<DotTab, typeof Activity> = { Chat: MessageSquare, Activity, Tasks: ListTodo, Memory: Brain, Tools: Wrench, Computer: Monitor };
+const DOT_PANEL_KEY = "space.dotPane.panel.";
+const WIDE_DOT_PANE = 880;
+// Turns Space starts for the user (approvals, reminders, Goal steps, voice) arrive in the feed as events or tagged messages.
+const serverStartedTurn = /^(?:Approved: |Declined: |Scheduled task “|Goal step \d+ of |\(Voice\) |[^\n]{1,80} reports on the task you delegated )/;
+function readPanelPreference(paneId: string): boolean | null {
+  try { const value = localStorage.getItem(`${DOT_PANEL_KEY}${paneId}`); return value === null ? null : value === "open"; } catch { return null; }
+}
 
 export { AGENT_PANE_ACTION_EVENT, AGENT_PANE_ATTACHMENTS_EVENT } from "./events.js";
 
@@ -288,17 +297,15 @@ export function AgentPane({
   const loadedThreadIdsRef = useRef(new Set<string>());
   const dotFlow = useDotSession();
   const [dots, setDots] = useState<DotProfile[]>([]);
-  const [dotSettingsOpen, setDotSettingsOpen] = useState(false);
   const dotsRef = useRef<DotProfile[]>([]);
   const dotsRequestRef = useRef<Promise<DotProfile[]> | null>(null);
   const [dotsError, setDotsError] = useState<string | null>(null);
   const [sessionUnavailable, setSessionUnavailable] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<DotTab>("Chat");
-  const [dotHistory, setDotHistory] = useState<DotCollectionItem[]>([]);
   const [dotGoal, setDotGoal] = useState<DotGoal | null>(null);
   const [goalRevision, setGoalRevision] = useState(0);
-  const [historyState, setHistoryState] = useState<"loading" | "ready" | "unavailable">("loading");
-  const [historyRevision, setHistoryRevision] = useState(0);
+  const [panelPreference, setPanelPreference] = useState<boolean | null>(() => readPanelPreference(pane.id));
+  const [wide, setWide] = useState(false);
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const selectedDot = dots.find(dot => dot.dotId === session?.dotId) ?? null;
   const composerSnapshotRef = useRef<(() => string) | null>(null);
   const loadedDraftDotRef = useRef<string | null>(null);
@@ -438,7 +445,6 @@ export function AgentPane({
     sessionRef.current = next;
     setSession(next); setSessionUnavailable(false); rememberModelSelection(next);
     if (changed) { setActiveThreadId(null); setThread(null); setThreadLoading(false); setCodexError(null); setError(null); lastSessionThreadIdRef.current = null; setHomePinned(false); }
-    if (changed) setHistoryRevision(value => value + 1);
   }
   async function transitionSession(dot: DotProfile | null, sessionId?: string | null, newTask = false, selectedModelConfigId?: string) {
     const desiredDotId = dot?.dotId;
@@ -466,21 +472,53 @@ export function AgentPane({
     if (dot.dotId === sessionRef.current?.dotId) return;
     await transitionSession(dot);
   }
+  // The info card docks beside a wide pane and opens over a narrow one; the user's choice is remembered per pane.
   useEffect(() => {
-    let current = true;
-    setDotHistory([]); setHistoryState("loading");
-    if (!selectedDot) { setHistoryState("unavailable"); return; }
-    void api.dotCollection(selectedDot.dotId, "sessions").then(response => {
-      if (!current) return;
-      if (response.dotId !== selectedDot.dotId || response.items.some(item => item.dotId !== selectedDot.dotId)) throw Error("Invalid Dot history");
-      setDotHistory(response.items.filter(item => item.roomId === pane.roomId)); setHistoryState("ready");
-    }).catch(() => { if (current) setHistoryState("unavailable"); });
-    return () => { current = false; };
-  }, [selectedDot?.dotId, pane.roomId, historyRevision]);
+    const node = shellRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => setWide((entries[0]?.contentRect.width ?? 0) >= WIDE_DOT_PANE));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const panelOpen = panelPreference ?? wide;
+  function togglePanel() {
+    const next = !panelOpen;
+    setPanelPreference(next);
+    try { localStorage.setItem(`${DOT_PANEL_KEY}${pane.id}`, next ? "open" : "closed"); } catch { /* the choice lasts for this view only */ }
+  }
   useEffect(() => {
     onWorkingStateChange?.({ isWorking: isRunning });
   }, [isRunning, onWorkingStateChange]);
-  const hasVisibleMessages = visibleChatMessages(thread?.items ?? [], session?.messages ?? []).length > 0;
+  // Space Dots Stage 8: one continuous feed per Dot across rooms. The current conversation's own
+  // messages show at once; the feed (refreshed when a task changes) replaces them by id.
+  const feed = useDotFeed({ dotId: selectedDot?.dotId ?? null, roomId: pane.roomId, visible: isVisible && !pane.isMinimized,
+    refreshKey: `${session?.binding.sessionId ?? ""}:${session?.latestRun?.runId ?? ""}:${session?.latestRun?.status ?? ""}:${session?.messages.length ?? 0}` });
+  const feedItems = useMemo<DotFeedItem[]>(() => {
+    const known = new Set(feed.items.map((item) => item.id));
+    const newest = feed.items.at(-1)?.createdAt ?? "";
+    // Without a Dot (legacy Chat) the conversation is its Codex thread, as before Stage 8.
+    const stored = selectedDot ? session?.messages ?? []
+      : visibleChatMessages(thread?.items ?? [], session?.messages ?? []).map((item) => ({ ...item, status: "COMPLETED" as const }));
+    const live = session && (!selectedDot || session.dotId === selectedDot.dotId) ? stored.flatMap((message) => {
+      if (known.has(message.id) || (message.role === "user" && serverStartedTurn.test(message.content))) return [];
+      const createdAt = message.createdAt ?? new Date().toISOString();
+      if (feed.status === "ready" && createdAt < newest) return [];
+      const item = projectDotFeedRow({ id: message.id, role: message.role ?? "assistant", content: message.content, status: message.status, createdAt,
+        sessionId: session.binding.sessionId ?? null, roomId: pane.roomId, runId: null, clientRequestId: null, conversationStart: false });
+      return item ? [item] : [];
+    }) : [];
+    return [...feed.items, ...live].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  }, [feed.items, feed.status, session?.messages, session?.threadId, session?.binding.sessionId, session?.dotId, selectedDot?.dotId, pane.roomId, thread]);
+  const runProgress = useMemo(() => {
+    // Without a Dot the thread itself is the conversation, so its replies already show as bubbles.
+    if (!isRunning || !thread || !selectedDot) return null;
+    const since = turnStartedAtRef.current ?? 0;
+    const latest = visibleCodexThreadItems(thread.items).filter((item) => item.role === "assistant"
+      && (!item.createdAt || Date.parse(item.createdAt) >= since)).at(-1);
+    const text = latest?.content.replace(/\s+/g, " ").trim() ?? "";
+    return text ? (text.length > 240 ? `${text.slice(0, 239)}…` : text) : null;
+  }, [isRunning, thread, selectedDot]);
+  const hasVisibleMessages = feedItems.length > 0 || visibleChatMessages(thread?.items ?? [], session?.messages ?? []).length > 0;
   const hasTranscriptContent = isRunning || hasVisibleMessages;
   const actionCanSend = session?.capabilities.canSend !== false;
   const actionCollaborationMode = session?.collaborationMode ?? null;
@@ -499,11 +537,16 @@ export function AgentPane({
     });
   }, [actionCanSend, actionCollaborationMode, dotFlow.transitioning, hasVisibleMessages, isChatEnabled, isRunning, onActionAvailabilityChange, pending, session, switchBlocked]);
   const { transcriptRef, followTranscriptRef, handleTranscriptScroll, showJumpToLatest, jumpToLatest } = useTranscriptScroll({
-    conversationId: activeThreadId ?? session?.threadId ?? null,
+    conversationId: selectedDot?.dotId ?? activeThreadId ?? session?.threadId ?? null,
     hasContent: hasTranscriptContent,
-    contentVersion: thread?.items ?? session?.messages,
+    contentVersion: `${feedItems.length}:${feedItems.at(-1)?.id ?? ""}:${runProgress ?? ""}:${isRunning}`,
     isVisible
   });
+  function handleFeedScroll() {
+    handleTranscriptScroll();
+    const element = transcriptRef.current;
+    if (element && element.scrollTop < 80 && feed.nextBefore && !feed.loadingOlder) void feed.loadOlder();
+  }
   useEffect(() => {
     if (!isVisible || pane.isMinimized) { setPermissionsOpen(false); visualCaptureRef.current?.abort(); }
   }, [isVisible, pane.isMinimized]);
@@ -544,7 +587,8 @@ export function AgentPane({
         setSessionUnavailable(true); setError("The active Dot session changed. Reconnect before sending."); return;
       }
       const remembered = readAgentPaneModelSelection(pane.id);
-      if (remembered && !nextSession.selectedModelConfigId) {
+      // A Dot's model comes from Settings → Dots, never from this pane's earlier pick.
+      if (remembered && !nextSession.selectedModelConfigId && !nextSession.dotId) {
         // The pane was closed and reopened: restore the model the operator had picked
         // instead of silently falling back to the provider default.
         const fallbackSession = await restoreRememberedModelSelection(remembered, nextSession);
@@ -620,7 +664,9 @@ export function AgentPane({
   }
 
   async function copyChat() {
-    const text = copyableCodexTranscript(thread?.items ?? [], session?.messages ?? []);
+    const text = selectedDot && feedItems.length
+      ? feedItems.map((item) => `${item.author === "USER" ? "You" : selectedDot.name}:\n${item.kind === "EVENT" ? item.summary ?? item.content : item.content}`).join("\n\n")
+      : copyableCodexTranscript(thread?.items ?? [], session?.messages ?? []);
     if (!text) {
       setNotice(null);
       setError("There are no visible Chat contents to copy.");
@@ -710,6 +756,27 @@ export function AgentPane({
     // from listeners that are installed once per pane.
     refreshModelCatalogRef.current = refreshModelCatalog;
   });
+
+  // A Dot renamed or reconfigured in Settings → Dots shows here without reopening the pane.
+  // A hidden or minimized pane only notes the change and reads the Dots again when it is shown.
+  const dotsStaleRef = useRef(false);
+  const shownRef = useRef(isVisible && !pane.isMinimized);
+  shownRef.current = isVisible && !pane.isMinimized;
+  function refreshDots() {
+    dotsStaleRef.current = false;
+    dotsRef.current = [];
+    void loadDots().then(() => { if (!dotFlow.lockedRef.current) void loadSession(false); });
+  }
+  useEffect(() => {
+    const changed = () => { if (shownRef.current) refreshDots(); else dotsStaleRef.current = true; };
+    window.addEventListener(DOTS_UPDATED_EVENT, changed);
+    return () => window.removeEventListener(DOTS_UPDATED_EVENT, changed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
+  useEffect(() => {
+    if (isVisible && !pane.isMinimized && dotsStaleRef.current) refreshDots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisible, pane.isMinimized]);
 
   useEffect(() => {
     const handleCliRuntimeVisibility = (event: Event) => {
@@ -1221,6 +1288,8 @@ export function AgentPane({
       }
       if (event.detail.action === "permissions") {
         if (!isVisible || pane.isMinimized) return;
+        // A Dot's permissions are set in Settings → Dots.
+        if (session?.dotId) { openDotSettings({ dotId: session.dotId, section: "profile" }); return; }
         setPermissionsOpen(true);
         return;
       }
@@ -1433,42 +1502,23 @@ export function AgentPane({
           if (files.length) void uploadFiles(files, "USER_UPLOAD");
         }}
       />
-      <div className="codex-chat-shell dots-chat-shell">
+      <div ref={shellRef} className="codex-chat-shell dots-chat-shell" data-panel={panelOpen ? (wide ? "docked" : "overlay") : "closed"}>
+        <div className="dots-home-main">
         <DotHeader dots={dots} selected={selectedDot} status={dotStatus(session, sessionUnavailable || dotFlow.transitioning, dotGoal?.sessionId === session?.binding.sessionId ? dotGoal?.status : undefined)} blocked={switchBlocked}
-          motionActive={isVisible && !pane.isMinimized} onSelect={dot => void selectDot(dot)} />
+          motionActive={isVisible && !pane.isMinimized} onSelect={dot => void selectDot(dot)} onManage={() => openDotSettings({ dotId: selectedDot?.dotId })}
+          onNewConversation={() => void startNewTask()} newConversationDisabled={switchBlocked || !isChatEnabled}
+          onCall={() => { if (selectedDot) requestDotCall({ roomId: pane.roomId, dotId: selectedDot.dotId, dotName: selectedDot.name, slot: selectedDot.slot }); }}
+          callDisabledReason={selectedDot ? null : "Choose a Dot first."} panelOpen={panelOpen} onTogglePanel={togglePanel} unread={feed.unread}
+          actions={[
+            { label: "Dot settings", onSelect: () => openDotSettings({ dotId: selectedDot?.dotId }) },
+            { label: "Set a goal", onSelect: () => setGoalDialogOpen(true), disabled: !isChatEnabled || !session },
+            { label: "Copy conversation", onSelect: () => void copyChat() },
+            ...(dotFlow.transitionError || sessionUnavailable ? [{ label: "Reconnect", onSelect: () => void reconnectChat() }] : [])
+          ]} />
         {dotsError ? <p className="dots-switch-hint" role="status">{dotsError} <button type="button" onClick={() => void loadDots()}>Retry</button></p> : null}
-        <div className="dots-toolbar">
-          <div className="dots-tabs" role="tablist" aria-label="Dot views">
-            {dotTabs.map((tab, index) => { const TabIcon = dotTabIcons[tab]; return <button key={tab} type="button" role="tab" id={`dot-tab-${pane.id}-${tab}`}
-              aria-controls={`dot-panel-${pane.id}-${tab}`} aria-selected={selectedTab === tab} tabIndex={selectedTab === tab ? 0 : -1} title={tab}
-              onClick={() => setSelectedTab(tab)} onKeyDown={event => {
-                const next = event.key === "ArrowRight" ? (index + 1) % dotTabs.length : event.key === "ArrowLeft" ? (index + dotTabs.length - 1) % dotTabs.length
-                  : event.key === "Home" ? 0 : event.key === "End" ? dotTabs.length - 1 : null;
-                if (next === null) return;
-                event.preventDefault(); setSelectedTab(dotTabs[next]!);
-                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
-              }}><TabIcon aria-hidden="true" /><span className="dots-tab-label">{tab}</span></button>; })}
-          </div>
-          <div className="dots-session-actions">
-            <button type="button" className="dots-new-task" aria-label="New task" title="New task" disabled={switchBlocked} onClick={() => void startNewTask()}>
-              <Plus aria-hidden="true" /><span className="dots-new-task-label">New task</span></button>
-            <button type="button" className="dots-icon-button" aria-label={selectedDot ? `${selectedDot.name} settings` : "Dot settings"} title="Dot settings"
-              disabled={!selectedDot} onClick={() => setDotSettingsOpen(true)}><Settings2 aria-hidden="true" /></button>
-            <select aria-label="Dot session history" title={historyState === "loading" ? "Loading session history…" : historyState === "unavailable" ? "Session history unavailable." : dotHistory.length ? "Saved tasks" : "No saved tasks yet."}
-              disabled={switchBlocked || historyState !== "ready" || !dotHistory.some(item => item.sessionId !== session?.binding.sessionId)}
-              value={session?.binding.sessionId ?? ""} onChange={event => { if (event.currentTarget.value) void transitionSession(selectedDot, event.currentTarget.value); }}>
-              <option value={session?.binding.sessionId ?? ""}>{historyState === "loading" ? "Loading history…" : "Current task"}</option>
-              {dotHistory.filter(item => item.sessionId !== session?.binding.sessionId).map(item => <option key={item.sessionId} value={item.sessionId}>{item.title ?? "Saved task"}</option>)}
-            </select>
-            {historyState === "unavailable" ? <button type="button" className="dots-icon-button" aria-label="Retry history" title="Session history unavailable. Retry history"
-              onClick={() => setHistoryRevision(value => value + 1)}><RotateCw aria-hidden="true" /></button> : null}
-            {dotFlow.transitionError || sessionUnavailable ? <button type="button" onClick={() => void reconnectChat()}>Reconnect</button> : null}
-          </div>
-        </div>
-        {switchBlocked ? <p className="dots-switch-hint">Finish or stop the current action before switching Dots.</p> : null}
         {dotFlow.transitionError ? <p className="dots-switch-hint" role="status">{dotFlow.transitionError}</p> : null}
-        <div className="dots-chat-content" role="tabpanel" id={`dot-panel-${pane.id}-Chat`} aria-labelledby={`dot-tab-${pane.id}-Chat`} hidden={selectedTab !== "Chat"}>
-
+        {dotFlow.transitionError || sessionUnavailable ? <p className="dots-switch-hint"><button type="button" onClick={() => void reconnectChat()}>Reconnect</button></p> : null}
+        <div className="dots-chat-content">
         {session?.collaborationMode === "plan" ? (
           <button
             type="button"
@@ -1484,26 +1534,12 @@ export function AgentPane({
           </button>
         ) : null}
         <div className="chat-transcript-region">
-          <div
-            ref={transcriptRef}
-            className={`codex-transcript-scroll${session?.collaborationMode === "plan" ? " has-plan-mode" : ""}`}
-            onScroll={handleTranscriptScroll}
-          >
-            <CodexTranscript
-              items={thread?.items ?? []}
-              messages={session?.messages ?? []}
-              latestRun={session?.latestRun && (!activeThreadId || session.latestRun.threadId === activeThreadId || (isRunning && !session.latestRun.threadId)) ? session.latestRun : null}
-              isRunning={isRunning}
-              loading={threadLoading || loading}
-              elapsedSeconds={elapsedSeconds}
-              providerName={session?.binding.selectedProviderName ?? "Codex"}
-              goal={session?.goal && session.goal.threadId === session.threadId ? session.goal : null}
-              failureMessage={runErrorMessage}
-              runStatus={session?.runStatus ?? "RUNNING"}
-              onAsk={isChatEnabled ? () => setComposerFocusRequest((current) => current + 1) : undefined}
-              onSetGoal={isChatEnabled ? () => setGoalDialogOpen(true) : undefined}
-              welcomeIdentity={selectedDot ? { name: selectedDot.name, artwork: dotArtwork(selectedDot) } : null}
-            />
+          <div ref={transcriptRef} className="codex-transcript-scroll dots-feed-scroll" onScroll={handleFeedScroll} data-thread-loading={threadLoading ? "true" : "false"}>
+            <DotFeed dot={{ name: selectedDot?.name ?? "Dots", artwork: selectedDot ? dotArtwork(selectedDot) : "/dots/orbit.svg" }}
+              items={feedItems} status={selectedDot ? feed.status : loading ? "loading" : "ready"}
+              hasOlder={Boolean(feed.nextBefore)} loadingOlder={feed.loadingOlder} onLoadOlder={() => void feed.loadOlder()} onRetry={() => void feed.refresh()}
+              running={isRunning ? { status: session?.runStatus ?? "RUNNING", elapsedSeconds, progress: runProgress } : null}
+              latestRun={session?.latestRun ?? null} />
           </div>
         {showJumpToLatest ? <button type="button" className="chat-jump-latest" onClick={jumpToLatest}><ArrowUp aria-hidden="true" />Jump to latest</button> : null}
         </div>
@@ -1546,21 +1582,10 @@ export function AgentPane({
           ) : null}
         </div>
         <CodexComposer
+          variant={session?.dotId ? "dot" : "full"}
           snapshotRef={composerSnapshotRef}
           paneTitle={pane.title}
           isVisible={isVisible}
-          onShortcut={command => {
-            if (command.action === "build") void updateCollaborationMode("default");
-            if (command.id === "plan_progress" || command.id === "deploy" || command.id === "clean_worktree") void submitQuickMessage(command.text);
-            if (command.action === "permissions") setPermissionsOpen(true);
-            if (command.action === "plan") void updateCollaborationMode(session?.collaborationMode === "plan" ? "default" : "plan");
-            if (command.id === "scroll_top" || command.action === "scroll_top") {
-              if (transcriptRef.current) transcriptRef.current.scrollTop = 0;
-            }
-            if (command.id === "scroll_bottom" || command.action === "scroll_bottom") {
-              if (transcriptRef.current) transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-            }
-          }}
           disabledReason={session?.dotId && !selectedDot ? "Dot identity unavailable. Reconnect before sending." : dotFlow.transitioning ? "Confirm the selected session before sending" : sessionUnavailable ? "Session status unavailable. Reconnect before sending." : uploading ? "Finish importing files before sending" : unconfirmedSubmission ? "Check the unconfirmed submission first" : isChatEnabled ? null : chatDisabledReason}
           prompt={prompt}
           focusRequestKey={composerFocusRequest}
@@ -1572,8 +1597,6 @@ export function AgentPane({
           onVoice={toggleVoiceCapture}
           onAddFiles={() => fileInputRef.current?.click()}
           onSetGoal={() => setGoalDialogOpen(true)}
-          onSetAcceptance={() => setAcceptanceDialogOpen(true)}
-          hasAcceptance={Boolean(acceptance)}
           onVisualContext={(source) => void attachVisualContext(source)}
           onVoicePrewarm={voiceInput.prewarm}
           voiceActive={voiceOwned && voiceInput.status === "recording"}
@@ -1588,14 +1611,16 @@ export function AgentPane({
           modelOptions={session?.modelOptions ?? []}
           modelProviders={session?.modelProviders ?? []}
           selectedModelConfigId={session?.selectedModelConfigId ?? null}
-          canSelectModel={Boolean(session?.capabilities.canSelectModel)}
+          canSelectModel={!session?.dotId && Boolean(session?.capabilities.canSelectModel)}
           onRefreshModelCatalog={refreshModelCatalog}
           onModelConfigChange={updateModelConfig}
         />
         </div>
-        {selectedTab !== "Chat" ? <div className="dots-chat-content" role="tabpanel" id={`dot-panel-${pane.id}-${selectedTab}`} aria-labelledby={`dot-tab-${pane.id}-${selectedTab}`}>
-          <DotPanels tab={selectedTab} dot={selectedDot} session={session} roomId={pane.roomId} visible={isVisible && !pane.isMinimized} />
-        </div> : null}
+        </div>
+        {panelOpen && selectedDot ? <DotInfoCard dot={selectedDot} roomId={pane.roomId} visible={isVisible && !pane.isMinimized} working={isRunning}
+          lastActiveAt={feed.lastActiveAt} roomScoped={feed.scope === "ROOM"} sessionId={session?.dotId === selectedDot.dotId ? session.binding.sessionId ?? null : null}
+          onCall={() => requestDotCall({ roomId: pane.roomId, dotId: selectedDot.dotId, dotName: selectedDot.name, slot: selectedDot.slot })} callDisabledReason={null}
+          overlay={!wide} onClose={togglePanel} /> : null}
       </div>
       {permissionsOpen && isVisible && !pane.isMinimized ? (
         <div className="attachment-modal codex-resume-modal" onClick={() => setPermissionsOpen(false)} onKeyDown={event => {
@@ -1629,8 +1654,6 @@ export function AgentPane({
         </div>
       ) : null}
       {/* A native Codex goal already on this thread stays manageable with its own editor. */}
-      {dotSettingsOpen && selectedDot ? <DotSettingsDialog key={selectedDot.dotId} dot={selectedDot} roomId={pane.roomId} onClose={() => setDotSettingsOpen(false)}
-        onSaved={saved => { setDots(current => current.map(dot => dot.dotId === saved.dotId ? saved : dot)); setDotSettingsOpen(false); }} /> : null}
       {goalDialogOpen && selectedDot && session?.dotId === selectedDot.dotId && session.binding.sessionId && !session.goal ? (
         <DotGoalDialog dot={selectedDot} sessionId={session.binding.sessionId} onClose={() => setGoalDialogOpen(false)}
           onCreated={(goal) => { setGoalDialogOpen(false); setDotGoal(goal); setGoalRevision((value) => value + 1); void loadSession(false); }} />

@@ -311,7 +311,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     nativeResumeArgs: ["--session"],
     declaresNativeReference: false,
     adapterLimitations: [providerSelectionOnly, interactivePicker("`--session`"), completionUnobserved],
-    accountProfileEnv: null,
+    accountProfileEnv: "SPACE_KIMI_ACCOUNT_PROFILE",
     paneModelLaunchEnv: true,
     defaultModelId: "kimi-code/k3",
     credentialVerifiedReason: "Kimi Code subscription direct operator parity wrapper, /etc cwd, MCP access, and credential smoke are verified.",
@@ -490,7 +490,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
     adapterLimitations: [providerSelectionOnly, completionUnobserved, loginNotInTerminal],
     accountProfileEnv: null,
     paneModelLaunchEnv: true,
-    defaultModelId: "codex-lb/gpt-6-sol",
+    defaultModelId: "space-gateway/gpt-6-sol",
     credentialVerifiedReason: "Oh My Pi CLI is installed and launched through the isolated Space wrapper.",
     loginBootstrapReason: null
   },
@@ -588,7 +588,7 @@ export const cliRuntimeDescriptors: readonly CliRuntimeDescriptor[] = [
  * Runtimes whose panes can run under a linked (non-main) account profile; each descriptor names the
  * variable that carries it (accountProfileEnv). The literal tuple keeps per-provider profile readers exhaustive.
  */
-export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor"] as const satisfies
+export const cliAccountProfileRuntimeIds = ["cli:gemini", "cli:claude", "cli:copilot", "cli:cursor", "cli:kimi"] as const satisfies
   readonly `cli:${CliRuntimeKey}`[];
 
 const descriptorById = new Map(cliRuntimeDescriptors.map((descriptor) => [descriptor.id, descriptor]));

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import { START_FEN, findMoveInText, legalMoves, parseFen } from "./chess-rules.js";
+import type { CliMoveRunner } from "./chess-cli.js";
 import {
   createChessCatalog,
   createChessMoveRequester,
@@ -52,6 +53,10 @@ export interface ChessRouteDeps {
   cli?: ChessCliBridge;
   /** Claude account profile with the most quota left (null = main account). */
   claudeProfile?: () => Promise<string | null>;
+  /** Runs CLI moves in the worker (CLI processes never run in the API's cgroup). */
+  runCliMove?: CliMoveRunner;
+  /** Continue a tournament an API restart interrupted (the production server only, never tests). */
+  autoResume?: boolean;
 }
 
 /** One real opening move from a provider's lightest contestant: proves sign-in, quota and answer format. */
@@ -101,7 +106,7 @@ export function registerChessBenchmarkRoutes(
 ): ChessTournamentRunner {
   const catalog = createChessCatalog({ cli: deps.cli });
   const providerChecks = new Map<string, ChessProviderCheck>();
-  const requestMove = deps.requestMove ?? createChessMoveRequester({ claudeProfile: deps.claudeProfile });
+  const requestMove = deps.requestMove ?? createChessMoveRequester({ claudeProfile: deps.claudeProfile, runCliMove: deps.runCliMove });
   let checking: Promise<void> | null = null;
   const loadContestants = async (): Promise<ChessContestantCatalog & { checking: boolean }> => {
     const loaded = await (deps.loadContestants ?? (() => catalog()))();
@@ -122,6 +127,11 @@ export function registerChessBenchmarkRoutes(
   app.addHook("onClose", async () => {
     await runner.stop("interrupted");
   });
+  if (deps.autoResume) {
+    app.addHook("onReady", async () => {
+      void runner.resumeIfInterrupted().catch((error) => app.log.warn({ event: "chess_auto_resume_failed", error: String(error) }, "chess benchmark"));
+    });
+  }
 
   app.get("/api/chess/benchmark/contestants", rateLimitOptions, async () => loadContestants());
 

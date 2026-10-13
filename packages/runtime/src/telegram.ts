@@ -744,6 +744,15 @@ export class TelegramIntegrationManager {
     return this.publicStatus();
   }
 
+  /** One immediate message to the paired chat (Job Copilot "needs you" alerts). False when not connected or disabled. */
+  async notify(text: string): Promise<boolean> {
+    const integration = await this.options.persistence.getIntegration();
+    if (!integration.isEnabled || integration.connectionStatus !== "CONNECTED" || !integration.secretVersion || !integration.chatId) return false;
+    const botToken = await this.options.secrets.read(integration.secretVersion);
+    await this.clientFactory(botToken).sendMessage(integration.chatId, text.slice(0, 3900));
+    return true;
+  }
+
   async disconnect(): Promise<TelegramIntegrationStatus> {
     const disconnected = await this.options.persistence.disconnect(this.now().toISOString());
     await Promise.all(disconnected.secretVersions.map((version) => this.options.secrets.delete(version)));

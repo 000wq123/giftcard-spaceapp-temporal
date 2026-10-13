@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { accessSync, constants, createReadStream } from "node:fs";
+import { accessSync, constants, createReadStream, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, join } from "node:path";
@@ -362,6 +362,7 @@ export function releaseDisplay(display: number): void {
 
 async function waitForDisplaySocket(display: number, timeoutMs: number, child: ChildProcessWithoutNullStreams, stderr: () => string): Promise<void> {
   const socketPath = `/tmp/.X11-unix/X${display}`;
+  const lockPath = `/tmp/.X${display}-lock`;
   const deadline = Date.now() + timeoutMs;
   let spawnError: Error | null = null;
   const onError = (error: Error) => { spawnError = error; };
@@ -372,10 +373,14 @@ async function waitForDisplaySocket(display: number, timeoutMs: number, child: C
       if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Xvfb exited before display ${display} was ready. ${stderr()}`);
       try {
         accessSync(socketPath);
-        return;
+        // The display is ready only when its lock names this Xvfb. Another X server on the
+        // same display, or one killed without cleaning up, leaves a socket too; this Xvfb
+        // then exits ("already active") and must not be reported as ready.
+        if (Number(readFileSync(lockPath, "utf8").trim()) === child.pid) return;
       } catch {
-        await sleep(100);
+        // Not created yet.
       }
+      await sleep(100);
     }
     throw new Error(`Timed out waiting for Xvfb display ${display}. ${stderr()}`);
   } finally { child.off("error", onError); }
@@ -1954,6 +1959,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   let closingAll = false;
   const runtimeStarts = new Map<string, Promise<BrowserRuntime>>();
   const paneStarts = new Map<string, Promise<PaneBrowserSessionResponse>>();
+  // Sessions this process is navigating right now (a count, for overlapping navigations).
+  const navigationsInFlight = new Map<string, number>();
   const tickets = new Map<string, { paneId: string; sessionId: string; expiresAt: number }>();
   const capacity = new BrowserCapacityGate(8, 4);
   const captureQueue: string[] = [];
@@ -2687,21 +2694,28 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       status: "NAVIGATING",
       statusReason: "Loading page."
     });
-    const runtime = await ensureRuntime(current);
-    const load = runtime.client.waitFor("Page.loadEventFired", runtime.cdpSessionId, 15_000).catch(() => null);
-    await runtime.client.send("Page.navigate", { url: targetUrl }, runtime.cdpSessionId);
-    await load;
-    await sleep(350);
-    const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
-    current = await store.updatePaneBrowserSession(session.sessionId, {
-      currentUrl: meta.currentUrl,
-      title: meta.title,
-      status: "READY",
-      statusReason: "Page ready.",
-      runtimeState: "READY",
-      workerHeartbeatAt: nowIso()
-    });
-    return current;
+    navigationsInFlight.set(session.sessionId, (navigationsInFlight.get(session.sessionId) ?? 0) + 1);
+    try {
+      const runtime = await ensureRuntime(current);
+      const load = runtime.client.waitFor("Page.loadEventFired", runtime.cdpSessionId, 15_000).catch(() => null);
+      await runtime.client.send("Page.navigate", { url: targetUrl }, runtime.cdpSessionId);
+      await load;
+      await sleep(350);
+      const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
+      current = await store.updatePaneBrowserSession(session.sessionId, {
+        currentUrl: meta.currentUrl,
+        title: meta.title,
+        status: "READY",
+        statusReason: "Page ready.",
+        runtimeState: "READY",
+        workerHeartbeatAt: nowIso()
+      });
+      return current;
+    } finally {
+      const remaining = (navigationsInFlight.get(session.sessionId) ?? 1) - 1;
+      if (remaining > 0) navigationsInFlight.set(session.sessionId, remaining);
+      else navigationsInFlight.delete(session.sessionId);
+    }
   }
 
   async function responseFor(session: PaneBrowserSession, includeFrame: boolean): Promise<PaneBrowserSessionResponse> {
@@ -2726,8 +2740,14 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       runtime.cdpSessionId
     );
     const meta = await readPageMetadata(runtime.client, runtime.cdpSessionId);
+    // A NAVIGATING session that no navigation of this process is loading was abandoned:
+    // Chrome or the host died before it committed. The frame shows what is really open, so
+    // the target follows it; otherwise the next start or getActive (which navigate to the
+    // target when no page URL is known) would load the page that may have crashed Chrome.
+    const abandonedNavigation = session.status === "NAVIGATING" && !navigationsInFlight.has(session.sessionId);
     const updated = await store.updatePaneBrowserSession(session.sessionId, {
       currentUrl: meta.currentUrl,
+      ...(abandonedNavigation ? { targetUrl: meta.currentUrl } : {}),
       title: meta.title,
       status: session.status === "NAVIGATING" ? "READY" : session.status,
       statusReason: "Frame captured.",

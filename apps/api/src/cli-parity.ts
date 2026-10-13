@@ -1,4 +1,4 @@
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { findCliRuntimeDescriptor } from "./cli-runtime-descriptors.js";
 
 export const codexDirectParityRuntimeId = "cli:codex";
@@ -80,6 +80,15 @@ export function isLegacyCodexCliCwd(cwd: string | null | undefined, workspaceRoo
 
 export function resolveCodexDirectParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {
   return isLegacyCodexCliCwd(cwd, workspaceRoot) ? codexDirectParityCwd : cwd ?? codexDirectParityCwd;
+}
+
+/**
+ * Folder of a room without a project in a public installation: CLIs there run as an
+ * unprivileged user who cannot write the operator default (/etc), so each room gets
+ * its own folder under the workspace root (a persistent volume).
+ */
+export function publicRoomWorkspacePath(workspaceRoot: string, roomId: string): string {
+  return join(workspaceRoot, roomId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "room");
 }
 
 export function resolveDirectOperatorParityCwd(cwd: string | null | undefined, workspaceRoot: string): string {

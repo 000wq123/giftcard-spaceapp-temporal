@@ -34,7 +34,7 @@ const requestHeaders = ["accept", "content-type", "content-length", "range", "if
 const responseHeaders = ["content-type", "content-length", "content-disposition", "content-range", "accept-ranges", "etag", "last-modified", "vary"];
 
 export async function registerT3Gateway(app: FastifyInstance, options: T3GatewayOptions) {
-  const handles = new T3AssetHandles(), active = new Set<() => void>();
+  const handles = new T3AssetHandles({ secret: options.sessionSecret }), active = new Set<() => void>();
   const socketPath = options.socketPath ?? T3_GATEWAY_SOCKET;
   const timeoutMs = options.timeoutMs ?? 30_000;
   const validate = async (request: FastifyRequest): Promise<Scope> => {
@@ -48,7 +48,7 @@ export async function registerT3Gateway(app: FastifyInstance, options: T3Gateway
     const timer = setInterval(() => {
       if (checking) return;
       checking = true;
-      void validate(request).catch(() => { handles.revokeSession(scope.sessionId); stop(); }).finally(() => { checking = false; });
+      void validate(request).catch(stop).finally(() => { checking = false; });
     }, options.revalidateMs ?? 5_000);
     timer.unref(); active.add(stop);
     return () => { clearInterval(timer); active.delete(stop); };
@@ -94,7 +94,7 @@ export async function registerT3Gateway(app: FastifyInstance, options: T3Gateway
     child.setErrorHandler((cause, _request, reply) => error(reply, cause));
     const scopes = new WeakMap<FastifyRequest, Scope>();
     child.addHook("onRequest", async request => { scopes.set(request, await validate(request)); });
-    child.addHook("onClose", async () => { for (const stop of active) stop(); handles.clear(); });
+    child.addHook("onClose", async () => { for (const stop of active) stop(); });
 
     child.get("/api/t3code/panes/:paneId/app/ws", { websocket: true }, (client, request) => {
       const scope = scopes.get(request)!;

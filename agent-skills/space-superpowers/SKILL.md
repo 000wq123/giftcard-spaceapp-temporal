@@ -1,67 +1,64 @@
 ---
 name: space-superpowers
-description: Complete software development methodology for coding agents: test-driven development (TDD), 4-phase systematic debugging, verification before completion, implementation planning, brainstorming, and subagent-driven development.
+description: "Superpowers (obra/superpowers) software development methodology for coding agents: brainstorming a design, writing and executing implementation plans, test-driven development, systematic debugging, code review, verification before completion and subagent-driven development. Use for feature work, bug fixing and planned changes where one of these methods helps, and whenever the operator asks for Superpowers."
 metadata:
   category: WORKFLOW
 ---
 
-<SUBAGENT-STOP>
-If you were dispatched as a subagent to execute a specific task, ignore this skill.
-</SUBAGENT-STOP>
+# Superpowers in Space
 
-<EXTREMELY-IMPORTANT>
-If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
+An index of the 15 Superpowers skills. Read only the one the task needs, at
+`<this folder>/<skill>/SKILL.md` (with MCP: `get_skill space-superpowers/<skill>`).
+Upstream treats every skill as mandatory ("1% chance ... must invoke"). In Space
+a skill is used when it fits the work or the operator asks for it, not merely
+because it exists; quick questions, ops checks and small edits rarely need one.
 
-IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
+## Defaults in Space
 
-This is not negotiable. You cannot rationalize your way out of this.
-</EXTREMELY-IMPORTANT>
+These two fit most coding work and are small; use them without a request when
+the situation matches:
 
-## The Rule
+| Skill | When |
+|---|---|
+| [systematic-debugging](systematic-debugging/SKILL.md) | A bug, failing test or unexpected behaviour, before proposing a fix |
+| [verification-before-completion](verification-before-completion/SKILL.md) | Before claiming work is done, fixed or passing |
 
-**Invoke relevant or requested skills BEFORE any response or action** — including clarifying questions, exploring the codebase, or checking files. If it turns out wrong for the situation, you don't have to use it.
+## When the work calls for it
 
-**Before entering plan mode:** if you haven't already brainstormed, invoke the brainstorming skill first.
+| Skill | When |
+|---|---|
+| [brainstorming](brainstorming/SKILL.md) | Shape an idea into a design before any code |
+| [writing-plans](writing-plans/SKILL.md) | Turn a spec into a step-by-step plan |
+| [executing-plans](executing-plans/SKILL.md) | Carry out a written plan yourself |
+| [subagent-driven-development](subagent-driven-development/SKILL.md) | Carry out a plan with one subagent per task and reviews |
+| [dispatching-parallel-agents](dispatching-parallel-agents/SKILL.md) | Two or more independent tasks at once |
+| [test-driven-development](test-driven-development/SKILL.md) | Red-green-refactor for a feature or fix |
+| [requesting-code-review](requesting-code-review/SKILL.md) | A reviewer pass on finished work (also used by the two plan executors) |
+| [receiving-code-review](receiving-code-review/SKILL.md) | Acting on review feedback |
+| [using-git-worktrees](using-git-worktrees/SKILL.md) | Isolated workspace for a feature |
+| [finishing-a-development-branch](finishing-a-development-branch/SKILL.md) | Integrating finished work |
+| [writing-skills](writing-skills/SKILL.md) | Test-driven skill writing (the default for skills is `space-anthropic-skills/skill-creator`) |
+| [diagnosing-superpowers](diagnosing-superpowers/SKILL.md) | Why a Superpowers session went wrong |
+| [using-superpowers](using-superpowers/SKILL.md) | Upstream's own entry point and per-harness tool notes (`using-superpowers/references/`) |
 
-Then announce "Using [skill] to [purpose]" and follow the skill exactly. If it has a checklist, create a todo per item.
+## In Space
 
-## Skill Priority
+Repository and operator instructions (`AGENTS.md`, `/opt/spaceapp/docs`) take precedence
+over every Superpowers step. In particular:
 
-When multiple skills apply, process skills come first — they set the approach, then implementation skills (frontend-design, etc.) carry it out. Brainstorming and systematic-debugging are Superpowers' most common process skills, but the rule holds for any of them.
+- **Plans, specs and brainstorm files** go to
+  `/var/lib/spaceapp-user/agent-workspace/active/<task>/` (or the Space clipboard as a
+  PLAN record when the operator wants a plan), never into the repository, so
+  `docs/superpowers/` and `.superpowers/` are not created in a project.
+- **Worktrees**: Space worktrees come from `/opt/spaceapp/bin/space-worktree` under
+  `/opt/spaceapp/var/worktrees/space/`; other scratch work uses
+  `/var/lib/spaceapp-user/agent-workspace/active/`, not `.worktrees/`.
+- **Integration**: finish Space work with `space-queue submit --worktree <wt>
+  --summary "..." --wait`. Do not `git merge` into or `git push` from a shared
+  branch; `finishing-a-development-branch`'s merge and push options do not apply.
+- **No external reports**: `diagnosing-superpowers` must not open GitHub issues or
+  send session transcripts anywhere; report findings to the operator.
+- Commits, deploys and publishing still need the authorization the repository
+  rules require; a workflow step is not that authorization.
 
-- "Let's build X" → superpowers:brainstorming first, then implementation skills.
-- "Fix this bug" → superpowers:systematic-debugging first, then domain skills.
-
-## Red Flags
-
-These thoughts mean STOP—you're rationalizing:
-
-| Thought | Reality |
-|---------|---------|
-| "This is just a simple question" | Questions are tasks. Check for skills. |
-| "I need more context first" | Skill check comes BEFORE clarifying questions. |
-| "Let me explore the codebase first" | Skills tell you HOW to explore. Check first. |
-| "I can check git/files quickly" | Files lack conversation context. Check for skills. |
-| "Let me gather information first" | Skills tell you HOW to gather information. |
-| "This doesn't need a formal skill" | If a skill exists, use it. |
-| "I remember this skill" | Skills evolve. Read current version. |
-| "This doesn't count as a task" | Action = task. Check for skills. |
-| "The skill is overkill" | Simple things become complex. Use it. |
-| "I'll just do this one thing first" | Check BEFORE doing anything. |
-| "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
-| "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
-
-## Platform Adaptation
-
-If your harness appears here, read its reference file for special instructions:
-
-- Claude Code: `references/claude-code-tools.md`
-- Codex: `references/codex-tools.md`
-- Pi: `references/pi-tools.md`
-- Antigravity: `references/antigravity-tools.md`
-- Hermes Agent: `references/hermes-tools.md`
-- Muse: `references/muse-tools.md`
-
-## User Instructions
-
-User instructions (CLAUDE.md, AGENTS.md, GEMINI.md, etc, direct requests) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.
+Source and license: [UPSTREAM.md](UPSTREAM.md).

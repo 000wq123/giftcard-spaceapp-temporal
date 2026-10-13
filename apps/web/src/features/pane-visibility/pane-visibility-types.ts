@@ -10,7 +10,8 @@ export type NonCliPaneType =
   | "vnc"
   | "live"
   | "harness"
-  | "t3code";
+  | "t3code"
+  | "jobs";
 
 export interface PaneItemConfig {
   id: NonCliPaneType;

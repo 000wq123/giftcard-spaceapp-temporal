@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, FolderPlus, GitBranch, Minus, Plus, RefreshCw, Settings, Star, Trash2, Undo2, Upload, X } from "../ui-theme/app-icons.js";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ChevronRight, Download, FolderPlus, GitBranch, GitMerge, Minus, Plus, RefreshCw, Settings, Star, Trash2, Undo2, Upload, X } from "../ui-theme/app-icons.js";
 import type { AnyProjectBinding, GitFileChange, GitFileDiff, GitOperation, GitOperationInput, GitRemoteRepository, GitStatusSnapshot, OpenProjectResult, ProjectDefaultRepositories, RepositoryProviderId, RepositoryProviderState, SpaceWorktree } from "@space/contracts";
 import { normalizeProjectBinding } from "@space/contracts";
 import { SOURCE_CONTROL_CONNECTION_EVENT, SourceControlRequestError, repositoryProviderSettings, sourceControlClient, type SourceControlClient } from "./client.js";
@@ -9,6 +9,8 @@ import { PublishRepositoryPanel } from "./PublishRepositoryPanel.js";
 import { enabledProviders, providerAvailability, providerLabel } from "./ProviderIcon.js";
 import { listWorktrees, mergeWorktree, removeWorktree } from "../worktrees/worktree-client.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
+import { DeployActivityPanel } from "../deploy-queue/DeployActivityPanel.js";
+import type { DeployQueueClient } from "../deploy-queue/DeployQueueSettingsCard.js";
 import {
   DockButton,
   DockChips,
@@ -28,9 +30,14 @@ import { SourceControlDiffModal } from "./SourceControlDiffModal.js";
 interface Project { label: string; path: string }
 type DockProvider = "local" | RepositoryProviderId;
 type StatusFilter = "all" | "M" | "A" | "D" | "R";
+type WorktreeFilter = "all" | "dirty" | "ahead";
+/** Above this many worktrees the open list gets a branch filter. */
+const WORKTREE_FILTER_MIN = 6;
 interface Props {
   userId: string; projects: Project[]; currentProjectPath?: string | null; client?: SourceControlClient;
   isAdmin?: boolean; defaultProjectParent?: string;
+  /** ADMIN only: shows the live merge-queue deploy above the repository. */
+  canViewDeploys?: boolean; deployClient?: DeployQueueClient;
   /** Adds a project opened from the dock to the personal presets. Never changes or creates a room. */
   onProjectOpened?: (project: Project) => void;
 }
@@ -84,7 +91,7 @@ function formatCommitDate(iso?: string | null): string {
   }
 }
 
-export function SourceControlDock({ userId, projects, currentProjectPath, client = sourceControlClient, isAdmin = false, defaultProjectParent = "/opt/spaceapp/projects", onProjectOpened }: Props) {
+export function SourceControlDock({ userId, projects, currentProjectPath, client = sourceControlClient, isAdmin = false, defaultProjectParent = "/opt/spaceapp/projects", onProjectOpened, canViewDeploys = false, deployClient }: Props) {
   // A hidden dock stays mounted; it must not poll git status or fetch remotes in the background.
   const isDockActive = useIsDockActive();
   const { confirm, confirmDialog } = useDockConfirm();
@@ -133,6 +140,12 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
   const [allProviderRepos, setAllProviderRepos] = useState<Partial<Record<RepositoryProviderId, GitRemoteRepository[]>>>({});
   const [worktrees, setWorktrees] = useState<SpaceWorktree[]>([]);
   const [worktreeBusy, setWorktreeBusy] = useState<string | null>(null);
+  // Worktrees stay folded until the user opens them; a repository can have more than a hundred.
+  const [worktreesOpen, setWorktreesOpen] = useState(false);
+  const [worktreeQuery, setWorktreeQuery] = useState("");
+  const [worktreeFilter, setWorktreeFilter] = useState<WorktreeFilter>("all");
+  const [deployRefresh, setDeployRefresh] = useState(0);
+  const worktreePanelId = useId();
   const visibleProviders = useMemo(() => enabledProviders(providerStates), [providerStates]);
   const connected = useMemo(() => visibleProviders.filter(state => providerAvailability(state) === "connected"), [visibleProviders]);
   const activeState = provider === "local" ? null : providerStates.find(state => state.id === provider) ?? null;
@@ -268,6 +281,21 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
   const filteredStaged = useMemo(() => filterFileList(snapshot?.staged ?? []), [filterFileList, snapshot?.staged]);
   const filteredChanges = useMemo(() => filterFileList(snapshot?.changes ?? []), [filterFileList, snapshot?.changes]);
   const filteredComparisonFiles = useMemo(() => filterFileList(comparisonFiles), [filterFileList, comparisonFiles]);
+
+  const worktreeStats = useMemo(() => ({
+    dirty: worktrees.filter(wt => wt.isDirty).length,
+    ahead: worktrees.filter(wt => wt.aheadCount > 0).length
+  }), [worktrees]);
+  const worktreeChips = useMemo<DockChipOption<WorktreeFilter>[]>(() => [
+    { id: "all", label: "All", count: worktrees.length },
+    { id: "dirty", label: "Uncommitted", count: worktreeStats.dirty },
+    { id: "ahead", label: "Ahead", count: worktreeStats.ahead }
+  ], [worktrees.length, worktreeStats]);
+  const visibleWorktrees = useMemo(() => {
+    const query = worktreeQuery.trim().toLowerCase();
+    return worktrees.filter(wt => (worktreeFilter === "all" || (worktreeFilter === "dirty" ? wt.isDirty : wt.aheadCount > 0))
+      && (!query || wt.branch.toLowerCase().includes(query)));
+  }, [worktrees, worktreeFilter, worktreeQuery]);
   const context = useRef(0);
   const staleRemoteDiff = useRef<string | null>(null);
   const staleRemoteMessage = "The remote branch changed while this file was being opened. The comparison list was refreshed.";
@@ -438,6 +466,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
     if (busyRef.current || refreshingRef.current) return;
     refreshingRef.current = true; setIsRefreshing(true);
     setError(null);
+    setDeployRefresh(value => value + 1);
     const epoch = ++statusEpoch.current;
     try {
       // 1. Provider states (enabled/connected) may have changed in Plugins.
@@ -627,6 +656,7 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
       {notice ? <DockNotice tone="success" onDismiss={() => setNotice(null)}>{notice}</DockNotice> : null}
 
       <div className="source-control-body">
+        {canViewDeploys ? <DeployActivityPanel client={deployClient} active={isDockActive} refreshKey={deployRefresh} /> : null}
         <div className="source-control-selectors">
           <label>Project<select aria-label="Project" value={project} disabled={busy || publishBusy} onChange={event => setProject(event.target.value)}>
             {!projectOptions.length ? <option value="">No projects</option> : null}{projectOptions.map(p => <option key={p.path} value={p.path}>{p.label}</option>)}
@@ -700,7 +730,10 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
               : <span title={snapshot.initialized ? "No branch is checked out (detached HEAD). Commits made here belong to no branch." : undefined}>{snapshot.initialized ? "Detached (no branch)" : "No repository"}</span>}
             {snapshot.comparison && !snapshot.comparison.ready
               ? <span>Remote not checked</span>
-              : <span className="source-control-sync" title={`${snapshot.ahead} to push, ${snapshot.behind} to pull`} aria-label={`${snapshot.ahead} to push, ${snapshot.behind} to pull`}>↑ {snapshot.ahead} ↓ {snapshot.behind}</span>}
+              : <span className="source-control-sync" title={`${snapshot.ahead} to push, ${snapshot.behind} to pull`} aria-label={`${snapshot.ahead} to push, ${snapshot.behind} to pull`}>
+                <span className={snapshot.ahead ? "is-ahead" : undefined}>↑ {snapshot.ahead}</span>
+                <span className={snapshot.behind ? "is-behind" : undefined}>↓ {snapshot.behind}</span>
+              </span>}
           </div>
           {snapshot.initialized ? (
             <div className="source-control-meta-card" aria-label="Project and repository details">
@@ -741,6 +774,64 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
             </div>
           ) : null}
 
+          {snapshot.initialized && worktrees.length > 0 ? (
+            <section className={`source-control-worktrees${worktreesOpen ? " is-open" : ""}`} aria-label="Worktrees">
+              <button type="button" className="source-control-section-toggle" aria-expanded={worktreesOpen} aria-controls={worktreePanelId}
+                onClick={() => setWorktreesOpen(open => !open)}>
+                <ChevronRight className="source-control-section-chevron" size={14} aria-hidden="true" />
+                <span className="source-control-section-title">Worktrees</span>
+                <span className="source-control-count">{worktrees.length}</span>
+                {worktreeStats.dirty ? <span className="dock-kit-badge is-warning">{worktreeStats.dirty} uncommitted</span> : null}
+                <span className="source-control-section-hint" aria-hidden="true">{worktreesOpen ? "Hide" : "Show"}</span>
+              </button>
+              {worktreesOpen ? (
+                <div className="source-control-worktree-panel" id={worktreePanelId}>
+                  {worktrees.length > WORKTREE_FILTER_MIN ? (
+                    <div className="source-control-worktree-tools">
+                      <DockSearch label="Filter worktrees by branch" placeholder="Filter branches…" value={worktreeQuery} onChange={setWorktreeQuery} name="source-control-worktree-filter" />
+                      <DockChips label="Worktree filter" options={worktreeChips} value={worktreeFilter}
+                        onChange={id => setWorktreeFilter(current => current === id && id !== "all" ? "all" : id)} />
+                    </div>
+                  ) : null}
+                  <div className="source-control-worktree-list">
+                    {visibleWorktrees.map(wt => {
+                      const target = wt.baseBranch || "main";
+                      const pending = worktreeBusy === wt.worktreePath;
+                      // The repository's own checkout cannot be merged into itself or removed.
+                      const primary = wt.worktreePath === wt.repoPath;
+                      return (
+                        <div key={wt.worktreePath} className={`source-control-worktree-item${wt.isDirty ? " is-dirty" : ""}${primary ? " is-primary" : ""}`}>
+                          <div className="source-control-worktree-info">
+                            <span className="source-control-worktree-branch" title={`${wt.branch}\n${wt.worktreePath}`}>
+                              <GitBranch size={13} aria-hidden="true" />
+                              <strong>{wt.branch}</strong>
+                            </span>
+                            <span className="source-control-worktree-meta">
+                              {wt.isDirty ? <span className="source-control-worktree-dirty">Uncommitted changes</span> : <span>Clean</span>}
+                              {wt.aheadCount ? <span className="source-control-worktree-ahead" title={`${wt.aheadCount} commit${wt.aheadCount === 1 ? "" : "s"} ahead of ${target}`}>↑ {wt.aheadCount} ahead</span> : null}
+                              {wt.behindCount ? <span title={`${wt.behindCount} commit${wt.behindCount === 1 ? "" : "s"} behind ${target}`}>↓ {wt.behindCount} behind</span> : null}
+                            </span>
+                          </div>
+                          {primary ? <span className="dock-kit-badge">Main checkout</span> : (
+                            <div className="source-control-worktree-actions">
+                              {wt.branch !== target ? (
+                                <DockButton icon={GitMerge} busy={pending} disabled={!!worktreeBusy} title={`Merge ${wt.branch} into ${target}`}
+                                  onClick={() => void mergeIntoBase(wt)}>Merge into {target}</DockButton>
+                              ) : null}
+                              <DockIconButton label={`Discard worktree ${wt.branch}`} icon={Trash2} tone="danger" disabled={!!worktreeBusy}
+                                onClick={() => void discardWorktree(wt)} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {!visibleWorktrees.length ? <p className="source-control-muted">No worktrees match the filter.</p> : null}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           {!snapshot.initialized ? (
             <div className="dock-kit-state is-empty source-control-empty" role="status">
               <span className="dock-kit-state-icon" aria-hidden="true"><GitBranch /></span>
@@ -767,39 +858,6 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
                 </div>
                 {isFiltered ? <DockButton tone="ghost" className="source-control-filter-reset" onClick={resetFilters}>Reset filters</DockButton> : null}
               </div>
-            ) : null}
-
-            {worktrees.length > 0 ? (
-              <section className="source-control-changes source-control-worktrees" aria-label="Worktrees">
-                <h3>Worktrees <span>{worktrees.length}</span></h3>
-                <div className="source-control-worktree-list">
-                  {worktrees.map(wt => {
-                    const target = wt.baseBranch || "main";
-                    const pending = worktreeBusy === wt.worktreePath;
-                    return (
-                      <div key={wt.worktreePath} className={`source-control-worktree-item dock-kit-card${wt.isDirty ? " is-warning" : ""}`}>
-                        <div className="source-control-worktree-info">
-                          <span className="source-control-worktree-branch" title={wt.worktreePath}>
-                            <GitBranch size={13} aria-hidden="true" />
-                            <strong>{wt.branch}</strong>
-                          </span>
-                          <span className="source-control-worktree-meta">
-                            {wt.isDirty ? <span className="source-control-worktree-dirty">Uncommitted changes</span> : "Clean"}
-                            {wt.aheadCount ? ` · ${wt.aheadCount} ahead` : ""}
-                            {wt.behindCount ? ` · ${wt.behindCount} behind` : ""}
-                          </span>
-                        </div>
-                        <div className="dock-kit-card-actions">
-                          <DockButton busy={pending} disabled={!!worktreeBusy} title={`Merge ${wt.branch} into ${target}`}
-                            onClick={() => void mergeIntoBase(wt)}>Merge into {target}</DockButton>
-                          <DockIconButton label={`Discard worktree ${wt.branch}`} icon={Trash2} tone="danger" disabled={!!worktreeBusy}
-                            onClick={() => void discardWorktree(wt)} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
             ) : null}
 
             {snapshot.conflicts.length ? (
@@ -838,6 +896,21 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
               ) : null}
             </section>
 
+            <div className="source-control-commit dock-kit-editor">
+              <label>Commit message<textarea className="dock-kit-field" aria-label="Commit message" placeholder="Describe the staged changes" rows={3} value={message} onChange={e => editMessage(e.target.value)} /></label>
+              <div className="dock-kit-editor-footer">
+                <span className="dock-kit-counter">{snapshot.staged.length} staged file{snapshot.staged.length === 1 ? "" : "s"}</span>
+                <DockButton tone="primary" disabled={busy || !message.trim() || !snapshot.staged.length || !!snapshot.conflicts.length} onClick={() => void action("commit")}>Commit</DockButton>
+                <DockButton icon={Upload} disabled={busy || !message.trim() || !snapshot.staged.length || !!snapshot.conflicts.length || !canPush || comparisonBlocked}
+                  title={remoteTitle} onClick={() => setPushOperation("commit-push")}>Commit &amp; Push</DockButton>
+              </div>
+            </div>
+            {hasRemote ? <div className="source-control-actions" role="group" aria-label="Sync with remote">
+              <DockButton icon={Upload} disabled={busy || !canPush || comparisonBlocked} title={remoteTitle} onClick={() => setPushOperation("push")}>Push</DockButton>
+              <DockButton icon={RefreshCw} disabled={busy} title="Download remote changes without changing your files" onClick={() => void action("fetch")}>Fetch</DockButton>
+              <DockButton icon={Download} disabled={busy || !!snapshot.conflicts.length || snapshot.comparison?.related === false} title="Fast-forward to the remote branch" onClick={() => void action("pull")}>Pull</DockButton>
+            </div> : null}
+            <small className="source-control-footnote">Remote checked: {snapshot.comparison?.checkedAt ? new Date(snapshot.comparison.checkedAt).toLocaleTimeString() : remoteChecked || "Not checked yet"} · Pull is fast-forward only.</small>
             {hasRemote ? <section className="source-control-changes source-control-comparison" aria-label={`Changes vs ${providerName}`}>
               <h3>
                 Changes vs {providerName}{" "}
@@ -871,22 +944,6 @@ export function SourceControlDock({ userId, projects, currentProjectPath, client
               filteredComparisonFiles.length === 0 ? (
                 <DockState kind="empty" title="No files match the selected filter." action={{ label: "Clear filters", onClick: resetFilters }} />
             ) : null}
-
-            <div className="source-control-commit dock-kit-editor">
-              <label>Commit message<textarea className="dock-kit-field" aria-label="Commit message" placeholder="Describe the staged changes" rows={3} value={message} onChange={e => editMessage(e.target.value)} /></label>
-              <div className="dock-kit-editor-footer">
-                <span className="dock-kit-counter">{snapshot.staged.length} staged file{snapshot.staged.length === 1 ? "" : "s"}</span>
-                <DockButton tone="primary" disabled={busy || !message.trim() || !snapshot.staged.length || !!snapshot.conflicts.length} onClick={() => void action("commit")}>Commit</DockButton>
-                <DockButton icon={Upload} disabled={busy || !message.trim() || !snapshot.staged.length || !!snapshot.conflicts.length || !canPush || comparisonBlocked}
-                  title={remoteTitle} onClick={() => setPushOperation("commit-push")}>Commit &amp; Push</DockButton>
-              </div>
-            </div>
-            {hasRemote ? <div className="source-control-actions" role="group" aria-label="Sync with remote">
-              <DockButton icon={Upload} disabled={busy || !canPush || comparisonBlocked} title={remoteTitle} onClick={() => setPushOperation("push")}>Push</DockButton>
-              <DockButton icon={RefreshCw} disabled={busy} title="Download remote changes without changing your files" onClick={() => void action("fetch")}>Fetch</DockButton>
-              <DockButton icon={Download} disabled={busy || !!snapshot.conflicts.length || snapshot.comparison?.related === false} title="Fast-forward to the remote branch" onClick={() => void action("pull")}>Pull</DockButton>
-            </div> : null}
-            <small>Remote checked: {snapshot.comparison?.checkedAt ? new Date(snapshot.comparison.checkedAt).toLocaleTimeString() : remoteChecked || "Not checked yet"} · Pull is fast-forward only.</small>
           </>}
 
           {!snapshot.remoteUrl && !hasRemote && project ? <PublishRepositoryPanel key={project} client={client} projectPath={project} providers={visibleProviders} preferred={provider === "local" ? null : provider}

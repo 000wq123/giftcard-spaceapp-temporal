@@ -2,6 +2,8 @@ import { open, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { PaneCliSession } from "@space/contracts";
+import type { SpaceStore } from "@space/runtime";
 import type { NativeTaskExecution } from "./room-task-telemetry.js";
 import { createNativeReadCache } from "./native-read-cache.js";
 
@@ -25,6 +27,10 @@ export interface ClaudeNativeTurns {
   statusUpdatedAt: string | null;
   modelId: string | null;
   reasoningEffort: string | null;
+  /** Claude's saved session title: a /rename title, else its own AI title. */
+  title: string | null;
+  /** The title came from /rename rather than Claude's automatic AI title. */
+  titleManual: boolean;
   tasks: NativeTaskExecution[];
 }
 
@@ -55,6 +61,8 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let lastActivityAt: string | null = null;
   let modelId: string | null = null;
   let reasoningEffort: string | null = null;
+  let aiTitle: string | null = null;
+  let customTitle: string | null = null;
   const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number) => {
     if (!open) return;
     open.status = status;
@@ -71,6 +79,8 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     let entry: Record<string, unknown>;
     try { entry = record(JSON.parse(line)); } catch { continue; }
     if (entry.isSidechain === true) continue;
+    if (entry.type === "ai-title") { aiTitle = text(entry.aiTitle)?.slice(0, 160) ?? aiTitle; continue; }
+    if (entry.type === "custom-title") { customTitle = text(entry.customTitle)?.slice(0, 160) ?? customTitle; continue; }
     const at = time(entry.timestamp);
     if (entry.type === "system" && entry.subtype === "turn_duration") {
       close("COMPLETED", at, typeof entry.durationMs === "number" ? entry.durationMs : undefined);
@@ -119,7 +129,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   }
   if (open && !busy) close("INTERRUPTED", lastActivityAt);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort };
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {
@@ -230,4 +240,24 @@ export async function loadClaudeNativeTurns(
       return JSON.parse(stdout) as ClaudeNativeTurns | null;
     } catch { return null; }
   }, { fresh });
+}
+
+/**
+ * Claude names its conversation only inside the live process. Record it on the task revision
+ * so host-loss restore, reopen and task history resume it exactly after the process is gone.
+ * Only a session with a written turn has a transcript that `claude --resume` can open.
+ */
+export function createClaudeNativeRefRecorder(store: Pick<SpaceStore, "getCliTaskRevision" | "updateCliTaskRevision">) {
+  const recorded = new Set<string>();
+  return async (session: Pick<PaneCliSession, "cliTaskRevisionId">, native: Pick<ClaudeNativeTurns, "nativeSessionId" | "tasks">): Promise<void> => {
+    if (!native.tasks.length || !session.cliTaskRevisionId) return;
+    const key = `${session.cliTaskRevisionId}|${native.nativeSessionId}`;
+    if (recorded.has(key)) return;
+    const revision = await store.getCliTaskRevision(session.cliTaskRevisionId);
+    if (revision && revision.nativeTaskRef !== native.nativeSessionId) {
+      await store.updateCliTaskRevision(revision.revisionId, { nativeTaskRef: native.nativeSessionId }, "trace:claude-native-ref");
+    }
+    if (recorded.size >= 4_096) recorded.clear();
+    recorded.add(key);
+  };
 }

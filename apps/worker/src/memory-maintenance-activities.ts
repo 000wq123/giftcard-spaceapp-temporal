@@ -37,14 +37,19 @@ import {
   type MemoryGraphSnapshot,
   type MemoryGraphSource
 } from "@space/memory-graph";
-import { redactMemoryText, resolveCanonicalGeminiMemoryPaths } from "@space/runtime";
+import {
+  MONTHLY_MEMORY_FILE_PATTERN,
+  SPACE_MEMORY_DIRECTORY,
+  redactMemoryText,
+  resolveCanonicalSpaceMemoryPaths,
+  spaceMemoryIndexPath,
+  spaceMemoryMonthlyPath
+} from "@space/runtime";
 import { runMemoryAiAudit } from "./memory-ai-audit.js";
 
-const DEFAULT_INDEX_PATH = "/opt/spaceapp/docs/gemini_history.md";
 const DEFAULT_GRAPH_ROOT = "/opt/spaceapp/var/memory-graph";
 const ATHENS_TIME_ZONE = "Europe/Athens";
 const CACHE_BATCH_LIMIT = 500;
-const MONTHLY_MEMORY_PATTERN = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
 interface MemoryMaintenanceCacheStore {
   listMemoryEntries(query: ListMemoryQuery, options: { limit: number }): Promise<MemoryEntry[]> | MemoryEntry[];
@@ -195,7 +200,7 @@ function canonicalSources(
   override?: CanonicalMemorySource[]
 ): CanonicalMemorySource[] {
   if (override) return override;
-  const { indexPath, monthlyPath } = resolveCanonicalGeminiMemoryPaths(env);
+  const { indexPath, monthlyPath } = resolveCanonicalSpaceMemoryPaths(env);
   return [
     { path: indexPath, kind: "INDEX" },
     { path: monthlyPath, kind: "MONTHLY" }
@@ -694,7 +699,7 @@ function athensYearMonth(date: Date): string {
 async function listMonthlyMemoryPaths(memoryDir: string): Promise<string[]> {
   const entries = await readdir(memoryDir, { withFileTypes: true });
   return entries
-    .filter((entry) => entry.isFile() && MONTHLY_MEMORY_PATTERN.test(entry.name))
+    .filter((entry) => entry.isFile() && MONTHLY_MEMORY_FILE_PATTERN.test(entry.name))
     .map((entry) => join(memoryDir, entry.name))
     .sort();
 }
@@ -707,8 +712,8 @@ export async function refreshAllMonthsMemoryGraphSnapshot(
   const startedAt = Date.now();
   const now = options.now ?? (() => new Date());
   const generatedAt = now().toISOString();
-  const indexPath = options.indexPath ?? DEFAULT_INDEX_PATH;
-  const memoryDir = options.memoryDir ?? "/opt/spaceapp/docs";
+  const indexPath = options.indexPath ?? spaceMemoryIndexPath();
+  const memoryDir = options.memoryDir ?? SPACE_MEMORY_DIRECTORY;
   const rootDir = options.rootDir ?? process.env.SPACE_MEMORY_GRAPH_ROOT ?? DEFAULT_GRAPH_ROOT;
   const indexContent = await readFile(indexPath, "utf8");
   const monthlyPaths = await listMonthlyMemoryPaths(memoryDir);
@@ -755,8 +760,8 @@ export async function refreshMemoryGraphSnapshot(
   const now = options.now ?? (() => new Date());
   const generatedAt = now().toISOString();
   const scheduledAt = new Date(input.scheduledAt);
-  const indexPath = options.indexPath ?? DEFAULT_INDEX_PATH;
-  const monthlyPath = options.monthlyPath ?? `/opt/spaceapp/docs/gemini_history_${athensYearMonth(scheduledAt)}.md`;
+  const indexPath = options.indexPath ?? spaceMemoryIndexPath();
+  const monthlyPath = options.monthlyPath ?? spaceMemoryMonthlyPath(athensYearMonth(scheduledAt));
   const rootDir = options.rootDir ?? process.env.SPACE_MEMORY_GRAPH_ROOT ?? DEFAULT_GRAPH_ROOT;
   const [indexContent, monthlyContent] = await Promise.all([
     readFile(indexPath, "utf8"),

@@ -24,7 +24,7 @@ export function cleanTaskText(value: string): string {
     .replace(/\[(?:image|file|attachment|εικόνα|εικονα|αρχείο|αρχειο|συνημμένο)\s*#?\s*\d+\]/giu, " ")
     .replace(/\b(?:Image|File|Attachment)\s*#\s*\d+\b/gi, " ")
     .replace(/(?:αρχείο|αρχειο|εικόνα|εικονα|συνημμένο)\s*#?\s*\d+/giu, " ")
-    .replace(/(?:https?:\/\/[^\s<>]*\/)?(?:\/[^\s<>]*)?\/cli-uploads\/[^\s<>"']+/gi, " ")
+    .replace(/(['"]?)(?:https?:\/\/[^\s<>]*\/)?(?:\/[^\s<>]*)?\/cli-uploads\/[^\s<>"']+\1/gi, " ")
     .replace(/\b(?:upload[_-][\w-]+|clipboard-image-\d+)\.[\w]+\b/gi, " ")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
@@ -70,4 +70,18 @@ export function isSubstantiveTaskRequest(value: string): boolean {
   if (!normalized || /^(?:yes|no|ok|okay|thanks|thank you|continue|go ahead|proceed|resume|ναι|οχι|ενταξει|συνεχισε|συνεχεια|ευχαριστω|προχωρα|κανε το)(?:\s+(?:please|παρακαλω))?$/.test(normalized)) return false;
   if (/^(?:\/\w+|[$>]\s|(?:cd|ls|pwd|cat|rg|git|npm|pnpm|node|curl|sudo|systemctl)\s)/i.test(text)) return false;
   return normalized.length >= 8 && normalized.split(" ").length >= 2;
+}
+
+/**
+ * True when a CLI-saved title merely repeats the start of a submitted request
+ * (e.g. a legacy "first message" title or a truncated-prompt default). Such a
+ * title is not a summary and must never become the task title.
+ */
+export function titleEchoesRequest(title: string, requests: readonly string[]): boolean {
+  const normalized = taskRequestFingerprint(title.replace(/(?:\.\.\.|…)\s*$/u, ""));
+  if (!normalized) return true;
+  return requests.some((request) => {
+    const fingerprint = taskRequestFingerprint(request);
+    return Boolean(fingerprint) && (fingerprint.startsWith(normalized) || normalized.startsWith(fingerprint));
+  });
 }

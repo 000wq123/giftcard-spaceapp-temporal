@@ -1,24 +1,62 @@
 import { randomBytes } from "node:crypto";
 import {
-  gatewayAccountListSchema, gatewayApiKeyCreatedResponseSchema, gatewayApiKeyListSchema, gatewayRequestLogListSchema,
-  gatewayCompressionStatsSchema, gatewayReportSchema, gatewaySettingsSchema, type GatewayCompressionStats, gatewayStatusSchema, type GatewayReport, type GatewayReportRow, type GatewayAccount, type GatewayApiKey, type GatewayApiKeyCreateRequest,
-  type GatewayApiKeyCreatedResponse, type GatewayApiKeyUpdateRequest, type GatewayProvider, type GatewayRequestLogList,
-  type GatewaySettings, type GatewaySettingsUpdateRequest, type GatewayStatus
+  gatewayAccountListSchema, gatewayApiKeyCreatedResponseSchema, gatewayApiKeyListSchema, gatewayRequestLogListSchema, gatewayRequestLogFacetsSchema,
+  gatewayRequestLogSchema, gatewayCompressionStatsSchema, gatewayReportSchema, gatewaySettingsSchema, type GatewayCompressionStats, gatewayStatusSchema,
+  type GatewayReport, type GatewayReportRow, type GatewayAccount, type GatewayAccountDetail, type GatewayApiKey, type GatewayApiKeyCreateRequest,
+  type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayDashboard, type GatewayDashboardRange, type GatewayHealth,
+  type GatewayProvider, type GatewayRequestLog, type GatewayRequestLogFacets, type GatewayRequestLogFilter, type GatewayRequestLogList,
+  type GatewaySettings, type GatewaySettingsUpdateRequest, type GatewayStatus, gatewayApiKeyUpdateRequestSchema, gatewayAccountUpdateRequestSchema,
+  type GatewayHeadroomHistory, type GatewayHeadroomLifetime, type GatewayHeadroomSession, type GatewayHistorySeries
 } from "@space/contracts";
+import type { z } from "zod";
 import type { GatewayAccountRecord, GatewayApiKeyRecord, GatewayRepository } from "@space/db";
 import { readFile } from "node:fs/promises";
-import { generateGatewayApiKey } from "@space/gateway";
+import { generateGatewayApiKey, lanAccessFromSettings } from "@space/gateway";
 import { discoverAntigravityProfiles, extractEmailFromIdToken, type AntigravityProfileLocation } from "../antigravity-usage-services.js";
+import {
+  buildAccountDetail, buildApiKeyDetail, buildGatewayDashboard, defaultHealthProbes, GatewayHealthSampler, requestLogCsv, type GatewayHealthProbes
+} from "./gateway-stats.js";
+import { buildHeadroomHistory, buildHeadroomLifetime, buildHeadroomSession, historyCsv } from "./gateway-headroom.js";
+
+export type GatewayApiKeyUpdate = z.output<typeof gatewayApiKeyUpdateRequestSchema>;
+export type GatewayAccountUpdate = z.output<typeof gatewayAccountUpdateRequestSchema>;
+
+export interface GatewayRequestLogQuery {
+  limit: number;
+  cursor?: string | null;
+  accountId?: string | null;
+  apiKeyId?: string | null;
+  filter?: GatewayRequestLogFilter;
+}
 
 export interface GatewayAdminService {
   status(): Promise<GatewayStatus>;
+  /** True when the gateway answers and has at least one ACTIVE account of the provider (cheap: no usage totals). */
+  serves(provider: GatewayProvider): Promise<boolean>;
   listAccounts(): Promise<{ data: GatewayAccount[] }>;
   setAccountPaused(accountId: string, paused: boolean): Promise<GatewayAccount | null>;
   listApiKeys(): Promise<{ data: GatewayApiKey[] }>;
   createApiKey(input: GatewayApiKeyCreateRequest, actorUserId: string | null): Promise<GatewayApiKeyCreatedResponse>;
-  updateApiKey(keyId: string, patch: GatewayApiKeyUpdateRequest): Promise<GatewayApiKey | null>;
+  updateApiKey(keyId: string, patch: GatewayApiKeyUpdate): Promise<GatewayApiKey | null>;
+  /** A new secret for a key; the plain key is returned once. Settings, limits and usage stay. */
+  regenerateApiKey(keyId: string): Promise<GatewayApiKeyCreatedResponse | null>;
   deleteApiKey(keyId: string): Promise<boolean>;
-  listRequestLogs(query: { limit: number; cursor?: string | null; accountId?: string | null; apiKeyId?: string | null }): Promise<GatewayRequestLogList>;
+  listRequestLogs(query: GatewayRequestLogQuery): Promise<GatewayRequestLogList>;
+  requestLog(id: string): Promise<GatewayRequestLog | null>;
+  requestLogFacets(range: { from?: string; to?: string }): Promise<GatewayRequestLogFacets>;
+  /** Up to 10,000 matching request logs as CSV, newest first. */
+  requestLogCsv(filter: GatewayRequestLogFilter): Promise<string>;
+  dashboard(range: GatewayDashboardRange): Promise<GatewayDashboard>;
+  health(): Promise<GatewayHealth>;
+  accountDetail(accountId: string): Promise<GatewayAccountDetail | null>;
+  /** Pause or resume, alias and warm-up opt-in. */
+  updateAccount(accountId: string, patch: GatewayAccountUpdate): Promise<GatewayAccount | null>;
+  apiKeyDetail(keyId: string): Promise<GatewayApiKeyDetail | null>;
+  /** Headroom views: since the gateway worker started, lifetime, and by day/week/month. */
+  headroomSession(): Promise<GatewayHeadroomSession>;
+  headroomLifetime(): Promise<GatewayHeadroomLifetime>;
+  headroomHistory(): Promise<GatewayHeadroomHistory>;
+  headroomHistoryCsv(series: GatewayHistorySeries): Promise<string>;
   getSettings(): Promise<GatewaySettings>;
   updateSettings(patch: GatewaySettingsUpdateRequest): Promise<GatewaySettings>;
   deleteAccount(accountId: string): Promise<boolean>;
@@ -31,10 +69,15 @@ export interface GatewayAdminService {
   /** Hands a profile's Antigravity sign-in to the gateway (Google refresh tokens do not rotate, so the profile keeps working). */
   importAntigravityProfile(profileId: string): Promise<{ status: number; body: unknown }>;
   /** Adds an OpenAI API key account: a pasted key, or the server's Space OpenAI key file. */
-  addOpenAiApiKey(input: { apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
+  /** OpenAI, OpenRouter or DeepSeek API keys (OpenAI may use this server's key). */
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
 }
 
 export class GatewayAccountNotFoundError extends Error {}
+/** A key change that contradicts itself (an enforced model outside the allowed models). */
+export class GatewayKeyPolicyError extends Error {}
+/** Settings the gateway could not apply (LAN access outside the private ranges, ...). */
+export class GatewaySettingsError extends Error {}
 
 /** Strips the encrypted credential envelope and the key hash before anything leaves the API. */
 function publicAccount(record: GatewayAccountRecord): GatewayAccount {
@@ -66,10 +109,23 @@ export function createGatewayAdminService(options: {
   antigravityProfileSource?: { list(): Promise<AntigravityProfileLocation[]>; read(path: string): Promise<string> };
   /** The server's own OpenAI API key (the one Space uses for voice). */
   spaceOpenAiKeyFile?: string;
+  healthProbes?: GatewayHealthProbes;
 }): GatewayAdminService {
   const { repository } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => new Date());
+  let lastStatusBody: { lanListen?: unknown; inFlightByAccount?: unknown; startedAt?: unknown; inFlightRequests?: unknown; activeWebSockets?: unknown;
+    relayTasks?: unknown; compressionQueue?: unknown } | null = null;
+  const sampler = new GatewayHealthSampler({
+    repository, now: () => now().getTime(),
+    probes: options.healthProbes ?? defaultHealthProbes({ gatewayUrl: options.gatewayUrl, fetchImpl, lanListen: async () => {
+      await serviceState();
+      return typeof lastStatusBody?.lanListen === "string" ? lastStatusBody.lanListen : null;
+    } })
+  });
+  const dashboardCache = new Map<GatewayDashboardRange, { at: number; value: Promise<GatewayDashboard> }>();
+  const knownAccount = async (accountId: string) => (await repository.listAccounts()).find((account) => account.id === accountId) ?? null;
+  const knownKey = async (keyId: string) => (await repository.listApiKeys()).find((key) => key.id === keyId) ?? null;
 
   const profileSource = options.antigravityProfileSource ?? { list: () => discoverAntigravityProfiles(), read: (path: string) => readFile(path, "utf8") };
 
@@ -112,13 +168,18 @@ export function createGatewayAdminService(options: {
       if (!response.ok) {
         return { state: "UNREACHABLE", version: null, startedAt: null, inFlightRequests: null, listen: null, error: `Status check returned HTTP ${response.status}.` };
       }
-      const body = await response.json() as { version?: unknown; startedAt?: unknown; inFlightRequests?: unknown; draining?: unknown; listen?: unknown };
+      const body = await response.json() as {
+        version?: unknown; startedAt?: unknown; inFlightRequests?: unknown; draining?: unknown; listen?: unknown; lanListen?: unknown; inFlightByAccount?: unknown;
+      };
+      lastStatusBody = body;
+      const listen = typeof body.listen === "string" ? body.listen : null;
+      const lanListen = typeof body.lanListen === "string" ? `LAN ${body.lanListen}` : null;
       return {
         state: body.draining === true ? "DRAINING" : "RUNNING",
         version: typeof body.version === "string" ? body.version.slice(0, 80) : null,
         startedAt: typeof body.startedAt === "string" ? body.startedAt.slice(0, 40) : null,
         inFlightRequests: typeof body.inFlightRequests === "number" ? Math.max(0, Math.trunc(body.inFlightRequests)) : null,
-        listen: typeof body.listen === "string" ? body.listen.slice(0, 120) : null,
+        listen: listen === null && lanListen === null ? null : [listen, lanListen].filter(Boolean).join(", ").slice(0, 120),
         error: null
       };
     } catch (error) {
@@ -155,6 +216,12 @@ export function createGatewayAdminService(options: {
         settings,
         checkedAt: now().toISOString()
       });
+    },
+
+    async serves(provider) {
+      const accounts = await repository.listAccounts();
+      if (!accounts.some((account) => account.provider === provider && account.status === "ACTIVE")) return false;
+      return (await serviceState()).state === "RUNNING";
     },
 
     async listAccounts() {
@@ -196,8 +263,33 @@ export function createGatewayAdminService(options: {
     },
 
     async updateApiKey(keyId, patch) {
-      const updated = await repository.updateApiKey(keyId, patch);
+      const current = await knownKey(keyId);
+      if (!current) return null;
+      if (patch.accountIds) {
+        const known = new Set((await repository.listAccounts()).map((account) => account.id));
+        if (patch.accountIds.some((accountId) => !known.has(accountId))) throw new GatewayAccountNotFoundError("One of the selected accounts no longer exists.");
+      }
+      const allowed = patch.allowedModels ?? current.allowedModels;
+      const enforced = patch.enforcedModel !== undefined ? patch.enforcedModel : current.enforcedModel;
+      if (enforced && allowed.length > 0 && !allowed.includes(enforced)) throw new GatewayKeyPolicyError("The enforced model must be one of the allowed models.");
+      const efforts = patch.allowedReasoningEfforts ?? current.allowedReasoningEfforts;
+      const enforcedEffort = patch.enforcedReasoningEffort !== undefined ? patch.enforcedReasoningEffort : current.enforcedReasoningEffort;
+      if (enforcedEffort && efforts.length > 0 && !efforts.includes(enforcedEffort)) {
+        throw new GatewayKeyPolicyError("The enforced reasoning effort must be one of the allowed efforts.");
+      }
+      const at = now();
+      const { limits, ...rest } = patch;
+      const updated = await repository.updateApiKey(keyId, {
+        ...rest,
+        ...(limits ? { limits: limits.map((limit) => ({ ...limit, modelFilter: limit.modelFilter ?? null, resetAt: nextReset(limit.limitWindow, at) })) } : {})
+      });
       return updated ? publicKey(updated) : null;
+    },
+
+    async regenerateApiKey(keyId) {
+      const generated = generateGatewayApiKey();
+      const updated = await repository.regenerateApiKey(keyId, { keyHash: generated.keyHash, keyPrefix: generated.keyPrefix });
+      return updated ? gatewayApiKeyCreatedResponseSchema.parse({ key: publicKey(updated), plainKey: generated.plainKey }) : null;
     },
 
     deleteApiKey: (keyId) => repository.deleteApiKey(keyId),
@@ -205,9 +297,108 @@ export function createGatewayAdminService(options: {
     async listRequestLogs(query) {
       const beforeId = query.cursor && /^\d{1,19}$/.test(query.cursor) ? Number(query.cursor) : null;
       const limit = Math.max(1, Math.min(query.limit, 200));
-      const rows = await repository.listRequestLogs({ limit: limit + 1, beforeId, accountId: query.accountId, apiKeyId: query.apiKeyId });
+      const rows = await repository.listRequestLogs({ limit: limit + 1, beforeId, accountId: query.accountId, apiKeyId: query.apiKeyId, filter: query.filter });
       const data = rows.slice(0, limit);
       return gatewayRequestLogListSchema.parse({ data, nextCursor: rows.length > limit ? data[data.length - 1]!.id : null });
+    },
+
+    async requestLog(id) {
+      const row = await repository.getRequestLog(id);
+      return row ? gatewayRequestLogSchema.parse(row) : null;
+    },
+
+    async requestLogFacets(range) {
+      return gatewayRequestLogFacetsSchema.parse(await repository.requestLogFacets(range));
+    },
+
+    async requestLogCsv(filter) {
+      const rows: GatewayRequestLog[] = [];
+      let beforeId: number | null = null;
+      while (rows.length < 10_000) {
+        const page = await repository.listRequestLogs({ limit: 500, beforeId, filter });
+        rows.push(...page);
+        if (page.length < 500) break;
+        beforeId = Number(page[page.length - 1]!.id);
+      }
+      const [accounts, keys] = await Promise.all([repository.listAccounts(), repository.listApiKeys()]);
+      const accountNames = new Map(accounts.map((account) => [account.id, account.alias ?? account.label]));
+      const keyNames = new Map(keys.map((key) => [key.id, key.name]));
+      return requestLogCsv(rows.slice(0, 10_000), {
+        account: (id) => (id ? accountNames.get(id) ?? "Removed account" : ""),
+        key: (id) => (id ? keyNames.get(id) ?? "Removed key" : "")
+      });
+    },
+
+    async dashboard(range) {
+      const at = now().getTime();
+      const cached = dashboardCache.get(range);
+      if (cached && at - cached.at < 10_000) return cached.value;
+      const value = (async () => {
+        const [accounts, keys] = await Promise.all([repository.listAccounts(), repository.listApiKeys(), serviceState()]);
+        const inFlight = lastStatusBody?.inFlightByAccount;
+        const inFlightByAccount = inFlight && typeof inFlight === "object" && !Array.isArray(inFlight)
+          ? Object.fromEntries(Object.entries(inFlight as Record<string, unknown>).filter(([, count]) => typeof count === "number").map(([id, count]) => [id, Math.max(0, Math.trunc(count as number))]))
+          : null;
+        return buildGatewayDashboard({ repository, range, accounts: accounts.map(publicAccount), keys: keys.map(publicKey), live: { inFlightByAccount }, now: at });
+      })();
+      dashboardCache.set(range, { at, value });
+      value.catch(() => dashboardCache.delete(range));
+      return value;
+    },
+
+    health: () => sampler.snapshot(),
+
+    async accountDetail(accountId) {
+      const account = await knownAccount(accountId);
+      if (!account) return null;
+      const result = await gatewayAdmin(`/__space-gateway/admin/accounts/${accountId}/token-status`);
+      const body = result.body as { accessExpiresAt?: unknown; refreshStored?: unknown; idTokenParsed?: unknown } | null;
+      const tokenStatus = result.status === 200 && body ? {
+        accessExpiresAt: typeof body.accessExpiresAt === "string" ? body.accessExpiresAt : null,
+        refreshStored: typeof body.refreshStored === "boolean" ? body.refreshStored : null,
+        idTokenParsed: typeof body.idTokenParsed === "boolean" ? body.idTokenParsed : null
+      } : null;
+      const { credentialsEncrypted: _credentials, externalAccountId: _external, sourceRef: _sourceRef, blockedUntil: _blocked, ...rest } = account;
+      return buildAccountDetail({ repository, account: rest, tokenStatus, now: now().getTime() });
+    },
+
+    async updateAccount(accountId, patch) {
+      let record: GatewayAccountRecord | null = await knownAccount(accountId);
+      if (!record) return null;
+      if (patch.alias !== undefined || patch.warmupEnabled !== undefined) {
+        record = await repository.updateAccountPreferences(accountId, { alias: patch.alias, warmupEnabled: patch.warmupEnabled });
+      }
+      if (record && patch.paused !== undefined) {
+        record = await repository.setAccountStatus(accountId, patch.paused ? "PAUSED" : "ACTIVE", patch.paused ? "Paused by an administrator." : null);
+      }
+      return record ? publicAccount(record) : null;
+    },
+
+    async headroomSession() {
+      const [service, accounts, settings] = await Promise.all([serviceState(), repository.listAccounts(), repository.getSettings()]);
+      const body = service.state === "RUNNING" || service.state === "DRAINING" ? lastStatusBody : null;
+      const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0);
+      return buildHeadroomSession({
+        repository, startedAt: service.startedAt, compressionMode: settings.compressionMode, accounts: accounts.map(publicAccount), now: now().getTime(),
+        live: body ? { activeRequests: number(body.inFlightRequests), activeWebSockets: number(body.activeWebSockets), relayTasks: number(body.relayTasks),
+          compressionQueue: number(body.compressionQueue) } : null
+      });
+    },
+
+    headroomLifetime: () => buildHeadroomLifetime({ repository, now: now().getTime() }),
+
+    async headroomHistory() {
+      return buildHeadroomHistory({ repository, retentionDays: (await repository.getSettings()).requestLogRetentionDays, now: now().getTime() });
+    },
+
+    async headroomHistoryCsv(series) {
+      return historyCsv(await buildHeadroomHistory({ repository, retentionDays: (await repository.getSettings()).requestLogRetentionDays, now: now().getTime() }), series);
+    },
+
+    async apiKeyDetail(keyId) {
+      const key = await knownKey(keyId);
+      if (!key) return null;
+      return buildApiKeyDetail({ repository, key: publicKey(key), accounts: (await repository.listAccounts()).map(publicAccount), now: now().getTime() });
     },
 
     deleteAccount: (accountId) => repository.deleteAccount(accountId),
@@ -291,10 +482,19 @@ export function createGatewayAdminService(options: {
         if (!apiKey) return { status: 404, body: { error: { code: "space_key_missing", message: "This server has no Space OpenAI key." } } };
         sourceRef = "space-openai-voice";
       }
-      return gatewayAdmin("/__space-gateway/admin/api-key/add", { provider: "OPENAI_API", apiKey, ...(input.label ? { label: input.label } : {}), ...(sourceRef ? { sourceRef } : {}) });
+      return gatewayAdmin("/__space-gateway/admin/api-key/add", { provider: input.provider ?? "OPENAI_API", apiKey, ...(input.label ? { label: input.label } : {}),
+        ...(sourceRef ? { sourceRef } : {}) });
     },
 
     async getSettings() { return gatewaySettingsSchema.parse(await repository.getSettings()); },
-    async updateSettings(patch) { return gatewaySettingsSchema.parse(await repository.updateSettings(patch)); }
+    async updateSettings(patch) {
+      if (patch.lanMode !== undefined || patch.lanHost !== undefined || patch.lanPort !== undefined || patch.lanAllowedSources !== undefined) {
+        const merged = { ...(await repository.getSettings()), ...patch };
+        const checked = lanAccessFromSettings(merged);
+        if (checked.error) throw new GatewaySettingsError(checked.error);
+      }
+      const ordered = patch.planPriority ? [...new Set(patch.planPriority.map((plan) => plan.trim().toLowerCase()).filter(Boolean))] : undefined;
+      return gatewaySettingsSchema.parse(await repository.updateSettings({ ...patch, ...(ordered ? { planPriority: ordered } : {}) }));
+    }
   };
 }

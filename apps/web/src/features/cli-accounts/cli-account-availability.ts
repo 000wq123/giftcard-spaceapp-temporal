@@ -1,4 +1,4 @@
-import type { AntigravityUsageAccount, ClaudeUsageAccount, CliAccountIdentity } from "@space/contracts";
+import type { AntigravityUsageAccount, ClaudeUsageAccount, CliAccountBalance, CliAccountIdentity } from "@space/contracts";
 import type { SharedQuotaCache } from "../desktop-widgets/shared-quota-cache.js";
 import { availabilityLabel, classifyQuota, quotaCapacity } from "../toolbar-metrics/account-availability.js";
 import {
@@ -8,7 +8,7 @@ import {
   claudeStatusLabel,
 } from "../toolbar-metrics/account-entries.js";
 
-export type CliAccountRuntimeId = "cli:gemini" | "cli:claude" | "cli:copilot" | "cli:cursor";
+export type CliAccountRuntimeId = "cli:gemini" | "cli:claude" | "cli:copilot" | "cli:cursor" | "cli:kimi";
 
 // Antigravity meters Gemini models and Claude/GPT models separately.
 export type AntigravityModelGroup = "gemini" | "claude";
@@ -21,8 +21,9 @@ export function antigravityModelGroup(modelId: string | null | undefined): Antig
 }
 
 // ready: usable now; blocked: not usable right now (limit, expired, signed out);
-// neutral: signed in without quota data; pending: nothing known yet.
-export type CliAccountTone = "ready" | "blocked" | "neutral" | "pending";
+// neutral: signed in without quota data; pending: nothing known yet;
+// off: works, but kept out of use (a pay-per-token API key) and only used when picked by hand.
+export type CliAccountTone = "ready" | "blocked" | "neutral" | "pending" | "off";
 
 export interface CliAccountQuotaWindow {
   label: string;
@@ -44,6 +45,7 @@ export interface CliAccountAvailability {
 export const CLI_ACCOUNT_BLOCKED_COLOR = "hsl(0 82% 58%)";
 export const CLI_ACCOUNT_NEUTRAL_COLOR = "hsl(186 34% 58%)";
 export const CLI_ACCOUNT_PENDING_COLOR = "hsl(195 10% 50%)";
+export const CLI_ACCOUNT_OFF_COLOR = "hsl(215 8% 46%)";
 
 // Remaining quota maps continuously from deep orange (nearly empty) through amber and
 // yellow to green (full); red itself is reserved for accounts that cannot be used now.
@@ -112,7 +114,14 @@ function fromQuota(
 
 function claudeAvailability(account: ClaudeUsageAccount, clock: number): CliAccountAvailability {
   if (account.status === "API_KEY") {
-    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "API key", description: "Available now · billed per token, no plan limits", windows: [] };
+    return { tone: "off", percent: null, color: CLI_ACCOUNT_OFF_COLOR, label: "Paid · not used", description: "Paid per token · never chosen automatically", windows: [] };
+  }
+  if (account.status === "GATEWAY" && account.pool) {
+    const entry = claudeAccountEntries([account], clock)[0]!;
+    return fromQuota(entry, [], clock, entry.hint?.replace(/\.$/, "") ?? "");
+  }
+  if (account.status === "GATEWAY") {
+    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now · Space Gateway picks a pooled Claude account", windows: [] };
   }
   if (account.status !== "CONNECTED") {
     const label = claudeStatusLabel(account);
@@ -162,6 +171,41 @@ function identityAvailability(identity: CliAccountIdentity | null): CliAccountAv
   }
 }
 
+type BalanceEntry = CliAccountBalance["profiles"][number];
+
+// Copilot, Cursor and Kimi Code: the quota each account's CLI reports, and the limits Space saw it hit. Null when the
+// reading says nothing (no quota reported or a failed read), so the sign-in status speaks instead.
+function balanceAvailability(entry: BalanceEntry, clock: number): CliAccountAvailability | null {
+  const { usage } = entry;
+  const windows: CliAccountQuotaWindow[] = usage.windows.map((window) => ({ label: window.label, percent: window.remainingPercent }));
+  const summary = windowsSummary(windows);
+  if (entry.exhaustedUntil && Date.parse(entry.exhaustedUntil) > clock) {
+    const label = availabilityLabel({ state: "soon", backAt: entry.exhaustedUntil }, clock);
+    return blocked(label, `Not available now · this account reached its limit · ${label}`, windows);
+  }
+  if (usage.status === "NOT_CONNECTED") return blocked("Not signed in", "Not available now · sign in from a pane that uses this account");
+  if (usage.status === "GATEWAY") {
+    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now · served through Space Gateway", windows: [] };
+  }
+  if (usage.status !== "OK") return null;
+  const percent = usage.remainingPercent;
+  if (percent == null) {
+    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now", windows };
+  }
+  if (percent <= 0) {
+    const label = usage.resetAt ? availabilityLabel({ state: "soon", backAt: usage.resetAt }, clock) : "Limit reached";
+    return blocked(label, `Not available now · ${label}${summary ? ` · ${summary}` : ""}`, windows);
+  }
+  return {
+    tone: "ready",
+    percent,
+    color: cliAccountAvailabilityColor(percent),
+    label: percentText(percent),
+    description: `Available now · ${percentText(percent)} left${summary ? ` · ${summary}` : ""}`,
+    windows,
+  };
+}
+
 export function cliAccountAvailability(input: {
   runtimeId: CliAccountRuntimeId;
   profileId: string;
@@ -170,6 +214,8 @@ export function cliAccountAvailability(input: {
   clock: number;
   // Antigravity only: the model group the pane runs.
   modelGroup?: AntigravityModelGroup | null;
+  // Copilot, Cursor and Kimi Code: the balance Auto works from.
+  balance?: CliAccountBalance | null;
 }): CliAccountAvailability {
   const { runtimeId, profileId, quota, identity, clock } = input;
   if (identity?.authStatus === "NOT_CONNECTED") return identityAvailability(identity);
@@ -183,21 +229,24 @@ export function cliAccountAvailability(input: {
     const account = quota?.agy?.data.find((candidate) => candidate.id === profileId);
     if (account) return antigravityAvailability(account, clock, input.modelGroup ?? null);
   }
-  return identityAvailability(identity);
+  const entry = input.balance?.runtimeId === runtimeId ? input.balance.profiles.find((candidate) => candidate.profileId === profileId) : undefined;
+  return (entry ? balanceAvailability(entry, clock) : null) ?? identityAvailability(identity);
 }
 
 // The plan each provider reports, shortened for a badge: "Google AI Pro" -> "AI Pro".
-export function cliAccountPlan(runtimeId: CliAccountRuntimeId, profileId: string, quota: SharedQuotaCache | null): string | null {
+export function cliAccountPlan(runtimeId: CliAccountRuntimeId, profileId: string, quota: SharedQuotaCache | null, balance: CliAccountBalance | null = null): string | null {
   if (runtimeId === "cli:claude") {
     const account = quota?.claude?.data.find((candidate) => candidate.id === profileId);
     if (account?.status === "API_KEY") return "API key";
+    if (account?.status === "GATEWAY") return "Gateway";
     return account?.plan?.trim() || null;
   }
   if (runtimeId === "cli:gemini") {
     const tier = quota?.agy?.data.find((candidate) => candidate.id === profileId)?.tier?.trim();
     return tier ? tier.replace(/^Google\s+/i, "") : null;
   }
-  return null;
+  if (balance?.runtimeId !== runtimeId) return null;
+  return balance.profiles.find((candidate) => candidate.profileId === profileId)?.usage.plan?.trim() || null;
 }
 
 export function cliAccountInitials(displayName: string): string {

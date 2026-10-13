@@ -38,6 +38,9 @@ export function TaskTitleDetails({
       ? shortTaskTitle(pane.title, "Task")
       : displayTitle;
   const headerText = pane.paneName || title;
+  const metadata = pane.taskMetadata;
+  const topics = metadata?.topics ?? [];
+  const summarizing = metadata?.generationStatus === "pending";
   const fullHeading = pane.paneName && pane.paneName !== title ? `${pane.paneName} · ${title}` : (pane.paneName || title);
   useEffect(() => {
     const handleGlobalDragStart = () => {
@@ -174,21 +177,53 @@ export function TaskTitleDetails({
         >
           <div className="task-title-body">
             <p className="task-title-heading">{fullHeading}</p>
-            <p className="task-title-description">
-              {pane.taskMetadata?.description ||
-                (taskPane
-                  ? "Task details will appear after a request is submitted."
-                  : displayTitle)}
-            </p>
-            {pane.taskMetadata?.steps.length ? (
-              <ol>
-                {pane.taskMetadata.steps.map((step, index) => (
-                  <li key={`${index}:${step}`}>{step}</li>
+            {metadata?.nativeTitle ? (
+              <p className="task-title-native">
+                <span className="task-title-native-label">
+                  Saved in {metadata.nativeTitleLabel || "CLI"}
+                </span>
+                <span className="task-title-native-text">{metadata.nativeTitle}</span>
+              </p>
+            ) : null}
+            {topics.length ? (
+              <ol className="task-title-lines" aria-label="Task title lines">
+                {topics.map((topic, index) => (
+                  <li
+                    key={`${index}:${topic.at}`}
+                    className="task-title-line"
+                    aria-current={index === topics.length - 1 ? "step" : undefined}
+                  >
+                    <span className="task-title-line-title">
+                      {topic.title}
+                      {topic.hasImages ? (
+                        <span className="task-title-line-badge">Image</span>
+                      ) : null}
+                    </span>
+                    {topic.summary ? (
+                      <span className="task-title-line-summary">{topic.summary}</span>
+                    ) : null}
+                  </li>
                 ))}
               </ol>
-            ) : null}
-            {pane.taskMetadata?.earlierWork ? (
-              <p>{pane.taskMetadata.earlierWork}</p>
+            ) : summarizing && !metadata?.description ? null : (
+              <>
+                <p className="task-title-description">
+                  {metadata?.description ||
+                    (taskPane
+                      ? "Task details will appear after a request is submitted."
+                      : displayTitle)}
+                </p>
+                {metadata?.steps.length ? (
+                  <ol>
+                    {metadata.steps.map((step, index) => (
+                      <li key={`${index}:${step}`}>{step}</li>
+                    ))}
+                  </ol>
+                ) : null}
+              </>
+            )}
+            {metadata?.earlierWork ? (
+              <p className="task-title-earlier">Earlier: {metadata.earlierWork}</p>
             ) : null}
             {taskPane ? (
               <div className="task-title-actions">
@@ -240,8 +275,15 @@ export function TaskTitleDetails({
                 </button>
               </div>
             ) : null}
-            {pane.taskMetadata?.generationStatus === "pending" ? (
-              <p role="status">Summary update queued.</p>
+            {summarizing ? (
+              <p role="status" className="task-title-status">
+                {topics.length ? "Checking the latest request…" : "Summarizing the request…"}
+              </p>
+            ) : topics.at(-1)?.source === "local" &&
+              (metadata?.generationStatus === "unavailable" || metadata?.generationStatus === "deferred") ? (
+              <p role="status" className="task-title-status">
+                AI summary unavailable. Showing a local title.
+              </p>
             ) : null}
             {preferencesOpen ? (
               <div className="task-title-preferences">
@@ -265,14 +307,15 @@ export function TaskTitleDetails({
                       <option key={candidate.id} value={candidate.id}>
                         {candidate.displayName} · {candidate.providerId} ·{" "}
                         {candidate.billing}
+                        {candidate.vision ? " · images" : ""}
                       </option>
                     ))}
                   </select>
                 </label>
                 <small>
-                  Summary: {pane.taskMetadata?.generationStatus ?? "pending"} ·
-                  Native title:{" "}
-                  {pane.taskMetadata?.nativeSyncStatus ?? "pending"}
+                  Summary: {metadata?.generationStatus ?? "pending"}
+                  {metadata?.modelId ? ` (${metadata.modelId})` : ""} · Native title:{" "}
+                  {metadata?.nativeSyncStatus ?? "pending"}
                 </small>
               </div>
             ) : null}

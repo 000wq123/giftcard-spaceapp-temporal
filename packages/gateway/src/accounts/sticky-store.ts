@@ -21,14 +21,18 @@ export class StickyStore {
     repository?: GatewayRepository;
     provider: GatewayProvider;
     kind: GatewayStickyKind;
-    ttlMs?: number;
+    /** How long a binding lives after its last use; a function follows a setting that can change. */
+    ttlMs?: number | (() => number);
     flushMs?: number;
     now?: () => number;
     onError?: (error: unknown) => void;
   }) {}
 
   private nowMs() { return (this.options.now ?? Date.now)(); }
-  private ttl() { return this.options.ttlMs ?? 24 * 60 * 60_000; }
+  private ttl() {
+    const ttl = this.options.ttlMs;
+    return typeof ttl === "function" ? ttl() : ttl ?? 24 * 60 * 60_000;
+  }
 
   /** The bound account, from memory or storage; storage failures count as no binding. */
   async get(keyHash: string): Promise<string | undefined> {

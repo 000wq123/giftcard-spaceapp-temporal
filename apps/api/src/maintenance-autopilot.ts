@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
+  cliUpdateAllRequestSchema,
   maintenanceAutopilotRunSchema,
   maintenanceAutopilotScheduleUpdateSchema,
   maintenancePlanSchema,
   type AdminOperationRun,
   type CliSessionCleanupResponse,
+  type CliUpdateAllResult,
   type HostMemoryDetails,
   type MaintenanceAction,
   type MaintenanceAutopilotRun,
@@ -17,7 +19,7 @@ import {
   type MaintenanceAutopilotScheduleUpdate
 } from "@space/contracts";
 import { SpaceConflictError } from "@space/runtime";
-import { CliMaintenanceError, type CliMaintenanceManager } from "./cli-maintenance.js";
+import { CliMaintenanceError, type CliMaintenanceManager, type CliUpdateAllRunner } from "./cli-maintenance.js";
 import type { CliSessionCleanupService } from "./cli-session-cleanup.js";
 
 /**
@@ -346,6 +348,16 @@ export class MaintenanceAutopilot {
 
 export interface CliMaintenanceAutopilotStepOptions {
   manager: Pick<CliMaintenanceManager, "createPlan" | "applyPlan" | "get">;
+  /**
+   * The custom-aware engine behind "Update all CLIs": it fingerprints every
+   * tracked custom procedure, installs through the guarded updater (patched
+   * builds for Autohand/Qwen, rollback on failure), re-applies the tracked
+   * Space configuration and MCP overlays, and verifies the customs afterwards.
+   * Without it, updates fall back to the reviewed plan.
+   */
+  updateAll?: Pick<CliUpdateAllRunner, "detect" | "updateAll">;
+  listCliRuntimeSettings?: () => Promise<ReadonlyArray<{ runtimeId: string; enabled: boolean }>>;
+  onUpdateAll?: (result: CliUpdateAllResult, actorId: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   pollMs?: number;
@@ -362,6 +374,45 @@ function plural(count: number, singular: string, pluralValue = `${singular}s`): 
 function listLabels(labels: string[]): string {
   if (labels.length <= 3) return labels.join(", ");
   return `${labels.slice(0, 3).join(", ")} and ${labels.length - 3} more`;
+}
+
+function cliKey(runtimeId: string): string {
+  return runtimeId.replace(/^cli:/, "");
+}
+
+function updatableKey(key: string): boolean {
+  return cliUpdateAllRequestSchema.safeParse({ keys: [key] }).success;
+}
+
+/** One line per outcome: what changed (from → to), what was already current, and that custom code was kept. */
+export function summarizeUpdateAll(result: CliUpdateAllResult): MaintenanceAutopilotStepOutcome {
+  const updated = result.runtimes.filter((runtime) => runtime.status !== "FAIL" && runtime.code.startsWith("UPDATED"));
+  const failed = result.runtimes.filter((runtime) => runtime.status === "FAIL");
+  // Not updated this time but nothing broke either, e.g. Hermes waits while a session is open.
+  const deferred = result.runtimes.filter((runtime) => runtime.status === "WARN" && !runtime.code.startsWith("UPDATED"));
+  const current = result.runtimes.filter((runtime) => runtime.status === "PASS" && !runtime.code.startsWith("UPDATED"));
+  const withCustom = new Set((result.customSummary ?? []).filter((entry) => entry.hasCustom).map((entry) => `cli:${entry.key}`));
+  const customKept = result.runtimes.filter((runtime) => withCustom.has(runtime.runtimeId) && runtime.customPreserved && runtime.status !== "FAIL");
+  const parts: string[] = [];
+  if (updated.length) {
+    parts.push(`Updated ${listLabels(updated.map((runtime) =>
+      runtime.installedVersion && runtime.availableVersion && runtime.installedVersion !== runtime.availableVersion
+        ? `${runtime.displayName} ${runtime.installedVersion} → ${runtime.availableVersion}`
+        : runtime.displayName))}.`);
+  }
+  if (current.length && !updated.length && !failed.length) parts.push(`${listLabels(current.map((runtime) => runtime.displayName))} already current.`);
+  for (const runtime of deferred.slice(0, 2)) parts.push(runtime.summary);
+  if (customKept.length) parts.push(`Custom code verified and Space settings re-applied for ${plural(customKept.length, "CLI")}.`);
+  const customFailures = failed.filter((runtime) => runtime.code.startsWith("CUSTOM_"));
+  const rolledBack = failed.filter((runtime) => !runtime.code.startsWith("CUSTOM_"));
+  if (rolledBack.length) {
+    parts.push(`${listLabels(rolledBack.map((runtime) => runtime.displayName))} not updated; the previous version was kept (${[...new Set(rolledBack.map((runtime) => runtime.code))].join(", ")}).`);
+  }
+  if (customFailures.length) {
+    parts.push(`Custom code needs attention for ${listLabels(customFailures.map((runtime) => runtime.displayName))}: a tracked custom procedure changed or could not be re-applied. Open Update all CLIs for details.`);
+  }
+  const status = failed.length === 0 ? (deferred.length ? "WARNING" : "DONE") : failed.length === result.runtimes.length ? "FAILED" : "WARNING";
+  return { status, summary: parts.join(" ") || "Nothing changed." };
 }
 
 /** The guarded health check and the update/repair of its recommendations, through the durable maintenance runner. */
@@ -415,28 +466,72 @@ export function createCliMaintenanceAutopilotSteps(options: CliMaintenanceAutopi
     },
     async update(context) {
       if (!context.plan) return { status: "SKIPPED", summary: "Skipped because the health check did not finish." };
-      const actions = context.plan.actions;
-      if (!actions.length) return { status: "DONE", summary: "Nothing to update." };
-      let run: AdminOperationRun;
-      try {
-        run = await options.manager.applyPlan(context.plan.planId, {
-          selectedActionIds: actions.map((action) => action.id),
-          idempotencyKey: randomUUID(),
-          confirmation: "APPLY MAINTENANCE"
-        }, context.actorId);
-      } catch (error) {
-        if (error instanceof CliMaintenanceError && error.code === "CLI_MAINTENANCE_REPAIR_DISABLED") {
-          return { status: "SKIPPED", summary: "Automatic updates and repairs are turned off on this server." };
+      const updateAll = options.updateAll;
+      const repairs = updateAll ? context.plan.actions.filter((action) => action.kind === "REPAIR") : context.plan.actions;
+      const lines: string[] = [];
+      let worst: MaintenanceAutopilotStepOutcome["status"] = "DONE";
+      const raise = (status: MaintenanceAutopilotStepOutcome["status"]) => {
+        const rank = { DONE: 0, SKIPPED: 0, WARNING: 1, FAILED: 2 } as const;
+        if (rank[status] > rank[worst]) worst = status;
+      };
+
+      // Recommended repairs go through the reviewed plan (configuration repair, update, verification).
+      if (repairs.length > 0) {
+        try {
+          const run = await options.manager.applyPlan(context.plan.planId, {
+            selectedActionIds: repairs.map((action) => action.id),
+            idempotencyKey: randomUUID(),
+            confirmation: "APPLY MAINTENANCE"
+          }, context.actorId);
+          const finished = await waitFor(run, options.updateTimeoutMs ?? 90 * 60_000, "The repair");
+          const labels = listLabels(repairs.map((action) => action.label));
+          if (finished.status === "SUCCEEDED") lines.push(`${updateAll ? "Repaired" : "Updated and verified"}: ${labels}.`);
+          else { raise(finished.status === "PARTIAL" ? "WARNING" : "FAILED"); lines.push(finished.summary); }
+        } catch (error) {
+          if (error instanceof CliMaintenanceError && error.code === "CLI_MAINTENANCE_REPAIR_DISABLED") {
+            lines.push("Automatic repairs are turned off on this server.");
+            if (!updateAll) return { status: "SKIPPED", summary: "Automatic updates and repairs are turned off on this server." };
+          } else if (error instanceof CliMaintenanceError && error.code === "CLI_MAINTENANCE_IN_PROGRESS") {
+            if (!updateAll) return { status: "SKIPPED", summary: "Another maintenance run is already in progress. Try again when it finishes." };
+            raise("WARNING");
+            lines.push("Repairs were skipped because another maintenance run is in progress.");
+          } else {
+            throw error;
+          }
         }
-        if (error instanceof CliMaintenanceError && error.code === "CLI_MAINTENANCE_IN_PROGRESS") {
-          return { status: "SKIPPED", summary: "Another maintenance run is already in progress. Try again when it finishes." };
-        }
-        throw error;
       }
-      const finished = await waitFor(run, options.updateTimeoutMs ?? 90 * 60_000, "The update");
-      const labels = listLabels(actions.map((action) => action.label));
-      if (finished.status === "SUCCEEDED") return { status: "DONE", summary: `Updated and verified: ${labels}.` };
-      return { status: finished.status === "PARTIAL" ? "WARNING" : "FAILED", summary: finished.summary };
+      if (!updateAll) return lines.length ? { status: worst, summary: lines.join(" ") } : { status: "DONE", summary: "Nothing to update." };
+
+      // Every pending update, from the health check or from the update engine's own detection.
+      const repairKeys = new Set(repairs.map((action) => cliKey(action.id)));
+      const keys = new Set(context.plan.actions.filter((action) => action.kind === "UPDATE").map((action) => cliKey(action.id)));
+      try {
+        const detection = await updateAll.detect(await options.listCliRuntimeSettings?.() ?? []);
+        for (const entry of detection.cliTypes) {
+          if (entry.managed && entry.updateAvailable && entry.installedVersion) keys.add(entry.key);
+        }
+      } catch {
+        raise("WARNING");
+        lines.push("Update detection was unavailable; only the health check findings were used.");
+      }
+      const selected = [...keys].filter((key) => !repairKeys.has(key) && updatableKey(key));
+      if (selected.length === 0) {
+        if (lines.length === 0) return { status: "DONE", summary: "Every CLI is up to date. Nothing to update." };
+        return { status: worst, summary: lines.join(" ") };
+      }
+      let result: CliUpdateAllResult;
+      try {
+        result = await updateAll.updateAll({ keys: selected as NonNullable<Parameters<typeof updateAll.updateAll>[0]>["keys"], reinstall: true });
+      } catch (error) {
+        raise("FAILED");
+        lines.push(`The custom-aware update could not run: ${error instanceof Error ? error.message : "unknown error"}`);
+        return { status: worst, summary: lines.join(" ") };
+      }
+      await options.onUpdateAll?.(result, context.actorId).catch(() => undefined);
+      const outcome = summarizeUpdateAll(result);
+      raise(outcome.status);
+      lines.push(outcome.summary);
+      return { status: worst, summary: lines.join(" ") };
     }
   };
 }

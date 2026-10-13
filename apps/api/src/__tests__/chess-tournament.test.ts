@@ -9,6 +9,7 @@ import {
   ProviderSlots,
   buildMovePrompt,
   defaultSwissRounds,
+  pickGameIndex,
   roundRobinSchedule,
   swissPairings,
   type ChessStanding,
@@ -86,6 +87,34 @@ describe("chess pairings", () => {
     expect(pairs.flat().sort()).toEqual(["a", "b", "c", "e"]);
   });
 
+  it("hands a free worker the game whose providers are least busy", () => {
+    const games = [
+      { id: "codex-vs-codex", providers: ["codex"] },
+      { id: "codex-vs-claude", providers: ["codex", "claude"] },
+      { id: "claude-vs-openrouter", providers: ["claude", "openrouter"] },
+    ];
+    const running: Record<string, number> = { codex: 4, claude: 1 };
+    const limits: Record<string, number> = { codex: 4, claude: 2, openrouter: 2 };
+    const load = (game: { providers: string[] }) => Math.max(...game.providers.map((provider) => (running[provider] ?? 0) / limits[provider]!));
+    expect(games[pickGameIndex(games, load)]!.id).toBe("claude-vs-openrouter");
+    running.codex = 0;
+    running.claude = 0;
+    expect(pickGameIndex(games, load)).toBe(0);
+  });
+
+  it("mixes equal scores by the tournament's tiebreak instead of catalog order", () => {
+    const standings = ["codex-a", "codex-b", "claude-a", "claude-b"].map((id, seed) => standing(id, seed));
+    expect(swissPairings(standings, new Set(), 1).pairs.map((pair) => pair.slice().sort().join("|"))).toEqual([
+      "codex-a|codex-b",
+      "claude-a|claude-b",
+    ]);
+    const order: Record<string, number> = { "codex-a": 0, "claude-a": 1, "codex-b": 2, "claude-b": 3 };
+    expect(swissPairings(standings, new Set(), 1, (id) => order[id]!).pairs.map((pair) => pair.slice().sort().join("|"))).toEqual([
+      "claude-a|codex-a",
+      "claude-b|codex-b",
+    ]);
+  });
+
   it("gives White to the player who had Black more often", () => {
     const standings = [standing("a", 0, { whiteGames: 2, blackGames: 0 }), standing("b", 1, { whiteGames: 0, blackGames: 2 })];
     expect(swissPairings(standings, new Set(), 3).pairs).toEqual([["b", "a"]]);
@@ -144,21 +173,21 @@ describe("chess tournament runner", () => {
   });
 
   it("adjudicates on material at the ply cap", async () => {
+    // Moves by side to move: pairings decide who gets White.
     const script: Record<string, string[]> = {
-      white: ["e2e4", "d1h5", "h5f7"],
-      black: ["e7e5", "b8c6", "e8f7"],
+      White: ["e2e4", "d1h5", "h5f7"],
+      Black: ["e7e5", "b8c6", "e8f7"],
     };
-    const scripted: ChessMoveRequester = async ({ contestant: player }) => ({
-      text: JSON.stringify({ move: script[player.modelName]!.shift() }),
+    const scripted: ChessMoveRequester = async ({ prompt }) => ({
+      text: JSON.stringify({ move: script[prompt.match(/^You play (White|Black)\./m)![1]!]!.shift() }),
     });
     const runner = new ChessTournamentRunner({ requestMove: scripted, stateFile: join(dir, "adj.json") });
-    await runner.start({ ...fast, rounds: 1, maxPlies: 6 }, [contestant("white"), contestant("black")]);
+    await runner.start({ ...fast, rounds: 1, maxPlies: 6 }, [contestant("a"), contestant("b")]);
     await runner.idle();
     const game = (await runner.snapshot())!.recentGames[0]!;
     // White gave up the queen for a pawn: Black is 8 points ahead.
-    const whiteIsWhite = game.white === "codex/white@low";
     expect(game.reason).toBe("adjudication");
-    expect(game.result).toBe(whiteIsWhite ? "0-1" : "1-0");
+    expect(game.result).toBe("0-1");
   });
 
   it("retries an illegal answer once and counts it", async () => {
@@ -283,22 +312,86 @@ describe("chess tournament runner", () => {
     expect(snapshot.totals.finished).toBe(1);
   });
 
-  it("marks a tournament that was running at restart as interrupted", async () => {
+  it("keeps a running game's moves across a restart and continues it automatically", async () => {
     const file = join(dir, "restart.json");
     const runner = new ChessTournamentRunner({ requestMove: firstLegal, stateFile: file });
-    await runner.start({ ...fast, rounds: 1, maxPlies: 4 }, [contestant("a"), contestant("b")]);
+    await runner.start({ ...fast, rounds: 1, maxPlies: 6 }, [contestant("a"), contestant("b")]);
     await runner.idle();
     const saved = JSON.parse(await readFile(file, "utf8"));
+    const finished = saved.games[0];
+    // The API went down two plies into the game.
     saved.status = "running";
-    saved.games[0].status = "running";
-    saved.games[0].san = ["e4"];
+    saved.updatedAt = new Date().toISOString();
+    Object.assign(finished, {
+      status: "running",
+      result: null,
+      reason: null,
+      finishedAt: null,
+      san: finished.san.slice(0, 2),
+      uci: finished.uci.slice(0, 2),
+      stats: { w: { modelMoves: 1, illegalReplies: 0, fallbackMoves: 0, totalLatencyMs: 5, tokens: 10 }, b: { modelMoves: 1, illegalReplies: 0, fallbackMoves: 0, totalLatencyMs: 5, tokens: 10 } },
+    });
+    for (const standing of Object.values(saved.standings) as Array<Record<string, unknown>>) {
+      Object.assign(standing, { points: 0, wins: 0, draws: 0, losses: 0, games: 0, elo: 1500, opponents: [], modelMoves: 0, tokens: 0 });
+    }
     await writeFile(file, JSON.stringify(saved));
 
     const restarted = new ChessTournamentRunner({ requestMove: firstLegal, stateFile: file });
     const snapshot = (await restarted.snapshot())!;
     expect(snapshot.status).toBe("interrupted");
     expect(snapshot.totals.pending).toBe(1);
-    expect(snapshot.totals.plies).toBe(0);
+    expect(snapshot.totals.plies).toBe(2);
+
+    expect(await restarted.resumeIfInterrupted()).toBe(true);
+    await restarted.idle();
+    const done = (await restarted.snapshot())!;
+    expect(done.status).toBe("completed");
+    const game = (await restarted.game(finished.id))!;
+    expect(game.san.slice(0, 2)).toEqual(finished.san.slice(0, 2));
+    expect(game.san).toHaveLength(6);
+    // Two moves from before the restart plus four after it.
+    expect(done.standings.reduce((sum, row) => sum + row.modelMoves, 0)).toBe(6);
+    expect(game.stats).toBeUndefined();
+  });
+
+  it("does not resume a tournament someone stopped", async () => {
+    const file = join(dir, "stopped.json");
+    const runner = new ChessTournamentRunner({ requestMove: firstLegal, stateFile: file });
+    await runner.start({ ...fast, rounds: 1, maxPlies: 4 }, [contestant("a"), contestant("b")]);
+    await runner.idle();
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    saved.status = "stopped";
+    await writeFile(file, JSON.stringify(saved));
+    const restarted = new ChessTournamentRunner({ requestMove: firstLegal, stateFile: file });
+    expect(await restarted.resumeIfInterrupted()).toBe(false);
+  });
+
+  it("stops mid-game and continues the same game on Resume", async () => {
+    let held = false;
+    const pausing: ChessMoveRequester = async (request) => {
+      if (held) {
+        await new Promise<void>((_, reject) => request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      }
+      return firstLegal(request);
+    };
+    let calls = 0;
+    const counting: ChessMoveRequester = async (request) => {
+      calls += 1;
+      if (calls === 4) held = true;
+      return pausing(request);
+    };
+    const runner = new ChessTournamentRunner({ requestMove: counting, stateFile: join(dir, "pause.json") });
+    await runner.start({ ...fast, rounds: 1, maxPlies: 10 }, [contestant("a"), contestant("b")]);
+    for (let wait = 0; wait < 200 && !held; wait += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    await runner.stop();
+    const paused = (await runner.snapshot())!;
+    expect(paused.totals.plies).toBe(3);
+    held = false;
+    await runner.resume();
+    await runner.idle();
+    const done = (await runner.snapshot())!;
+    expect(done.status).toBe("completed");
+    expect(done.totals.plies).toBe(10);
   });
 });
 
@@ -491,6 +584,72 @@ describe("chess CLI providers", () => {
     expect(providers.gemini).toMatchObject({ available: false, note: "catalog failed" });
     expect(loaded.contestants.map((row) => row.id)).toContain("claude/sonnet@max");
     expect(loaded.contestants.map((row) => row.id)).toContain("grok/grok-4.7@default");
+  });
+
+  it("sends CLI moves to the worker with model, effort and Claude account", async () => {
+    const { createChessMoveRequester } = await import("../chess/chess-players.js");
+    const calls: Array<Record<string, unknown>> = [];
+    const requester = createChessMoveRequester({
+      claudeProfile: async () => "crew",
+      runCliMove: async ({ signal: _signal, ...input }) => {
+        calls.push(input);
+        return '{"move":"e2e4"}';
+      },
+    });
+    const player: ChessContestant = {
+      id: "claude/sonnet@high", modelId: "claude/sonnet", providerId: "claude", modelName: "Sonnet", reasoningEffort: "high", displayName: "Sonnet · high",
+    };
+    const signal = new AbortController().signal;
+    const reply = await requester({ contestant: player, system: "SYS", prompt: "PROMPT", signal });
+    expect(reply.text).toBe('{"move":"e2e4"}');
+    expect(calls[0]).toEqual({ runtimeId: "cli:claude", model: "sonnet", effort: "high", claudeProfile: "crew", prompt: "SYS\n\nPROMPT" });
+    // Without the worker the API never starts a CLI itself.
+    await expect(createChessMoveRequester()({ contestant: player, system: "SYS", prompt: "PROMPT", signal })).rejects.toThrow(
+      "CLI moves need the Space worker."
+    );
+  });
+
+  it("asks the worker for CLI moves over its socket and stops a move on abort", async () => {
+    const { createServer } = await import("node:http");
+    const { createWorkerCliMoveRunner } = await import("../chess/chess-cli.js");
+    const socketPath = join(dir, "worker.sock");
+    let lastBody: Record<string, unknown> = {};
+    let closedEarly = false;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        lastBody = JSON.parse(body);
+        if (lastBody.prompt === "slow") {
+          response.on("close", () => {
+            if (!response.writableFinished) closedEarly = true;
+          });
+          return;
+        }
+        if (lastBody.prompt === "quota") {
+          response.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: "quota exhausted" }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ text: '{"move":"d2d4"}' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    try {
+      const run = createWorkerCliMoveRunner(socketPath);
+      const input = { runtimeId: "cli:claude", model: "sonnet", effort: "low", claudeProfile: "crew", prompt: "move", signal: new AbortController().signal };
+      expect(await run(input)).toBe('{"move":"d2d4"}');
+      expect(lastBody).toMatchObject({ runtimeId: "cli:claude", model: "sonnet", effort: "low", claudeProfile: "crew", prompt: "move" });
+      await expect(run({ ...input, prompt: "quota" })).rejects.toThrow("quota exhausted");
+      const controller = new AbortController();
+      const slow = run({ ...input, prompt: "slow", signal: controller.signal });
+      setTimeout(() => controller.abort(), 30);
+      await expect(slow).rejects.toThrow("aborted");
+      for (let wait = 0; wait < 100 && !closedEarly; wait += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(closedEarly).toBe(true);
+      await expect(createWorkerCliMoveRunner(join(dir, "missing.sock"))(input)).rejects.toThrow("Space worker unavailable");
+    } finally {
+      server.close();
+    }
   });
 
   it("plays Claude on the signed-in account with the most quota left", async () => {

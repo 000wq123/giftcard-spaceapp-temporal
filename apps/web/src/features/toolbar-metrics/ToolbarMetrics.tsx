@@ -27,8 +27,6 @@ import type {
   CodexUsageAccountList,
   HostMemoryDetails,
   MemoryReclaimResponse,
-  ProviderSwitchResponse,
-  ProviderSwitchTargets,
   SystemAnalyticsCliSessionsResponse,
   SystemAnalyticsModelsResponse,
   SystemAnalyticsResourcesResponse,
@@ -116,8 +114,6 @@ export interface ToolbarMetricsClient {
   reapCliSessions(): Promise<CliSessionReapResponse>;
   hostMemory(): Promise<HostMemoryDetails>;
   reclaimMemory(): Promise<MemoryReclaimResponse>;
-  providerTargets(): Promise<ProviderSwitchTargets>;
-  switchProvider(providerId: string): Promise<ProviderSwitchResponse>;
   analyticsResources?(): Promise<SystemAnalyticsResourcesResponse>;
   analyticsCliSessions?(): Promise<SystemAnalyticsCliSessionsResponse>;
   analyticsModels?(): Promise<SystemAnalyticsModelsResponse>;
@@ -144,8 +140,6 @@ const defaultClient: ToolbarMetricsClient = {
   reapCliSessions: () => api.reapToolbarCliSessions(),
   hostMemory: () => api.toolbarHostMemory(),
   reclaimMemory: () => api.reclaimToolbarMemory(),
-  providerTargets: () => api.toolbarProviderTargets(),
-  switchProvider: (providerId) => api.switchToolbarProvider(providerId),
   analyticsResources: () => api.systemAnalyticsResources("10m"),
   analyticsCliSessions: () => api.systemAnalyticsCliSessions("10m"),
   analyticsModels: () => api.systemAnalyticsModels("10m"),
@@ -273,21 +267,9 @@ export function getToolbarRttPresentation(rttMs: number | null, failed: boolean)
 
 function providerBadge(environment: CodexEnvironment | null): string {
   const modelProvider = environment?.config.modelProvider?.toLowerCase() ?? "";
-  const routeMode = environment?.lbUsage?.routeMode;
-  const routeTargetMode = environment?.lbUsage?.routeTargetMode;
-  const upstream = environment?.lbUsage?.upstream?.toLowerCase() ?? "";
   if (modelProvider === "openai") return "OPAI";
-  if (routeMode === "headroom" || upstream === "headroom") return "HD";
-  if (routeTargetMode === "fallback" || upstream === "fallback") return "LB.B";
-  if (routeMode === "direct" || routeTargetMode === "primary" || routeTargetMode === "auto" || upstream === "primary") return "LB.A";
-  if (modelProvider === "codex-lb") return "LB.A";
-  return "--";
-}
-
-function providerBadgeFromSwitch(result: ProviderSwitchResponse): string {
-  if (result.routeMode === "headroom") return "HD";
-  if (result.routeTargetMode === "fallback") return "LB.B";
-  if (result.routeMode === "direct") return "LB.A";
+  // Space Gateway serves Codex; codex-lb and Headroom (the HD and LB routes) are retired.
+  if (modelProvider === "space-gateway") return "GW";
   return "--";
 }
 
@@ -498,7 +480,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const resetCredits = useLazyResource(() => client.resetCredits(), 60_000);
   const cli = useLazyResource(() => client.cliSessions(), 5_000, sharedTelemetry?.sessions);
   const memory = useLazyResource(() => client.hostMemory(), 10_000);
-  const providers = useLazyResource(() => client.providerTargets(), 10_000);
   const modelStats = useLazyResource(
     () => client.modelStats(roomId ?? "global", TOOLBAR_MODEL_WINDOW_MINUTES),
     30_000
@@ -519,7 +500,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const closeTimerRef = useRef<number | null>(null);
   const resetInFlightRef = useRef(new Set<string>());
   const actionTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const providerMenuRef = useRef<HTMLDivElement | null>(null);
   const [activePanel, setActivePanel] = useState<PanelKey | null>(presentation === "embedded" ? initialPanel : null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerTriggerRef = useRef<HTMLButtonElement>(null);
@@ -539,9 +519,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   }, [telemetryVisible, isExhausted, activePanel]);
   const cooldown = computeCodexCooldown(accounts.data, environment, clock);
   useAutoDismiss(actionMessage, setActionMessage);
-  const [providerMenuFocusRequested, setProviderMenuFocusRequested] = useState(false);
-  const [providerSwitchingId, setProviderSwitchingId] = useState<string | null>(null);
-  const [switchedProviderCode, setSwitchedProviderCode] = useState<string | null>(null);
   const [resetAttempts, setResetAttempts] = useState<Record<string, {
     idempotencyKey: string;
     status: "resetting" | "retry";
@@ -553,8 +530,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const [reopeningAll, setReopeningAll] = useState(false);
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
   const snapshot = getToolbarMetricsSnapshot(environment);
-  const providerCode = isCodexEnabled ? switchedProviderCode ?? snapshot.provider : "OFF";
-  const visibleProviderTargets = providers.data?.data.filter((provider) => provider.isCurrent || provider.canSwitch) ?? [];
+  const providerCode = isCodexEnabled ? snapshot.provider : "OFF";
   const rtt = getToolbarRttPresentation(rttMs, rttFailed);
   const detailedModels = analyticsModels.data?.models ?? null;
   const badgeModels = detailedModels ?? modelStats.data?.models ?? null;
@@ -576,7 +552,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     await modelStats.load(force);
   }, [analyticsModels.load, client, modelStats.load]);
 
-  useEffect(() => setSwitchedProviderCode(null), [environment]);
   useEffect(() => {
     if (!canManage || !telemetryVisible || (presentation === "embedded" && activePanel !== "models")) return;
     let disposed = false;
@@ -594,7 +569,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   useEffect(() => {
     if (isCodexEnabled) return;
     setActivePanel((current) => current === "accounts" || current === "provider" ? null : current);
-    setProviderMenuFocusRequested(false);
   }, [isCodexEnabled]);
   useEffect(() => {
     if (!telemetryVisible || presentation === "embedded") return;
@@ -640,10 +614,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [client, telemetryVisible, presentation]);
-  useEffect(() => {
-    if (!providerMenuFocusRequested || !providers.data) return;
-    providerMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [providerMenuFocusRequested, providers.data]);
   useEffect(() => () => {
     if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
   }, []);
@@ -657,7 +627,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
   const closePanel = useCallback(() => {
     cancelClose();
     setActivePanel(null);
-    setProviderMenuFocusRequested(false);
   }, [cancelClose]);
 
   const requestClose = useCallback(() => {
@@ -678,7 +647,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       case "cpu": return Promise.all([memory.load(), analyticsResources.load()]);
       case "rtt": return Promise.resolve();
       case "models": return loadModels();
-      case "provider": return providers.load();
+      case "provider": return Promise.resolve();
     }
   }
 
@@ -750,27 +719,6 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       setActionMessage(reason instanceof Error ? reason.message : "The safe toolbar action failed.");
     } finally {
       setActionBusy(false);
-    }
-  }
-
-  async function switchProvider(providerId: string) {
-    if (!isCodexEnabled || providerSwitchingId || !allowChanges || !canManage) return;
-    const target = providers.data?.data.find((item) => item.providerId === providerId);
-    setProviderSwitchingId(providerId);
-    setActionMessage(null);
-    try {
-      const result = await client.switchProvider(providerId);
-      setSwitchedProviderCode(providerBadgeFromSwitch(result));
-      setActionMessage(result.status === "SWITCHED"
-        ? `Provider switched to ${target?.displayName ?? providerId}.`
-        : "Provider route unchanged; no external route was modified.");
-      closePanel();
-      await providers.load(true);
-      await onChanged?.();
-    } catch (reason) {
-      setActionMessage(reason instanceof Error ? reason.message : "Provider switch failed; the previous route remains active.");
-    } finally {
-      setProviderSwitchingId(null);
     }
   }
 
@@ -1360,24 +1308,9 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     return (
       <>
         <header><strong>Codex provider</strong><small>{providerCode}</small></header>
-        {providers.loading ? <p className="toolbar-metric-note">Checking provider routes…</p> : null}
-        {providers.error ? <p className="toolbar-metric-error" role="alert">{providers.error}</p> : null}
-        {providers.data && visibleProviderTargets.length ? <div ref={providerMenuRef} className="toolbar-provider-menu" role="menu" aria-label="Provider quick switch">
-          {visibleProviderTargets.map((provider) => (
-            <button
-              key={provider.providerId}
-              type="button"
-              role="menuitemradio"
-              aria-checked={provider.isCurrent}
-              disabled={!allowChanges || provider.isCurrent || Boolean(providerSwitchingId)}
-              title={provider.reason ?? undefined}
-              onClick={() => void switchProvider(provider.providerId)}
-            >
-              <span>{provider.displayName}</span>
-              <small>{providerSwitchingId === provider.providerId ? "Switching…" : provider.isCurrent ? "Current" : provider.health}</small>
-            </button>
-          ))}
-        </div> : providers.data ? <p className="toolbar-metric-note">No active provider routes are available.</p> : null}
+        <p className="toolbar-metric-note">{providerCode === "GW"
+          ? "Codex runs through Space Gateway. Accounts, routing and compression are set in Space Gateway."
+          : "Codex uses the provider in its own configuration."}</p>
       </>
     );
   }
@@ -1401,7 +1334,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         : null
     : null;
 
-  const metricStrip = <section className="toolbar-lb-strip toolbar-metrics-strip" aria-label={roomName ? `Room Codex LB ${roomName}` : "Toolbar system metrics"}>
+  const metricStrip = <section className="toolbar-lb-strip toolbar-metrics-strip" aria-label={roomName ? `Room metrics ${roomName}` : "Toolbar system metrics"}>
       <button
         ref={(node) => { anchorsRef.current.accounts = node; }}
         type="button"
@@ -1496,10 +1429,7 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
         aria-controls="toolbar-metric-panel-provider"
         disabled={!isCodexEnabled}
         title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
-        onClick={() => {
-          openPanel("provider");
-          if (canManage) setProviderMenuFocusRequested(true);
-        }}
+        onClick={() => openPanel("provider")}
         {...anchorEvents("provider")}
       ><small>{presentation === "drawer" ? "Provider" : providerCode}</small>{presentation === "drawer" ? <strong>{providerCode}</strong> : null}</button>
     </section>;

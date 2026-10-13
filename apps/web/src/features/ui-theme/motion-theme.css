@@ -636,7 +636,8 @@
 
 /* Motion Theme CLI Shortcuts Popover */
 :root[data-interface-theme="motion"] .terminal-shortcuts-popover,
-.terminal-shortcuts-popover[data-interface-theme="motion"] {
+.terminal-shortcuts-popover[data-interface-theme="motion"],
+:root[data-interface-theme="motion"] .terminal-model-popover-quick {
   font-family: var(--font-sans);
   border-radius: 16px;
   border-color: #282e31;

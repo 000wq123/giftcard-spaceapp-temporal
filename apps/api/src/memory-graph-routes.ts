@@ -40,6 +40,8 @@ import {
   SpaceConflictError,
   SpaceFeatureDisabledError,
   SpaceNotFoundError,
+  isMemoryCoreFile,
+  monthOfMemoryFile,
   redactMemoryText,
   type SpaceStore
 } from "@space/runtime";
@@ -185,8 +187,7 @@ function filterNodes(snapshot: Awaited<ReturnType<MemoryGraphApiService["getSnap
     if (query.roomId && record?.roomId !== query.roomId && !(node.type === "ROOM" && node.label === query.roomId)) return false;
     if (query.sourcePath && node.sourcePath !== query.sourcePath) return false;
     if (query.month && query.month !== "all") {
-      const expected = `gemini_history_${query.month}.md`;
-      if (!node.sourcePath || node.sourcePath.split(/[\\/]/).at(-1) !== expected) return false;
+      if (!node.sourcePath || monthOfMemoryFile(node.sourcePath) !== query.month) return false;
     }
     if (query.lifecycleStatus && record?.lifecycleStatus !== query.lifecycleStatus) return false;
     if (!normalizedQuery) return true;
@@ -199,10 +200,9 @@ function monthScopedSummary(
   snapshot: Awaited<ReturnType<MemoryGraphApiService["getSnapshot"]>>["snapshot"],
   month: string
 ): MemoryGraphSummary {
-  const expected = `gemini_history_${month}.md`;
   const monthSources = new Set(
     snapshot.nodes
-      .filter((node) => node.sourcePath?.split(/[\\/]/).at(-1) === expected)
+      .filter((node) => node.sourcePath && monthOfMemoryFile(node.sourcePath) === month)
       .map((node) => node.sourcePath!)
   );
   const inMonth = (sourcePath: string | null) => Boolean(sourcePath && monthSources.has(sourcePath));
@@ -328,7 +328,7 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     Number(explicit.has(b.id)) - Number(explicit.has(a.id)) ||
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
   ).slice(0, 160);
-  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(b.label === "gemini.md") - Number(a.label === "gemini.md") || a.id.localeCompare(b.id)).slice(0, 120);
+  const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
   const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
   // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
   for (const topic of topics) {
@@ -428,9 +428,9 @@ function resolveRecordCalendarDate(record: MemoryGraphRecord): { dateKey: string
   if (titleMatch?.[1]) {
     return { dateKey: titleMatch[1], isoCreatedAt: `${titleMatch[1]}T00:00:00.000Z` };
   }
-  const pathMatch = record.sourcePath?.match(/gemini_history_(\d{4})-(\d{2})/);
-  if (pathMatch?.[1] && pathMatch?.[2]) {
-    const fallbackKey = `${pathMatch[1]}-${pathMatch[2]}-01`;
+  const sourceMonth = record.sourcePath ? monthOfMemoryFile(record.sourcePath) : null;
+  if (sourceMonth) {
+    const fallbackKey = `${sourceMonth}-01`;
     return { dateKey: fallbackKey, isoCreatedAt: `${fallbackKey}T00:00:00.000Z` };
   }
   if (record.createdAt) {

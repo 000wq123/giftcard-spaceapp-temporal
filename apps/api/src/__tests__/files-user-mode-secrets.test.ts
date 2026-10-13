@@ -29,10 +29,14 @@ describe("User Mode never exposes install secrets or runtime data", () => {
   afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 
   it("classifies restricted locations relative to the workspace root", () => {
-    for (const path of [".env", ".env.local", "secrets/telegram.json", "var/artifacts/upload.png", "backups/db.sql", ".git/config", "projects/demo/.env", "var", "var/worktrees/space/wt-1/.env"]) {
+    for (const path of [".env", ".env.local", "secrets/telegram.json", "var/artifacts/upload.png", "backups/db.sql", ".git/config", "projects/demo/.env", "var", "var/worktrees/space/wt-1/.env",
+      // Inside a managed worktree: Git metadata at any depth and the install root's restricted directories.
+      "var/worktrees/space/wt-1/.git", "projects/demo/.git/config", "var/worktrees/space/wt-1/packages/x/.git/HEAD",
+      "var/worktrees/space/wt-1/secrets/token.json", "var/worktrees/space/wt-1/backups/db.sql", "var/worktrees/space/wt-1/var/artifacts/a.png"]) {
       expect(isUserModeRestricted(join(root, path), root), path).toBe(true);
     }
-    for (const path of ["", ".env.example", "apps/api/index.ts", "projects/demo/env-notes.md", "variables", "var/worktrees/space/wt-1/src/index.ts", "var/worktrees"]) {
+    for (const path of ["", ".env.example", "apps/api/index.ts", "projects/demo/env-notes.md", "variables", "var/worktrees/space/wt-1/src/index.ts", "var/worktrees",
+      "var/worktrees/space/wt-1", "var/worktrees/space/wt-1/docs/secrets-guide.md", "var/worktrees/space/wt-1/.github/workflows/ci.yml"]) {
       expect(isUserModeRestricted(join(root, path), root), path).toBe(false);
     }
   });

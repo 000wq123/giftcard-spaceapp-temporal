@@ -6,7 +6,11 @@ export interface ClaudeUsageTokens {
   inputTokens: number | null;
   cacheReadInputTokens: number | null;
   cacheCreationInputTokens: number | null;
+  /** Part of the cache writes made with the 1-hour TTL. */
+  cacheCreation1hInputTokens?: number | null;
   outputTokens: number | null;
+  /** "fast" for fast mode. */
+  speed?: string | null;
 }
 
 type Json = Record<string, unknown>;
@@ -78,7 +82,9 @@ export class ClaudeStreamInspector {
       inputTokens: count(usage.input_tokens) ?? this.usage.inputTokens,
       cacheReadInputTokens: count(usage.cache_read_input_tokens) ?? this.usage.cacheReadInputTokens,
       cacheCreationInputTokens: count(usage.cache_creation_input_tokens) ?? this.usage.cacheCreationInputTokens,
-      outputTokens: count(usage.output_tokens) ?? this.usage.outputTokens
+      cacheCreation1hInputTokens: count(obj(usage.cache_creation)?.ephemeral_1h_input_tokens) ?? this.usage.cacheCreation1hInputTokens ?? null,
+      outputTokens: count(usage.output_tokens) ?? this.usage.outputTokens,
+      speed: typeof usage.speed === "string" ? usage.speed : this.usage.speed ?? null
     };
   }
 }
@@ -88,7 +94,9 @@ export function claudeResponseUsage(body: unknown): ClaudeUsageTokens {
   const usage = obj(obj(body)?.usage);
   return {
     inputTokens: count(usage?.input_tokens), cacheReadInputTokens: count(usage?.cache_read_input_tokens),
-    cacheCreationInputTokens: count(usage?.cache_creation_input_tokens), outputTokens: count(usage?.output_tokens)
+    cacheCreationInputTokens: count(usage?.cache_creation_input_tokens),
+    cacheCreation1hInputTokens: count(obj(usage?.cache_creation)?.ephemeral_1h_input_tokens), outputTokens: count(usage?.output_tokens),
+    speed: typeof usage?.speed === "string" ? usage.speed : null
   };
 }
 

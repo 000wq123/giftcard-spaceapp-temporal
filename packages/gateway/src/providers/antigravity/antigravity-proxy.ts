@@ -4,6 +4,7 @@ import type { GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
+import { requestOrigin } from "../../client-detect.js";
 import { hashKey, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
@@ -152,6 +153,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const stickyHash = sessionId ? hashKey(`antigravity:${sessionId}`) : null;
     const settings = await options.settings();
     const tried = new Set<string>();
+    const origin = requestOrigin(request);
     const log = (account: GatewayAccountRecord | null, status: "success" | "error", errorCode: string | null, usage: GeminiUsage | null, extra: { firstTokenMs?: number | null; model?: string | null; errorMessage?: string | null } = {}) =>
       options.logs.add({
         requestId, requestedAt: new Date(startedAt).toISOString(), provider: "ANTIGRAVITY", accountId: account?.id ?? null, apiKeyId: null,
@@ -159,7 +161,8 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         errorMessage: extra.errorMessage ?? null, latencyMs: now() - startedAt, firstTokenMs: extra.firstTokenMs ?? null,
         inputTokens: usage?.promptTokens ?? null, cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null,
         reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: null, compressionTokensSaved: null, planType: account?.planType ?? null,
-        stickyKeySource: sessionId ? "request.sessionId" : null, stickyKind: stickyHash ? "PROMPT_CACHE" : null, stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null
+        stickyKeySource: sessionId ? "request.sessionId" : null, stickyKind: stickyHash ? "PROMPT_CACHE" : null, stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null,
+        ...origin
       });
 
     let lastError: { status: number; body: string; headers: Headers | null } | null = null;
@@ -167,7 +170,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
       const account = await pick(group, tried, stickyHash, settings);
       if (!account) break;
       tried.add(account.id);
-      options.pool.markSelected(account.id);
+      options.pool.markSelected(account.id, reply.raw);
       let credentials;
       try {
         credentials = await options.pool.credentials(account);

@@ -21,6 +21,10 @@ export default defineConfig({
       "**/.git/**"
     ],
     maxWorkers: 2,
-    minWorkers: 1
+    minWorkers: 1,
+    // Most API tests build the whole app; on the shared public-host that alone can pass 5 s under load
+    // (two cli-runtimes tests in the full npm test of 2026-10-12).
+    testTimeout: 20_000,
+    hookTimeout: 20_000
   }
 });

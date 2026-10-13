@@ -1,17 +1,21 @@
 import { existsSync } from "node:fs";
 import { apiPackageVersion } from "./package-version.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   cliChatTurnDefaultRuntimeIds,
   DOT_WORKSPACE_ROOT,
   mcpServerConfigListSchema,
   voiceTranscriptionModelSchema,
   voiceModelVoiceSchema,
+  instanceBackgroundJobEnabled,
+  instanceBackgroundJobs,
+  type InstanceBackgroundJob,
   type McpServerConfig,
+  type SpaceInstance,
   type VoiceTranscriptionModel,
   type VoiceModelVoice
 } from "@space/contracts";
-import { resolveCanonicalGeminiMemoryPaths } from "@space/runtime";
+import { resolveCanonicalSpaceMemoryPaths } from "@space/runtime";
 import {
   configuredCliCredentialSmoke,
   configuredCliLoginBootstrap,
@@ -26,6 +30,9 @@ export interface SpaceApiConfig {
   t3CodeSocketPath: string;
   t3CodeProxyTimeoutMs: number;
   t3CodeHealthTimeoutMs: number;
+  instance: SpaceInstance;
+  /** Jobs that would repeat copied stable work; a dev instance runs only those it opts into. */
+  instanceJobs: Record<InstanceBackgroundJob, boolean>;
   host: string;
   port: number;
   version: string;
@@ -39,6 +46,8 @@ export interface SpaceApiConfig {
   temporalNamespace: string;
   temporalTaskQueue: string;
   workflowsEnabled?: boolean;
+  /** The public SpaceApp installer (run-spaceapp) runs this API; CLIs there run as an unprivileged user. */
+  publicDistribution?: boolean;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -48,8 +57,6 @@ export interface SpaceApiConfig {
   codexLbKeyName: string | null;
   /** Space Gateway base URL (the native account load balancer service). */
   gatewayUrl: string;
-  /** Where Codex account quotas and reset credits come from: "gateway" (Space Gateway) or the legacy public-host bridge. */
-  codexUsageSource: "gateway" | "vm214";
   codexAppServerEnabled: boolean;
   codexAppServerCommand: string;
   codexAppServerTransport: string;
@@ -64,13 +71,13 @@ export interface SpaceApiConfig {
   codexAppServerAllowStdioSpawn: boolean;
   codexAppServerAllowTurnExecution: boolean;
   codexAppServerAllowTurnSmoke: boolean;
-  codexRouteCommand: string;
-  codexRouteSwitchEnabled: boolean;
   cliEnabled: boolean;
   cliCommandPath: string | null;
   cliWorkspaceRoot: string;
   cliTokenTtlMs: number;
   cliHostSocketPath: string;
+  /** Unlimited when null; a dev instance caps its own pane host. */
+  cliMaxRunningSessions: number | null;
   cliRootEnabled: boolean;
   cliAdminHostSocketPath: string;
   cliCodexDefaultModel: string | null;
@@ -127,9 +134,9 @@ export interface SpaceApiConfig {
   vercelVoiceBaseUrl: string;
   liveModelPolicy: LiveModelPolicy;
   liveJevAccelerationEnabled: boolean;
-  geminiMemoryIndexPath: string;
-  geminiMemoryMonthlyPath: string;
-  geminiMemoryLockPath: string;
+  spaceMemoryIndexPath: string;
+  spaceMemoryMonthlyPath: string;
+  spaceMemoryLockPath: string;
   codexGoalsDbPath: string;
   browserEvidenceEnabled: boolean;
   browserEvidenceChromePath: string;
@@ -138,11 +145,14 @@ export interface SpaceApiConfig {
   browserEvidenceTimeoutMs: number;
   appDiagnosticsRoot: string;
   maintenanceAutopilotStateFile: string;
+  /** Auto (session-level balancing) panes and exhausted CLI accounts; beside the maintenance state by default. */
+  cliAccountBalancerStateFile: string;
   browserSessionsEnabled: boolean;
   browserSessionsChromePath: string;
   browserSessionsXvfbPath: string;
   browserSessionsXvfbEnabled: boolean;
   browserSessionsProfileRoot: string;
+  jobApplyRoot: string;
   browserSessionsDefaultUrl: string;
   browserSessionsTokenTtlMs: number;
   browserSessionsAudioEnabled: boolean;
@@ -241,12 +251,15 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
   const runtimeStore = valid.SPACE_RUNTIME_STORE;
   const mcpConfig = parseMcpServerConfigs(env.SPACE_MCP_SERVERS_JSON);
   const artifactRoot = env.SPACE_ARTIFACT_ROOT || "/opt/spaceapp/var/artifacts";
-  const geminiMemoryPaths = resolveCanonicalGeminiMemoryPaths(env);
+  const spaceMemoryPaths = resolveCanonicalSpaceMemoryPaths(env);
   return {
     t3CodeEnabled: valid.SPACE_T3CODE_ENABLED !== "false",
     t3CodeSocketPath: valid.SPACE_T3CODE_SOCKET,
     t3CodeProxyTimeoutMs: valid.SPACE_T3CODE_PROXY_TIMEOUT_MS,
     t3CodeHealthTimeoutMs: valid.SPACE_T3CODE_HEALTH_TIMEOUT_MS,
+    instance: valid.SPACE_INSTANCE,
+    instanceJobs: Object.fromEntries(instanceBackgroundJobs.map((job) => [job, instanceBackgroundJobEnabled(
+      { SPACE_INSTANCE: valid.SPACE_INSTANCE, SPACE_INSTANCE_ENABLED_JOBS: env.SPACE_INSTANCE_ENABLED_JOBS }, job)])) as Record<InstanceBackgroundJob, boolean>,
     host: valid.SPACE_API_HOST,
     port: valid.SPACE_API_PORT,
     version: apiPackageVersion,
@@ -261,15 +274,17 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     temporalTaskQueue: valid.SPACE_TEMPORAL_TASK_QUEUE ?? "space-agent-turns",
     // Only the public small profile turns workflows off; private installations always require the worker.
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
+    publicDistribution: env.SPACE_PUBLIC_DISTRIBUTION === "true",
     enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",
-    codexLbConfigured: Boolean(env.SPACE_CODEX_LB_BASE_URL && env.SPACE_CODEX_LB_KEY_FILE),
-    codexLbBaseUrl: env.SPACE_CODEX_LB_BASE_URL || null,
-    codexLbKeyFile: env.SPACE_CODEX_LB_KEY_FILE || null,
-    codexLbKeyName: env.SPACE_CODEX_LB_KEY_NAME || null,
+    // Space Gateway's OpenAI-compatible endpoint and Space's key for it; SPACE_CODEX_LB_* are the names from
+    // before codex-lb was retired and still work.
+    codexLbConfigured: Boolean((env.SPACE_GATEWAY_BASE_URL || env.SPACE_CODEX_LB_BASE_URL) && (env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE)),
+    codexLbBaseUrl: env.SPACE_GATEWAY_BASE_URL || env.SPACE_CODEX_LB_BASE_URL || null,
+    codexLbKeyFile: env.SPACE_GATEWAY_KEY_FILE || env.SPACE_CODEX_LB_KEY_FILE || null,
+    codexLbKeyName: env.SPACE_GATEWAY_KEY_NAME || env.SPACE_CODEX_LB_KEY_NAME || null,
     gatewayUrl: parseGatewayUrl(env.SPACE_GATEWAY_URL),
-    codexUsageSource: env.SPACE_CODEX_USAGE_SOURCE === "gateway" ? "gateway" : "vm214",
     codexAppServerEnabled: env.SPACE_CODEX_APP_SERVER_ENABLED === "true",
     codexAppServerCommand: env.SPACE_CODEX_APP_SERVER_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
     codexAppServerTransport: env.SPACE_CODEX_APP_SERVER_TRANSPORT || "stdio",
@@ -283,13 +298,12 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     codexAppServerAllowStdioSpawn: env.SPACE_CODEX_APP_SERVER_ALLOW_STDIO_SPAWN === "true",
     codexAppServerAllowTurnExecution: env.SPACE_CODEX_APP_SERVER_ALLOW_TURN_EXECUTION === "true",
     codexAppServerAllowTurnSmoke: env.SPACE_CODEX_APP_SERVER_ALLOW_TURN_SMOKE === "true",
-    codexRouteCommand: env.SPACE_CODEX_ROUTE_COMMAND || "/opt/spaceapp/bin/codex-vscode-parity",
-    codexRouteSwitchEnabled: env.SPACE_CODEX_ROUTE_SWITCH_ENABLED === "true",
     cliEnabled: valid.SPACE_CLI_ENABLED === "true",
     cliCommandPath: valid.SPACE_CLI_COMMAND_PATH ?? null,
     cliWorkspaceRoot: valid.SPACE_CLI_WORKSPACE_ROOT ?? join(artifactRoot, "cli-workspaces"),
     cliTokenTtlMs: Math.min(valid.SPACE_CLI_TOKEN_TTL_MS ?? 60000, 5 * 60 * 1000),
     cliHostSocketPath: valid.SPACE_CLI_HOST_SOCKET ?? "/run/space-codex-pane-host/pane-host.sock",
+    cliMaxRunningSessions: valid.SPACE_CLI_MAX_RUNNING_SESSIONS ?? null,
     cliRootEnabled: valid.SPACE_CLI_ROOT_ENABLED === "true",
     cliAdminHostSocketPath: valid.SPACE_CLI_ADMIN_HOST_SOCKET ?? "/run/space-admin-pane-host/pane-host.sock",
     cliCodexDefaultModel: env.SPACE_CLI_CODEX_DEFAULT_MODEL || null,
@@ -348,9 +362,9 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     vercelVoiceBaseUrl: env.SPACE_VERCEL_VOICE_BASE_URL || "https://ai-gateway.vercel.sh",
     liveModelPolicy: parseLiveModelPolicy(env.SPACE_LIVE_MODEL_POLICY_JSON, env.SPACE_LIVE_DAILY_BUDGET_USD, env.SPACE_LIVE_COST_MODE),
     liveJevAccelerationEnabled: env.SPACE_LIVE_JEV_ACCELERATION_ENABLED === "true",
-    geminiMemoryIndexPath: geminiMemoryPaths.indexPath,
-    geminiMemoryMonthlyPath: geminiMemoryPaths.monthlyPath,
-    geminiMemoryLockPath: geminiMemoryPaths.lockPath,
+    spaceMemoryIndexPath: spaceMemoryPaths.indexPath,
+    spaceMemoryMonthlyPath: spaceMemoryPaths.monthlyPath,
+    spaceMemoryLockPath: spaceMemoryPaths.lockPath,
     codexGoalsDbPath: env.SPACE_CODEX_GOALS_DB_PATH || "/var/lib/spaceapp-user/.codex/goals_1.sqlite",
     browserEvidenceEnabled: env.SPACE_BROWSER_EVIDENCE_ENABLED !== "false",
     browserEvidenceChromePath: env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
@@ -359,11 +373,14 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     browserEvidenceTimeoutMs: Number.parseInt(env.SPACE_BROWSER_EVIDENCE_TIMEOUT_MS ?? "20000", 10),
     appDiagnosticsRoot: env.SPACE_APP_DIAGNOSTICS_ROOT || "/opt/spaceapp/var/app-diagnostics",
     maintenanceAutopilotStateFile: env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json",
+    cliAccountBalancerStateFile: env.SPACE_CLI_ACCOUNT_BALANCER_STATE_FILE
+      || join(dirname(dirname(env.SPACE_MAINTENANCE_AUTOPILOT_STATE_FILE || "/opt/spaceapp/var/maintenance-autopilot/state.json")), "cli-account-balancer", "state.json"),
     browserSessionsEnabled: env.SPACE_BROWSER_SESSIONS_ENABLED === "true",
     browserSessionsChromePath: env.SPACE_BROWSER_SESSIONS_CHROME_PATH || env.SPACE_BROWSER_CHROME_PATH || "/usr/bin/google-chrome",
     browserSessionsXvfbPath: env.SPACE_BROWSER_SESSIONS_XVFB_PATH || "/usr/bin/Xvfb",
     browserSessionsXvfbEnabled: env.SPACE_BROWSER_SESSIONS_XVFB_ENABLED !== "false",
     browserSessionsProfileRoot: env.SPACE_BROWSER_SESSIONS_PROFILE_ROOT || join(artifactRoot, "browser-profiles"),
+    jobApplyRoot: env.SPACE_JOB_APPLY_ROOT || join(artifactRoot, "job-apply"),
     browserSessionsDefaultUrl: env.SPACE_BROWSER_SESSIONS_DEFAULT_URL || "https://www.example.invalid/",
     browserSessionsTokenTtlMs: Math.min(parsePositiveInt(env.SPACE_BROWSER_SESSIONS_TOKEN_TTL_MS, 60000), 5 * 60 * 1000),
     browserSessionsAudioEnabled: env.SPACE_BROWSER_SESSIONS_AUDIO_ENABLED !== "false",

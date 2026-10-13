@@ -5,10 +5,18 @@ export const dotAppearanceSchema = z.object({
   character: z.enum(["astronaut", "star", "robot", "comet", "moon", "planet"]),
   accent: z.enum(["slate", "amber", "cyan", "coral", "silver", "violet"])
 }).strict();
+/** Chat permission modes a Dot can run with; the Chat transport has no interactive "Ask for approval". */
+export const dotPermissionModeSchema = z.enum(["approve_for_me", "full_access"]);
+/** Model and permissions set in SpaceApp Settings → Dots; null keeps the user's Dots default. */
+export const dotRuntimeSchema = z.object({
+  modelConfigId: z.string().trim().min(1).max(260).nullable().optional(),
+  permissionMode: dotPermissionModeSchema.nullable().optional()
+}).strict();
 export const dotPreferencesSchema = z.object({
   communicationStyle: z.string().trim().max(2000).optional(),
   // An empty value clears the preference (profile patches merge preferences).
-  language: z.string().trim().max(80).refine(value => value.length === 0 || value.length >= 2, "Use at least two characters.").optional()
+  language: z.string().trim().max(80).refine(value => value.length === 0 || value.length >= 2, "Use at least two characters.").optional(),
+  runtime: dotRuntimeSchema.optional()
 }).strict();
 // A profile is never an authorization grant. Existing user/tool gates remain authoritative.
 export const dotPermissionsSchema = z.object({ mode: z.literal("INHERIT_USER") }).strict();
@@ -26,6 +34,8 @@ export const updateDotProfileSchema = dotProfileSchema.pick({ name: true, appear
   .partial().strict().refine(input => Object.keys(input).length > 0, "Provide a profile change.");
 export const dotResourceSchema = z.enum(["sessions", "tasks", "goals", "memory", "schedules", "receipts", "activity"]);
 export type DotProfile = z.infer<typeof dotProfileSchema>;
+export type DotPermissionMode = z.infer<typeof dotPermissionModeSchema>;
+export type DotRuntime = z.infer<typeof dotRuntimeSchema>;
 export type UpdateDotProfile = z.infer<typeof updateDotProfileSchema>;
 export type DotResource = z.infer<typeof dotResourceSchema>;
 

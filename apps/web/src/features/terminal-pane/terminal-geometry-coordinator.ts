@@ -324,6 +324,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
   let lastStableGeometry: StableGeometry | null = null;
   let timer: number | null = null;
   let lastResizeKey: string | null = null;
+  let forcedSocketGeneration: number | null = null;
   let viewportMeasurementKey = JSON.stringify([
     ownerWindow.devicePixelRatio || 1,
     ownerWindow.visualViewport?.scale ?? 1
@@ -368,6 +369,19 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     options.host.dataset.terminalGeometryRepaired = String(repaired);
   };
 
+  // The first frame sent on a socket is forced (operator-approved 2026-10-12).
+  // Every socket rebuilds xterm from the bounded transcript tail, which for a
+  // cell-diff renderer (Claude Code) holds no complete screen: only the cells
+  // that changed recently. A forced same-grid frame makes the API nudge the
+  // PTY once (cols-1 and back), so the CLI repaints the whole screen into the
+  // new xterm. Later frames keep the 2026-10-11 rule: never resend a grid the
+  // PTY already has, and a repair forces only a grid's first frame.
+  const forceFirstSocketFrame = (identity: { socketGeneration: number }, force: boolean) => {
+    const forced = force || identity.socketGeneration !== forcedSocketGeneration;
+    if (forced) forcedSocketGeneration = identity.socketGeneration;
+    return forced;
+  };
+
   const sendResizeBackground = (cols: number, rows: number) => {
     if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) return;
     const identity = options.getResizeIdentity();
@@ -388,7 +402,8 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     ]);
     if (key === lastResizeKey) return;
     lastResizeKey = key;
-    options.sendResize({ cols, rows, leaseId: identity.leaseId });
+    const forced = forceFirstSocketFrame(identity, false);
+    options.sendResize({ cols, rows, leaseId: identity.leaseId, ...(forced ? { force: true } : {}) });
   };
 
   const sendResizeOnce = (cols: number, rows: number, force = false) => {
@@ -414,8 +429,9 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
     // again (operator-approved 2026-10-11); reconcileResize stays explicit.
     if (key === lastResizeKey) return;
     lastResizeKey = key;
-    options.onTrace?.("RESIZE_SENT", force ? "REPAIR" : "NORMAL");
-    options.sendResize({ cols, rows, leaseId: identity.leaseId, ...(force ? { force: true } : {}) });
+    const forced = forceFirstSocketFrame(identity, force);
+    options.onTrace?.("RESIZE_SENT", forced ? "REPAIR" : "NORMAL");
+    options.sendResize({ cols, rows, leaseId: identity.leaseId, ...(forced ? { force: true } : {}) });
   };
 
   // Maximize/restore and the delayed stabilize pass often refit a grid that
@@ -789,7 +805,7 @@ export function createTerminalGeometryCoordinator(options: TerminalGeometryCoord
         rows
       ]);
       options.onTrace?.("RESIZE_SENT", "RECONCILE");
-      options.sendResize({ cols, rows, leaseId: identity.leaseId, force });
+      options.sendResize({ cols, rows, leaseId: identity.leaseId, force: forceFirstSocketFrame(identity, force) });
     },
     repairIfBroken(): boolean {
       const terminal = options.getTerminal();

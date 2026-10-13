@@ -24,6 +24,7 @@ const postgresUrl = () => text().refine((value) => /^postgres(?:ql)?:\/\/[^\s]+$
 
 export const t3ApiEnvServerSchema = {
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  SPACE_INSTANCE: z.enum(["stable", "dev"]).default("stable"),
   SPACE_API_HOST: text().default("127.0.0.1"),
   SPACE_API_PORT: integer(1, 65535).default(4910),
   SPACE_RUNTIME_STORE: z.enum(["memory", "postgres"]).default("memory"),
@@ -43,6 +44,7 @@ export const t3ApiEnvServerSchema = {
   SPACE_CLI_WORKSPACE_ROOT: absolutePath().optional(),
   SPACE_CLI_TOKEN_TTL_MS: integer(1, 86_400_000).optional(),
   SPACE_CLI_HOST_SOCKET: absolutePath().optional(),
+  SPACE_CLI_MAX_RUNNING_SESSIONS: integer(1, 1000).optional(),
   SPACE_CLI_ROOT_ENABLED: strictBoolean().optional(),
   SPACE_CLI_ADMIN_HOST_SOCKET: absolutePath().optional(),
   SPACE_CLI_VPN_ENABLED: strictBoolean().optional(),

@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewaySettings } from "@space/contracts";
-import type { GatewayAccountRecord, GatewayCompressionRow, GatewayRequestLogInsert } from "@space/db";
+import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRequestLogInsert } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { compressAnthropicBodyAsync, type AsyncBlockRunner, type CompressionCache } from "../../compression/engine.js";
-import { compressionRows } from "../../compression/recorder.js";
+import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { gatewayError, gatewayErrors, type GatewayErrorEnvelope } from "../../errors.js";
 import { checkKeyLimits, PolicyRejection } from "../../policy.js";
 import { claudeCostUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
+import { requestOrigin } from "../../client-detect.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { permanentFailureCodes, selectAccount, USAGE_LIMIT_REACHED, type UpstreamError } from "../../router/balancer.js";
@@ -34,7 +35,8 @@ export interface ClaudeProxyOptions {
   now?: () => number;
   maxAccountAttempts?: number;
   preOutputBufferBytes?: number;
-  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; record: (rows: GatewayCompressionRow[]) => Promise<void> };
+  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; record: (rows: GatewayCompressionRow[]) => Promise<void>;
+    recordSignals?: (rows: GatewayCompressionSignalRow[]) => Promise<void> };
   settleKeyUsage?: (keyId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number; model: string | null; at: string }) => Promise<void>;
   /** Session affinity for the prompt cache; without it bindings live in memory only. */
   sticky?: StickyStore;
@@ -64,8 +66,14 @@ function parseClaudeError(text: string, status: number, headers: Headers | null)
     resetsAt: limits?.rejected && limits.resetAt !== null ? limits.resetAt : undefined,
     resetsInSeconds: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined
   };
+  // Every reply to a subscription token carries the unified rate-limit headers, and a real limit says "rejected".
+  // A bare 429 without them (Anthropic's answer to a request that does not come from Claude Code) is about the
+  // request, not the account: it goes back to the client and blocks no account.
+  const requestRejected = status === 429 && headers !== null && headers.get("anthropic-ratelimit-unified-status") === null
+    && upstreamError.resetsInSeconds === undefined;
   let kind: FailureKind;
-  if (status === 429 || code === "rate_limit_error") kind = "rate_limit";
+  if (requestRejected) kind = "surface";
+  else if (status === 429 || code === "rate_limit_error") kind = "rate_limit";
   else if (status === 401 || code === "authentication_error") kind = "permanent";
   else if (status >= 500 || code === "overloaded_error" || code === "api_error") kind = "transient";
   else kind = "surface";
@@ -81,6 +89,20 @@ function stickySource(request: FastifyRequest, body: Record<string, unknown>): {
   if (!userId) return null;
   const sessionPart = /session_([0-9a-f-]{8,})/i.exec(userId)?.[1];
   return { source: "metadata.user_id", raw: sessionPart ?? userId };
+}
+
+/**
+ * The answer when every pooled account is at its limit. The balancer's "Try again in 300s" caps the wait at five
+ * minutes, which reads as a short hiccup while a 5-hour window can be hours away; Claude Code shows this text as is.
+ */
+export function claudePoolLimitMessage(accounts: number, resetsAt: number | null | undefined, nowSeconds: number,
+  timeZone?: string): string {
+  const subject = accounts === 1 ? "The Claude account in Space Gateway reached its usage limit" : `All ${accounts} Claude accounts in Space Gateway reached their usage limit`;
+  if (resetsAt === null || resetsAt === undefined || resetsAt <= nowSeconds) return `${subject}.`;
+  const minutes = Math.ceil((resetsAt - nowSeconds) / 60);
+  const wait = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  const at = new Date(resetsAt * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, ...(timeZone ? { timeZone } : {}) });
+  return `${subject}. ${accounts === 1 ? "It is" : "The first one is"} back in ${wait} (at ${at}).`;
 }
 
 /** Anthropic clients read `{ type: "error", error: { type, message } }`. */
@@ -110,18 +132,19 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
   async function pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null) {
     const accounts = (await options.pool.accounts()).filter((account) => (!scope || scope.has(account.id)) && !tried.has(account.id));
     const states = accounts.map((candidate) => options.pool.toBalancerState(candidate));
+    const pooled = accounts.filter((candidate) => candidate.status !== "PAUSED" && candidate.status !== "DEACTIVATED").length;
     const stickyId = stickyHash ? await stickyAccounts.get(stickyHash) : undefined;
     const stickyState = stickyId ? states.find((state) => state.accountId === stickyId) : undefined;
     if (stickyState) {
       const check = selectAccount([stickyState], { now: now() / 1000, routingStrategy: "SINGLE_ACCOUNT", allowUsageExhaustionError: false });
       const used = Math.max(stickyState.usedPercent ?? 0, stickyState.secondaryUsedPercent ?? 0);
       if (check.account && used < settings.stickyReallocationBudgetThresholdPercent) {
-        return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null };
+        return { account: accounts.find((candidate) => candidate.id === stickyState.accountId), result: null, pooled };
       }
     }
     const result = selectAccount(states, { now: now() / 1000, routingStrategy: settings.routingStrategy, preferEarlierReset: settings.preferEarlierReset });
     for (const state of states) options.pool.absorb(state);
-    return { account: result.account ? accounts.find((candidate) => candidate.id === result.account!.accountId) : undefined, result };
+    return { account: result.account ? accounts.find((candidate) => candidate.id === result.account!.accountId) : undefined, result, pooled };
   }
 
   async function messages(request: FastifyRequest, reply: FastifyReply) {
@@ -149,17 +172,23 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const settings = await options.settings();
     const compressionMode = header(request, "x-space-gateway-compression")?.toLowerCase() === "off" ? "OFF" : key.compressionOverride ?? settings.compressionMode;
     let compressionSaved: number | null = null;
+    let compressionMeasured: { before: number; after: number } | null = null;
+    let detail: GatewayRequestLogInsert["compressionDetail"] = null;
     let outgoing = body;
     if (compressionMode !== "OFF" && options.compression) {
       try {
         const outcome = await compressAnthropicBodyAsync(body, { run: options.compression.run, cache: options.compression.cache,
-          timeBudgetMs: settings.compressionTimeBudgetMs });
+          timeBudgetMs: settings.compressionTimeBudgetMs, codeText: settings.compressionCodeText, profile: settings.compressionProfile });
+        if (outcome.tokensBefore > 0) compressionMeasured = { before: outcome.tokensBefore, after: outcome.tokensAfter };
         if (compressionMode === "ON" && outcome.modified) {
           outgoing = outcome.body;
           compressionSaved = outcome.tokensBefore - outcome.tokensAfter;
         }
         void options.compression.record(compressionRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "CLAUDE" }))
           .catch(() => undefined);
+        void options.compression.recordSignals?.(compressionSignalRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "CLAUDE" }))
+          .catch(() => undefined);
+        detail = compressionDetail(outcome);
       } catch {
         // Compression never blocks a request: the original body goes upstream.
       }
@@ -167,34 +196,42 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
     const upstreamBody = JSON.stringify(outgoing);
     const sticky = stickySource(request, body);
     const stickyHash = sticky ? hashKey(`claude:${sticky.raw}`) : null;
+    // A conversation that already has a cache binding: a large cache write now means its cached prefix was lost.
+    const continuing = stickyHash ? (await stickyAccounts.get(stickyHash)) !== undefined : false;
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
     const tried = new Set<string>();
     const controller = new AbortController();
     request.raw.once("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
     const upstreamUrl = `${baseUrl}/v1/messages${queryOf(request)}`;
+    const origin = requestOrigin(request);
 
     const baseLog = (): Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage"> => ({
       requestId, requestedAt: new Date(startedAt).toISOString(), provider: "CLAUDE", accountId: null, apiKeyId: key.id,
       model: model ?? "unknown", reasoningEffort: null, requestedServiceTier: null, serviceTier: null, transport: "http", upstreamTransport: "http",
       latencyMs: null, firstTokenMs: null, inputTokens: null, cachedInputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null,
       compressionTokensSaved: null, stickyKeySource: sticky?.source ?? null, stickyKind: stickyHash ? "PROMPT_CACHE" : null,
-      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null
+      stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, ...origin,
+      compressionTokensBefore: compressionMeasured?.before ?? null, compressionTokensAfter: compressionMeasured?.after ?? null,
+      compressionDetail: detail
     });
 
     let lastFailure: UpstreamFailure | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const { account, result } = await pickAccount(settings, scope, tried, stickyHash);
+      const { account, result, pooled } = await pickAccount(settings, scope, tried, stickyHash);
       if (!account) {
         if (attempt === 0 && result) {
-          const status = result.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
-          options.logs.add({ ...baseLog(), status: "error", errorCode: result.errorCode ?? "no_accounts", errorMessage: result.errorMessage, latencyMs: now() - startedAt });
-          return reply.code(status).send(anthropicError(gatewayError(result.errorCode ?? "no_accounts",
-            result.errorMessage ?? gatewayErrors.noAccounts().error.message, status === 429 ? "rate_limit_error" : "api_error")));
+          const limited = result.errorCode === USAGE_LIMIT_REACHED;
+          const status = limited ? 429 : 503;
+          const message = limited ? claudePoolLimitMessage(pooled, result.resetsAt, now() / 1000)
+            : result.errorMessage ?? gatewayErrors.noAccounts().error.message;
+          options.logs.add({ ...baseLog(), status: "error", errorCode: result.errorCode ?? "no_accounts", errorMessage: message, latencyMs: now() - startedAt });
+          return reply.code(status).send(anthropicError(gatewayError(result.errorCode ?? "no_accounts", message,
+            status === 429 ? "rate_limit_error" : "api_error")));
         }
         break;
       }
       tried.add(account.id);
-      options.pool.markSelected(account.id);
+      options.pool.markSelected(account.id, reply.raw);
 
       let credentials;
       try {
@@ -326,6 +363,14 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
       else options.pool.markTransientError(account.id);
     }
 
+    /** Headroom's bust rule: on a continuing conversation, cache writes above half of the cache traffic. Null without cache traffic. */
+    function cacheBust(usage: ClaudeUsageTokens): boolean | null {
+      const read = usage.cacheReadInputTokens ?? 0;
+      const write = usage.cacheCreationInputTokens ?? 0;
+      if (read + write === 0) return null;
+      return continuing && write > 0.5 * (read + write);
+    }
+
     function finish(account: GatewayAccountRecord, usage: ClaudeUsageTokens, responseModel: string | null, firstTokenAt: number | null,
       errorCode: string | null, errorMessage: string | null = null) {
       const cost = claudeCostUsd(usage, responseModel);
@@ -339,7 +384,8 @@ export function registerClaudeProxyRoutes(app: FastifyInstance, helpers: Gateway
         ...baseLog(), accountId: account.id, planType: account.planType, model: responseModel ?? "unknown", status: errorCode ? "error" : "success",
         errorCode, errorMessage: errorCode ? errorMessage : null, latencyMs: now() - startedAt,
         firstTokenMs: firstTokenAt === null ? null : firstTokenAt - startedAt, inputTokens, cachedInputTokens: usage.cacheReadInputTokens,
-        outputTokens: usage.outputTokens, costUsd: cost, compressionTokensSaved: compressionSaved
+        cacheCreationTokens: usage.cacheCreationInputTokens, outputTokens: usage.outputTokens, costUsd: cost, compressionTokensSaved: compressionSaved,
+        cacheBust: cacheBust(usage)
       });
       void options.pool.touch(account.id, new Date(startedAt).toISOString()).catch(() => undefined);
     }

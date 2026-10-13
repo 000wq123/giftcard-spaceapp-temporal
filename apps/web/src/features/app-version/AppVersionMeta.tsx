@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Github, RefreshCw, Youtube } from "../ui-theme/app-icons.js";
 import { readPublicHomepageConfig } from "./public-config.js";
 import { useAppVersion } from "./use-app-version.js";
@@ -72,6 +73,60 @@ export function DemoVersionMeta({ compact = false }: { compact?: boolean }) {
   );
 }
 
+/** Public installations update with one command; the badge opens it with a Copy button. */
+function UpdateCommandBadge({ latest, command, notesUrl }: { latest: string; command: string; notesUrl: string }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const root = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    const onPointer = (event: PointerEvent) => {
+      if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onPointer);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onPointer);
+    };
+  }, [open]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <span className="topbar-meta-update-wrap" ref={root}>
+      <button
+        type="button"
+        className="topbar-meta-update"
+        aria-expanded={open}
+        aria-controls="app-update-panel"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <RefreshCw aria-hidden="true" />
+        <span>Update available: {latest}</span>
+      </button>
+      {open ? (
+        <div id="app-update-panel" className="topbar-update-panel" role="dialog" aria-label="Update SpaceApp">
+          <p>SpaceApp {latest} is available. Run this on the machine where SpaceApp is installed:</p>
+          <div className="topbar-update-command">
+            <code>{command}</code>
+            <button type="button" onClick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+          </div>
+          <p>Your data, settings and workspaces are kept. The app is unavailable for a minute while it restarts.</p>
+          <a href={notesUrl} target="_blank" rel="noopener noreferrer">What's new in {latest}</a>
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
 export function AppVersionMeta({ compact = false }: { compact?: boolean }) {
   const status = useAppVersion();
   const { discordUrl } = readPublicHomepageConfig();
@@ -85,7 +140,13 @@ export function AppVersionMeta({ compact = false }: { compact?: boolean }) {
   return (
     <div className="topbar-meta" aria-label={compact ? "App version" : "App version and community links"}>
       {!compact ? <SocialLinks discordUrl={discordUrl} /> : null}
-      {updateAvailable && !compact ? (
+      {updateAvailable && !compact && status?.updateCommand && status.githubLatest ? (
+        <UpdateCommandBadge
+          latest={status.githubLatest}
+          command={status.updateCommand}
+          notesUrl={status.githubTagUrl ?? SPACE_GITHUB_RELEASES_URL}
+        />
+      ) : updateAvailable && !compact ? (
         <a
           className="topbar-meta-update"
           href={SPACE_GITHUB_RELEASES_URL}
@@ -93,7 +154,7 @@ export function AppVersionMeta({ compact = false }: { compact?: boolean }) {
           rel="noopener noreferrer"
         >
           <RefreshCw aria-hidden="true" />
-          <span>Update!! {status?.githubLatest ?? ""}</span>
+          <span>Update available: {status?.githubLatest ?? ""}</span>
         </a>
       ) : null}
       <a

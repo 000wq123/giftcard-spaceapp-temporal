@@ -292,7 +292,14 @@ export function FileListView({
             </thead>
             <tbody ref={tableBodyRef}>
               {canGoUp && (
-                <tr className="fm-row" onDoubleClick={onNavigateUp}>
+                <tr
+                  className="fm-row"
+                  tabIndex={0}
+                  onDoubleClick={onNavigateUp}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") onNavigateUp();
+                  }}
+                >
                   <td colSpan={6} style={{ color: "var(--modern-accent, #61d2c3)" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={onNavigateUp}>
                       <CornerLeftUp size={16} />
@@ -317,8 +324,12 @@ export function FileListView({
                     key={entry.path}
                     data-file-entry-path={entry.path}
                     className={`fm-row ${isSelected ? "selected" : ""}`}
+                    tabIndex={0}
                     onClick={() => setSelectedPath(entry.path)}
                     onDoubleClick={() => onOpenEntry(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") onOpenEntry(entry);
+                    }}
                     onContextMenu={(e) => handleContextMenu(e, entry)}
                   >
                     <td>
@@ -443,8 +454,13 @@ export function FileListView({
               key={entry.path}
               className="fm-grid-card"
               data-file-entry-path={entry.path}
+              role="button"
+              tabIndex={0}
               onClick={() => setSelectedPath(entry.path)}
               onDoubleClick={() => onOpenEntry(entry)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onOpenEntry(entry);
+              }}
               onContextMenu={(e) => handleContextMenu(e, entry)}
             >
               <div style={{ transform: "scale(1.5)", marginBottom: 6 }}>

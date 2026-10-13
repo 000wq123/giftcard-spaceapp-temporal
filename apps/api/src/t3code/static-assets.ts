@@ -18,9 +18,9 @@ const NAME = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,199}$/;
 const TYPES: Record<string, string> = {
   js: "text/javascript; charset=utf-8", css: "text/css; charset=utf-8", json: "application/json; charset=utf-8", svg: "image/svg+xml",
   wasm: "application/wasm", woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf", png: "image/png", webp: "image/webp",
-  gif: "image/gif", jpg: "image/jpeg", jpeg: "image/jpeg", mp3: "audio/mpeg", wav: "audio/wav",
+  gif: "image/gif", jpg: "image/jpeg", jpeg: "image/jpeg", mp3: "audio/mpeg", wav: "audio/wav", glb: "model/gltf-binary",
 };
-const COMPRESSIBLE = new Set(["js", "css", "json", "svg", "wasm", "ttf", "otf", "wav"]);
+const COMPRESSIBLE = new Set(["js", "css", "json", "svg", "wasm", "ttf", "otf", "wav", "glb"]);
 const brotli = promisify(brotliCompress), gzipAsync = promisify(gzip);
 
 // Encode once per file and keep it: quality 6 costs tens of milliseconds for

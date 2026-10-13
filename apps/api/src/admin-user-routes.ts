@@ -28,15 +28,26 @@ export function registerAdminUserRoutes(app: FastifyInstance, options: {
     return adminUserListResponseSchema.parse({ users });
   });
 
+  const roleRank: Record<"USER" | "OPERATOR" | "ADMIN", number> = { USER: 0, OPERATOR: 1, ADMIN: 2 };
+
   app.patch("/api/admin/users/:id/role", defaultRouteRateLimitOptions, async (request, reply) => {
     if (!request.user || (request.user.role !== "ADMIN" && request.user.role !== "OPERATOR")) {
       return sendApiError(reply, 403, "ADMIN_REQUIRED", "Administrator permissions are required.");
     }
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const input = updateUserRoleInputSchema.parse(request.body);
+    const callerRank = roleRank[request.user.role];
 
     if (params.id === request.user.id && input.role !== "ADMIN") {
       return sendApiError(reply, 400, "CANNOT_DEMOTE_SELF", "You cannot remove admin permissions from your own account.");
+    }
+    // Nobody grants a role above their own, and nobody changes a user who outranks them.
+    if (roleRank[input.role] > callerRank) {
+      return sendApiError(reply, 403, "ROLE_ESCALATION_FORBIDDEN", "You cannot grant a role above your own.");
+    }
+    const target = await store.getControlActor(params.id);
+    if (target && roleRank[target.role] > callerRank) {
+      return sendApiError(reply, 403, "ROLE_ESCALATION_FORBIDDEN", "You cannot change the role of a user who outranks you.");
     }
 
     if (!store.updateUserRole) {

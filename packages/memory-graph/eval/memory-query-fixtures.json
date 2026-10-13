@@ -2,7 +2,7 @@
   "version": 1,
   "documents": [
     { "id": "memory:room-agent", "title": "Persistent Room Agent sessions", "body": "Room agents preserve durable goals and resume the active plan after a reconnect.", "provenance": "space-room-runtime", "createdAt": "2026-07-13T08:30:00.000Z" },
-    { "id": "memory:canonical-plane", "title": "Canonical Gemini memory plane", "body": "The monthly Gemini history and its index remain the only canonical memory sources.", "provenance": "memory-policy", "createdAt": "2026-07-13T08:29:00.000Z" },
+    { "id": "memory:canonical-plane", "title": "Canonical Space Memory plane", "body": "The monthly Space Memory history and its index remain the only canonical memory sources.", "provenance": "memory-policy", "createdAt": "2026-07-13T08:29:00.000Z" },
     { "id": "memory:athens-timer", "title": "Athens daily audit schedule", "body": "The deterministic memory audit starts at 03:30 Athens time with bounded jitter.", "provenance": "memory-maintenance", "createdAt": "2026-07-13T08:28:00.000Z" },
     { "id": "memory:mutation-journal", "title": "Crash-safe mutation journal", "body": "Canonical edits use hash guards, fsync, atomic rename and a reversible mutation journal.", "provenance": "memory-mutation-worker", "createdAt": "2026-07-13T08:27:00.000Z" },
     { "id": "memory:redaction", "title": "Memory transport redaction", "body": "Secret-like values are removed from node details, issue evidence and change-set list responses.", "provenance": "security-boundary", "createdAt": "2026-07-13T08:26:00.000Z" },
@@ -20,7 +20,7 @@
   "queries": [
     { "id": "positive-01", "query": "persistent room agent", "expectedIds": ["memory:room-agent"] },
     { "id": "positive-02", "query": "resume active plan reconnect", "expectedIds": ["memory:room-agent"] },
-    { "id": "positive-03", "query": "canonical Gemini memory sources", "expectedIds": ["memory:canonical-plane"] },
+    { "id": "positive-03", "query": "canonical Space Memory sources", "expectedIds": ["memory:canonical-plane"] },
     { "id": "positive-04", "query": "monthly history index", "expectedIds": ["memory:canonical-plane"] },
     { "id": "positive-05", "query": "Athens daily audit", "expectedIds": ["memory:athens-timer"] },
     { "id": "positive-06", "query": "03:30 bounded jitter", "expectedIds": ["memory:athens-timer"] },

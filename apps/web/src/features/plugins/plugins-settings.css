@@ -27,6 +27,10 @@
   margin: 0;
 }
 
+.plugins-header-block .plugins-readonly-note {
+  margin-top: 6px;
+}
+
 .plugins-search-bar-wrap {
   position: relative;
   display: flex;

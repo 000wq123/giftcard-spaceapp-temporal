@@ -2,13 +2,13 @@ import { usePanePolling } from "../../use-pane-polling.js";
 import { useGoogleAccountSignIn } from "./useGoogleAccountSignIn.js";
 import { useBrowserAudio } from "./useBrowserAudio.js";
 import { resolveBrowserAddress } from "./browser-address.js";
-import { accountMenuEntries, accountMenuLabel, effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
+import { effectiveAccountId, googleSignInTarget as accountSignInTarget, privatePaneProfileId, type YouTubeAccounts as GoogleAccounts } from "./youtube-accounts.js";
+import { GoogleAccountMenuItems, selectedAccountSummary } from "./GoogleAccountMenuItems.js";
 import {
   Bookmark,
   BookmarkPlus,
   Bug,
   Camera,
-  Check,
   ChevronLeft,
   ChevronRight,
   CircleStop,
@@ -40,7 +40,6 @@ import {
   X
 } from "../ui-theme/app-icons.js";
 import {
-  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -194,6 +193,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   const [handoff, setHandoff] = useState(false);
   const [googleAccounts, setGoogleAccounts] = useState<GoogleAccounts | null>(null);
   const [googleAccountMenuOpen, setGoogleAccountMenuOpen] = useState(false);
+  const googleAccountSummary = googleAccounts ? selectedAccountSummary(googleAccounts) : null;
   const googleAccountPickerRef = useRef<HTMLDivElement | null>(null);
   const googleAccountButtonRef = useRef<HTMLButtonElement | null>(null);
   const [googleSignInTarget, setGoogleSignInTarget] = useState<string | null>(null);
@@ -563,16 +563,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     }
   }
 
-  useEffect(() => {
-    if (observerOnly || pane.mode !== "BROWSER" || typeof api.browserAccounts !== "function") return;
-    let disposed = false;
-    api.browserAccounts(pane.id).then((accounts) => { if (!disposed) setGoogleAccounts(accounts); }).catch(() => undefined);
-    return () => { disposed = true; };
-  }, [pane.id, pane.mode, observerOnly]);
+  // Loaded with the pane and again whenever the menu opens, so sign-in states stay current.
+  // A selection made meanwhile wins over an older answer.
+  const googleAccountsRequestRef = useRef(0);
+  function loadGoogleAccounts() {
+    if (observerOnly || pane.mode !== "BROWSER" || typeof api.browserAccounts !== "function") return () => undefined;
+    const request = ++googleAccountsRequestRef.current;
+    api.browserAccounts(pane.id).then((accounts) => { if (googleAccountsRequestRef.current === request) setGoogleAccounts(accounts); }).catch(() => undefined);
+    return () => { if (googleAccountsRequestRef.current === request) googleAccountsRequestRef.current += 1; };
+  }
+  useEffect(() => loadGoogleAccounts(), [pane.id, pane.mode, observerOnly]);
 
   async function selectGoogleAccount(profileId: string | null, reconnect = false) {
     if (pending || observerOnly) return;
     setGoogleAccountMenuOpen(false);
+    googleAccountsRequestRef.current += 1;
     setPending(true);
     setError(null);
     try {
@@ -1658,6 +1663,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       }
       if (detail.action === "handoff") {
         joinSession();
+        return;
+      }
+      // Job Copilot "Return to agent": the operator gives the browser back without the toolbar.
+      if (detail.action === "release") {
+        void releaseControl();
       }
     }
     window.addEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
@@ -1859,20 +1869,17 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGoogleAccountMenuOpen(false); }}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setGoogleAccountMenuOpen(false); googleAccountButtonRef.current?.focus(); } }}>
         <button ref={googleAccountButtonRef} type="button" className={`browser-account-trigger${effectiveAccountId(googleAccounts) !== privatePaneProfileId ? " selected" : ""}`}
+          data-account-status={googleAccountSummary?.tone}
           aria-label={`Google account for ${pane.title}`} aria-haspopup="menu" aria-expanded={googleAccountMenuOpen}
-          title={`Google account: ${accountMenuEntries(googleAccounts).find((profile) => profile.profileId === effectiveAccountId(googleAccounts))?.displayName ?? "Private pane profile"}`}
-          disabled={pending || observerOnly} onClick={() => { browserToolbar.closeMenus(); setGoogleAccountMenuOpen((value) => !value); }}><Users aria-hidden="true" /></button>
+          title={`Google account: ${[googleAccountSummary?.name, googleAccountSummary?.status].filter(Boolean).join(" · ")}`}
+          disabled={pending || observerOnly} onClick={() => {
+            browserToolbar.closeMenus();
+            if (!googleAccountMenuOpen) loadGoogleAccounts();
+            setGoogleAccountMenuOpen(!googleAccountMenuOpen);
+          }}><Users aria-hidden="true" /></button>
         {googleAccountMenuOpen ? <div className="browser-account-menu" role="menu" aria-label={`Google accounts for ${pane.title}`}>
-          <strong>Google account</strong>
-          {accountMenuEntries(googleAccounts).map((profile, index, entries) => <Fragment key={profile.profileId}>
-            {profile.group === "legacy" && entries[index - 1]?.group !== "legacy" ? <small className="browser-account-group">Gemini accounts · shared by all panes</small> : null}
-            <button type="button" role="menuitemradio" data-profile-id={profile.profileId} aria-checked={effectiveAccountId(googleAccounts) === profile.profileId}
-              onClick={() => void selectGoogleAccount(profile.profileId)}>
-              <span>{accountMenuLabel(profile)}</span>{effectiveAccountId(googleAccounts) === profile.profileId ? <Check aria-hidden="true" /> : null}
-            </button>
-          </Fragment>)}
-          <button type="button" role="menuitem" onClick={() => void selectGoogleAccount(effectiveAccountId(googleAccounts), true)}>Sign in to selected account</button>
-          <small>Sign in once per Google account. Every Browser and YouTube pane using that account stays signed in.</small>
+          <GoogleAccountMenuItems accounts={googleAccounts} onSelect={(profileId) => void selectGoogleAccount(profileId)}
+            onSignIn={(profileId) => void selectGoogleAccount(profileId, true)} />
         </div> : null}
       </div> : null}
         <form onSubmit={navigate} className="browser-url-form">
@@ -2243,7 +2250,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       </div>
 
       <div className={`browser-workspace${debugOpen ? " with-debugger" : ""}`}>
-        <div ref={frameShellRef} className="browser-frame-shell">
+        <div ref={frameShellRef} className="browser-frame-shell" data-empty={emptyBrowser || session?.status === "CLOSED" ? "true" : undefined}>
           <BrowserCanvas
             key={session?.status === "CLOSED" ? "empty" : session?.sessionId ?? "empty"}
             ref={canvasRef}

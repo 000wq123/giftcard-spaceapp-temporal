@@ -6,7 +6,8 @@ import { t3CodeBindingBootstrapSchema, t3CodeBindingUpdateSchema, t3CodeServiceS
 import { authorizeT3Pane, type T3PaneAccessOptions, type T3PaneScope } from "./access.js";
 import { T3GatewayError } from "./gateway-policy.js";
 import { installedT3Version, T3Upstream, type T3Shell } from "./upstream.js";
-import { t3WorktreeWorkspace } from "./worktree-workspace.js";
+import { publishT3AgentTokens, type T3AgentTokenOptions } from "./agent-tokens.js";
+import { t3RoomProjectWorkspace, t3WorktreeWorkspace } from "./worktree-workspace.js";
 
 export interface T3BindingOptions extends T3PaneAccessOptions {
   store: T3PaneAccessOptions["store"] & {
@@ -17,9 +18,11 @@ export interface T3BindingOptions extends T3PaneAccessOptions {
   // Explicit server policy, never supplied by a browser. The managed service
   // currently exposes its owned workspace tree; no permission widening here.
   workspaceRoot?: string;
-  // Space-managed worktrees the T3 sandbox may also use (tests override them).
+  // Space-managed worktrees and CLI-writable roots T3 may also use (tests override them).
   worktreesRoot?: string;
-  worktreeRepository?: string;
+  writableRoots?: string[];
+  // Pane-bound tool tokens (space_browser, Agent Files) for the pane's T3 agents.
+  agentTokens?: T3AgentTokenOptions | null;
 }
 
 const RECOVERABLE_SELECTION = new Set(["T3_THREAD_NOT_FOUND", "T3_THREAD_PROJECT_MISMATCH", "T3_PROJECT_NOT_FOUND", "T3_ENVIRONMENT_MISMATCH"]);
@@ -40,24 +43,36 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
     const pending = previous.catch(() => {}).then(work); locks.set(key, pending);
     try { return await pending; } finally { if (locks.get(key) === pending) locks.delete(key); }
   };
-  // A pane's own Space worktree (room worktree isolation, as for CLI panes) is
-  // checked here; everything else by the policy inside the private T3 tree.
+  // What a CLI pane of the room would open is checked here: its own Space
+  // worktree (room worktree isolation) or the room's project directory.
+  // Everything else goes through the policy inside the private T3 tree.
   const allowedWorkspace = async (scope: T3PaneScope, candidate: string) =>
-    await t3WorktreeWorkspace(candidate, options.worktreesRoot, options.worktreeRepository) ?? upstream.workspace(scope, candidate);
+    await t3WorktreeWorkspace(candidate, options.worktreesRoot) ??
+    await t3RoomProjectWorkspace(candidate, scope.room.projectPath, options.writableRoots) ??
+    upstream.workspace(scope, candidate);
   const validateSelection = async (scope: T3PaneScope, selection: T3CodeSelection, snapshot?: T3Shell) => {
     const descriptor = await upstream.descriptor(scope);
     if (descriptor.environmentId !== selection.environmentId) throw new T3GatewayError(409, "T3_ENVIRONMENT_MISMATCH");
     const model = snapshot ?? await upstream.shell(scope);
     const project = model.projects.find(p => p.id === selection.projectId);
     if (!project) throw new T3GatewayError(409, "T3_PROJECT_NOT_FOUND");
-    await allowedWorkspace(scope, project.workspaceRoot);
+    const workspace = await allowedWorkspace(scope, project.workspaceRoot);
     if (selection.threadId !== null) {
       const thread = model.threads.find(t => t.id === selection.threadId);
       if (!thread) throw new T3GatewayError(409, "T3_THREAD_NOT_FOUND");
       if (thread.projectId !== selection.projectId) throw new T3GatewayError(409, "T3_THREAD_PROJECT_MISMATCH");
     }
-    return descriptor;
+    return { descriptor, workspace };
   };
+  // The pane's T3 agents work in its selected workspace: give them the pane's
+  // tool tokens there, as a CLI pane's session gets them. Never fails the pane.
+  const publishAgentTokens = async (scope: T3PaneScope, workspace: string) => {
+    if (!options.agentTokens) return;
+    try { await publishT3AgentTokens(options.agentTokens, { roomId: scope.room.id, paneId: scope.paneId, workspaceRoot: workspace }); }
+    catch { /* The tools report the bridge as unavailable instead. */ }
+  };
+  const validateAndPublish = async (scope: T3PaneScope, selection: T3CodeSelection) =>
+    publishAgentTokens(scope, (await validateSelection(scope, selection)).workspace);
   const workspaceCandidates = (scope: T3PaneScope) =>
     [scope.pane.cwd, scope.room.projectPath === "/opt/spaceapp" ? null : scope.room.projectPath].filter((v): v is string => Boolean(v?.trim()));
   // Same rule as initialSelection, without creating anything upstream.
@@ -131,7 +146,7 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
       }
     }
     selection ??= await initialSelection({ ...access, pane: current });
-    await validateSelection(access, selection);
+    await validateAndPublish(access, selection);
     await authorizeT3Pane(request, options, access.paneId); // Revocation during upstream work fails closed.
     const next: T3CodePaneMetadata = { version: 1, revision: (metadata?.revision ?? 0) + 1, generation: randomUUID(), lastSequence: 0, selection };
     if (!await options.store.compareAndSetT3CodeMetadata(access.paneId, metadata?.revision ?? 0, next)) throw new T3GatewayError(409, "T3_SELECTION_STALE");
@@ -160,7 +175,7 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
     child.get(base + "status", async (request, reply) => reply.header("cache-control", "no-store").send(await status(await scope(request))));
     child.get(base + "binding", async (request, reply) => {
       const access = await scope(request), metadata = access.pane.t3CodeMetadata ?? null;
-      if (metadata) await validateSelection(access, metadata.selection);
+      if (metadata) await validateAndPublish(access, metadata.selection);
       return reply.header("cache-control", "no-store").send({ version: 1, paneId: access.paneId, metadata });
     });
     child.post(base + "binding/validate", { bodyLimit: 4096 }, async (request, reply) => {
@@ -170,7 +185,7 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
         throw new T3GatewayError(409, "T3_SELECTION_STALE");
       const parsed = t3CodeSelectionSchema.safeParse(body.selection);
       if (!parsed.success) throw new T3GatewayError(400, "T3_SELECTION_INVALID");
-      await validateSelection(access, parsed.data);
+      await validateAndPublish(access, parsed.data);
       if ((await scope(request)).pane.t3CodeMetadata?.generation !== body.generation) throw new T3GatewayError(409, "T3_SELECTION_STALE");
       return reply.header("cache-control", "no-store").send({ version: 1, selection: parsed.data });
     });
@@ -186,7 +201,7 @@ export async function registerT3Bindings(app: FastifyInstance, options: T3Bindin
         const current = await options.store.getPane(access.paneId) as Pane, metadata = current.t3CodeMetadata;
         const input = parsed.data;
         if (!metadata || metadata.generation !== input.generation || input.sequence <= metadata.lastSequence) throw new T3GatewayError(409, "T3_SELECTION_STALE");
-        await validateSelection(access, input.selection); await scope(request);
+        await validateAndPublish(access, input.selection); await scope(request);
         const next = { ...metadata, revision: metadata.revision + 1, lastSequence: input.sequence, selection: input.selection };
         if (!await options.store.compareAndSetT3CodeMetadata(access.paneId, metadata.revision, next)) throw new T3GatewayError(409, "T3_SELECTION_STALE");
         return reply.header("cache-control", "no-store").send({ version: 1, paneId: access.paneId, metadata: next });

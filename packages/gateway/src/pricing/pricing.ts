@@ -119,33 +119,91 @@ export function costUsd(usage: CostUsage | null, model: string | null, serviceTi
   return ((usage.inputTokens - cached) / 1e6) * inputRate + (cached / 1e6) * cachedRate + (usage.outputTokens / 1e6) * outputRate;
 }
 
-/** Anthropic API list prices per 1M tokens; cache reads cost 0.1x input and 5-minute cache writes 1.25x input. */
-const anthropicPrices: Array<{ prefix: string; input: number; output: number }> = [
+interface AnthropicPrice {
+  prefix: string;
+  input: number;
+  output: number;
+  /** Cache reads per 1M; 0.1x input unless the model's card says otherwise. */
+  cacheRead?: number;
+  /** Rate card for prompts longer than `threshold` tokens (input + cache reads + cache writes). */
+  long?: { threshold: number; input: number; output: number };
+  /** Price multiplier of `speed: "fast"`; a model without one leaves fast requests unpriced. */
+  fast?: number;
+}
+
+/**
+ * Anthropic API list prices per 1M tokens (Claude API reference, cached 2026-10-06). Cache writes cost 1.25x input for
+ * the 5-minute TTL and 2x for the 1-hour TTL; cache reads 0.1x input unless `cacheRead` says otherwise.
+ */
+const anthropicPrices: AnthropicPrice[] = [
+  { prefix: "claude-fable-5-1", input: 10, output: 50, cacheRead: 0.25 },
+  { prefix: "claude-mythos-5-1", input: 10, output: 50, cacheRead: 0.25 },
+  { prefix: "claude-fable-5", input: 10, output: 50 },
+  { prefix: "claude-mythos-5", input: 10, output: 50 },
+  { prefix: "claude-opus-5-5", input: 4, output: 20, cacheRead: 0.2, fast: 2 },
+  { prefix: "claude-opus-5", input: 5, output: 25, fast: 2 },
+  { prefix: "claude-opus-4-8", input: 5, output: 25 },
+  { prefix: "claude-opus-4-7", input: 5, output: 25 },
+  { prefix: "claude-opus-4-6", input: 5, output: 25 },
   { prefix: "claude-opus-4-5", input: 5, output: 25 },
   { prefix: "claude-opus-4-1", input: 15, output: 75 },
   { prefix: "claude-opus-4", input: 15, output: 75 },
+  { prefix: "claude-sonnet-5-5", input: 2, output: 10 },
+  { prefix: "claude-sonnet-5", input: 2, output: 10 },
+  { prefix: "claude-sonnet-4-6", input: 3, output: 15 },
   { prefix: "claude-sonnet-4-5", input: 3, output: 15 },
   { prefix: "claude-sonnet-4", input: 3, output: 15 },
+  { prefix: "claude-haiku-5-5", input: 0.1, output: 0.5, long: { threshold: 100_000, input: 0.5, output: 2.5 } },
   { prefix: "claude-haiku-4-5", input: 1, output: 5 },
   { prefix: "claude-3-7-sonnet", input: 3, output: 15 },
   { prefix: "claude-3-5-haiku", input: 0.8, output: 4 }
 ];
 
+// Exact ids, dated snapshots and `-latest` only, so a newer model is never priced as an older one.
+const anthropicPrice = (model: string) => {
+  const normalized = model.toLowerCase();
+  return anthropicPrices.find((entry) => new RegExp(`^${entry.prefix}(?:-\\d{8}|-latest)?$`).test(normalized)) ?? null;
+};
+
 export interface ClaudeCostUsage {
   inputTokens: number | null;
   cacheReadInputTokens: number | null;
   cacheCreationInputTokens: number | null;
+  /** Part of the cache writes made with the 1-hour TTL (`usage.cache_creation.ephemeral_1h_input_tokens`). */
+  cacheCreation1hInputTokens?: number | null;
   outputTokens: number | null;
+  /** `usage.speed`: "fast" for fast mode. */
+  speed?: string | null;
 }
 
-/** API-equivalent cost of a Claude request, or null for an unknown model or incomplete usage. */
+/** API-equivalent cost of a Claude request, or null for an unknown model, an unpriced speed or incomplete usage. */
 export function claudeCostUsd(usage: ClaudeCostUsage | null, model: string | null): number | null {
   if (!usage || usage.inputTokens === null || usage.outputTokens === null || !model) return null;
-  const normalized = model.toLowerCase();
-  // Exact ids, dated snapshots and `-latest` only, so a newer model is never priced as an older one.
-  const price = anthropicPrices.find((entry) => new RegExp(`^${entry.prefix}(?:-\\d{8}|-latest)?$`).test(normalized));
+  const price = anthropicPrice(model);
   if (!price) return null;
+  const multiplier = usage.speed === "fast" ? price.fast ?? null : 1;
+  if (multiplier === null) return null;
   const read = usage.cacheReadInputTokens ?? 0;
   const write = usage.cacheCreationInputTokens ?? 0;
-  return (usage.inputTokens * price.input + read * price.input * 0.1 + write * price.input * 1.25 + usage.outputTokens * price.output) / 1e6;
+  const writeLong = Math.min(write, usage.cacheCreation1hInputTokens ?? 0);
+  const card = price.long && usage.inputTokens + read + write > price.long.threshold ? price.long : price;
+  const cacheRead = card === price ? price.cacheRead ?? price.input * 0.1 : card.input * 0.1;
+  const cost = usage.inputTokens * card.input + read * cacheRead + (write - writeLong) * card.input * 1.25 + writeLong * card.input * 2
+    + usage.outputTokens * card.output;
+  return (cost * multiplier) / 1e6;
+}
+
+/**
+ * Per-million input prices of a model, for savings in dollars (Headroom prices saved tokens at the input price and
+ * cache reads at the input price minus the cached price). Null when the model has no known price.
+ */
+export function inputPrices(model: string | null, provider: string): { input: number; cachedInput: number; cacheWrite: number } | null {
+  if (!model) return null;
+  if (provider === "CLAUDE" || provider === "ANTHROPIC_API" || model.toLowerCase().startsWith("claude-")) {
+    const price = anthropicPrice(model);
+    return price ? { input: price.input, cachedInput: price.cacheRead ?? price.input * 0.1, cacheWrite: price.input * 1.25 } : null;
+  }
+  const found = priceForModel(model);
+  if (!found) return null;
+  return { input: found.price.input_per_1m, cachedInput: found.price.cached_input_per_1m ?? found.price.input_per_1m, cacheWrite: found.price.input_per_1m };
 }

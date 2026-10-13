@@ -22,7 +22,7 @@ const stepCopy: Record<MaintenanceAutopilotStepId, { label: string; idle: string
   cleanup: { label: "Clean up storage", idle: "Empty tasks, orphaned pane homes and temporary files." },
   memory: { label: "Free memory", idle: "Stops leftover CLIs of closed panes and releases cache under memory pressure." },
   check: { label: "Check health", idle: "Space and every enabled CLI." },
-  update: { label: "Update & repair", idle: "Applies what the check recommends, with automatic rollback." }
+  update: { label: "Update & repair", idle: "Updates every CLI that needs it and applies recommended repairs. Custom code is verified and Space settings re-applied; a failed update rolls back." }
 };
 const stepOrder: MaintenanceAutopilotStepId[] = ["cleanup", "memory", "check", "update"];
 const pollMs = 2_000;

@@ -27,6 +27,42 @@ interface SetupConnectionsWizardProps {
   triggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
+/** First prompts for the free OpenCode model: short, safe, and useful in an empty folder. */
+export const STARTER_PROMPTS = [
+  "Create a one-page personal homepage in index.html with a title, a short bio and a contact link, then tell me how to open it.",
+  "Write a Python function that checks whether a word is a palindrome, with three examples, and explain how it works.",
+  "Explain in five short points what you can do for me in this workspace."
+] as const;
+
+function StarterPrompts() {
+  const [copied, setCopied] = useState<number | null>(null);
+  const copy = async (index: number, prompt: string) => {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopied(index);
+      window.setTimeout(() => setCopied((current) => (current === index ? null : current)), 2000);
+    } catch {
+      setCopied(null);
+    }
+  };
+  return (
+    <section className="setup-starter-prompts" aria-label="Try a first prompt">
+      <h4>Try a first prompt</h4>
+      <p>Copy one, paste it into the OpenCode pane in the Getting Started room and press Enter. The first answer can take up to a minute while the free model starts.</p>
+      <ul>
+        {STARTER_PROMPTS.map((prompt, index) => (
+          <li key={prompt}>
+            <span>{prompt}</span>
+            <button type="button" onClick={() => void copy(index, prompt)} aria-label={`Copy prompt ${index + 1}`}>
+              {copied === index ? "Copied" : "Copy"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function formatElapsed(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -257,6 +293,7 @@ export function SetupConnectionsWizard({
           <p>{summary.functional} of {summary.total} tools are ready to launch. {summary.needsSetup} still need setup.</p>
           <p>Open Rooms to choose or create a workspace, then use Create to add a CLI, Chat, or Browser pane.</p>
           <p>You can reopen this wizard from the room toolbar → Setup wizard. Optional connections can be added later.</p>
+          <StarterPrompts />
         </div> : null}
 
         <footer className="setup-connections-footer">

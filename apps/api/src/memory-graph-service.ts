@@ -1,9 +1,10 @@
 import { createMemorySourceTopology } from "./memory-source-topology.js";
 import { readFile, readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryGraphSnapshot, MemoryGraphSource } from "@space/memory-graph";
+import { MONTHLY_MEMORY_FILE_PATTERN, monthOfMemoryFile } from "@space/runtime";
 
 export interface MemoryGraphApiService {
   withSourceTopology?(snapshot: MemoryGraphSnapshot): Promise<MemoryGraphSnapshot>;
@@ -44,7 +45,6 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   let archiveBuild: Promise<MemoryGraphSnapshot> | null = null;
   const memoryDir = dirname(options.indexPath);
   const withSourceTopology = createMemorySourceTopology(options.indexPath);
-  const monthlyMemoryPattern = /^gemini_history_(\d{4}-\d{2})\.md$/;
 
   const loadGraphModule = () => {
     graphModule ??= import("@space/memory-graph");
@@ -53,7 +53,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
   const listMonthlyPaths = async (): Promise<string[]> => {
     const entries = await readdir(memoryDir, { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isFile() && monthlyMemoryPattern.test(entry.name))
+      .filter((entry) => entry.isFile() && MONTHLY_MEMORY_FILE_PATTERN.test(entry.name))
       .map((entry) => join(memoryDir, entry.name))
       .sort();
   };
@@ -175,7 +175,7 @@ export function createMemoryGraphService(options: CreateMemoryGraphServiceOption
     async listAvailableMonths() {
       const paths = await listMonthlyPaths();
       return paths
-        .map((path) => monthlyMemoryPattern.exec(basename(path))?.[1])
+        .map((path) => monthOfMemoryFile(path))
         .filter((month): month is string => Boolean(month));
     },
     async invalidateCachedSnapshot() {

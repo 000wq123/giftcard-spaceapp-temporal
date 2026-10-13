@@ -179,6 +179,10 @@ export function isUserModeRestricted(targetPath: string, workspaceRoot: string =
   // Managed worktrees are code checkouts that worktree panes browse in User Mode.
   const managedWorktree = segments[0] === "var" && segments[1] === "worktrees";
   if (userModeRestrictedTopLevel.has(segments[0]!) && !managedWorktree) return true;
+  // Git metadata stays hidden at any depth, and each managed worktree
+  // (var/worktrees/<project>/<worktree>/...) keeps the install root's restrictions.
+  if (segments.includes(".git")) return true;
+  if (managedWorktree && segments.length > 4 && userModeRestrictedTopLevel.has(segments[4]!)) return true;
   return segments.some((segment) => environmentFilePattern.test(segment) && segment !== ".env.example");
 }
 

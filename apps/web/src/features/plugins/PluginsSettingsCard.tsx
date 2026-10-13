@@ -23,8 +23,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Plus,
-  ExternalLink,
-  ArrowUpCircle
+  ExternalLink
 } from "../ui-theme/app-icons.js";
 import { isRepositoryProviderId, type PluginWithState, type PluginCategory } from "@space/contracts";
 import "./plugins-settings.css";
@@ -124,7 +123,8 @@ async function authedPost(url: string, body?: unknown): Promise<Response> {
   return res;
 }
 
-export function PluginsSettingsCard() {
+// canManage: installation plugins are shared by every account; only administrators change them.
+export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean } = {}) {
   const [plugins, setPlugins] = useState<PluginWithState[]>([]);
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("all");
@@ -133,32 +133,8 @@ export function PluginsSettingsCard() {
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [accountLabel, setAccountLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const [upgradingAll, setUpgradingAll] = useState(false);
-  const [upgradeAllMessage, setUpgradeAllMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
-
-  const outdatedCount = useMemo(() => plugins.filter((p) => p.hasUpdate).length, [plugins]);
-
-  const handleUpgradeAll = async () => {
-    setUpgradingAll(true);
-    setUpgradeAllMessage(null);
-    try {
-      const res = await authedPost("/api/plugins/upgrade-all");
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setUpgradeAllMessage(data.message || `Upgraded ${data.upgradedCount} plugins.`);
-        await fetchPlugins();
-      } else {
-        setUpgradeAllMessage(data.message || "Failed to upgrade plugins.");
-      }
-    } catch {
-      setUpgradeAllMessage("Network error during batch upgrade.");
-    } finally {
-      setUpgradingAll(false);
-    }
-  };
 
   const fetchPlugins = async () => {
     setLoading(true);
@@ -277,78 +253,6 @@ export function PluginsSettingsCard() {
     }
   };
 
-  const handleUpdatePlugin = async () => {
-    if (!selectedPlugin) return;
-    setUpdating(true);
-    setActionError(null);
-    setTestResult(null);
-    try {
-      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/update`);
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setTestResult(data.message || `Successfully updated ${selectedPlugin.displayName}.`);
-        await fetchPlugins();
-        setSelectedPlugin((prev) =>
-          prev
-            ? {
-                ...prev,
-                installedVersion: data.installedVersion || prev.latestVersion,
-                hasUpdate: false,
-                connection: {
-                  ...prev.connection,
-                  installedVersion: data.installedVersion || prev.latestVersion,
-                  hasUpdate: false
-                }
-              }
-            : null
-        );
-      } else {
-        const errorMsg = data.error?.message || data.message || "Update failed";
-        setActionError(errorMsg);
-      }
-    } catch {
-      setActionError("Failed to update plugin.");
-    } finally {
-      setUpdating(false);
-    }
-  };
-
-  const handleCheckUpdate = async () => {
-    if (!selectedPlugin) return;
-    setUpdating(true);
-    setActionError(null);
-    setTestResult(null);
-    try {
-      const res = await authedPost(`/api/plugins/${selectedPlugin.id}/check-update`);
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setTestResult(data.message);
-        if (data.hasUpdate) {
-          setSelectedPlugin((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  hasUpdate: true,
-                  latestVersion: data.latestVersion,
-                  connection: {
-                    ...prev.connection,
-                    hasUpdate: true,
-                    latestVersion: data.latestVersion
-                  }
-                }
-              : null
-          );
-        }
-      } else {
-        setActionError(data.error?.message || data.message || "Failed to check update.");
-      }
-    } catch {
-      setActionError("Failed to check update.");
-    } finally {
-      setUpdating(false);
-    }
-  };
-
   return (
     <div className="plugins-settings-container">
       <div className="plugins-header-block">
@@ -356,61 +260,11 @@ export function PluginsSettingsCard() {
           <div>
             <h2>Plugins</h2>
             <p>Accounts and services your agents can act through.</p>
+            {canManage ? null : <p className="plugins-readonly-note" role="note">Only an administrator can change installation plugins.</p>}
           </div>
           <div className="plugins-header-actions">
-            <button
-              type="button"
-              className={`plugin-upgrade-all-btn ${outdatedCount > 0 ? "has-updates" : "up-to-date"}`}
-              onClick={handleUpgradeAll}
-              disabled={upgradingAll}
-              title={
-                outdatedCount > 0
-                  ? `Upgrade ${outdatedCount} outdated plugin${outdatedCount > 1 ? "s" : ""}`
-                  : "All plugins are up to date. Click to check and upgrade all."
-              }
-            >
-              {upgradingAll ? (
-                <>
-                  <RefreshCw className="plugin-btn-spinner" size={15} />
-                  <span>Upgrading...</span>
-                </>
-              ) : outdatedCount > 0 ? (
-                <>
-                  <ArrowUpCircle size={15} />
-                  <span>Upgrade All ({outdatedCount})</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 size={15} className="plugin-btn-check-icon" />
-                  <span>Upgrade All (Up to date)</span>
-                </>
-              )}
-            </button>
           </div>
         </div>
-        {upgradeAllMessage && (
-          <div className="plugin-success-alert" style={{ marginTop: "12px" }}>
-            <CheckCircle2 className="plugin-alert-icon" />
-            <span style={{ flex: 1 }}>{upgradeAllMessage}</span>
-            <button
-              type="button"
-              className="plugin-alert-close-btn"
-              onClick={() => setUpgradeAllMessage(null)}
-              title="Dismiss"
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "inherit",
-                cursor: "pointer",
-                padding: "2px",
-                display: "inline-flex",
-                alignItems: "center"
-              }}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="plugins-search-bar-wrap">
@@ -470,7 +324,7 @@ export function PluginsSettingsCard() {
                       <Sparkles size={11} className="plugin-preview-sparkle" />
                       <span>Preview</span>
                     </span>
-                  ) : (
+                  ) : canManage ? (
                     <button
                       type="button"
                       className="plugin-connect-btn"
@@ -479,7 +333,7 @@ export function PluginsSettingsCard() {
                       <Plus size={13} className="plugin-connect-icon" />
                       <span>Connect</span>
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
@@ -490,7 +344,7 @@ export function PluginsSettingsCard() {
       </div>
 
       <div className="plugins-footer-banner">
-        Plugins connect once to SpaceApp and every agent can use them — turn one off for a specific agent in Agent Settings. Agent-mode chats expose them to Claude Code and Codex through one private gateway; credentials never enter either engine&apos;s configuration.
+        Built-in plugins are installed once for every agent: skill bundles appear in each CLI&apos;s skill list, and Context7 runs on demand through the MCP dispatcher. Turning a plugin off here turns it off for every agent. Repository providers are personal to your account.
       </div>
 
       {selectedPlugin && (
@@ -557,54 +411,23 @@ export function PluginsSettingsCard() {
                   </div>
                 </div>
 
-                {/* MCP Version & Update Info */}
-                <div className="plugin-modal-field">
-                  <label>MCP Version</label>
-                  <div className="plugin-version-card">
-                    <div className="plugin-version-info">
-                      <div className="plugin-version-row">
-                        <span className="plugin-version-label">Installed:</span>
-                        <span className="plugin-version-value">v{selectedPlugin.installedVersion || "1.0.0"}</span>
-                      </div>
-                      <div className="plugin-version-row">
-                        <span className="plugin-version-label">Latest:</span>
-                        <span className="plugin-version-value">v{selectedPlugin.latestVersion || selectedPlugin.installedVersion || "1.0.0"}</span>
-                      </div>
-                    </div>
-
-                    <div className="plugin-version-actions">
-                      {selectedPlugin.hasUpdate ? (
-                        <button
-                          type="button"
-                          className="plugin-update-btn has-update"
-                          onClick={handleUpdatePlugin}
-                          disabled={updating || submitting}
-                          title="Upgrade to latest version"
-                        >
-                          <ArrowUpCircle size={14} className={updating ? "plugin-spin" : ""} />
-                          <span>{updating ? "Upgrading..." : `Upgrade to v${selectedPlugin.latestVersion}`}</span>
-                        </button>
-                      ) : (
-                        <div className="plugin-up-to-date-wrap">
-                          <span className="plugin-up-to-date-badge">
-                            <CheckCircle2 size={13} />
-                            <span>Up to date</span>
-                          </span>
-                          <button
-                            type="button"
-                            className="plugin-check-update-btn"
-                            onClick={handleCheckUpdate}
-                            disabled={updating || submitting}
-                            title="Check for updates"
-                          >
-                            <RefreshCw size={12} className={updating ? "plugin-spin" : ""} />
-                            <span>{updating ? "Checking..." : "Check"}</span>
-                          </button>
+                {/* Built-in plugins are pinned in the repository and update with SpaceApp releases. */}
+                {selectedPlugin.installedVersion ? (
+                  <div className="plugin-modal-field">
+                    <label>Version</label>
+                    <div className="plugin-version-card">
+                      <div className="plugin-version-info">
+                        <div className="plugin-version-row">
+                          <span className="plugin-version-label">Pinned to:</span>
+                          <span className="plugin-version-value">{selectedPlugin.installedVersion}</span>
                         </div>
-                      )}
+                        <div className="plugin-version-row">
+                          <span className="plugin-version-label">Updates with SpaceApp releases.</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : null}
 
                 {testResult && (
                   <div className="plugin-success-alert">
@@ -620,21 +443,21 @@ export function PluginsSettingsCard() {
                   </div>
                 )}
 
-                <div className="plugin-modal-actions" style={{ justifyContent: "space-between" }}>
-                  <button
+                <div className="plugin-modal-actions" style={{ justifyContent: canManage ? "space-between" : "flex-end" }}>
+                  {canManage ? <button
                     type="button"
                     className="plugin-btn-danger"
                     onClick={handleDisconnect}
-                    disabled={submitting || updating}
+                    disabled={submitting}
                   >
                     {submitting ? "Disconnecting..." : "Disconnect"}
-                  </button>
+                  </button> : null}
                   <div style={{ display: "flex", gap: "0.5rem" }}>
                     <button
                       type="button"
                       className="plugin-btn-secondary"
                       onClick={handleTestConnection}
-                      disabled={submitting || updating}
+                      disabled={submitting}
                     >
                       <RefreshCw size={14} className={submitting ? "plugin-spin" : ""} style={{ display: "inline", marginRight: "4px" }} />
                       {submitting ? "Testing..." : "Test Connection"}

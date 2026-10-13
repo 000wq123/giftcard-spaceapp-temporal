@@ -42,10 +42,11 @@ async function mount() {
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
   }
-  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }] = await Promise.all([
+  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }, { InstanceBadge }] = await Promise.all([
     import("./live/LiveSpaceApp.js"),
     import("./ui-theme.js"),
-    import("./features/ui-theme/icon-pack-registry.js")
+    import("./features/ui-theme/icon-pack-registry.js"),
+    import("./features/instance-badge/InstanceBadge.js")
   ]);
   document.documentElement.dataset.uiBackground = readUiBackground(window.localStorage);
   // Non-default icon packs load on demand; await the stored one like the theme CSS.
@@ -56,7 +57,15 @@ async function mount() {
     await import("./features/ui-theme/motion-theme.css");
   }
   await iconPackReady;
-  root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /></SurfaceErrorBoundary></StrictMode>);
+  if (route === "app") {
+    // Uncaught errors are reported by name and bundle location only (no messages or user content).
+    const [{ installClientErrorReporter }, { api }] = await Promise.all([
+      import("./client-error-reporter.js"),
+      import("./live-api.js")
+    ]);
+    installClientErrorReporter({ send: (report) => api.reportClientError(report) });
+  }
+  root.render(<StrictMode><SurfaceErrorBoundary><LiveSpaceApp /><InstanceBadge /></SurfaceErrorBoundary></StrictMode>);
   return route;
 }
 

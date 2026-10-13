@@ -16,8 +16,8 @@ export class BoundedMap<V> {
   }
 }
 
-/** Reads at most 64 KB of an error body. */
-export async function readBounded(response: Response): Promise<string> {
+/** Reads at most `limit` bytes (64 KB, an error body, by default). */
+export async function readBounded(response: Response, limit = MAX_ERROR_BODY_BYTES): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
@@ -26,7 +26,7 @@ export async function readBounded(response: Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_ERROR_BODY_BYTES) { await reader.cancel().catch(() => undefined); break; }
+    if (size > limit) { await reader.cancel().catch(() => undefined); break; }
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");

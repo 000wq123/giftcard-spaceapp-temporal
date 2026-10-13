@@ -18,10 +18,20 @@ const nodeStyles: Record<MemoryGraphNode["type"], MemoryGraphVisualStyle> = {
 
 const CANONICAL_INDEX_STYLE: MemoryGraphVisualStyle = { color: "#e8c05f", size: 11, label: "Canonical index" };
 
+/** The agent core rules file, the root of the memory atlas: space.md (legacy gemini.md). */
+export function isMemoryCoreLabel(label: string): boolean {
+  return /^(?:space|gemini)\.md$/.test(label);
+}
+
+/** The Space Memory index: space_memory.md (legacy gemini_history.md). */
+export function isMemoryIndexLabel(label: string | null | undefined): boolean {
+  return /^(?:space_memory|gemini_history)\.md$/.test(label ?? "");
+}
+
 export function isCanonicalIndexNode(node: MemoryGraphNode): boolean {
   return node.type === "SOURCE" && (
-    node.label === "gemini_history.md" ||
-    node.sourcePath?.split(/[\\/]/).at(-1) === "gemini_history.md"
+    isMemoryIndexLabel(node.label) ||
+    isMemoryIndexLabel(node.sourcePath?.split(/[\\/]/).at(-1))
   );
 }
 

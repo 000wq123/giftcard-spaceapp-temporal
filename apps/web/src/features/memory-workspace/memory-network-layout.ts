@@ -1,4 +1,5 @@
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import { isMemoryCoreLabel, isMemoryIndexLabel } from "./memory-graph-visuals.js";
 
 const unit = (value: string) => {
   let hash = 2166136261;
@@ -11,7 +12,7 @@ export function layoutMemoryNetwork(nodes: MemoryGraphNode[], edges: MemoryGraph
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const sources = ordered.filter(node => node.type === "SOURCE");
-  const root = sources.find(node => node.label === "gemini.md") ?? sources.find(node => node.label === "gemini_history.md");
+  const root = sources.find(node => isMemoryCoreLabel(node.label)) ?? sources.find(node => isMemoryIndexLabel(node.label));
   const rootIndex = root ? index.get(root.id)! : -1;
   const sourceIndex = new Map(sources.map(node => [node.sourcePath, index.get(node.id)!]));
   const points = ordered.map(node => ({ x: (unit(node.id) - 0.5) * 240, y: (unit(`${node.id}:y`) - 0.5) * 200 }));

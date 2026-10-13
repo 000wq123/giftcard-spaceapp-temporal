@@ -1,20 +1,55 @@
 import type {} from "../request-context.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
-import { gatewayApiKeyCreateRequestSchema, gatewayApiKeyUpdateRequestSchema, gatewaySettingsUpdateRequestSchema } from "@space/contracts";
+import {
+  gatewayAccountUpdateRequestSchema, gatewayApiKeyCreateRequestSchema, gatewayApiKeyUpdateRequestSchema, gatewayDashboardRangeSchema, gatewayHistorySeriesSchema,
+  gatewayLogStatusCategorySchema, gatewayProviderSchema, gatewayRequestLogFilterSchema, gatewaySettingsUpdateRequestSchema, type GatewayRequestLogFilter
+} from "@space/contracts";
 import type { AuditRecorder } from "../request-audit.js";
 import { sendApiError } from "../http-errors.js";
-import { GatewayAccountNotFoundError, type GatewayAdminService } from "./gateway-service.js";
+import { GatewayAccountNotFoundError, GatewayKeyPolicyError, GatewaySettingsError, type GatewayAdminService } from "./gateway-service.js";
 
-const accountParamsSchema = z.object({ accountId: z.string().regex(/^gw_account:[a-f0-9]{32}$/) }).strict();
-const keyParamsSchema = z.object({ keyId: z.string().regex(/^gw_key:[a-f0-9]{32}$/) }).strict();
-const pauseSchema = z.object({ paused: z.boolean() }).strict();
+const accountIdSchema = z.string().regex(/^gw_account:[a-f0-9]{32}$/);
+const keyIdSchema = z.string().regex(/^gw_key:[a-f0-9]{32}$/);
+const accountParamsSchema = z.object({ accountId: accountIdSchema }).strict();
+const keyParamsSchema = z.object({ keyId: keyIdSchema }).strict();
+const isoQuery = z.string().max(40).refine((value) => Number.isFinite(Date.parse(value)), "Expected a date and time.");
+/** A query parameter given once or repeated. */
+const many = <T extends z.ZodTypeAny>(item: T, max: number) => z.union([item, z.array(item).max(max)])
+  .transform((value) => (Array.isArray(value) ? value : [value]) as z.output<T>[]).optional();
+const logFilterQuery = {
+  q: z.string().trim().min(1).max(200).optional(),
+  from: isoQuery.optional(),
+  to: isoQuery.optional(),
+  account: many(accountIdSchema, 100),
+  key: many(keyIdSchema, 100),
+  model: many(z.string().min(1).max(160), 100),
+  provider: many(gatewayProviderSchema, 20),
+  status: many(gatewayLogStatusCategorySchema, 5),
+  client: many(z.string().min(1).max(80), 50)
+};
 const logsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().regex(/^\d{1,19}$/).optional(),
-  accountId: z.string().regex(/^gw_account:[a-f0-9]{32}$/).optional(),
-  apiKeyId: z.string().regex(/^gw_key:[a-f0-9]{32}$/).optional()
+  accountId: accountIdSchema.optional(),
+  apiKeyId: keyIdSchema.optional(),
+  ...logFilterQuery
 }).strict();
+const logFilterQuerySchema = z.object(logFilterQuery).strict();
+
+function toFilter(query: z.output<typeof logFilterQuerySchema>): GatewayRequestLogFilter {
+  return gatewayRequestLogFilterSchema.parse({
+    ...(query.q ? { q: query.q } : {}),
+    ...(query.from ? { from: new Date(query.from).toISOString() } : {}),
+    ...(query.to ? { to: new Date(query.to).toISOString() } : {}),
+    ...(query.account?.length ? { accountIds: query.account } : {}),
+    ...(query.key?.length ? { apiKeyIds: query.key } : {}),
+    ...(query.model?.length ? { models: query.model } : {}),
+    ...(query.provider?.length ? { providers: query.provider } : {}),
+    ...(query.status?.length ? { statuses: query.status } : {}),
+    ...(query.client?.length ? { clients: query.client } : {})
+  });
+}
 
 /** Space Gateway administration. Administrators only; every change is audited. */
 export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
@@ -40,14 +75,48 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
     return service.listAccounts();
   });
 
+  app.get("/api/admin/gateway/dashboard", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { range } = z.object({ range: gatewayDashboardRangeSchema.default("24h") }).strict().parse(request.query);
+    return service.dashboard(range);
+  });
+
+  app.get("/api/admin/gateway/health", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.health();
+  });
+
+  app.get("/api/admin/gateway/accounts/:accountId", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { accountId } = accountParamsSchema.parse(request.params);
+    const detail = await service.accountDetail(accountId);
+    return detail ?? sendApiError(reply, 404, "GATEWAY_ACCOUNT_NOT_FOUND", "Account not found.");
+  });
+
   app.patch("/api/admin/gateway/accounts/:accountId", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const { accountId } = accountParamsSchema.parse(request.params);
-    const { paused } = pauseSchema.parse(request.body);
-    const account = await service.setAccountPaused(accountId, paused);
+    const patch = gatewayAccountUpdateRequestSchema.parse(request.body);
+    const account = await service.updateAccount(accountId, patch);
     if (!account) return sendApiError(reply, 404, "GATEWAY_ACCOUNT_NOT_FOUND", "Account not found.");
-    await recordAudit(request, { action: paused ? "admin.gateway.account.pause" : "admin.gateway.account.resume", targetType: "gateway_account", targetId: accountId });
+    if (patch.paused !== undefined) {
+      await recordAudit(request, { action: patch.paused ? "admin.gateway.account.pause" : "admin.gateway.account.resume", targetType: "gateway_account", targetId: accountId });
+    }
+    if (patch.alias !== undefined || patch.warmupEnabled !== undefined) {
+      await recordAudit(request, { action: "admin.gateway.account.update", targetType: "gateway_account", targetId: accountId,
+        metadata: { ...(patch.alias !== undefined ? { alias: patch.alias } : {}), ...(patch.warmupEnabled !== undefined ? { warmupEnabled: patch.warmupEnabled } : {}) } });
+    }
     return account;
+  });
+
+  /** Hands out the account's Codex sign-in as auth.json. The operator confirms first; every export is audited. */
+  app.post("/api/admin/gateway/accounts/:accountId/export", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { accountId } = accountParamsSchema.parse(request.params);
+    z.object({ confirm: z.literal(true) }).strict().parse(request.body);
+    const result = await service.gatewayAdmin(`/__space-gateway/admin/accounts/${accountId}/export`);
+    await recordAudit(request, { action: "admin.gateway.account.export", targetType: "gateway_account", targetId: accountId, metadata: { status: result.status } });
+    return relay(reply, result);
   });
 
   const flowParamsSchema = z.object({ flowId: z.string().regex(/^[a-f0-9]{32}$/) }).strict();
@@ -119,15 +188,16 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/api-key/add", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const input = z.object({
-      provider: z.literal("OPENAI_API"),
+      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK"]),
       apiKey: z.string().trim().min(20).max(400).optional(),
       useSpaceKey: z.boolean().optional(),
       label: z.string().trim().min(1).max(80).optional()
-    }).strict().refine((value) => Boolean(value.apiKey) !== Boolean(value.useSpaceKey), "Give an API key or choose the Space key.").parse(request.body);
+    }).strict().refine((value) => Boolean(value.apiKey) !== Boolean(value.useSpaceKey), "Give an API key or choose the Space key.")
+      .refine((value) => !value.useSpaceKey || value.provider === "OPENAI_API", "Only the OpenAI key exists on this server.").parse(request.body);
     const result = await service.addOpenAiApiKey(input);
     const account = connected(result.body);
     if (account) await recordAudit(request, { action: "admin.gateway.account.add", targetType: "gateway_account", targetId: account.id ?? null,
-      metadata: { provider: "OPENAI_API", method: input.useSpaceKey ? "space-key" : "api-key" } });
+      metadata: { provider: input.provider, method: input.useSpaceKey ? "space-key" : "api-key" } });
     return relay(reply, result);
   });
 
@@ -194,14 +264,38 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
     }
   });
 
+  app.get("/api/admin/gateway/keys/:keyId", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { keyId } = keyParamsSchema.parse(request.params);
+    const detail = await service.apiKeyDetail(keyId);
+    return detail ?? sendApiError(reply, 404, "GATEWAY_KEY_NOT_FOUND", "API key not found.");
+  });
+
   app.patch("/api/admin/gateway/keys/:keyId", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const { keyId } = keyParamsSchema.parse(request.params);
     const patch = gatewayApiKeyUpdateRequestSchema.parse(request.body);
-    const key = await service.updateApiKey(keyId, patch);
-    if (!key) return sendApiError(reply, 404, "GATEWAY_KEY_NOT_FOUND", "API key not found.");
-    await recordAudit(request, { action: "admin.gateway.key.update", targetType: "gateway_api_key", targetId: keyId, metadata: { ...patch } });
-    return key;
+    try {
+      const key = await service.updateApiKey(keyId, patch);
+      if (!key) return sendApiError(reply, 404, "GATEWAY_KEY_NOT_FOUND", "API key not found.");
+      await recordAudit(request, { action: "admin.gateway.key.update", targetType: "gateway_api_key", targetId: keyId, metadata: { ...patch } });
+      return key;
+    } catch (error) {
+      if (error instanceof GatewayAccountNotFoundError) return sendApiError(reply, 422, "GATEWAY_ACCOUNT_NOT_FOUND", error.message);
+      if (error instanceof GatewayKeyPolicyError) return sendApiError(reply, 422, "GATEWAY_KEY_POLICY_INVALID", error.message);
+      throw error;
+    }
+  });
+
+  /** A new secret for the key; the plain key is shown once. The old secret stops working at once. */
+  app.post("/api/admin/gateway/keys/:keyId/regenerate", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { keyId } = keyParamsSchema.parse(request.params);
+    const regenerated = await service.regenerateApiKey(keyId);
+    if (!regenerated) return sendApiError(reply, 404, "GATEWAY_KEY_NOT_FOUND", "API key not found.");
+    await recordAudit(request, { action: "admin.gateway.key.regenerate", targetType: "gateway_api_key", targetId: keyId,
+      metadata: { keyPrefix: regenerated.key.keyPrefix } });
+    return reply.header("cache-control", "no-store").send(regenerated);
   });
 
   app.delete("/api/admin/gateway/keys/:keyId", writeOptions, async (request, reply) => {
@@ -214,8 +308,28 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
 
   app.get("/api/admin/gateway/logs", routeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
-    const query = logsQuerySchema.parse(request.query);
-    return service.listRequestLogs(query);
+    const { limit, cursor, accountId, apiKeyId, ...filterQuery } = logsQuerySchema.parse(request.query);
+    return service.listRequestLogs({ limit, cursor, accountId, apiKeyId, filter: toFilter(filterQuery) });
+  });
+
+  app.get("/api/admin/gateway/logs/facets", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { from, to } = z.object({ from: isoQuery.optional(), to: isoQuery.optional() }).strict().parse(request.query);
+    return service.requestLogFacets({ from: from ? new Date(from).toISOString() : undefined, to: to ? new Date(to).toISOString() : undefined });
+  });
+
+  app.get("/api/admin/gateway/logs/export.csv", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const csv = await service.requestLogCsv(toFilter(logFilterQuerySchema.parse(request.query)));
+    return reply.header("content-type", "text/csv; charset=utf-8").header("cache-control", "no-store")
+      .header("content-disposition", `attachment; filename="space-gateway-requests-${new Date().toISOString().slice(0, 10)}.csv"`).send(csv);
+  });
+
+  app.get("/api/admin/gateway/logs/:logId", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { logId } = z.object({ logId: z.string().regex(/^\d{1,19}$/) }).strict().parse(request.params);
+    const log = await service.requestLog(logId);
+    return log ?? sendApiError(reply, 404, "GATEWAY_LOG_NOT_FOUND", "Request log not found.");
   });
 
   app.get("/api/admin/gateway/reports", routeOptions, async (request, reply) => {
@@ -233,6 +347,34 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
     return service.compressionStats(hours);
   });
 
+  app.get("/api/admin/gateway/compression/session", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.headroomSession();
+  });
+
+  app.get("/api/admin/gateway/compression/lifetime", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.headroomLifetime();
+  });
+
+  app.get("/api/admin/gateway/compression/history", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.headroomHistory();
+  });
+
+  /** Headroom-style exports: the whole history as JSON, or one series as CSV. */
+  app.get("/api/admin/gateway/compression/export", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const { format, series } = z.object({ format: z.enum(["json", "csv"]).default("json"), series: gatewayHistorySeriesSchema.default("daily") }).strict().parse(request.query);
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === "csv") {
+      return reply.header("content-type", "text/csv; charset=utf-8").header("cache-control", "no-store")
+        .header("content-disposition", `attachment; filename="space-gateway-savings-${series}-${stamp}.csv"`).send(await service.headroomHistoryCsv(series));
+    }
+    return reply.header("cache-control", "no-store").header("content-disposition", `attachment; filename="space-gateway-savings-${stamp}.json"`)
+      .send(await service.headroomHistory());
+  });
+
   app.get("/api/admin/gateway/settings", routeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     return service.getSettings();
@@ -241,8 +383,21 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.patch("/api/admin/gateway/settings", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const patch = gatewaySettingsUpdateRequestSchema.parse(request.body);
-    const settings = await service.updateSettings(patch);
-    await recordAudit(request, { action: "admin.gateway.settings.update", targetType: "gateway_settings", targetId: "space-gateway", metadata: { ...patch } });
-    return settings;
+    try {
+      const settings = await service.updateSettings(patch);
+      await recordAudit(request, { action: "admin.gateway.settings.update", targetType: "gateway_settings", targetId: "space-gateway", metadata: { ...patch } });
+      return settings;
+    } catch (error) {
+      if (error instanceof GatewaySettingsError) return sendApiError(reply, 422, "GATEWAY_SETTINGS_INVALID", error.message);
+      throw error;
+    }
+  });
+
+  /** Starts a new gateway worker that reads the settings (LAN access) and takes over without dropping open streams. */
+  app.post("/api/admin/gateway/reload", writeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const result = await service.gatewayAdmin("/__space-gateway/admin/reload");
+    await recordAudit(request, { action: "admin.gateway.reload", targetType: "gateway_settings", targetId: "space-gateway", metadata: { status: result.status } });
+    return relay(reply, result);
   });
 }

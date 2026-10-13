@@ -88,7 +88,7 @@ const labels: Record<string, string> = {
   "surface-cli": "CLI tools",
   "surface-source-control": "Source Control",
   "surface-health": "Health", "surface-streaming": "Streaming", "memory-workspace": "Memory",
-  "add-files": "File Manager", "add-demos": "Demo Projects", "add-empty-slots": "Empty slots",
+  "add-files": "File Manager", "add-demos": "Demo Projects", "add-jobs": "Job Copilot", "add-empty-slots": "Empty slots",
   "system-analytics": "System analytics", "system-services": "System services", "system-resources": "System resources",
   "pane-layout": "Pane layout", "font-down": "Text size", "resources": "Resources", "workspace-room": "Room",
   "desktop-displays": "Displays", "room-toolbar": "Room toolbar",

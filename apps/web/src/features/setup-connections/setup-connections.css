@@ -648,3 +648,20 @@
   background: #f7f9fb;
   color: #17232d;
 }
+
+.setup-starter-prompts { margin-top: 1rem; display: grid; gap: 0.5rem; }
+.setup-starter-prompts h4 { margin: 0; font-size: 0.95rem; }
+.setup-starter-prompts p { margin: 0; }
+.setup-starter-prompts ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.4rem; }
+.setup-starter-prompts li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--room-border, #2f3337);
+  border-radius: 8px;
+  background: var(--room-surface-2, rgba(255, 255, 255, 0.03));
+  line-height: 1.45;
+}
+.setup-starter-prompts li span { flex: 1; min-width: 0; }
+.setup-starter-prompts li button { flex: 0 0 auto; min-width: 4.5rem; }

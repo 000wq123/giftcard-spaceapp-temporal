@@ -73,8 +73,9 @@ function titleModelScore(model: Model): number {
   return score;
 }
 
+// Space Gateway took over codex-lb's API; providers of either type (or backed by the codex-lb provider) qualify.
 function backedByCodexLb(provider: Provider): boolean {
-  return provider.type === "CODEX_LB" || provider.backingProviderId === "codex-lb";
+  return provider.type === "SPACE_GATEWAY" || provider.type === "CODEX_LB" || provider.backingProviderId === "codex-lb";
 }
 
 export function selectTerminalPaneTitleGeneration(

@@ -6,6 +6,8 @@ import type { NodeHoverDrawingFunction, NodeLabelDrawingFunction } from "sigma/r
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
 import type { MemoryAtlasPosition } from "./memory-atlas.js";
 import {
+  isMemoryCoreLabel,
+  isMemoryIndexLabel,
   memoryGraphEdgeStyle,
   memoryGraphNodeStyle,
   memoryGraphTaxonomySummary,
@@ -374,7 +376,7 @@ export default function DesktopMemoryGraph({
         const position = atlas ?? resolveMemoryGraphPosition(node, index, relationMode);
         const topicOrigin = topicOrigins.get(node.id) ?? null;
         const style = memoryGraphNodeStyle(node, topicOrigin);
-        const importantHub = atlas ? (node.label === "gemini.md" || node.label === "gemini_history.md") : shouldForceMemoryGraphLabel(
+        const importantHub = atlas ? (isMemoryCoreLabel(node.label) || isMemoryIndexLabel(node.label)) : shouldForceMemoryGraphLabel(
           node,
           topicOrigin,
           degrees.get(node.id) ?? 0,
@@ -384,7 +386,7 @@ export default function DesktopMemoryGraph({
           label: `${node.label.length > 48 ? `${node.label.slice(0, 45)}…` : node.label}${atlas?.monthLabel ? ` · ${atlas.monthLabel}` : ""}`,
           x: position.x,
           y: position.y,
-          size: atlas ? (node.label === "gemini.md" ? 14 : node.type === "SOURCE" ? (importantHub ? 8 : 4.8) : atlas.hub ? 5 : node.type === "MEMORY" ? 2.7 : 1.8) : style.size,
+          size: atlas ? (isMemoryCoreLabel(node.label) ? 14 : node.type === "SOURCE" ? (importantHub ? 8 : 4.8) : atlas.hub ? 5 : node.type === "MEMORY" ? 2.7 : 1.8) : style.size,
           color: atlas?.color ?? style.color,
           forceLabel: importantHub,
           importantHub,

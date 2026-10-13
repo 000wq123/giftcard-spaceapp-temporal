@@ -7,6 +7,8 @@ export type SpaceToggleProps = {
   onChange: (checked: boolean) => void;
   ariaLabel?: string;
   className?: string;
+  /** Switch and label only: no "Enabled/Disabled" state text (dense bars). */
+  compact?: boolean;
   detail?: ReactNode;
   disabled?: boolean;
   id?: string;
@@ -19,6 +21,7 @@ export function SpaceToggle({
   ariaLabel,
   checked,
   className,
+  compact = false,
   detail,
   disabled = false,
   id,
@@ -28,7 +31,7 @@ export function SpaceToggle({
   required = false,
   title
 }: SpaceToggleProps) {
-  const classes = ["space-toggle", className].filter(Boolean).join(" ");
+  const classes = ["space-toggle", compact ? "space-toggle-compact" : null, className].filter(Boolean).join(" ");
   const accessibleLabel = ariaLabel ?? (typeof label === "string" ? label : undefined);
 
   return (
@@ -52,7 +55,7 @@ export function SpaceToggle({
       </span>
       <span className="space-toggle-control" aria-hidden="true">
         <span className="space-toggle-track"><span className="space-toggle-thumb" /></span>
-        <span className="space-toggle-state">{checked ? "Enabled" : "Disabled"}</span>
+        {compact ? null : <span className="space-toggle-state">{checked ? "Enabled" : "Disabled"}</span>}
       </span>
     </label>
   );

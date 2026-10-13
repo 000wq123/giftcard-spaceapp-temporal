@@ -29,6 +29,13 @@ export class CodexModelPlans {
     return this.plansBySlug.get(model.toLowerCase()) ?? null;
   }
 
+  /** Models whose catalog lists the plan (empty until a catalog was read). */
+  modelsFor(planType: string | null): string[] {
+    if (this.nowMs() - this.refreshedAt > REFRESH_MS) void this.refresh();
+    const plan = normalizePlanPriorityType(planType);
+    return [...this.plansBySlug].filter(([, plans]) => plans.has(plan)).map(([slug]) => slug);
+  }
+
   /** Accounts whose plan offers the model; all accounts when the model is unknown. */
   eligible(accounts: GatewayAccountRecord[], model: string | null): GatewayAccountRecord[] {
     const plans = this.plansFor(model);

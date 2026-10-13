@@ -101,47 +101,56 @@ export function PushupReminderWidget({
     []
   );
 
-  // Timer tick for workout countdown
+  // Timer tick for workout countdown. The deadline is absolute, so a tab whose
+  // timers are throttled in the background still alerts on time, and the state
+  // updater stays pure (storage is written by the effect below, not per tick).
+  const deadlineRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!config.isRunning) {
+    if (!config.isRunning || config.isAlertActive) {
+      deadlineRef.current = null;
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
       return;
     }
-
+    deadlineRef.current = Date.now() + config.remainingSeconds * 1000;
     timerRef.current = setInterval(() => {
+      const deadline = deadlineRef.current;
+      if (deadline === null) return;
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setConfig((prev) => {
         if (!prev.isRunning || prev.isAlertActive) return prev;
-        if (prev.remainingSeconds <= 1) {
+        if (remaining <= 0) {
           // Time is up! Trigger pushup workout alert
-          const next = {
-            ...prev,
-            remainingSeconds: prev.intervalMinutes * 60,
-            isAlertActive: true,
-            alertReason: "pushups" as const
-          };
-          saveWidgetConfig("pushup-reminder", next);
-          return next;
+          deadlineRef.current = null;
+          return { ...prev, remainingSeconds: prev.intervalMinutes * 60, isAlertActive: true, alertReason: "pushups" as const };
         }
-        const next = {
-          ...prev,
-          remainingSeconds: prev.remainingSeconds - 1
-        };
-        // Local-only: the alert transition above and user actions sync the config.
-        saveWidgetConfig("pushup-reminder", next, { syncToServer: false });
-        return next;
+        return prev.remainingSeconds === remaining ? prev : { ...prev, remainingSeconds: remaining };
       });
     }, 1000);
-
     return () => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
     };
-  }, [config.isRunning]);
+    // remainingSeconds seeds the deadline only when the countdown (re)starts or the interval changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.isRunning, config.isAlertActive, config.intervalMinutes]);
+
+  // Persist the countdown sparingly: the alert transition syncs to the server,
+  // ordinary ticks are saved locally every 15 seconds instead of every second.
+  const lastPersistedRef = useRef<{ remainingSeconds: number; isAlertActive: boolean } | null>(null);
+  useEffect(() => {
+    if (!config.isRunning) return;
+    const last = lastPersistedRef.current;
+    const alertTransition = config.isAlertActive && !last?.isAlertActive;
+    if (!alertTransition && config.remainingSeconds % 15 !== 0) return;
+    if (last && last.remainingSeconds === config.remainingSeconds && last.isAlertActive === config.isAlertActive) return;
+    lastPersistedRef.current = { remainingSeconds: config.remainingSeconds, isAlertActive: config.isAlertActive };
+    saveWidgetConfig("pushup-reminder", config, { syncToServer: alertTransition });
+  }, [config]);
 
   // Audio alert playback
   const prevAlertActiveRef = useRef(config.isAlertActive);

@@ -1,5 +1,19 @@
 import { z } from "zod";
 
+/**
+ * One summarized title line. The first prompt creates line 1; a later prompt
+ * adds a line only when the title model judges it to be different work.
+ */
+export const taskTopicSchema = z.object({
+  title: z.string().max(120),
+  summary: z.string().max(400).default(""),
+  source: z.enum(["local", "native", "ai"]),
+  at: z.string().datetime({ offset: true }),
+  hasImages: z.boolean().optional(),
+});
+export type TaskTopic = z.infer<typeof taskTopicSchema>;
+export const taskTopicsMax = 12;
+
 export const taskMetadataSchema = z.object({
   taskKey: z.string().min(1).max(240),
   version: z.number().int().nonnegative(),
@@ -15,6 +29,10 @@ export const taskMetadataSchema = z.object({
   modelId: z.string().max(200).nullable().default(null),
   preferredCandidateId: z.string().max(320).nullable().optional(),
   planId: z.string().max(160).nullable().optional(),
+  topics: z.array(taskTopicSchema).max(taskTopicsMax).optional(),
+  /** The title the CLI itself saved for this task, when the CLI type keeps one. */
+  nativeTitle: z.string().max(160).nullable().optional(),
+  nativeTitleLabel: z.string().max(60).nullable().optional(),
   updatedAt: z.string().datetime({ offset: true }),
 });
 export type TaskMetadata = z.infer<typeof taskMetadataSchema>;
@@ -58,6 +76,12 @@ export interface TaskTitleState {
   syncOnly?: boolean;
   resetNativeManual?: boolean;
   lastNativeTitle?: string | null;
+  /** Validated image uploads attached to the latest request (absolute paths). */
+  images?: string[];
+  /** Substantive requests not yet summarized, latest last. */
+  pendingRequests?: string[];
+  /** "Regenerate summary": the next result replaces the latest title line. */
+  regenerateLatest?: boolean;
 }
 
 export interface TaskTitleCandidateStatus {
@@ -70,4 +94,8 @@ export interface TaskTitleCandidateStatus {
   remainingPercent: number | null;
   checkedAt: string;
   cooldownUntil: string | null;
+  /** Can read attached images, so screenshots inform the title. */
+  vision?: boolean;
+  /** Internal: the free model the daily picker verified with a real call. */
+  pickerVerified?: boolean;
 }

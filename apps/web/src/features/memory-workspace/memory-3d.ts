@@ -1,4 +1,5 @@
 import type { MemoryGraphEdge, MemoryGraphNode } from "@space/contracts";
+import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 export type MemoryPoint3D = { x: number; y: number; z: number };
 export type MemoryCamera3D = { yaw: number; pitch: number; zoom: number };
 export const DEFAULT_MEMORY_CAMERA: MemoryCamera3D = { yaw: 0.3, pitch: -0.15, zoom: 1 };
@@ -16,7 +17,7 @@ const unit = (seed: string) => {
 export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
-  const root = ordered.findIndex(node => node.type === "SOURCE" && node.label === "gemini.md");
+  const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
   const count = ordered.length;
   const points = ordered.map(node => ({
     x: (unit(`${node.id}:x`) - 0.5) * 260,

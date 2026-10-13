@@ -1,17 +1,14 @@
 import { bridgePlanExecutionEvent } from "./features/terminal-pane/plan-execution-events.js";
-import { PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX, PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX, PaneCard, PaneModeIcon, SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY, SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY, dispatchAgentPaneAction, dispatchTerminalPaneAction, displayPaneTitle } from "./features/pane-card/PaneCard.js";
+import { DOT_CALL_EVENT, OPEN_DOT_SETTINGS_EVENT, readLivePaneDot, writeLivePaneDot, type DotSettingsSection } from "./features/agent-pane/dot-home-events.js";
+import type { DotSettingsRequest } from "./features/agent-pane/DotsSettingsCard.js";
+import { PANE_TOOLBAR_ACTION_ORDER_STORAGE_KEY_PREFIX, PANE_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY_PREFIX, PaneCard, SHARED_CODEX_TOOLBAR_HIDDEN_STORAGE_KEY, SHARED_CODEX_TOOLBAR_ORDER_STORAGE_KEY, dispatchAgentPaneAction, dispatchTerminalPaneAction, displayPaneTitle } from "./features/pane-card/PaneCard.js";
 export { formatTerminalSessionDebugInfo, formatTerminalSessionClipboardText } from "./features/pane-card/PaneCard.js";
-import { MovePaneDialog, TaskHistoryDialog, type TaskHistoryDialogItem } from "./features/pane-dialogs/PaneDialogs.js";
-import { type AppView, isRecord, isTransientUpstreamErrorMessage, isTransientUpstreamRuntimeError, parseStreamEvent, readAppView, streamEventTypes } from "./app-shell-utils.js";
+import { MovePaneDialog } from "./features/pane-dialogs/PaneDialogs.js";
+import { isTransientUpstreamErrorMessage, isTransientUpstreamRuntimeError, parseStreamEvent, streamEventTypes } from "./app-shell-utils.js";
 import {
   MAX_PANE_COLUMN_SPAN,
   calculatePaneGridBaseRows,
-  canPaneGrowAtCurrentPlacement,
-  clampPaneColumnSpan,
-  computePaneGridPlacements,
-  detectPaneGridColumnCount,
   measureSingleLineTitleWidth,
-  paneGridDensityMetrics,
   paneHeaderNeedsSecondRow,
   remToPx,
   resolvePaneGridColumnCount,
@@ -21,237 +18,112 @@ import {
   type PaneColumnAnchor,
   type PaneColumnAnchorMap,
   type PaneDensity,
-  type PaneGridPlacement,
-  type PaneGridPlacementSeed,
   type ShellMode
 } from "./features/pane-grid/pane-grid-layout.js";
 export { roomToolbarNeedsSecondRow, paneHeaderNeedsSecondRow, resolvePaneGridPlacements, calculatePaneGridBaseRows } from "./features/pane-grid/pane-grid-layout.js";
 export type { PaneColumnAnchor, PaneColumnAnchorMap } from "./features/pane-grid/pane-grid-layout.js";
-import { MobileActionSheet } from "./features/action-surfaces/MobileActionSheet.js";
-import { DesktopActionManager } from "./features/action-surfaces/DesktopActionManager.js";
-import type { PaneOverflowCommand } from "./features/action-surfaces/action-surface-shared.js";
 import { LoginScreen } from "./features/auth/LoginScreen.js";
-import { VoiceSettingsCard } from "./features/voice-input/VoiceSettingsCard.js";
+// Evaluated at its old position so the stylesheet order is unchanged; the Settings dock renders it.
+import "./features/voice-input/VoiceSettingsCard.js";
 import { clearLegacyCliShortcutUsage } from "./features/terminal-pane/CliShortcutsMenu.js";
-import { openManage, consolidatedResourceActions, consolidatedManageActions } from "./features/server-actions/manage-navigation.js";
+import { openManage } from "./features/server-actions/manage-navigation.js";
 import { useSpaceControlClient } from "./features/room-agent/space-control-client.js";
 import { useRailOrder } from "./features/ui-theme/use-rail-order.js";
 import { syncRailScale } from "./features/ui-theme/rail-dynamic-scaling.js";
 import { useTouchContextMenu } from "./features/ui-theme/use-touch-context-menu.js";
-import { RailVisibilityMenu } from "./features/ui-theme/RailVisibilityMenu.js";
 import { LiveSessionProvider } from "./features/live-pane/LiveSessionProvider.js";
 import { LiveRailSession } from "./features/live-pane/LiveRailSession.js";
-import { LiveRailContextMenu } from "./features/live-pane/LiveRailContextMenu.js";
+import { useLiveRail } from "./features/live-pane/useLiveRail.js";
 import {
   DEFAULT_LOWER_RAIL_ITEMS,
   LOWER_RAIL_HIDDEN_KEY,
-  LOWER_RAIL_LABELS,
   LOWER_RAIL_NON_HIDEABLE,
   LOWER_RAIL_VISIBILITY_IDS,
-  railVisibilityItems,
-  useRailVisibility,
-  type RailVisibilityMenuState,
+  useRailVisibility
 } from "./features/ui-theme/use-rail-visibility.js";
 import { bindSpaceMediaVolume } from './space-audio.js';
 import { AsteroidsGate } from "./features/asteroids/AsteroidsGate.js";
 import { canPlayAsteroids } from "./features/asteroids/eligibility.js";
-import { TaskTitleDetails } from "./features/task-titles/TaskTitleDetails.js";
-import { TaskTitleSettings } from "./features/task-titles/TaskTitleSettings.js";
-import { WorktreeBadge } from "./features/worktrees/WorktreeBadge.js";
-import { PaneWorkingTimeBadge } from "./features/pane-working-time/index.js";
 import { createWorktree } from "./features/worktrees/worktree-client.js";
 import { RecoverableSurface } from "./features/SurfaceErrorBoundary.js";
-import { readDockSession, writeDockSession } from "./features/workspace-session.js";
+import { readDockSession } from "./features/workspace-session.js";
 import { SystemHealth, useResourceIndicators } from "./features/system-health/SystemHealth.js";
 import { openSystemHealth, openSystemResources } from "./features/system-health/health-model.js";
 import type { OskCliCommand } from "./features/osk-keyboard/cli-shortcuts.js";
 import {
   AppIconProvider,
   Activity,
-  GitMerge,
-  ALargeSmall,
-  ArrowRightLeft,
-  Archive,
-  Bookmark,
-  Bot,
-  Boxes,
-  Camera,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
-  CheckCircle2,
   Chrome,
-  CircleHelp,
-  CircleStop,
-  Clipboard,
-  ClipboardList,
-  Clock3,
-  CodeXml,
-  Columns2,
-  Columns3,
-  Copy,
-  Cpu,
-  Crosshair,
-  Crop,
-  Database,
-  SlidersHorizontal,
-  Dumbbell,
-  Eraser,
   Eye,
-  EyeOff,
-  FileInput,
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  Gauge,
-  GitCompare,
-  Globe,
   Grid2X2,
-  GripVertical,
-  HardDrive,
-  Hash,
-  History,
-  Images,
-  Keyboard,
-  LayoutDashboard,
-  Link as LinkIcon,
-  ListFilter,
-  ListTodo,
   Loader2,
-  Lock,
-  LogOut,
-  Maximize2,
   MessageSquare,
   Mic,
-  Minimize2,
   Minus,
   Monitor,
-  MoreHorizontal,
   MoveHorizontal,
-  Music2,
   Network,
-  Paperclip,
   Palette,
-  PanelLeft,
-  PanelRight,
-  PanelsTopLeft,
   PanelTopOpen,
   Pencil,
-  PictureInPicture2,
   Plus,
-  Radio,
-  RefreshCw,
-  Rocket,
   Save,
-  Send,
-  Search,
-  ServerCog,
-  Settings2,
   Bell,
-  Bug,
-  ShieldAlert,
   ShieldCheck,
-  Sparkles,
-  Star,
-  StickyNote,
-  Shrink,
   Terminal,
-  Timer,
-  Trash2,
-  Upload,
-  Undo2,
-  UserCheck,
-  Users,
-  Wrench,
-  X,
-  Youtube
+  UserCheck
 } from "./features/ui-theme/app-icons.js";
-import type { LucideIcon } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
-import type { AgentPaneIdentity } from "./features/agent-pane/AgentPane.js";
-import { connectorResultMessage } from "./features/agent-pane/connector-result.js";
-import { cloneElement, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import { createPortal } from "react-dom";
-import { useAutoDismiss } from "./use-auto-dismiss.js";
+import { cloneElement, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject } from "react";
 import type {
   Artifact,
-  AgentPaneSession,
   AgentRuntime,
-  AuditEvent,
   AuthMe,
-  BrowserEvidenceViewport,
   ClipboardItem,
-  CliEgressRouteId,
-  CliTaskHistoryItem,
-  CliVpnRoutingStatus,
   CodexEnvironment,
-  CodexHistoryItem,
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
   CodexAppServerTurnSmokeCheck,
   TaskItem,
-  CreateProviderInput,
   CreateRoomPanesRequest,
   Event as SpaceEvent,
   ImportCandidate,
-  ImportSourceKind,
-  ImportTargetKind,
-  LaunchReadiness,
   McpDiscoverySmokeCheck,
-  McpToolExecutionResult,
   MemoryEmbeddingSmokeCheck,
-  MemoryEntry,
-  MemorySearchMode,
-  MemorySearchStatus,
   MemoryVectorReadiness,
   Model,
   ObservabilitySnapshot,
   Pane,
-  PaneCliSessionResponse,
-  PaneCapabilityMatrix,
   Provider,
   ProviderSettings,
-  ProviderValidationResult,
-  ReviewCheck,
-  ReviewDecision,
-  ReviewDiffSummary,
-  ReviewRoomState,
   Room,
   SetupClaimInput,
   SetupStatus,
   Skill,
   StorageReadiness,
-  SwarmLock,
-  SwarmReconcileDecision,
   SwarmState,
-  SwarmTask,
-  SwarmTaskRole,
-  SwarmTaskStatus,
   Turn,
-  UpdateProviderInput,
-  UpdateProviderSettingsInput,
   WorkerReadiness,
   UserLink,
   CliRuntimeSettingsResponse,
   AgentSessionHistoryItem,
-  AdminUserItem,
-  OpenProjectResult,
   UserSettings
 } from "@space/contracts";
 import {
-  saveUserSettingDebounced,
   seedInitialLocalSettingsToServer,
   syncFromServer
 } from "./features/user-settings/user-settings-manager.js";
-import { MAX_ROOMS, LIVE_AUDIO_PROVIDERS, type LiveAudioProviderId, paneCategoryColors, type PaneCategoryColor } from "@space/contracts";
+import { MAX_ROOMS, type PaneCategoryColor } from "@space/contracts";
 import {
   nextCategoryColor,
   readStoredCategoryFilter,
   roomCategoryColors,
   writeStoredCategoryFilter
 } from "./features/pane-category-color/room-filter.js";
-import { SpaceApiError, api, type McpPayload, type ReadyzPayload } from "./api.js";
+import { api, type McpPayload, type ReadyzPayload } from "./api.js";
 import {
   acknowledgePaneCompletion,
   applyPaneCompletionEvents,
@@ -268,8 +140,6 @@ import {
 } from "./pane-run-lifecycle-events.js";
 import { nextGeneratedRoomName } from "./room-naming.js";
 import {
-  cliRuntimeLabel,
-  cliRuntimePresentation,
   isCliRuntimeTerminalLaunchable
 } from "./cli-runtime-presentation.js";
 import {
@@ -277,37 +147,19 @@ import {
   dispatchCliRuntimeVisibilityChange,
   readCliRuntimeVisibilityChange
 } from "./cli-runtime-visibility-events.js";
-import {
-  CLI_VPN_ROUTING_STATUS_EVENT,
-  harnessPaneVpnRoutingPresentation,
-  loadCliVpnRoutingStatus,
-  paneVpnRoutingPresentation,
-  publishCliVpnRoutingStatus,
-  refreshCliVpnRoutingStatus
-} from "./cli-vpn-routing.js";
+import { useToolbarVpn } from "./features/toolbar-vpn/useToolbarVpn.js";
 import {
   CLI_RECOVERY_OPENED_EVENT,
   parseCliRecoveryOpenedDetail
 } from "./cli-recovery-events.js";
-import { GlobalApiErrorAlert, reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-availability.js";
+import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-availability.js";
 import { DEMO_LOCAL_REPLY, eventGateway, getSpaceRuntime, getSpaceRuntimeKind } from "./runtime/SpaceRuntime.js";
 import { dispatchArtifactsUpdated } from "./artifact-events.js";
 import { SpaceBrand } from "./SpaceBrand.js";
 import {
-  CLI_IMAGE_PREVIEW_LIMIT_STORAGE_KEY,
-  MAX_CLI_IMAGE_PREVIEW_LIMIT,
-  MIN_CLI_IMAGE_PREVIEW_LIMIT,
-  normalizeCliImagePreviewLimit,
-  readStoredCliImagePreviewLimit,
-  writeStoredCliImagePreviewLimit,
-  applyServerCliImagePreviewLimit
-} from "./cli-upload-settings.js";
-import {
   dispatchAgentPaneActionEvent,
   dispatchAgentPaneAttachmentsEvent
 } from "./features/agent-pane/events.js";
-import type { AdminCodexTool } from "./features/admin-codex-tools/AdminCodexToolsDialog.js";
-import type { AdminOperationTool } from "./features/admin-operations/AdminOperationsDialog.js";
 import { AuthenticationBootstrap } from "./features/auth/AuthenticationBootstrap.js";
 import { OwnerSetupScreen } from "./features/auth/OwnerSetupScreen.js";
 import {
@@ -317,8 +169,9 @@ import {
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
+import type { JobCopilotLaunchChoice } from "./features/job-apply-pane/JobCopilotLaunchDialog.js";
+import { dispatchJobApplyLiveEvent } from "./features/job-apply-pane/live-events.js";
 import { HealthDock } from "./features/health/HealthDock.js";
-import { statusTone } from "./features/status-tone.js";
 import {
   AppDiagnosticsGlobalIndicators,
   useDiagnosticsState
@@ -328,29 +181,26 @@ import {
   applyAppDiagnosticsStatus,
   startAppDiagnosticsBootstrap
 } from "./app-diagnostics/app-diagnostics-bootstrap.js";
-import { SettingsActionMenu } from "./features/settings/SettingsActionMenu.js";
 import { GitBranch } from "./features/ui-theme/app-icons.js";
-import { Plug, ArrowUpDown } from "./features/ui-theme/app-icons.js";
-import { SOURCE_CONTROL_CONNECTION_EVENT, sourceControlClient } from "./features/source-control/client.js";
-import { applyServerKeyboardAutocorrectSettings } from "./features/keyboard-autocorrect/keyboard-autocorrect-settings.js";
-import { applyServerDateTimeSettings } from "./features/date-time-settings/date-time-settings.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
-import { DOCK_DEFINITIONS, useDocksVisibility } from "./features/docks/use-docks-visibility.js";
-import { DockNotice, useDockConfirm } from "./features/dock-kit/DockKit.js";
-import { DockKeepAliveHost } from "./features/docks/DockKeepAliveHost.js";
+import { useDocksVisibility } from "./features/docks/use-docks-visibility.js";
+import { useDockConfirm } from "./features/dock-kit/DockKit.js";
+import type { SideSurface } from "./features/docks/dock-types.js";
+import { sideSurfaceMeta } from "./features/docks/side-surface-meta.js";
+import { useSideSurfaceEffects, useSideSurfaces } from "./features/docks/useSideSurfaces.js";
+import { CompactSideSurfaceDrawer, InlineSideSurface } from "./features/docks/SideSurfaceFrame.js";
 import { preloadDockModules } from "./features/docks/dock-preloader.js";
 import { usePanesVisibility } from "./features/pane-visibility/use-panes-visibility.js";
-import { DesktopNavigation } from "./features/ui-theme/DesktopNavigation.js";
+// Evaluated at its old position so the stylesheet order is unchanged; the room toolbar and rail render it.
+import "./features/ui-theme/DesktopNavigation.js";
 import { WorkspaceRoomSettings } from "./features/ui-theme/WorkspaceRoomSettings.js";
 import { WorkspacePortalMount } from "./features/ui-theme/WorkspaceSurface.js";
 import "./features/ui-theme/workspace-chrome.css";
-import { workspaceRoomActivity, workspaceRoomMatches, type WorkspaceRoomFilter } from "./features/ui-theme/workspace-room-filter.js";
-import { desktopActionDescriptions } from "./features/ui-theme/desktop-navigation.js";
 import {
-  SPACE_CLIPBOARD_NOTICE_EVENT,
-  useSpaceClipboardCapture,
-  writeClipboardText
+  useSpaceClipboardCapture
 } from "./features/clipboard-dock/clipboard-events.js";
+import { useAppNotices } from "./features/app-notices/useAppNotices.js";
+import { AppNoticeBanners, LiveDebugToastView } from "./features/app-notices/AppNoticeBanners.js";
 import {
   StreamingOverlay,
   StreamingOverlayProvider
@@ -358,19 +208,10 @@ import {
 import { reorderPanesByTarget, setPaneDragData, type PaneDropPosition } from "./features/pane-drag/pane-drag.js";
 import { LinksPanel, QuickLinksPopover } from "./features/user-links/UserLinks.js";
 import {
-  ROOM_THEME_MENU_ID,
-  RoomThemeMenu,
-  roomThemes,
-  type RoomTheme
+  RoomThemeMenu
 } from "./features/room-theme/RoomThemeMenu.js";
 import {
-  groupModernRoomActions,
-  modernPanePrimaryActionCapacity,
-  modernPanePrimaryActionCount
-} from "./features/ui-theme/modern-toolbar.js";
-import {
   migrateModernToolbarPreference,
-  modernPaneToolbarStorageKeys,
   modernRoomToolbarStorageKeys,
   readModernAppearance,
   readModernIconPack,
@@ -387,62 +228,47 @@ import {
   type UiBackground,
   type UiTheme
 } from "./ui-theme.js";
-import { RoomPaneComposer } from "./features/room-pane-composer/RoomPaneComposer.js";
+import { RoomsDockPanel, selectRoomEntries } from "./features/rooms-dock/RoomsDockPanel.js";
+import { useRoomsDock, useRoomsDockFit } from "./features/rooms-dock/useRoomsDock.js";
+import { useAdminUsers } from "./features/rooms-dock/useAdminUsers.js";
+import { ensureProjectFolder, loadBoundedRoomCatalog, sortRoomsByOrder } from "./features/rooms-dock/room-catalog.js";
+import { useAppView } from "./features/help/useAppView.js";
 import { MemoryWorkspaceErrorBoundary } from "./features/memory-workspace/MemoryWorkspaceErrorBoundary.js";
-import type { ServerActionCommand } from "./features/server-actions/ServerActionsMenu.js";
-import {
-  CHAT_LAUNCHER_MENU_ID,
-  CLI_LAUNCHER_MENU_ID,
-  PANE_LAYOUT_MENU_ID,
-  PANE_SPAN_ALL_MENU_ID,
-  SERVER_ACTIONS_MENU_ID
-} from "./features/toolbar-menu-ids.js";
+import { useManageController } from "./features/server-actions/useManageController.js";
+import { CliRuntimeRestartAllDialog, ServerRestartDialog } from "./features/server-actions/RestartDialogs.js";
 import { CliLauncherMenu } from "./features/cli-launcher/CliLauncherMenu.js";
 import { PaneLayoutMenu } from "./features/pane-layout/PaneLayoutMenu.js";
 import { useRootRemSize } from "./features/pane-layout/use-root-rem-size.js";
 import {
   createTerminalBootstrapBarrier,
-  TerminalPane,
-  type TerminalBootstrapBarrier,
-  type TerminalSessionMetadata
+  type TerminalBootstrapBarrier
 } from "./features/terminal-pane/index.js";
 import { registerYouTubeBrowseIntent } from "./features/browser-pane/youtube-browse-intent.js";
 import { registerCliResumeIntent } from "./features/terminal-pane/cli-resume-intent.js";
 import { paneRuntimeBlockedReason, roomPaneLimit } from "./pane-runtime-availability.js";
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
-import { VIBE_MUSIC_PANEL_ID, useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
+import { useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
 import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
 import {
-  DEFAULT_PUSHUP_CONFIG,
   DesktopWidgetsLayer,
-  loadWidgetConfig,
-  saveWidgetConfig,
   useDesktopWidgets,
   useWidgetsVisibility
 } from "./features/desktop-widgets/index.js";
-import { useRailMenuDodge } from "./features/rail-popover.js";
 import {
   ToolbarMetrics,
-  ToolbarMetricsSummary,
   type ToolbarMetricsHandle
 } from "./features/toolbar-metrics/ToolbarMetrics.js";
 import type { SystemAnalyticsTab } from "./features/system-analytics/SystemAnalyticsWorkspace.js";
-import { SystemAnalyticsErrorBoundary } from "./features/system-analytics/SystemAnalyticsErrorBoundary.js";
 import { shouldLoadHarnessPane } from "./features/harness-pane/harness-load-policy.js";
 import {
-  MAX_WORKSPACE_TEXT_SIZE,
-  MIN_WORKSPACE_TEXT_SIZE,
-  WORKSPACE_TEXT_SIZE_PICKER_ID,
   WorkspaceTextSizePicker
 } from "./features/workspace-text-size-picker/WorkspaceTextSizePicker.js";
 import {
-  MINIMIZED_PANE_BAR_ID,
   MINIMIZED_PANE_BAR_TOGGLE_ID,
   MinimizedPaneBarToggle
 } from "./features/pane-float/MinimizedPaneBarToggle.js";
-import { MinimizedPaneChip, MinimizedPanePreviewCard } from "./features/pane-float/MinimizedPanePreview.js";
 import { DesktopDisplayControls } from "./features/desktop-screens/DesktopDisplayControls.js";
-import { isDocumentFullscreen, toggleBrowserFullscreen } from "./features/desktop-titlebar/fullscreen.js";
+import { useBrowserFullscreen } from "./features/desktop-titlebar/useBrowserFullscreen.js";
 import { DesktopWindowTitlebar } from "./features/desktop-titlebar/DesktopWindowTitlebar.js";
 import {
   useDismissibleToolbarLayer,
@@ -450,18 +276,11 @@ import {
   type IconToolbarAction
 } from "./icon-toolbar.js";
 import {
-  clearLifecycleDebugEvents,
   classifyRoomSwitchTemperature,
   recordLifecycleDebugEvent,
   recordRoomSwitchMeasurementPhase,
-  startRoomSwitchMeasurement,
-  type LifecycleDebugEvent,
-  type LifecycleDebugSnapshot
+  startRoomSwitchMeasurement
 } from "./lifecycle-debug.js";
-import {
-  applyServerVoiceSettings
-} from "./voice-settings.js";
-import { applyServerLivePaneSettings } from "./features/live-pane/live-pane-config.js";
 import { useVoiceInput } from "./features/voice-input/VoiceInputProvider.js";
 import {
   connectedPaneCount,
@@ -471,7 +290,6 @@ import {
   WARM_ROOM_RUNTIME_POLL_INTERVAL_MS
 } from "./room-runtime-cache.js";
 import {
-  classifyRoomWarmPresentation,
   hydrateWarmRoomsWithinWindow,
   readRoomMru,
   recordRoomMru,
@@ -481,31 +299,24 @@ import {
 } from "./warm-room-startup.js";
 import { reuseVersionedItems, useStableCallback } from "./render-performance.js";
 import { lazyWithPreload } from "./lazy-with-preload.js";
-import {
-  readStoredWarmRoomConnectedPaneLimit,
-  readStoredWarmRoomEnabled,
-  writeStoredWarmRoomConnectedPaneLimit,
-  writeStoredWarmRoomEnabled,
-  applyServerWarmRoomConnectedPaneLimit,
-  applyServerWarmRoomEnabled
-} from "./warm-room-settings.js";
-import {
-  readStoredSuppressNotifications,
-  writeStoredSuppressNotifications,
-  applyServerSuppressNotifications
-} from "./notifications-settings.js";
+import { useUserPreferenceWriteThrough, useUserPreferences } from "./features/user-settings/useUserPreferences.js";
+import { readStoredBoolean } from "./stored-boolean.js";
+import { readStoredSessionString } from "./session-string-storage.js";
+import { useSnipTool } from "./features/snip-tool/useSnipTool.js";
+import { useToolbarPopovers } from "./features/room-toolbar/useToolbarPopovers.js";
+import { buildRoomToolbarActions } from "./features/room-toolbar/room-toolbar-actions.js";
+import { CollapsedRoomRail, type WorkspaceNavigationBinding } from "./features/room-toolbar/CollapsedRoomRail.js";
+import { RoomTitleBar } from "./features/room-toolbar/RoomTitleBar.js";
+import { useRoomRename } from "./features/room-toolbar/useRoomRename.js";
+import { useMinimizedPaneBar } from "./features/pane-float/useMinimizedPaneBar.js";
+import { MinimizedPaneBar } from "./features/pane-float/MinimizedPaneBar.js";
+import { paneTitleForMode } from "./features/pane-float/pane-mode-labels.js";
+import { AgentSettingsDock, settingsCardLoadingFallback, type AgentSettingsCards } from "./features/settings/AgentSettingsDock.js";
+import { RoomToolbarActions } from "./features/room-toolbar/RoomToolbarActions.js";
 import { scheduleT3BundlePrefetch } from "./features/t3code-pane/t3code-prefetch.js";
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
-const DEFAULT_PROJECT_PRESETS: { label: string; path: string }[] = [
-  { label: "space", path: "/opt/spaceapp" },
-  { label: "space1", path: "/opt/spaceapp/projects/space1" },
-  { label: "space2", path: "/opt/spaceapp/projects/space2" }
-];
-
-type SideSurface = "rooms" | "room-agent" | "shared-chat" | "media" | "streaming" | "source-control" | "agent-files" | "clipboard" | "tasks" | "links" | "settings" | "health" | "cli" | "agent-sessions";
-type EventStreamStatus = "idle" | "connecting" | "connected" | "reconnecting" | "unavailable";
 type ActiveRoomEventStreamStatus = "idle" | "connecting" | "connected" | "disconnected" | "unavailable";
 type RoomRefreshCategory = "panes" | "turns" | "swarm" | "events";
 type RoomRuntimeSnapshot = {
@@ -632,6 +443,10 @@ const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
     .then((module) => ({ default: module.AdminOperationsDialog }))
 );
+const LazyJobCopilotLaunchDialog = lazy(() =>
+  import("./features/job-apply-pane/JobCopilotLaunchDialog.js")
+    .then((module) => ({ default: module.JobCopilotLaunchDialog }))
+);
 const LazyMaintenanceHub = lazy(() =>
   import("./features/admin-operations/MaintenanceHub.js")
     .then((module) => ({ default: module.MaintenanceHub }))
@@ -718,7 +533,6 @@ const LazySourceControlPublishingCard = lazyWithPreload(() =>
 );
 const LazySourceControlDock = lazyWithPreload(() => import("./features/source-control/SourceControlDock.js").then(module => ({ default: module.SourceControlDock })), { idle: true });
 // Opened only from a room's Project Directory, so it is not preloaded at idle.
-const LazyProjectSourcePicker = lazyWithPreload(() => import("./features/source-control/ProjectSourcePicker.js").then(module => ({ default: module.ProjectSourcePicker })));
 const LazyCodexCliDefaultsCard = lazyWithPreload(() =>
   import("./features/codex-cli-defaults/CodexCliDefaultsCard.js")
     .then((module) => ({ default: module.CodexCliDefaultsCard })),
@@ -793,8 +607,17 @@ const LazyDeployQueueSettingsCard = lazyWithPreload(() =>
     .then((module) => ({ default: module.DeployQueueSettingsCard })),
   { idle: true }
 );
+const LazyReleasesSettingsCard = lazyWithPreload(() =>
+  import("./features/releases/ReleasesSettingsCard.js")
+    .then((module) => ({ default: module.ReleasesSettingsCard })),
+  { idle: true }
+);
 const LazyPluginsSettingsCard = lazyWithPreload(() =>
   import("./features/plugins/PluginsSettingsCard.js").then((module) => ({ default: module.PluginsSettingsCard })),
+  { idle: true }
+);
+const LazyAgentCapabilitiesCard = lazyWithPreload(() =>
+  import("./features/agent-tools/AgentCapabilitiesCard.js").then((module) => ({ default: module.AgentCapabilitiesCard })),
   { idle: true }
 );
 const LazyKeyboardAutocorrectSettingsCard = lazyWithPreload(() =>
@@ -807,31 +630,42 @@ const LazyPromptVariablesSettingsCard = lazyWithPreload(() =>
     .then((module) => ({ default: module.PromptVariablesSettingsCard })),
   { idle: true }
 );
+const LazyDotsSettingsCard = lazyWithPreload(() =>
+  import("./features/agent-pane/DotsSettingsCard.js").then((module) => ({ default: module.DotsSettingsCard })),
+  { idle: true }
+);
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
-const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
+/** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
+const agentSettingsCards: AgentSettingsCards = {
+  EnvironmentPreset: LazyEnvironmentPresetCard,
+  GoogleAccount: LazyGoogleAccountSettingsCard,
+  UiTheme: LazyUiThemeSettingsCard,
+  Docks: LazyDocksSettingsCard,
+  Panes: LazyPanesSettingsCard,
+  Widgets: LazyWidgetsSettingsCard,
+  DateTime: LazyDateTimeSettingsCard,
+  AppDiagnostics: LazyAppDiagnosticsSettingsCard,
+  DeployQueue: LazyDeployQueueSettingsCard,
+  Releases: LazyReleasesSettingsCard,
+  SourceControlPublishing: LazySourceControlPublishingCard,
+  CodexCliDefaults: LazyCodexCliDefaultsCard,
+  TelegramIntegration: LazyTelegramIntegrationCard,
+  Plugins: LazyPluginsSettingsCard,
+  AgentCapabilities: LazyAgentCapabilitiesCard,
+  KeyboardAutocorrect: LazyKeyboardAutocorrectSettingsCard,
+  PromptVariables: LazyPromptVariablesSettingsCard,
+  ConfigurationMigration: LazyConfigurationMigrationCard,
+  Dots: LazyDotsSettingsCard
+};
 
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
 
 const roomEventLimit = 50;
-const MIN_TERMINAL_FONT_SIZE = MIN_WORKSPACE_TEXT_SIZE;
-const MAX_TERMINAL_FONT_SIZE = MAX_WORKSPACE_TEXT_SIZE;
-const DEFAULT_TERMINAL_FONT_SIZE = 12;
-const TERMINAL_FONT_SIZE_STORAGE_KEY = "space.terminal.fontSize";
-const SESSION_DEBUG_IDS_STORAGE_KEY = "space.showSessionDebugIds";
-const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
-const CLI_FLOATS_HIDDEN_STORAGE_KEY = "space.cliFloatsHidden";
-const SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY = "space.sensitiveDataMasked";
-const SIDE_SURFACE_HIDDEN_STORAGE_KEY = "space.roomsRailHidden";
-const ROOM_FOCUS_MODE_STORAGE_KEY = "space.roomFocusMode";
-const ROOM_TOOLBAR_HIDDEN_STORAGE_KEY = "space.roomToolbar.hidden.v1";
-const ROOM_THEME_STORAGE_KEY = "space.room.theme";
 const ADMIN_MODE_REQUESTED_STORAGE_KEY = "space.adminModeRequested";
-const OSK_PANEL_ID = "space-osk-keyboard";
 const ROOM_TOOLBAR_HIDDEN_ACTIONS_STORAGE_KEY = "space.roomToolbar.hiddenActionIds.v3";
 const ROOM_TOOLBAR_ACTION_ORDER_STORAGE_KEY = "space.roomToolbar.actionOrder.v3";
 const SELECTED_ROOM_ID_STORAGE_KEY = "space.selectedRoomId";
 const SELECTED_PANE_ID_STORAGE_KEY = "space.selectedPaneId";
-const DISMISSED_STORAGE_WARNING_STORAGE_KEY = "space.dismissedStorageWarning";
 const MOBILE_SHELL_MAX_WIDTH = 767;
 const TABLET_SHELL_MAX_WIDTH = 1100;
 const ROOM_CLI_ACTIVITY_POLL_INTERVAL_MS = 5_000;
@@ -843,84 +677,8 @@ type ClipImageTarget = {
   paneMode: Pane["mode"] | null;
 };
 
-const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; surfaceLabel: string }> = {
-  rooms: { icon: PanelLeft, label: "rooms", surfaceLabel: "Rooms" },
-  "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
-  "shared-chat": { icon: MessageSquare, label: "shared chat", surfaceLabel: "Shared Chat" },
-  media: { icon: Images, label: "media dock", surfaceLabel: "Media dock" },
-  streaming: { icon: Radio, label: "streaming dock", surfaceLabel: "Streaming dock" },
-  "source-control": { icon: GitBranch, label: "source control", surfaceLabel: "Source Control" },
-  "agent-files": { icon: FolderOpen, label: "Agent Files", surfaceLabel: "Agent Files" },
-  clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
-  tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
-  links: { icon: LinkIcon, label: "links", surfaceLabel: "Links" },
-  settings: { icon: Settings2, label: "settings dock", surfaceLabel: "Settings dock" },
-  health: { icon: Activity, label: "health dock", surfaceLabel: "Health dock" },
-  cli: { icon: Terminal, label: "cli dock", surfaceLabel: "CLI dock" },
-  "agent-sessions": { icon: Archive, label: "agent session history", surfaceLabel: "Agent Session History" }
-};
-
-type BlueprintStatus = "LIVE" | "GATED" | "NEXT";
-
-interface BlueprintProgressItem {
-  label: string;
-  status: BlueprintStatus;
-  detail: string;
-}
-
-type LaunchBlockerSeverity = "hard" | "gate" | "next";
-
-interface LaunchBlocker {
-  label: string;
-  detail: string;
-  severity: LaunchBlockerSeverity;
-}
-
-interface BlueprintProgressProps {
-  readiness: ReadyzPayload | null;
-  mcp: McpPayload | null;
-  latestSmoke: McpDiscoverySmokeCheck | null;
-  latestMemoryEmbeddingSmoke: MemoryEmbeddingSmokeCheck | null;
-  latestMemoryVectorReadiness: MemoryVectorReadiness | null;
-  providers: Provider[];
-  skills: Skill[];
-  importCandidates: ImportCandidate[];
-  swarmState: SwarmState | null;
-  rooms: Room[];
-  panes: Pane[];
-  codexAppServer: CodexAppServerStatus | null;
-  observability: ObservabilitySnapshot | null;
-  workerReadiness: WorkerReadiness | null;
-  storageReadiness: StorageReadiness | null;
-  storageWarning: string;
-}
-
-
 function readViewportWidth() {
   return typeof window === "undefined" ? 1440 : window.innerWidth;
-}
-
-function readStoredSessionString(key: string): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = getSpaceRuntime().platform.sessionStorage.getItem(key);
-    return value || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredSessionString(key: string, value: string | null): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (value) {
-      getSpaceRuntime().platform.sessionStorage.setItem(key, value);
-    } else {
-      getSpaceRuntime().platform.sessionStorage.removeItem(key);
-    }
-  } catch {
-    // Session-only preference when storage is blocked.
-  }
 }
 
 function detectShellMode(width: number, mobileMaxWidth = MOBILE_SHELL_MAX_WIDTH): ShellMode {
@@ -957,143 +715,6 @@ function paneDensityFor(shellMode: ShellMode, paneCount: number): PaneDensity {
     return paneCount >= 6 ? "dense" : "regular";
   }
   return paneCount >= 6 ? "dense" : "regular";
-}
-
-const paneModeLabels: Record<Pane["mode"], string> = {
-  CHAT: "Chat",
-  CODE: "Code",
-  BROWSER: "Browser",
-  REVIEW: "Review",
-  SWARM: "Swarm",
-  DESIGN: "Design",
-  TERMINAL: "CLI",
-  YOUTUBE: "YouTube",
-  VNC: "VNC",
-  HARNESS: "Harness",
-  LIVE: "Live",
-  FILES: "Files",
-  DATABASES: "Databases",
-  DEMOS: "Demo Projects",
-  T3CODE: "T3 Code"
-};
-
-function paneModeLabel(mode: Pane["mode"]): string {
-  return paneModeLabels[mode];
-}
-
-function paneTitleForMode(mode: Pane["mode"], index: number): string {
-  return `${paneModeLabel(mode)} ${index}`;
-}
-
-function formatPaneFullTitle(pane: Pick<Pane, "mode" | "title"> & { paneName?: string | null }): string {
-  const baseTitle = pane.mode === "TERMINAL" ? pane.title.replace(/^Terminal\b/i, "CLI") : pane.title;
-  if (!pane.paneName) return baseTitle;
-  if (!baseTitle || baseTitle.trim().toLowerCase() === pane.paneName.trim().toLowerCase()) return pane.paneName;
-  return `${pane.paneName} · ${baseTitle}`;
-}
-
-/** Second line of a minimized pane card: the task title, or the CLI / pane type when there is none. */
-function minimizedPaneSubtitle(pane: Pick<Pane, "mode" | "title" | "terminalRuntimeId"> & { paneName?: string | null }): string {
-  const baseTitle = pane.mode === "TERMINAL" ? pane.title.replace(/^Terminal\b/i, "CLI") : pane.title;
-  if (pane.paneName && baseTitle && baseTitle.trim().toLowerCase() !== pane.paneName.trim().toLowerCase()) return baseTitle;
-  if (pane.mode === "TERMINAL") return cliRuntimeLabel(pane.terminalRuntimeId) ?? "CLI";
-  return paneModeLabel(pane.mode);
-}
-
-function sortRoomsByOrder(rooms: Room[]): Room[] {
-  return [...rooms].sort((left, right) => {
-    if (left.order !== right.order) return left.order - right.order;
-    const leftCreatedAt = Date.parse(left.createdAt);
-    const rightCreatedAt = Date.parse(right.createdAt);
-    if (!Number.isNaN(leftCreatedAt) && !Number.isNaN(rightCreatedAt) && leftCreatedAt !== rightCreatedAt) {
-      return leftCreatedAt - rightCreatedAt;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
-
-const ROOM_CATALOG_PAGE_SIZE = 100;
-const ROOM_CATALOG_MAX_PAGES = 20;
-
-async function loadBoundedRoomCatalog(): Promise<Room[]> {
-  const firstPage = await api.rooms({ page: 1, pageSize: ROOM_CATALOG_PAGE_SIZE, all: true });
-  const reportedPageCount = firstPage.pagination.totalPages;
-  const pageCount = Number.isSafeInteger(reportedPageCount) && reportedPageCount > 1
-    ? Math.min(reportedPageCount, ROOM_CATALOG_MAX_PAGES)
-    : 1;
-  if (pageCount === 1) return firstPage.data;
-
-  const remainingPages = await Promise.all(
-    Array.from({ length: pageCount - 1 }, (_, index) =>
-      api.rooms({ page: index + 2, pageSize: ROOM_CATALOG_PAGE_SIZE, all: true })
-    )
-  );
-  return [firstPage, ...remainingPages].flatMap((page) => page.data);
-}
-
-function reorderRoomsById(rooms: Room[], draggedRoomId: string, targetRoomId: string): Room[] {
-  if (draggedRoomId === targetRoomId) return rooms;
-  const draggedIndex = rooms.findIndex((room) => room.id === draggedRoomId);
-  const targetIndex = rooms.findIndex((room) => room.id === targetRoomId);
-  if (draggedIndex === -1 || targetIndex === -1) return rooms;
-  const next = [...rooms];
-  const [draggedRoom] = next.splice(draggedIndex, 1);
-  if (!draggedRoom) return rooms;
-  const insertionIndex = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
-  next.splice(insertionIndex, 0, draggedRoom);
-  return next.map((room, index) => (room.order === index ? room : { ...room, order: index }));
-}
-
-
-
-function readStoredTerminalFontSize(): number {
-  if (typeof window === "undefined") return DEFAULT_TERMINAL_FONT_SIZE;
-  const storedValue = getSpaceRuntime().platform.localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY);
-  if (!storedValue) return DEFAULT_TERMINAL_FONT_SIZE;
-  const stored = Number(storedValue);
-  if (!Number.isFinite(stored)) return DEFAULT_TERMINAL_FONT_SIZE;
-  return Math.min(MAX_TERMINAL_FONT_SIZE, Math.max(MIN_TERMINAL_FONT_SIZE, Math.round(stored)));
-}
-
-function readStoredBoolean(key: string): boolean {
-  if (typeof window === "undefined") return false;
-  return getSpaceRuntime().platform.localStorage.getItem(key) === "true";
-}
-
-function readStoredBooleanDefaultTrue(key: string): boolean {
-  if (typeof window === "undefined") return true;
-  const stored = getSpaceRuntime().platform.localStorage.getItem(key);
-  return stored === null ? true : stored === "true";
-}
-
-function readStoredRoomTheme(): RoomTheme {
-  if (typeof window === "undefined") return "graphite";
-  const stored = getSpaceRuntime().platform.localStorage.getItem(ROOM_THEME_STORAGE_KEY);
-  return roomThemes.some((theme) => theme.id === stored) ? (stored as RoomTheme) : "graphite";
-}
-
-const LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY = "space.liveRail.graphicDisabled.v1";
-
-const ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY = "space:room-extra-empty-slots.v1";
-
-function readStoredRoomExtraEmptySlots(): Record<string, number> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = getSpaceRuntime().platform.localStorage.getItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    if (parsed && typeof parsed === "object") {
-      const clamped: Record<string, number> = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === "number" && Number.isFinite(v)) {
-          clamped[k] = Math.max(0, Math.min(6, Math.round(v)));
-        }
-      }
-      return clamped;
-    }
-    return {};
-  } catch {
-    return {};
-  }
 }
 
 const migratedCliToolbarStorages = new WeakSet<Storage>();
@@ -1137,16 +758,6 @@ function isRoomNotFoundError(error: unknown, roomId: string): boolean {
   if (!(error instanceof Error)) return false;
   return error.message.includes("NOT_FOUND") && error.message.includes(`Room ${roomId} was not found`);
 }
-
-
-
-
-
-
-
-
-
-
 
 function applyServerUserSettings(
   storage: Storage,
@@ -1226,7 +837,6 @@ export function App() {
       delete document.documentElement.dataset.uiBackground;
     };
   }, [uiTheme, uiBackground]);
-  const [toolbarVpnRoute, setToolbarVpnRoute] = useState<CliEgressRouteId | null>(null);
   useEffect(() => {
     const body = document.body;
     const html = document.documentElement;
@@ -1271,62 +881,15 @@ export function App() {
     });
   }, [runtime.platform.localStorage]);
   const isAdminMode = auth?.user?.role === "ADMIN" && adminModeRequested;
-  const [roomExtraEmptySlots, setRoomExtraEmptySlots] = useState<Record<string, number>>(() => readStoredRoomExtraEmptySlots());
-  const updateRoomExtraEmptySlots = useCallback((roomId: string, targetOrDelta: number, isAbsolute = false) => {
-    setRoomExtraEmptySlots((prev) => {
-      const current = prev[roomId] ?? 0;
-      const nextVal = Math.max(0, Math.min(6, isAbsolute ? targetOrDelta : current + targetOrDelta));
-      const next = { ...prev, [roomId]: nextVal };
-      try {
-        runtime.platform.localStorage.setItem(ROOM_EXTRA_EMPTY_SLOTS_STORAGE_KEY, JSON.stringify(next));
-      } catch {}
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("roomExtraEmptySlots", next);
-      }
-      return next;
-    });
-  }, [runtime.platform.localStorage, auth?.isAuthenticated]);
   const [isDemoModeActive, setIsDemoModeActive] = useState(false);
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const voiceSettingsAuthUserIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (!auth?.isAuthenticated) return;
-    const interval = window.setInterval(() => {
-      void refreshCliVpnRoutingStatus().catch(() => undefined);
-    }, 20_000);
-    return () => window.clearInterval(interval);
-  }, [auth?.isAuthenticated]);
-
-  useEffect(() => {
-    if (!auth?.isAuthenticated) {
-      setToolbarVpnRoute(null);
-      return;
-    }
-    let active = true;
-    const refresh = () => {
-      void api
-        .cliVpnRoutingStatus()
-        .then((status) => {
-          if (active) setToolbarVpnRoute(status.selectedRoute);
-        })
-        .catch(() => {
-          if (active) setToolbarVpnRoute(null);
-        });
-      void api
-        .cliRuntimeSettings()
-        .then((settings) => {
-          if (active) setCliRuntimeSettings(settings);
-        })
-        .catch(() => undefined);
-    };
-    refresh();
-    window.addEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    return () => {
-      active = false;
-      window.removeEventListener(CLI_VPN_ROUTING_STATUS_EVENT, refresh);
-    };
-  }, [auth?.isAuthenticated]);
+  const toolbarVpn = useToolbarVpn({
+    isAuthenticated: auth?.isAuthenticated,
+    onRuntimeSettings: (settings) => setCliRuntimeSettings(settings)
+  });
+  const { toolbarVpnRoute, vpnCityPending, vpnCityNotice, setVpnCityNotice, vpnCityNoticeRef, rotateVpnCityFromToolbar } = toolbarVpn;
 
   useEffect(() => {
     const authenticatedUserId = auth?.isAuthenticated ? auth.user?.id ?? "authenticated" : null;
@@ -1339,104 +902,31 @@ export function App() {
     void ensureServerSettings();
   }, [auth?.isAuthenticated, auth?.user?.id, ensureServerSettings]);
   const [authBootstrapError, setAuthBootstrapError] = useState<string | null>(null);
-  const [appView, setAppView] = useState<AppView>(readAppView);
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [roomSearch, setRoomSearch] = useState("");
-  const [adminRoomFilterMode, setAdminRoomFilterMode] = useState<"mine" | "all" | "user">("mine");
-  const [adminSelectedUserId, setAdminSelectedUserId] = useState<string>("");
-  const [adminUsersList, setAdminUsersList] = useState<AdminUserItem[]>([]);
 
   // T3 Code is the owner's: warm its client bundle once the page is idle.
   useEffect(() => {
     if (auth?.user?.role === "ADMIN") scheduleT3BundlePrefetch();
   }, [auth?.user?.role]);
 
-  useEffect(() => {
-    if (auth?.user?.role === "ADMIN") {
-      api.listAdminUsers()
-        .then((res) => {
-          if (Array.isArray(res?.users)) {
-            setAdminUsersList(res.users);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [auth?.user?.role]);
+  const adminUsers = useAdminUsers(auth?.user?.role, rooms);
 
-  const userEmailById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const u of adminUsersList) {
-      map.set(u.id, u.email || u.id);
-    }
-    return map;
-  }, [adminUsersList]);
-
-  // Compute live room counts per user from the current rooms state
-  // (overrides the DB snapshot count from listAdminUsers which may be stale)
-  const liveRoomCountByUserId = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const r of rooms) {
-      if (r.ownerUserId) {
-        map.set(r.ownerUserId, (map.get(r.ownerUserId) ?? 0) + 1);
-      }
-    }
-    return map;
-  }, [rooms]);
-
-  // Merge adminUsersList with live room counts
-  const adminUsersListWithLiveCounts = useMemo(() => {
-    return adminUsersList.map((u) => ({
-      ...u,
-      roomCount: liveRoomCountByUserId.get(u.id) ?? u.roomCount,
-    }));
-  }, [adminUsersList, liveRoomCountByUserId]);
-
-  const roomsPanelRef = useRef<HTMLDivElement | null>(null);
-  const [showDownloadBanner, setShowDownloadBanner] = useState(true);
-  const [roomListOverflow, setRoomListOverflow] = useState(false);
-  const [roomListMaxHeight, setRoomListMaxHeight] = useState<number | null>(null);
   const [roomPaneCounts, setRoomPaneCounts] = useState<Record<string, number>>({});
   const [roomCliActivityCounts, setRoomCliActivityCounts] = useState<Record<string, number>>({});
   const [roomCliRuntimeIds, setRoomCliRuntimeIds] = useState<Record<string, string[]>>({});
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => readStoredSessionString(SELECTED_ROOM_ID_STORAGE_KEY));
+  const [dotSettingsRequest, setDotSettingsRequest] = useState<DotSettingsRequest | null>(null);
   const [roomRuntimes, setRoomRuntimes] = useState<Record<string, RoomRuntimeSnapshot>>({});
   const [roomPaneLoadStates, setRoomPaneLoadStates] = useState<Record<string, RoomPaneLoadState>>({});
   const [displayedRoomId, setDisplayedRoomId] = useState<string | null>(selectedRoomId);
   const [preparingRoomId, setPreparingRoomId] = useState<string | null>(null);
   const [panes, setPanes] = useState<Pane[]>([]);
-  const [liveRailStatus, setLiveRailStatus] = useState<"idle" | "connecting" | "active" | "listening" | "thinking" | "speaking" | "error">("idle");
-  const [liveRailContextMenu, setLiveRailContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [liveDebugToast, setLiveDebugToast] = useState<{ id: number; message: string; type: "info" | "success" | "error" } | null>(null);
-  const liveDebugTimerRef = useRef<number | null>(null);
+  const notices = useAppNotices();
+  const { showLiveDebug } = notices;
 
-  const showLiveDebug = useCallback((message: string, type: "info" | "success" | "error" = "info") => {
-    console.log(`[AI-Live-Debug][${type.toUpperCase()}] ${message}`);
-    if (liveDebugTimerRef.current !== null) window.clearTimeout(liveDebugTimerRef.current);
-    setLiveDebugToast({ id: Date.now(), message, type });
-    liveDebugTimerRef.current = window.setTimeout(() => {
-      setLiveDebugToast(null);
-      liveDebugTimerRef.current = null;
-    }, 4500);
-  }, []);
-
-  useEffect(() => {
-    const handleDebug = (event: Event) => {
-      const detail = (event as CustomEvent<{ message: string; type?: "info" | "success" | "error" }>).detail;
-      if (detail?.message) showLiveDebug(detail.message, detail.type || "info");
-    };
-    window.addEventListener("space-live-debug", handleDebug);
-    return () => window.removeEventListener("space-live-debug", handleDebug);
-  }, [showLiveDebug]);
-
-  const [isLiveRailGraphicDisabled, setIsLiveRailGraphicDisabled] = useState<boolean>(() => readStoredBoolean(LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY));
   const [activeCategoryColorByRoom, setActiveCategoryColorByRoom] = useState<Record<string, PaneCategoryColor>>({});
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(() => readStoredSessionString(SELECTED_PANE_ID_STORAGE_KEY));
   const [shellMode, setShellMode] = useState<ShellMode>(() => detectUiThemeShellMode(readViewportWidth(), uiTheme));
-  const [roomNamePreview, setRoomNamePreview] = useState<string | null>(null);
-  const roomNameHoldTimerRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
-  }, []);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [roomEvents, setRoomEvents] = useState<SpaceEvent[]>([]);
   const bridgedPlanEventsRef = useRef(new Set<string>());
@@ -1468,30 +958,6 @@ export function App() {
   const [observability, setObservability] = useState<ObservabilitySnapshot | null>(null);
   const [workerReadiness, setWorkerReadiness] = useState<WorkerReadiness | null>(null);
   const [storageReadiness, setStorageReadiness] = useState<StorageReadiness | null>(null);
-  const [storageWarning, setStorageWarning] = useState<string>("");
-  const [dismissedStorageWarning, setDismissedStorageWarning] = useState<string | null>(() =>
-    readStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY)
-  );
-  const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
-  const [clipToolNotice, setClipToolNotice] = useState<string | null>(null);
-  useAutoDismiss(clipToolNotice, setClipToolNotice);
-  const [watchdogAlerts, setWatchdogAlerts] = useState<Array<{ id: string; message: string; timestamp: string }>>([]);
-
-  useEffect(() => {
-    const handleWatchdogCustomEvent = (customEvent: globalThis.Event) => {
-      const detail = (customEvent as CustomEvent<{ id?: string; message: string; timestamp?: string }>).detail;
-      if (!detail?.message) return;
-      const id = detail.id ?? `watchdog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setWatchdogAlerts((current) => {
-        if (current.some((item) => item.id === id)) return current;
-        return [...current, { id, message: detail.message, timestamp: detail.timestamp ?? new Date().toISOString() }];
-      });
-    };
-    window.addEventListener("space:room-watchdog-alert", handleWatchdogCustomEvent as EventListener);
-    return () => {
-      window.removeEventListener("space:room-watchdog-alert", handleWatchdogCustomEvent as EventListener);
-    };
-  }, []);
   const [codexEnvironmentSummary, setCodexEnvironmentSummary] = useState<CodexEnvironment | null>(null);
   // Panes only read isCodexEnabled; keep their prop stable across the 30 s
   // environment poll so cached rooms do not re-render on every check.
@@ -1505,81 +971,32 @@ export function App() {
   const anyCliEnabled = cliRuntimeSettings?.settings.some((setting) => setting.enabled) ?? true;
   const isHarnessEnabled = cliRuntimeSettings?.harness?.enabled ?? true;
   const [restoredDock] = useState(() => readDockSession(runtime.platform.sessionStorage, Object.keys(sideSurfaceMeta)));
-  const [activeSideSurface, setActiveSideSurface] = useState<SideSurface>(() => (restoredDock?.surface as SideSurface | undefined) ?? "rooms");
-  const [sourceControlEnabled, setSourceControlEnabled] = useState(false);
   const { hiddenDockIds, isDockHidden } = useDocksVisibility();
   const { hiddenPaneIds, isPaneHidden } = usePanesVisibility();
   const { hiddenWidgetIds, isWidgetHidden } = useWidgetsVisibility();
-  const [isRoomFocusMode, setIsRoomFocusMode] = useState(() => readStoredBoolean(ROOM_FOCUS_MODE_STORAGE_KEY));
-  const [isRoomToolbarHidden, setIsRoomToolbarHidden] = useState(() => readStoredBoolean(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY));
-  const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(() => isDocumentFullscreen());
 
   useEffect(() => {
     preloadDockModules();
   }, []);
 
-  useEffect(() => {
-    const bridge = (window as any).spaceDesktop;
-    let disposed = false;
-    const handleFullscreenChange = () => {
-      if (typeof bridge?.isFullscreen === "function") {
-        void bridge.isFullscreen().then((fullscreen: boolean) => {
-          if (!disposed) setIsBrowserFullscreen(fullscreen || isDocumentFullscreen());
-        }).catch(() => {});
-      } else {
-        setIsBrowserFullscreen(isDocumentFullscreen());
-      }
-    };
-    const unsubscribe = bridge?.onFullscreenChange?.((fullscreen: boolean) => {
-      if (!disposed) setIsBrowserFullscreen(fullscreen);
-    });
-    if (typeof bridge?.isFullscreen === "function") {
-      void bridge.isFullscreen().then((fullscreen: boolean) => {
-        if (!disposed) setIsBrowserFullscreen(fullscreen);
-      }).catch(() => {});
-    }
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
-    document.addEventListener("mozfullscreenchange", handleFullscreenChange);
-    document.addEventListener("MSFullscreenChange", handleFullscreenChange);
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "F11") {
-        event.preventDefault();
-        void toggleBrowserFullscreen();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      disposed = true;
-      if (typeof unsubscribe === "function") unsubscribe();
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
-      document.removeEventListener("mozfullscreenchange", handleFullscreenChange);
-      document.removeEventListener("MSFullscreenChange", handleFullscreenChange);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
+  const isBrowserFullscreen = useBrowserFullscreen();
   const [isMobilePaneFocusMode, setIsMobilePaneFocusMode] = useState(false);
-  const [isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen] = useState(() => restoredDock?.desktopOpen ?? !readStoredBoolean(SIDE_SURFACE_HIDDEN_STORAGE_KEY));
-  const [isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen] = useState(() => restoredDock?.compactOpen ?? false);
-  const compactSideSurfaceRef = useRef<HTMLElement>(null);
-  const compactSideSurfaceTriggerRef = useRef<HTMLElement | null>(null);
-  const [terminalFontSize, setTerminalFontSize] = useState(readStoredTerminalFontSize);
-  const [cliImagePreviewLimit, setCliImagePreviewLimit] = useState(readStoredCliImagePreviewLimit);
-  const [warmRoomEnabled, setWarmRoomEnabled] = useState(readStoredWarmRoomEnabled);
-  const [warmConnectedPaneLimit, setWarmConnectedPaneLimit] = useState(readStoredWarmRoomConnectedPaneLimit);
-  const [suppressNotifications, setSuppressNotifications] = useState(readStoredSuppressNotifications);
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.setAttribute("data-suppress-notifications", String(suppressNotifications));
-    if (document.body) {
-      document.body.setAttribute("data-suppress-notifications", String(suppressNotifications));
-    }
-  }, [suppressNotifications]);
-  const [showSessionDebugIds, setShowSessionDebugIds] = useState(() => readStoredBooleanDefaultTrue(SESSION_DEBUG_IDS_STORAGE_KEY));
-  const [cliDebugModeEnabled, setCliDebugModeEnabled] = useState(() => readStoredBoolean(CLI_DEBUG_MODE_STORAGE_KEY));
+  const userPreferences = useUserPreferences({ isAuthenticated: auth?.isAuthenticated, restoredDesktopOpen: restoredDock?.desktopOpen, uiTheme });
+  const {
+    terminalFontSize, setTerminalFontSize, cliImagePreviewLimit, warmRoomEnabled, warmConnectedPaneLimit, suppressNotifications,
+    showSessionDebugIds, cliDebugModeEnabled, setCliDebugModeEnabled, cliFloatsHidden, maskSensitiveData, roomTheme, setRoomTheme,
+    isRoomFocusMode, setIsRoomFocusMode, isRoomToolbarHidden, isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen, projectPresets,
+    roomExtraEmptySlots, updateRoomExtraEmptySlots, isRoomWorktreeEnabled, toggleCliFloats, toggleMaskSensitiveData, toggleRoomFocusMode
+  } = userPreferences;
+  const sideSurfaces = useSideSurfaces({
+    shellMode, restoredDock, isDesktopSideSurfaceOpen, setIsDesktopSideSurfaceOpen, runtimeKind,
+    isAuthenticated: auth?.isAuthenticated, role: auth?.user?.role, isDockHidden
+  });
+  const {
+    activeSideSurface, setActiveSideSurface, isCompactSideSurfaceOpen, setIsCompactSideSurfaceOpen, sourceControlEnabled,
+    sourceControlAvailable, isCompactShell, isSideSurfaceOpen, showInlineSideSurface, showOverlaySideSurface,
+    sideSurfaceToggleLabel, closeCompactSideSurface, toggleSideSurface, openSideSurface
+  } = sideSurfaces;
   const appDiagnosticsState = useDiagnosticsState();
   const [debugModePending, setDebugModePending] = useState(false);
   const canManageDiagnostics = auth?.user?.role === "ADMIN";
@@ -1604,95 +1021,35 @@ export function App() {
       setDebugModePending(false);
     }
   }, [debugModePending, isDebugModeActive]);
-  const [cliFloatsHidden, setCliFloatsHidden] = useState(() => readStoredBoolean(CLI_FLOATS_HIDDEN_STORAGE_KEY));
-  const [maskSensitiveData, setMaskSensitiveData] = useState(() =>
-    readStoredBoolean(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY)
-  );
-  const [roomTheme, setRoomTheme] = useState<RoomTheme>(readStoredRoomTheme);
-  useEffect(() => {
-    const body = document.body;
-    if (uiTheme === "classic") {
-      body.removeAttribute("data-room-theme");
-      return;
-    }
-    body.setAttribute("data-room-theme", roomTheme);
-    return () => {
-      if (body.getAttribute("data-room-theme") === roomTheme) {
-        body.removeAttribute("data-room-theme");
-      }
-    };
-  }, [roomTheme, uiTheme]);
-  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
-  const [isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen] = useState(false);
-  const [isCollapsedPaneLayoutMenuOpen, setIsCollapsedPaneLayoutMenuOpen] = useState(false);
+  const toolbarPopovers = useToolbarPopovers();
+  const {
+    isThemeMenuOpen, setIsThemeMenuOpen, isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen, isCollapsedPaneLayoutMenuOpen,
+    setIsCollapsedPaneLayoutMenuOpen, isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen, isWorkspaceTextSizePickerOpen,
+    setIsWorkspaceTextSizePickerOpen, isCliLauncherOpen, setIsCliLauncherOpen, isChatLauncherOpen, setIsChatLauncherOpen,
+    isVibeMusicOpen, setIsVibeMusicOpen, isOskKeyboardOpen, setIsOskKeyboardOpen, isQuickLinksOpen, setIsQuickLinksOpen,
+    lowerRailVisibilityMenu, setLowerRailVisibilityMenu, boardToolbarRef, roomToolbarActionsRef, roomToolbarScrollRef,
+    collapsedToolbarRef, roomOverflowTriggerRef, cliLauncherButtonRef, chatLauncherButtonRef, cliLauncherReturnFocusRef,
+    workspaceTextSizeButtonRef, vibeMusicButtonRef, quickLinksButtonRef, paneLayoutButtonRef, paneLayoutCollapsedButtonRef,
+    paneSpanAllButtonRef, roomThemeButtonRef, closePaneLayoutMenu, closePaneSpanAllMenu
+  } = toolbarPopovers;
   const [paneLayoutPending, setPaneLayoutPending] = useState(false);
   const paneLayoutSequenceRef = useRef(0);
-  const [vpnCityNotice, setVpnCityNotice] = useState<string | null>(null);
-  const [vpnCityPending, setVpnCityPending] = useState(false);
-  useAutoDismiss(vpnCityNotice, setVpnCityNotice);
   const [paneLayoutError, setPaneLayoutError] = useState<string | null>(null);
-  const [isPaneSpanAllMenuOpen, setIsPaneSpanAllMenuOpen] = useState(false);
   const [paneSpanAllPending, setPaneSpanAllPending] = useState(false);
   const paneSpanSequenceRef = useRef(0);
   const [paneSpanAllError, setPaneSpanAllError] = useState<string | null>(null);
-  const [isWorkspaceTextSizePickerOpen, setIsWorkspaceTextSizePickerOpen] = useState(false);
-  const [isCliLauncherOpen, setIsCliLauncherOpen] = useState(false);
-  const [isChatLauncherOpen, setIsChatLauncherOpen] = useState(false);
   const [cliPaneCreationPending, setCliPaneCreationPending] = useState(false);
-  const [isVibeMusicOpen, setIsVibeMusicOpen] = useState(false);
-  const [isSnipToolOpen, setIsSnipToolOpen] = useState(false);
-  useEffect(() => {
-    if (isSnipToolOpen) {
-      document.body.setAttribute("data-snip-tool-active", "true");
-    } else {
-      document.body.removeAttribute("data-snip-tool-active");
-    }
-  }, [isSnipToolOpen]);
-  const [isOskKeyboardOpen, setIsOskKeyboardOpen] = useState(false);
+  const snipTool = useSnipTool();
+  const { isSnipToolOpen, setIsSnipToolOpen, snipToolInitialModeRef } = snipTool;
   const oskKeyboardMountedRef = useRef(false);
-  const [isServerActionsMenuOpen, setIsServerActionsMenuOpen] = useState(false);
-  const [manageLoginPending, setManageLoginPending] = useState(false);
-  const manageLoginPendingRef = useRef(false);
-  const [manageInitialAction, setManageInitialAction] = useState<string | null>(null);
-  useEffect(() => {
-    const open = (event: Event) => {
-      if (auth?.user?.role !== "ADMIN") return;
-      manageLoginPendingRef.current = false;
-      setManageLoginPending(false);
-      setManageInitialAction((event as CustomEvent<{action?: string}>).detail?.action ?? null);
-      setIsServerActionsMenuOpen(true);
-    };
-    window.addEventListener("space:manage", open);
-    return () => window.removeEventListener("space:manage", open);
-  }, [auth?.user?.role]);
-
-  const [isSetupConnectionsOpen, setIsSetupConnectionsOpen] = useState(false);
-  const [workspaceSetupHost, setWorkspaceSetupHost] = useState<HTMLDivElement | null>(null);
-  const workspaceSetupBack = useRef<(() => void) | null>(null);
-  const setupFromWorkspace = useRef(false);
-  const setupConnectionsMounted = useRef(false);
-  if (workspaceSetupHost) setupFromWorkspace.current = true;
-  if (isSetupConnectionsOpen || workspaceSetupHost) setupConnectionsMounted.current = true;
-  const [isServerRestartDialogOpen, setIsServerRestartDialogOpen] = useState(false);
-  const [adminCodexTool, setAdminCodexTool] = useState<AdminCodexTool | null>(null);
-  const [adminOperationTool, setAdminOperationTool] = useState<AdminOperationTool | null>(null);
-  const [isSystemServicesDialogOpen, setIsSystemServicesDialogOpen] = useState(false);
-  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
-  const userManagementTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const [serverRestartPending, setServerRestartPending] = useState(false);
-  const [serverRestartMessage, setServerRestartMessage] = useState<string | null>(null);
-  const [serverRestartError, setServerRestartError] = useState<string | null>(null);
-  useAutoDismiss(serverRestartMessage, setServerRestartMessage);
-  useAutoDismiss(serverRestartError, setServerRestartError);
-  const [isCliRuntimeRestartAllDialogOpen, setIsCliRuntimeRestartAllDialogOpen] = useState(false);
-  const [cliRuntimeRestartAllPending, setCliRuntimeRestartAllPending] = useState(false);
-  const [cliRuntimeRestartAllMessage, setCliRuntimeRestartAllMessage] = useState<string | null>(null);
-  const [cliRuntimeRestartAllError, setCliRuntimeRestartAllError] = useState<string | null>(null);
-  useAutoDismiss(cliRuntimeRestartAllMessage, setCliRuntimeRestartAllMessage);
-  useAutoDismiss(cliRuntimeRestartAllError, setCliRuntimeRestartAllError);
+  const manage = useManageController({ role: auth?.user?.role, onReadiness: setReadiness, onEnvironment: setCodexEnvironmentSummary });
+  const {
+    serverActionsButtonRef, adminOperationToolTriggerRef, isServerActionsMenuOpen, setIsServerActionsMenuOpen, manageLoginPending,
+    manageLoginPendingRef, setManageLoginPending, isSetupConnectionsOpen, setIsSetupConnectionsOpen, workspaceSetupHost,
+    setWorkspaceSetupHost, workspaceSetupBack, setupFromWorkspace
+  } = manage;
   const [restoreAllPending, setRestoreAllPending] = useState(false);
   const [minimizeAllPending, setMinimizeAllPending] = useState(false);
-  const [isRoomRenameOpen, setIsRoomRenameOpen] = useState(false);
   const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
   const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
@@ -1716,178 +1073,7 @@ export function App() {
     }
   }, [systemAnalyticsTab]);
 
-
   const [activeUserLink, setActiveUserLink] = useState<UserLink | null>(null);
-  const [isQuickLinksOpen, setIsQuickLinksOpen] = useState(false);
-  const [roomNameDraft, setRoomNameDraft] = useState("");
-  const [roomProjectPathDraft, setRoomProjectPathDraft] = useState("");
-  const [roomRenamePending, setRoomRenamePending] = useState(false);
-  const [roomRenameError, setRoomRenameError] = useState<string | null>(null);
-  useAutoDismiss(roomRenameError, setRoomRenameError);
-  const [dockExpandedRoomId, setDockExpandedRoomId] = useState<string | null>(null);
-  const [dockProjectPathDrafts, setDockProjectPathDrafts] = useState<Record<string, string>>({});
-  const [dockProjectSavingRoomId, setDockProjectSavingRoomId] = useState<string | null>(null);
-  const [defaultWorktreeEnabled, setDefaultWorktreeEnabled] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem("space.worktree.defaultEnabled");
-      if (stored !== null) return stored === "true";
-    } catch {}
-    return true; // Default true
-  });
-  const [roomWorktreeOverrides, setRoomWorktreeOverrides] = useState<Record<string, boolean>>(() => {
-    try {
-      const stored: Record<string, boolean> = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith("space.room.") && key.endsWith(".isolatedWorktree")) {
-          const roomId = key.slice("space.room.".length, -".isolatedWorktree".length);
-          stored[roomId] = localStorage.getItem(key) === "true";
-        }
-      }
-      return stored;
-    } catch {
-      return {};
-    }
-  });
-
-  function isRoomWorktreeEnabled(roomId: string): boolean {
-    if (typeof roomWorktreeOverrides[roomId] === "boolean") {
-      return roomWorktreeOverrides[roomId];
-    }
-    try {
-      const stored = localStorage.getItem(`space.room.${roomId}.isolatedWorktree`);
-      if (stored !== null) return stored === "true";
-    } catch {}
-    return defaultWorktreeEnabled;
-  }
-
-  function setRoomWorktreeEnabled(roomId: string, enabled: boolean) {
-    try {
-      localStorage.setItem(`space.room.${roomId}.isolatedWorktree`, String(enabled));
-    } catch {}
-    setRoomWorktreeOverrides((prev) => {
-      const next = { ...prev, [roomId]: enabled };
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("roomWorktreeOverrides", next);
-      }
-      return next;
-    });
-  }
-  const [projectPresets, setProjectPresets] = useState<{ label: string; path: string }[]>(() => {
-    try {
-      const saved = localStorage.getItem("space:project_presets");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const filtered = parsed.filter(
-            (p) =>
-              p.label !== "olla" &&
-              p.label !== "workspace" &&
-              !p.path?.includes("/olla") &&
-              !p.path?.includes("/workspace")
-          );
-          localStorage.setItem("space:project_presets", JSON.stringify(filtered));
-          return filtered.length > 0 ? filtered : DEFAULT_PROJECT_PRESETS;
-        }
-      }
-    } catch {}
-    return DEFAULT_PROJECT_PRESETS;
-  });
-  const [isAddingPresetRoomId, setIsAddingPresetRoomId] = useState<string | null>(null);
-  const [newPresetDraft, setNewPresetDraft] = useState("");
-  // Shared project picker: a room assignment is bound to the room that opened the picker.
-  const [projectPickerRoom, setProjectPickerRoom] = useState<{ id: string; name: string } | null>(null);
-  const [roomProjectSources, setRoomProjectSources] = useState<Record<string, string>>({});
-  const latestRoomsRef = useRef(rooms);
-  latestRoomsRef.current = rooms;
-
-  function addOpenedProjectPreset(project: { label: string; path: string }) {
-    setProjectPresets((prev) => {
-      if (prev.some((p) => p.path === project.path)) return prev;
-      let label = project.label;
-      for (let index = 2; prev.some((p) => p.label.toLowerCase() === label.toLowerCase()); index++) label = `${project.label} (${index})`;
-      const next = [...prev, { label, path: project.path }];
-      try {
-        localStorage.setItem("space:project_presets", JSON.stringify(next));
-      } catch {}
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("projectPresets", next);
-      }
-      return next;
-    });
-  }
-
-  async function assignPickedProjectToRoom(roomId: string, result: OpenProjectResult) {
-    const targetRoom = latestRoomsRef.current.find((r) => r.id === roomId);
-    if (!targetRoom) throw new Error("The room was removed. The project is ready; choose it again from another room.");
-    const updated = await api.updateRoom(roomId, { name: targetRoom.name, projectPath: result.projectPath });
-    setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
-    setDockProjectPathDrafts((prev) => ({ ...prev, [roomId]: result.projectPath }));
-    setRoomProjectSources((prev) => ({ ...prev, [roomId]: `${result.source.label}${result.source.detail ? ` · ${result.source.detail}` : ""}` }));
-  }
-
-  async function ensureProjectFolder(targetPath: string) {
-    if (!targetPath || !targetPath.trim()) return;
-    try {
-      // The shared client attaches the CSRF token that this mutation requires.
-      await api.ensureProject({ path: targetPath.trim() });
-    } catch {}
-  }
-
-  async function handleAddNewPreset(roomId: string) {
-    const name = newPresetDraft.trim();
-    if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) return;
-    const projectPath = `/opt/spaceapp/projects/${name}`;
-    await ensureProjectFolder(projectPath);
-    setProjectPresets((prev) => {
-      if (prev.some((p) => p.label.toLowerCase() === name.toLowerCase())) return prev;
-      const next = [...prev, { label: name, path: projectPath }];
-      try {
-        localStorage.setItem("space:project_presets", JSON.stringify(next));
-      } catch {}
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("projectPresets", next);
-      }
-      return next;
-    });
-    setDockProjectPathDrafts((prev) => ({ ...prev, [roomId]: projectPath }));
-    setIsAddingPresetRoomId(null);
-    setNewPresetDraft("");
-    const targetRoom = rooms.find((r) => r.id === roomId);
-    if (targetRoom) {
-      try {
-        const updated = await api.updateRoom(roomId, {
-          name: targetRoom.name,
-          projectPath
-        });
-        setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to save project");
-      }
-    }
-  }
-
-  async function saveDockProject(roomId: string) {
-    if (dockProjectSavingRoomId) return;
-    const targetRoom = rooms.find((r) => r.id === roomId);
-    if (!targetRoom) return;
-    setDockProjectSavingRoomId(roomId);
-    const draft = dockProjectPathDrafts[roomId]?.trim() || null;
-    try {
-      if (draft) {
-        await ensureProjectFolder(draft);
-      }
-      const updated = await api.updateRoom(roomId, {
-        name: targetRoom.name,
-        projectPath: draft
-      });
-      setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update project path");
-    } finally {
-      setDockProjectSavingRoomId(null);
-    }
-  }
   const [isRoomToolbarStacked, setIsRoomToolbarStacked] = useState(false);
   const [paneMoveDialog, setPaneMoveDialog] = useState<{
     pane: Pane;
@@ -1896,48 +1082,14 @@ export function App() {
     error: string | null;
   } | null>(null);
   const [paneMoveNotice, setPaneMoveNotice] = useState<string | null>(null);
-  const [accountNotice, setAccountNotice] = useState<string | null>(null);
-  const [accountError, setAccountError] = useState<string | null>(null);
-  useAutoDismiss(accountNotice, setAccountNotice);
-  useAutoDismiss(accountError, setAccountError);
-
-  useEffect(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const googleLinked = params.get("googleLinked");
-      const googleLinkError = params.get("googleLinkError");
-      const connectorResult = connectorResultMessage(params.get("connector"));
-      if (connectorResult) {
-        if (connectorResult.tone === "notice") setAccountNotice(connectorResult.text);
-        else setAccountError(connectorResult.text);
-        params.delete("connector");
-        const query = params.toString();
-        window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
-      } else if (googleLinked === "true") {
-        setAccountNotice("Google account linked. To save its browser sign-in, select it in a Browser or YouTube pane and choose “Sign in to selected account” once.");
-        const nextUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, nextUrl);
-      } else if (googleLinkError) {
-        setAccountError(decodeURIComponent(googleLinkError));
-        const nextUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, nextUrl);
-      }
-    } catch {
-      // Ignore URL parsing errors
-    }
-  }, []);
-  const [roomReorderPending, setRoomReorderPending] = useState(false);
-  const [draggedRoomId, setDraggedRoomId] = useState<string | null>(null);
-  const [dragOverRoomId, setDragOverRoomId] = useState<string | null>(null);
-  const dragOverRoomIdRef = useRef<string | null>(null);
-  const roomPointerDragCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => roomPointerDragCleanupRef.current?.(), []);
+  const [error, setError] = useState<string | null>(null);
+  const roomsDock = useRoomsDock({ rooms, setRooms, reportError: setError, addNamedProjectPreset: userPreferences.addNamedProjectPreset });
+  const { roomSearch, adminRoomFilterMode, adminSelectedUserId, dockProjectPathDrafts } = roomsDock;
   const [paneReorderPending, setPaneReorderPending] = useState(false);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [paneDragOverId, setPaneDragOverId] = useState<string | null>(null);
   const [paneDragOverPosition, setPaneDragOverPosition] = useState<PaneDropPosition>("before");
   const [dragOverSlotKey, setDragOverSlotKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [paneCreationPendingMode, setPaneCreationPendingMode] = useState<Pane["mode"] | null>(null);
   const [roomCreationPending, setRoomCreationPending] = useState(false);
   const [deletePendingRoomId, setDeletePendingRoomId] = useState<string | null>(null);
@@ -1948,6 +1100,7 @@ export function App() {
   const [paneGridWidth, setPaneGridWidth] = useState(() => readViewportWidth());
   const [paneGridHeight, setPaneGridHeight] = useState(0);
   const [pendingBrowserHandoffPaneId, setPendingBrowserHandoffPaneId] = useState<string | null>(null);
+  const [jobCopilotLaunch, setJobCopilotLaunch] = useState<{ roomId: string; count: number } | null>(null);
   const [activeRoomEventStreamStatus, setActiveRoomEventStreamStatus] = useState<ActiveRoomEventStreamStatus>("idle");
   const cliMemorySaveModelId = useMemo(() => pickCliMemorySaveModelId(models), [models]);
   const previousShellModeRef = useRef<ShellMode | null>(null);
@@ -2005,23 +1158,9 @@ export function App() {
   const clipImageInputRef = useRef<HTMLInputElement | null>(null);
   const pendingClipImageTargetRef = useRef<ClipImageTarget | null>(null);
   const isCapturingScreenRef = useRef(false);
-  const boardToolbarRef = useRef<HTMLDivElement | null>(null);
-  const roomToolbarActionsRef = useRef<HTMLDivElement | null>(null);
-  const roomToolbarScrollRef = useRef<HTMLDivElement | null>(null);
-  const roomOverflowTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const cliLauncherButtonRef = useRef<HTMLButtonElement | null>(null);
-  const chatLauncherButtonRef = useRef<HTMLButtonElement | null>(null);
-  const cliLauncherReturnFocusRef = useRef<HTMLButtonElement | null>(null);
   const cliPaneCreationPendingRef = useRef(false);
   const paneCreationPendingRef = useRef(false);
   const roomCreationPendingRef = useRef(false);
-  const workspaceTextSizeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const vibeMusicButtonRef = useRef<HTMLButtonElement | null>(null);
-  const quickLinksButtonRef = useRef<HTMLButtonElement | null>(null);
-  const paneLayoutButtonRef = useRef<HTMLButtonElement | null>(null);
-  const paneLayoutCollapsedButtonRef = useRef<HTMLButtonElement | null>(null);
-  const collapsedToolbarRef = useRef<HTMLDivElement | null>(null);
-  const [lowerRailVisibilityMenu, setLowerRailVisibilityMenu] = useState<RailVisibilityMenuState>(null);
   const lowerRailTouchContext = useTouchContextMenu(
     (source) => source instanceof Element && !source.closest(".room-live-rail-button, .touch-context-menu-trigger")
       ? source.closest<HTMLElement>(".room-toolbar-collapsed > button, .room-toolbar-collapsed > .toolbar-overflow > button")
@@ -2029,13 +1168,7 @@ export function App() {
     ({ x, y }) => setLowerRailVisibilityMenu((current) => current ? null : { x, y })
   );
   const lowerRailVisibility = useRailVisibility(LOWER_RAIL_HIDDEN_KEY, LOWER_RAIL_VISIBILITY_IDS, LOWER_RAIL_NON_HIDEABLE);
-  const vpnCityNoticeRef = useRef<HTMLDivElement | null>(null);
-  const paneSpanAllButtonRef = useRef<HTMLButtonElement | null>(null);
-  const roomThemeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const serverActionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const toolbarMetricsRef = useRef<ToolbarMetricsHandle | null>(null);
-  const adminCodexToolTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const adminOperationToolTriggerRef = useRef<HTMLButtonElement | null>(null);
   const paneGridRef = useRef<HTMLDivElement | null>(null);
   const minimizedPaneRestoreRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingPaneHeaderFocusIdRef = useRef<string | null>(null);
@@ -2102,21 +1235,6 @@ export function App() {
     };
   }, []);
 
-  function closeAdminCodexTool() {
-    setAdminCodexTool(null);
-    window.requestAnimationFrame(() => adminCodexToolTriggerRef.current?.focus());
-  }
-
-  function closeAdminOperationTool() {
-    setAdminOperationTool(null);
-    window.requestAnimationFrame(() => adminOperationToolTriggerRef.current?.focus());
-  }
-
-  function closeUserManagement() {
-    setIsUserManagementOpen(false);
-    window.requestAnimationFrame(() => userManagementTriggerRef.current?.focus());
-  }
-
   useLayoutEffect(() => {
     const paneId = pendingPaneHeaderFocusIdRef.current;
     const pane = panes.find((candidate) => candidate.id === paneId);
@@ -2131,35 +1249,7 @@ export function App() {
     if (document.activeElement === paneHeader) pendingPaneHeaderFocusIdRef.current = null;
   }, [panes]);
 
-  useEffect(() => {
-    const syncViewFromLocation = () => {
-      const nextView = readAppView();
-      if (nextView === "help" || nextView === "benchmark") setIsVibeMusicOpen(false);
-      setAppView(nextView);
-    };
-    window.addEventListener("popstate", syncViewFromLocation);
-    return () => window.removeEventListener("popstate", syncViewFromLocation);
-  }, []);
-
-  useEffect(() => {
-    document.title = appView === "help" ? "Space Help" : appView === "benchmark" ? "Space Benchmark" : "Space";
-  }, [appView]);
-
-  useEffect(() => {
-    let dismissTimer: number | null = null;
-    const handleClipboardNotice = (event: Event) => {
-      const detail = (event as CustomEvent<{ message?: unknown }>).detail;
-      if (typeof detail?.message !== "string" || !detail.message.trim()) return;
-      setClipboardNotice(detail.message);
-      if (dismissTimer !== null) window.clearTimeout(dismissTimer);
-      dismissTimer = window.setTimeout(() => setClipboardNotice(null), 5_000);
-    };
-    window.addEventListener(SPACE_CLIPBOARD_NOTICE_EVENT, handleClipboardNotice);
-    return () => {
-      if (dismissTimer !== null) window.clearTimeout(dismissTimer);
-      window.removeEventListener(SPACE_CLIPBOARD_NOTICE_EVENT, handleClipboardNotice);
-    };
-  }, []);
+  const { appView, setAppView, openHelp, closeHelp, openBenchmark, closeBenchmark } = useAppView({ onLeaveWorkspace: () => setIsVibeMusicOpen(false) });
 
   function roomRuntimeSnapshotsEqual(left: RoomRuntimeSnapshot | undefined, right: RoomRuntimeSnapshot): boolean {
     if (!left) return false;
@@ -3120,57 +2210,7 @@ export function App() {
         const seeded = await seedInitialLocalSettingsToServer(api, me.settings, runtime.platform.localStorage);
         if (seeded) me.settings = seeded;
       }
-      if (typeof me.settings.suppressNotifications === "boolean") {
-        setSuppressNotifications(me.settings.suppressNotifications);
-      }
-      if (typeof me.settings.warmRoomEnabled === "boolean") {
-        setWarmRoomEnabled(me.settings.warmRoomEnabled);
-      }
-      if (typeof me.settings.warmRoomConnectedPaneLimit === "number") {
-        setWarmConnectedPaneLimit(me.settings.warmRoomConnectedPaneLimit);
-      }
-      if (typeof me.settings.cliImagePreviewLimit === "number") {
-        setCliImagePreviewLimit(me.settings.cliImagePreviewLimit);
-      }
-      if (typeof me.settings.roomTheme === "string" && roomThemes.some((t) => t.id === me.settings?.roomTheme)) {
-        setRoomTheme(me.settings.roomTheme as RoomTheme);
-      }
-      if (typeof me.settings.terminalFontSize === "number") {
-        setTerminalFontSize(me.settings.terminalFontSize);
-      }
-      if (typeof me.settings.showSessionDebugIds === "boolean") {
-        setShowSessionDebugIds(me.settings.showSessionDebugIds);
-      }
-      if (typeof me.settings.cliDebugModeEnabled === "boolean") {
-        setCliDebugModeEnabled(me.settings.cliDebugModeEnabled);
-      }
-      if (typeof me.settings.cliFloatsHidden === "boolean") {
-        setCliFloatsHidden(me.settings.cliFloatsHidden);
-      }
-      if (typeof me.settings.sensitiveDataMasked === "boolean") {
-        setMaskSensitiveData(me.settings.sensitiveDataMasked);
-      }
-      if (typeof me.settings.roomToolbarHidden === "boolean") {
-        setIsRoomToolbarHidden(me.settings.roomToolbarHidden);
-      }
-      if (typeof me.settings.roomFocusMode === "boolean") {
-        setIsRoomFocusMode(me.settings.roomFocusMode);
-      }
-      if (typeof me.settings.roomsRailHidden === "boolean") {
-        setIsDesktopSideSurfaceOpen(!me.settings.roomsRailHidden);
-      }
-      if (typeof me.settings.worktreeDefaultEnabled === "boolean") {
-        setDefaultWorktreeEnabled(me.settings.worktreeDefaultEnabled);
-      }
-      if (me.settings.roomWorktreeOverrides && typeof me.settings.roomWorktreeOverrides === "object") {
-        setRoomWorktreeOverrides(me.settings.roomWorktreeOverrides as Record<string, boolean>);
-      }
-      if (Array.isArray(me.settings.projectPresets)) {
-        setProjectPresets(me.settings.projectPresets as { label: string; path: string }[]);
-      }
-      if (me.settings.roomExtraEmptySlots && typeof me.settings.roomExtraEmptySlots === "object") {
-        setRoomExtraEmptySlots(me.settings.roomExtraEmptySlots as Record<string, number>);
-      }
+      userPreferences.hydrate(me.settings);
       const { themeChanged } = applyServerUserSettings(
         runtime.platform.localStorage,
         me.settings,
@@ -3296,11 +2336,7 @@ export function App() {
       if (!appMountedRef.current) return;
       if (readyResult.status === "fulfilled") setReadiness(readyResult.value);
       if (adminResult.status === "fulfilled") {
-        setStorageWarning(adminResult.value.storageWarning);
-        if (!adminResult.value.storageWarning) {
-          setDismissedStorageWarning(null);
-          writeStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY, null);
-        }
+        notices.applyStorageWarning(adminResult.value.storageWarning);
       }
     });
 
@@ -3315,7 +2351,8 @@ export function App() {
         .catch(() => {
           // Onboarding discovery must not delay or block room hydration, but the
           // owner should know setup status is unknown rather than see nothing.
-          if (appMountedRef.current) setError("Setup status could not be loaded. Open Setup wizard from the room toolbar to finish setup.");
+          // It never replaces an error from an action the owner just took.
+          if (appMountedRef.current) setError((current) => current ?? "Setup status could not be loaded. Open Setup wizard from the room toolbar to finish setup.");
         });
     }
   }
@@ -3482,10 +2519,6 @@ export function App() {
   }, [selectedRoomId, shellMode, panes.length, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen, isRoomFocusMode]);
 
   useEffect(() => {
-    writeDockSession(runtime.platform.sessionStorage, { surface: activeSideSurface, desktopOpen: isDesktopSideSurfaceOpen, compactOpen: isCompactSideSurfaceOpen });
-  }, [activeSideSurface, isDesktopSideSurfaceOpen, isCompactSideSurfaceOpen]);
-
-  useEffect(() => {
     try {
       const storageKey = auth?.user?.id ? `${SELECTED_ROOM_ID_STORAGE_KEY}.${auth.user.id}` : SELECTED_ROOM_ID_STORAGE_KEY;
       if (selectedRoomId) {
@@ -3530,41 +2563,7 @@ export function App() {
     return () => window.removeEventListener(BROWSER_PANE_ACTION_EVENT, focusRequestedBrowserPane);
   }, [panes]);
 
-  useEffect(() => {
-    runtime.platform.localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(terminalFontSize));
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("terminalFontSize", terminalFontSize);
-    }
-  }, [terminalFontSize, auth?.isAuthenticated]);
-
-  useEffect(() => {
-    runtime.platform.localStorage.setItem(SESSION_DEBUG_IDS_STORAGE_KEY, String(showSessionDebugIds));
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("showSessionDebugIds", showSessionDebugIds);
-    }
-  }, [showSessionDebugIds, auth?.isAuthenticated]);
-
-  useEffect(() => {
-    runtime.platform.localStorage.setItem(CLI_DEBUG_MODE_STORAGE_KEY, String(cliDebugModeEnabled));
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("cliDebugModeEnabled", cliDebugModeEnabled);
-    }
-  }, [cliDebugModeEnabled, auth?.isAuthenticated]);
-
-  useEffect(() => {
-    const hidden = !isDesktopSideSurfaceOpen;
-    runtime.platform.localStorage.setItem(SIDE_SURFACE_HIDDEN_STORAGE_KEY, String(hidden));
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("roomsRailHidden", hidden);
-    }
-  }, [isDesktopSideSurfaceOpen, auth?.isAuthenticated]);
-
-  useEffect(() => {
-    runtime.platform.localStorage.setItem(ROOM_THEME_STORAGE_KEY, roomTheme);
-    if (auth?.isAuthenticated) {
-      void api.updateUserSettings({ roomTheme }).catch(() => {});
-    }
-  }, [roomTheme, auth?.isAuthenticated]);
+  useUserPreferenceWriteThrough(userPreferences, auth?.isAuthenticated);
 
   useEffect(() => {
     if (uiTheme === "classic" || modernAppearance !== "system" || typeof window.matchMedia !== "function") return;
@@ -3637,57 +2636,7 @@ export function App() {
       const seeded = await seedInitialLocalSettingsToServer(api, nextAuth.settings, runtime.platform.localStorage);
       if (seeded) nextAuth.settings = seeded;
 
-      if (typeof nextAuth.settings.suppressNotifications === "boolean") {
-        setSuppressNotifications(nextAuth.settings.suppressNotifications);
-      }
-      if (typeof nextAuth.settings.warmRoomEnabled === "boolean") {
-        setWarmRoomEnabled(nextAuth.settings.warmRoomEnabled);
-      }
-      if (typeof nextAuth.settings.warmRoomConnectedPaneLimit === "number") {
-        setWarmConnectedPaneLimit(nextAuth.settings.warmRoomConnectedPaneLimit);
-      }
-      if (typeof nextAuth.settings.cliImagePreviewLimit === "number") {
-        setCliImagePreviewLimit(nextAuth.settings.cliImagePreviewLimit);
-      }
-      if (typeof nextAuth.settings.roomTheme === "string" && roomThemes.some((t) => t.id === nextAuth.settings?.roomTheme)) {
-        setRoomTheme(nextAuth.settings.roomTheme as RoomTheme);
-      }
-      if (typeof nextAuth.settings.terminalFontSize === "number") {
-        setTerminalFontSize(nextAuth.settings.terminalFontSize);
-      }
-      if (typeof nextAuth.settings.showSessionDebugIds === "boolean") {
-        setShowSessionDebugIds(nextAuth.settings.showSessionDebugIds);
-      }
-      if (typeof nextAuth.settings.cliDebugModeEnabled === "boolean") {
-        setCliDebugModeEnabled(nextAuth.settings.cliDebugModeEnabled);
-      }
-      if (typeof nextAuth.settings.cliFloatsHidden === "boolean") {
-        setCliFloatsHidden(nextAuth.settings.cliFloatsHidden);
-      }
-      if (typeof nextAuth.settings.sensitiveDataMasked === "boolean") {
-        setMaskSensitiveData(nextAuth.settings.sensitiveDataMasked);
-      }
-      if (typeof nextAuth.settings.roomToolbarHidden === "boolean") {
-        setIsRoomToolbarHidden(nextAuth.settings.roomToolbarHidden);
-      }
-      if (typeof nextAuth.settings.roomFocusMode === "boolean") {
-        setIsRoomFocusMode(nextAuth.settings.roomFocusMode);
-      }
-      if (typeof nextAuth.settings.roomsRailHidden === "boolean") {
-        setIsDesktopSideSurfaceOpen(!nextAuth.settings.roomsRailHidden);
-      }
-      if (typeof nextAuth.settings.worktreeDefaultEnabled === "boolean") {
-        setDefaultWorktreeEnabled(nextAuth.settings.worktreeDefaultEnabled);
-      }
-      if (nextAuth.settings.roomWorktreeOverrides && typeof nextAuth.settings.roomWorktreeOverrides === "object") {
-        setRoomWorktreeOverrides(nextAuth.settings.roomWorktreeOverrides as Record<string, boolean>);
-      }
-      if (Array.isArray(nextAuth.settings.projectPresets)) {
-        setProjectPresets(nextAuth.settings.projectPresets as { label: string; path: string }[]);
-      }
-      if (nextAuth.settings.roomExtraEmptySlots && typeof nextAuth.settings.roomExtraEmptySlots === "object") {
-        setRoomExtraEmptySlots(nextAuth.settings.roomExtraEmptySlots as Record<string, number>);
-      }
+      userPreferences.hydrate(nextAuth.settings);
       const { themeChanged } = applyServerUserSettings(
         runtime.platform.localStorage,
         nextAuth.settings,
@@ -3730,26 +2679,6 @@ export function App() {
       return;
     }
     runtime.platform.reloadPage();
-  }
-
-  function openHelp() {
-    window.history.pushState({ spaceView: "help" }, "", "/help");
-    setAppView("help");
-  }
-
-  function closeHelp() {
-    window.history.replaceState({ spaceView: "workspace" }, "", "/");
-    setAppView("workspace");
-  }
-
-  function openBenchmark() {
-    window.history.pushState({ spaceView: "benchmark" }, "", "/benchmark");
-    setAppView("benchmark");
-  }
-
-  function closeBenchmark() {
-    window.history.replaceState({ spaceView: "workspace" }, "", "/");
-    setAppView("workspace");
   }
 
   async function createRoom() {
@@ -3906,6 +2835,19 @@ export function App() {
     await addRoomPanes(selectedRoomId, { panes: newPanes });
   }
 
+  // Job Copilot: the operator picks the agent (Claude Code recommended) before the pane opens.
+  async function addJobApplyPane(count = 1) {
+    if (!selectedRoomId || panes.length >= 16) return;
+    setJobCopilotLaunch({ roomId: selectedRoomId, count: Math.min(Math.max(1, count), 16 - panes.length) });
+  }
+
+  async function createJobCopilotPanes(choice: JobCopilotLaunchChoice) {
+    const launch = jobCopilotLaunch;
+    if (!launch) return;
+    await addRoomPanes(launch.roomId, { panes: Array.from({ length: launch.count }, () => ({ mode: "JOB_APPLY" as const, terminalRuntimeId: choice.terminalRuntimeId })) });
+    setJobCopilotLaunch(null);
+  }
+
   async function addT3CodePane(count = 1) {
     if (!selectedRoomId || panes.length >= 16) return;
     const targetCount = Math.min(Math.max(1, count), 16 - panes.length);
@@ -4015,7 +2957,8 @@ export function App() {
         setPanes((current) => [...current, ...optimisticPanes]);
       }
 
-      // Create all panes concurrently
+      // Create all panes concurrently; the room's project path is persisted once.
+      let roomProjectPathPersisted = false;
       const createPromises = optimisticPanes.map(async (optPane) => {
         let paneCwd = roomCwd;
         if (effectiveProjectPath && isRoomWorktreeEnabled(roomId)) {
@@ -4027,9 +2970,12 @@ export function App() {
               linkModules: true
             });
             paneCwd = wt.worktreePath;
-            if (!targetRoom?.projectPath && targetRoom) {
+            if (!targetRoom?.projectPath && targetRoom && !roomProjectPathPersisted) {
+              roomProjectPathPersisted = true;
               void api.updateRoom(roomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
                 setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+              }).catch((err) => {
+                console.warn("Failed to persist the room project path:", err);
               });
             }
           } catch (err) {
@@ -4167,6 +3113,27 @@ export function App() {
     };
     window.addEventListener(CLI_RECOVERY_OPENED_EVENT, openRecoveryRoom);
     return () => window.removeEventListener(CLI_RECOVERY_OPENED_EVENT, openRecoveryRoom);
+  });
+
+  // Space Dots Stage 8: a Dot pane asks the shell to open a call or Settings → Dots.
+  useEffect(() => {
+    const call = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail?.dotId !== "string" || typeof event.detail?.dotName !== "string") return;
+      const dot = { dotId: event.detail.dotId as string, name: event.detail.dotName as string,
+        ...(typeof event.detail.slot === "number" ? { slot: event.detail.slot as number } : {}) };
+      // One call per Dot and room: an open call with this Dot is brought forward instead of a second one.
+      const existing = panes.find((pane) => pane.mode === "LIVE" && !pane.isClosed && readLivePaneDot(pane.id)?.dotId === dot.dotId);
+      if (existing) { setSelectedPaneId(existing.id); return; }
+      void addLivePane(1, `${dot.name} · Call`).then((pane) => { if (pane) writeLivePaneDot(pane.id, dot); });
+    };
+    const settings = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail as { dotId?: string; section?: DotSettingsSection } | null : null;
+      setDotSettingsRequest({ dotId: detail?.dotId, section: detail?.section, nonce: Date.now() });
+      openSettingsSurface();
+    };
+    window.addEventListener(DOT_CALL_EVENT, call);
+    window.addEventListener(OPEN_DOT_SETTINGS_EVENT, settings);
+    return () => { window.removeEventListener(DOT_CALL_EVENT, call); window.removeEventListener(OPEN_DOT_SETTINGS_EVENT, settings); };
   });
 
   useEffect(() => {
@@ -4314,6 +3281,8 @@ export function App() {
               if (!targetRoom?.projectPath && targetRoom) {
                 void api.updateRoom(roomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
                   setRooms((current) => current.map((r) => (r.id === roomId ? updated : r)));
+                }).catch((err) => {
+                  console.warn("Failed to persist the room project path:", err);
                 });
               }
             } catch (err) {
@@ -4379,7 +3348,7 @@ export function App() {
     }
   }
 
-  async function addLivePane(count = 1): Promise<Pane | null> {
+  async function addLivePane(count = 1, title?: string): Promise<Pane | null> {
     const targetRoomId = selectedRoomId || activeRoom?.id || rooms[0]?.id;
     if (!targetRoomId) {
       showLiveDebug("Cannot open AI Live: No active room found.", "error");
@@ -4394,7 +3363,7 @@ export function App() {
     let lastPane: Pane | null = null;
     try {
       for (let i = 0; i < targetCount; i++) {
-        const pane = await api.createPane(targetRoomId, paneTitleForMode("LIVE", panes.length + 1), "LIVE");
+        const pane = await api.createPane(targetRoomId, title ?? paneTitleForMode("LIVE", panes.length + 1), "LIVE");
         setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
         setSelectedPaneId(pane.id);
         lastPane = pane;
@@ -4422,26 +3391,6 @@ export function App() {
     }
     window.dispatchEvent(new CustomEvent("space-live-rail-toggle"));
   }
-
-  const toggleLiveRailGraphic = useCallback(() => {
-    setIsLiveRailGraphicDisabled((prev) => {
-      const next = !prev;
-      try {
-        getSpaceRuntime().platform.localStorage.setItem(LIVE_RAIL_GRAPHIC_DISABLED_STORAGE_KEY, String(next));
-      } catch {}
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const handleToggle = () => {
-      toggleLiveRailGraphic();
-    };
-    window.addEventListener("space-live-rail-graphic-toggle", handleToggle);
-    return () => {
-      window.removeEventListener("space-live-rail-graphic-toggle", handleToggle);
-    };
-  }, [toggleLiveRailGraphic]);
 
   async function addLegacyHarnessPane() {
     if (!selectedRoomId || panes.length >= 16) return;
@@ -4495,6 +3444,8 @@ export function App() {
           if (!targetRoom?.projectPath && targetRoom) {
             void api.updateRoom(selectedRoomId, { name: targetRoom.name, projectPath: effectiveProjectPath }).then((updated) => {
               setRooms((current) => current.map((r) => (r.id === selectedRoomId ? updated : r)));
+            }).catch((err) => {
+              console.warn("Failed to persist the room project path:", err);
             });
           }
         } catch (err) {
@@ -4822,6 +3773,19 @@ export function App() {
   }
 
   const activeRoom = useMemo(() => rooms.find((room) => room.id === selectedRoomId) ?? null, [rooms, selectedRoomId]);
+  const roomRename = useRoomRename({
+    activeRoom,
+    setRooms,
+    onBeginRename: () => {
+      setIsThemeMenuOpen(false);
+      setIsWorkspaceTextSizePickerOpen(false);
+      roomToolbar.closeMenus();
+    }
+  });
+  const {
+    isRoomRenameOpen, setIsRoomRenameOpen, roomNameDraft, setRoomNameDraft, roomRenamePending, setRoomRenamePending, roomRenameError,
+    setRoomRenameError, beginRoomRename, submitRoomRename
+  } = roomRename;
   const controlLayouts = useSpaceControlClient(selectedRoomId, Boolean(auth?.isAuthenticated && auth.user?.role === "ADMIN" && !auth.user?.automationScope), selectRoom, setSelectedPaneId);
   const activeRoomCategoryFilter = useMemo(
     () => (selectedRoomId ? (activeCategoryColorByRoom[selectedRoomId] ?? null) : null),
@@ -4859,32 +3823,8 @@ export function App() {
       ? unfiltered.filter((pane) => pane.categoryColor === activeRoomCategoryFilter)
       : unfiltered;
   }, [panes, activeRoomCategoryFilter, floatingYouTubePaneIds, shellMode]);
-  const minimizedPanes = useMemo(() => panes.filter((pane) => pane.isMinimized), [panes]);
-  const minimizedPaneRunningCount = useMemo(
-    () => minimizedPanes.filter((pane) => paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null).length,
-    [minimizedPanes, paneCompletionLifecycle]
-  );
-  const [minimizedBarExpanded, setMinimizedBarExpanded] = useState(false);
-  const showMinimizedBar = shellMode !== "mobile" && minimizedPanes.length > 0 && minimizedBarExpanded;
-  /** The bar hides behind one room toolbar button, so only render it where that button can live. */
-  const showMinimizedBarToggle = minimizedPanes.length > 0 && shellMode !== "mobile";
-  const [minimizedBarPreviewMode, setMinimizedBarPreviewMode] = useState(() => {
-    try {
-      return getSpaceRuntime().platform.localStorage.getItem("space.minimized.bar.preview.v1") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  const toggleMinimizedBarPreviewMode = useCallback(() => {
-    setMinimizedBarPreviewMode((prev) => {
-      const next = !prev;
-      try {
-        getSpaceRuntime().platform.localStorage.setItem("space.minimized.bar.preview.v1", String(next));
-      } catch {}
-      return next;
-    });
-  }, []);
+  const minimizedPaneBar = useMinimizedPaneBar({ panes, shellMode, paneCompletionLifecycle });
+  const { minimizedPanes, minimizedPaneRunningCount, showMinimizedBar, showMinimizedBarToggle, setMinimizedBarExpanded } = minimizedPaneBar;
 
   const activePane = useMemo(
     () => {
@@ -5061,10 +4001,7 @@ export function App() {
         void requestRoomCatalogRefreshRef.current();
       }
       if (event.type === "ROOM_WATCHDOG_ALERT") {
-        setWatchdogAlerts((current) => {
-          if (current.some((item) => item.id === event.id)) return current;
-          return [...current, { id: event.id, message: event.message, timestamp: event.createdAt }];
-        });
+        notices.addWatchdogAlert({ id: event.id, message: event.message, timestamp: event.createdAt });
       }
       for (const category of roomRefreshCategoriesForEvent(event.type)) {
         if (replaying) replayRefreshCategories.add(category);
@@ -5216,12 +4153,20 @@ export function App() {
     source.addEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
     source.addEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
     source.addEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
+    // Job Copilot activity reaches its pane through a window event; the pane refreshes without waiting for its poll.
+    const handleJobApplyUpdated = (message: MessageEvent<string>) => {
+      const event = parseStreamEvent(message.data);
+      if (!event || event.type !== "JOB_APPLY_UPDATED" || !event.paneId) return;
+      dispatchJobApplyLiveEvent({ paneId: event.paneId, roomId: event.roomId, eventId: event.id, message: event.message, payload: event.payload });
+    };
+    source.addEventListener("JOB_APPLY_UPDATED", handleJobApplyUpdated as EventListener);
     return () => {
       source.removeEventListener("replay-start", handleReplayStart);
       source.removeEventListener("replay-complete", handleReplayComplete);
       source.removeEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
       source.removeEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
       source.removeEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
+      source.removeEventListener("JOB_APPLY_UPDATED", handleJobApplyUpdated as EventListener);
       source.close();
     };
   }, [activeTerminalPanesBootstrapped, auth?.isAuthenticated]);
@@ -5419,36 +4364,7 @@ export function App() {
     [effectiveLayoutPaneCount, paneGridWidth, rootRemSize, shellMode, uiTheme]
   );
   const agentNumberByPaneId = useMemo(() => new Map(panes.map((pane, index) => [pane.id, index + 1])), [panes]);
-  const isCompactShell = shellMode !== "desktop";
-  const isSideSurfaceOpen = isCompactShell ? isCompactSideSurfaceOpen : isDesktopSideSurfaceOpen;
-  const activeSideSurfaceLabel = sideSurfaceMeta[activeSideSurface].surfaceLabel;
-  // The visible title uses the same short name as the dock button and Docks settings.
-  const activeSideSurfaceDockTitle = useMemo(() => {
-    const definition = DOCK_DEFINITIONS.find((dock) => dock.id === activeSideSurface);
-    return definition?.label ?? (sideSurfaceMeta[activeSideSurface]?.surfaceLabel || activeSideSurface).replace(/ dock$/i, "");
-  }, [activeSideSurface]);
-  const activeSideSurfaceCloseLabel = `Close ${sideSurfaceMeta[activeSideSurface].label}`;
-  const showInlineSideSurface = !isCompactShell && isDesktopSideSurfaceOpen;
-  const showOverlaySideSurface = isCompactShell && isCompactSideSurfaceOpen;
-  // Once opened, the desktop dock stays mounted (hidden) after closing so a
-  // reopen keeps its cached docks, data, filters and scroll position. Compact
-  // shells use the drawer instead, so the inline host is dropped there.
-  const [inlineSideSurfaceRetained, setInlineSideSurfaceRetained] = useState(false);
-  if (showInlineSideSurface && !inlineSideSurfaceRetained) setInlineSideSurfaceRetained(true);
-  const mountInlineSideSurface = !isCompactShell && (showInlineSideSurface || inlineSideSurfaceRetained);
-  useEffect(() => {
-    const handleLiveStatus = (event: Event) => {
-      const detail = (event as CustomEvent<{ paneId?: string; rail?: boolean; status?: typeof liveRailStatus }>).detail;
-      if (detail.rail && detail.status) {
-        setLiveRailStatus(detail.status);
-        return;
-      }
-      const livePane = panes.find((pane) => pane.id === detail?.paneId && pane.mode === "LIVE");
-      if (livePane && detail.status) setLiveRailStatus(detail.status);
-    };
-    window.addEventListener("space-live-pane-status", handleLiveStatus);
-    return () => window.removeEventListener("space-live-pane-status", handleLiveStatus);
-  }, [panes]);
+  const liveRail = useLiveRail(panes);
 
   useEffect(() => {
     const handlePaneControlAction = async (event: Event) => {
@@ -5608,47 +4524,7 @@ export function App() {
     };
   }, [isRoomsSurfaceVisible]);
 
-  useEffect(() => {
-    if (!showOverlaySideSurface) return;
-    const trigger = compactSideSurfaceTriggerRef.current;
-    const drawer = compactSideSurfaceRef.current;
-    const focusableSelector = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
-    const isJSDOM = /\bjsdom\b/i.test(navigator.userAgent);
-    const focusableElements = () => Array.from(drawer?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])
-      .filter((element) => isJSDOM || element.getClientRects().length > 0);
-    window.requestAnimationFrame(() => focusableElements()[0]?.focus());
-    function handleKeyDown(event: KeyboardEvent) {
-      // A modal opened from inside the drawer (project picker, diff dialog) owns its own Escape and focus.
-      const nestedModal = event.target instanceof Element ? event.target.closest('dialog[open], [aria-modal="true"]') : null;
-      if (nestedModal && nestedModal !== drawer && drawer?.contains(nestedModal)) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeCompactSideSurface();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = focusableElements();
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) {
-        event.preventDefault();
-        return;
-      }
-      if (event.shiftKey && (document.activeElement === first || !drawer?.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !drawer?.contains(document.activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown, true);
-      if (trigger?.isConnected) window.requestAnimationFrame(() => trigger.focus());
-    };
-  }, [showOverlaySideSurface]);
+  useSideSurfaceEffects(sideSurfaces, { runtimeKind, isAuthenticated: auth?.isAuthenticated, role: auth?.user?.role, userId: auth?.user?.id });
 
   async function growPaneColumnSpan(pane: Pane) {
     if (shellMode === "mobile") return;
@@ -5675,105 +4551,14 @@ export function App() {
     await updatePaneColumnSpan(pane, 2, placement.columnStart);
   }
 
-  function sideSurfaceToggleLabel(surface: SideSurface) {
-    const verb = isSideSurfaceOpen && activeSideSurface === surface
-      ? (isCompactShell ? "Close" : "Hide")
-      : (isCompactShell || surface === "agent-files" ? "Open" : "Show");
-    return `${verb} ${sideSurfaceMeta[surface].label}`;
-  }
-
-  function closeCompactSideSurface() {
-    setIsCompactSideSurfaceOpen(false);
-  }
-
-  useEffect(() => {
-    if (auth?.user?.role === "ADMIN" && activeSideSurface === "health" && isSideSurfaceOpen) {
-      setIsDesktopSideSurfaceOpen(false);
-      setIsCompactSideSurfaceOpen(false);
-      openSystemHealth();
-    }
-  }, [auth?.user?.role, activeSideSurface, isSideSurfaceOpen]);
-
-  function toggleSideSurface(surface: SideSurface) {
-    if (surface === "health" && auth?.user?.role === "ADMIN") { openSystemHealth(); return; }
-    if (isCompactShell) {
-      if (activeSideSurface === surface && isCompactSideSurfaceOpen) {
-        setIsCompactSideSurfaceOpen(false);
-        return;
-      }
-      if (document.activeElement instanceof HTMLElement) compactSideSurfaceTriggerRef.current = document.activeElement;
-      setActiveSideSurface(surface);
-      setIsCompactSideSurfaceOpen(true);
-      return;
-    }
-    if (activeSideSurface !== surface) {
-      setActiveSideSurface(surface);
-      setIsDesktopSideSurfaceOpen(true);
-      return;
-    }
-    setIsDesktopSideSurfaceOpen((current) => !current);
-  }
-
-  const dockOrder: SideSurface[] = ["rooms", "room-agent", "shared-chat", "media", "streaming", "agent-files", "clipboard", "tasks", "links", "settings", "cli", "agent-sessions"];
-  useEffect(() => {
-    if (runtimeKind !== "live" || !auth?.isAuthenticated) { setSourceControlEnabled(false); return; }
-    const controller = new AbortController();
-    const refreshConnections = async (event?: Event) => {
-      try {
-        const connections = await sourceControlClient.connections(controller.signal);
-        if (controller.signal.aborted) return;
-        const enabled = connections.some(connection => connection.status === "CONNECTED");
-        setSourceControlEnabled(enabled);
-        if (enabled && (event as CustomEvent | undefined)?.detail?.openDock) {
-          setActiveSideSurface("source-control");
-          if (isCompactShell) setIsCompactSideSurfaceOpen(true); else setIsDesktopSideSurfaceOpen(true);
-        }
-      } catch { if (!controller.signal.aborted) setSourceControlEnabled(false); }
-    };
-    void refreshConnections(); window.addEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections);
-    return () => { controller.abort(); window.removeEventListener(SOURCE_CONTROL_CONNECTION_EVENT, refreshConnections); };
-  }, [runtimeKind, auth?.isAuthenticated, auth?.user?.id, isCompactShell]);
-  // Source Control works locally without a provider account; personal dock hiding still applies.
-  const sourceControlAvailable = runtimeKind === "live" && Boolean(auth?.isAuthenticated);
-  if (sourceControlAvailable && !isDockHidden("source-control")) dockOrder.splice(dockOrder.indexOf("settings"), 0, "source-control");
-  const availableDocks = dockOrder.filter((surface) =>
-    (surface !== "streaming" || auth?.user?.role === "ADMIN") && !isDockHidden(surface)
-  );
-
-  function navigateDock(direction: "prev" | "next") {
-    // Previous/Next follow the dock buttons as the user arranged them.
-    const launcherOrder = roomToolbar.orderedActions
-      .map((action) => action.id.startsWith("surface-") ? action.id.slice("surface-".length) as SideSurface : null)
-      .filter((surface): surface is SideSurface => surface !== null && availableDocks.includes(surface));
-    const order = [...launcherOrder, ...availableDocks.filter((surface) => !launcherOrder.includes(surface))];
-    const currentIndex = order.indexOf(activeSideSurface);
-    const offset = direction === "next" ? 1 : -1;
-    const nextIndex = (currentIndex + offset + order.length) % order.length;
-    const nextSurface = order[nextIndex];
-    if (!nextSurface) return;
-    setActiveSideSurface(nextSurface);
-    if (isCompactShell) {
-      setIsCompactSideSurfaceOpen(true);
-    } else {
-      setIsDesktopSideSurfaceOpen(true);
-    }
-  }
-
   function openSettingsSurface() {
     setIsCliLauncherOpen(false);
-    setActiveSideSurface("settings");
-    if (isCompactShell) {
-      setIsCompactSideSurfaceOpen(true);
-    } else {
-      setIsDesktopSideSurfaceOpen(true);
-    }
+    openSideSurface("settings");
   }
 
   function manageLinks() {
     setIsQuickLinksOpen(false);
-    setActiveSideSurface("links");
-    if (isCompactShell) setIsCompactSideSurfaceOpen(true);
-    else setIsDesktopSideSurfaceOpen(true);
+    openSideSurface("links");
   }
 
   function isYouTubeUrl(url: string): boolean {
@@ -5812,125 +4597,6 @@ export function App() {
     setActiveUserLink(link);
   }
 
-  function toggleCliFloats() {
-    setCliFloatsHidden((current) => {
-      const next = !current;
-      try {
-        runtime.platform.localStorage.setItem(CLI_FLOATS_HIDDEN_STORAGE_KEY, String(next));
-      } catch {
-        // Best effort only.
-      }
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("cliFloatsHidden", next);
-      }
-      return next;
-    });
-  }
-
-  function toggleMaskSensitiveData() {
-    setMaskSensitiveData((current) => {
-      const next = !current;
-      try {
-        runtime.platform.localStorage.setItem(SPACE_SENSITIVE_DATA_MASKED_STORAGE_KEY, String(next));
-      } catch {
-        // Best effort only.
-      }
-      if (auth?.isAuthenticated) {
-        saveUserSettingDebounced("sensitiveDataMasked", next);
-      }
-      return next;
-    });
-  }
-
-  function openServerRestartDialog() {
-    setServerRestartError(null);
-    setServerRestartMessage(null);
-    setIsServerRestartDialogOpen(true);
-  }
-
-  function openCliRuntimeRestartAllDialog() {
-    setCliRuntimeRestartAllError(null);
-    setCliRuntimeRestartAllMessage(null);
-    setIsCliRuntimeRestartAllDialogOpen(true);
-  }
-
-  function closeCliRuntimeRestartAllDialog() {
-    if (cliRuntimeRestartAllPending) return;
-    setIsCliRuntimeRestartAllDialogOpen(false);
-    window.requestAnimationFrame(() => serverActionsButtonRef.current?.focus());
-  }
-
-  async function confirmCliRuntimeRestartAll() {
-    if (cliRuntimeRestartAllPending) return;
-    setCliRuntimeRestartAllPending(true);
-    setCliRuntimeRestartAllError(null);
-    setCliRuntimeRestartAllMessage("Restarting every CLI runtime session...");
-    try {
-      const result = await api.cliRuntimeRestartAll();
-      const restarted = result.restartedSessionIds.length;
-      const failed = result.failedSessionIds.length;
-      setCliRuntimeRestartAllMessage(
-        failed > 0
-          ? `Restart requested: ${restarted} sessions restarted across ${result.requestedRuntimes.length} runtimes, ${failed} failed.`
-          : `Restart requested: ${restarted} sessions restarted across ${result.requestedRuntimes.length} runtimes.`
-      );
-    } catch (err) {
-      setCliRuntimeRestartAllMessage(null);
-      setCliRuntimeRestartAllError(err instanceof Error ? err.message : "CLI restart-all failed.");
-    } finally {
-      setCliRuntimeRestartAllPending(false);
-    }
-  }
-
-  function closeServerRestartDialog() {
-    if (serverRestartPending) return;
-    setIsServerRestartDialogOpen(false);
-    window.requestAnimationFrame(() => serverActionsButtonRef.current?.focus());
-  }
-
-  async function waitForServerRestart(previousApiStartedAt: string) {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      try {
-        const nextReady = await api.readyz();
-        setReadiness(nextReady);
-        if (nextReady.ok && nextReady.apiStartedAt && nextReady.apiStartedAt !== previousApiStartedAt) return;
-      } catch {
-        // The API is expected to be briefly unavailable while the core services restart.
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    }
-    throw new Error("Timed out waiting for Space to become ready after restart.");
-  }
-
-  async function confirmServerRestart() {
-    if (serverRestartPending) return;
-    setServerRestartPending(true);
-    setServerRestartError(null);
-    setServerRestartMessage("Requesting server restart...");
-    try {
-      const accepted = await api.restartCoreServices();
-      if (getSpaceRuntimeKind() === "demo") {
-        setServerRestartMessage(DEMO_LOCAL_REPLY);
-        return;
-      }
-      setServerRestartMessage("Restart request accepted. Waiting for Space to return...");
-      await waitForServerRestart(accepted.apiStartedAt);
-      try {
-        setCodexEnvironmentSummary(await api.codexEnvironment());
-      } catch {
-        // Host metrics are refreshed by the existing environment poll if this immediate read races the restart.
-      }
-      setServerRestartMessage("Server restarted and ready.");
-    } catch (restartError) {
-      const message = restartError instanceof Error ? restartError.message : "Server restart failed.";
-      setServerRestartError(message);
-      setServerRestartMessage(null);
-    } finally {
-      setServerRestartPending(false);
-    }
-  }
-
   async function refreshToolbarSystemState() {
     const [environmentResult, providerSettingsResult, runtimeSettingsResult] = await Promise.allSettled([
       api.codexEnvironment(),
@@ -5940,13 +4606,6 @@ export function App() {
     if (environmentResult.status === "fulfilled") setCodexEnvironmentSummary(environmentResult.value);
     if (providerSettingsResult.status === "fulfilled") setProviderSettings(providerSettingsResult.value);
     if (runtimeSettingsResult.status === "fulfilled") setCliRuntimeSettings(runtimeSettingsResult.value);
-  }
-
-  function closePaneLayoutMenu(restoreFocus = true) {
-    setIsPaneLayoutMenuOpen(false);
-    if (restoreFocus) {
-      window.requestAnimationFrame(() => paneLayoutButtonRef.current?.focus());
-    }
   }
 
   async function applyPaneLayoutPreset(
@@ -6030,25 +4689,6 @@ export function App() {
     }
   }
 
-  async function rotateVpnCityFromToolbar() {
-    if (vpnCityPending || !toolbarVpnRoute) return;
-    setVpnCityPending(true);
-    setVpnCityNotice(null);
-    const providerLabel = toolbarVpnRoute === "nord" ? "NordVPN" : "Mullvad";
-    try {
-      const connection = toolbarVpnRoute === "nord"
-        ? await api.rotateCliNordCity()
-        : await api.rotateCliMullvadCity();
-      setVpnCityNotice(connection.relay
-        ? `${providerLabel} changed to ${connection.relay.cityName}, ${connection.relay.countryName} (${connection.egressIpv4 ?? "public IP verifying"}).`
-        : `${providerLabel} city changed and the new egress was verified.`);
-    } catch {
-      setVpnCityNotice(`${providerLabel} city could not be changed.`);
-    } finally {
-      setVpnCityPending(false);
-    }
-  }
-
   async function applyPaneSpanToAll(columnSpan: number) {
     if (!activeRoom) return;
     const sequence = ++paneSpanSequenceRef.current;
@@ -6109,634 +4749,31 @@ export function App() {
     return panes.every((pane) => (pane.columnSpan ?? 1) === first) ? first : null;
   }
 
-  function closePaneSpanAllMenu(restoreFocus = true) {
-    setIsPaneSpanAllMenuOpen(false);
-    if (restoreFocus) {
-      window.requestAnimationFrame(() => paneSpanAllButtonRef.current?.focus());
-    }
-  }
-
   const roomToolbarActions = useMemo<IconToolbarAction[]>(
     () => {
-      const actions: IconToolbarAction[] = [
-      ...(Object.entries(sideSurfaceMeta) as Array<[SideSurface, (typeof sideSurfaceMeta)[SideSurface]]>)
-        .filter(([surface]) => surface !== "health" && (surface !== "streaming" || auth?.user?.role === "ADMIN") && (surface !== "source-control" || sourceControlAvailable) && !hiddenDockIds.includes(surface))
-        .map(([surface, meta]) => {
-          const label = sideSurfaceToggleLabel(surface);
-          return {
-            id: `surface-${surface}`,
-            label,
-            title: label,
-            ariaLabel: label,
-            icon: meta.icon,
-            onClick: () => toggleSideSurface(surface),
-            ariaPressed: isSideSurfaceOpen && activeSideSurface === surface,
-            className: "toolbar-surface-toggle"
-          };
-        }),
-      {
-        id: "memory-workspace",
-        label: "Open memory workspace",
-        title: "Open memory workspace",
-        ariaLabel: "Open memory workspace",
-        icon: Network,
-        onClick: () => {
-          setSystemAnalyticsTab(null);
-          setIsMemoryWorkspaceOpen(true);
+      return buildRoomToolbarActions({
+        role: auth?.user?.role,
+        hasUser: Boolean(auth?.user),
+        shellMode,
+        docks: { ...sideSurfaces, hiddenDockIds },
+        visibility: { isWidgetHidden, isPaneHidden },
+        popovers: toolbarPopovers,
+        preferences: userPreferences,
+        room: {
+          activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter,
+          activeRoomCategoryColors, cycleRoomCategoryColor
         },
-        ariaExpanded: isMemoryWorkspaceOpen
-      },
-      {
-        id: "quick-links",
-        label: "Quick Links",
-        title: "Quick Links",
-        ariaLabel: "Quick Links",
-        icon: Star,
-        onClick: () => {
-          setIsVibeMusicOpen(false);
-          setIsQuickLinksOpen((current) => !current);
+        create: {
+          isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
+          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addLivePane
         },
-        ariaExpanded: isQuickLinksOpen,
-        ariaHasPopup: "dialog"
-      },
-      {
-        id: "sticky-note",
-        label: "Sticky note",
-        title: "Sticky note",
-        ariaLabel: "Sticky note",
-        icon: StickyNote,
-        onClick: () => {
-          setIsThemeMenuOpen(false);
-          setIsPaneLayoutMenuOpen(false);
-          setIsCollapsedPaneLayoutMenuOpen(false);
-          setIsPaneSpanAllMenuOpen(false);
-          setIsWorkspaceTextSizePickerOpen(false);
-          setIsVibeMusicOpen(false);
-          setLowerRailVisibilityMenu(null);
-          openStickyNote();
+        tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
+        workspace: {
+          isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen, setSystemAnalyticsTab, agentsDashboardSummary, setIsAgentsDashboardOpen,
+          resourceIndicatorsVisible, toggleResourceIndicators, isDebugModeActive, debugModePending, toggleDebugMode, isDemoModeActive,
+          setIsDemoModeActive, setAdminModeRequested, openHelp, openBenchmark, signOut, isServerActionsMenuOpen, setIsServerActionsMenuOpen
         }
-      },
-      ...(!isWidgetHidden("clock")
-        ? [
-            {
-              id: "widget-clock",
-              label: "Clock widget",
-              title: "Float Clock widget",
-              ariaLabel: "Clock widget",
-              icon: Clock3,
-              ariaPressed: desktopWidgets.isWidgetEnabled("clock"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("clock");
-              }
-            }
-          ]
-        : []),
-      ...(!isWidgetHidden("countdown-timer")
-        ? [
-            {
-              id: "widget-countdown-timer",
-              label: "Countdown timer",
-              title: "Float Countdown Timer widget",
-              ariaLabel: "Countdown timer",
-              icon: Timer,
-              ariaPressed: desktopWidgets.isWidgetEnabled("countdown-timer"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("countdown-timer");
-              }
-            }
-          ]
-        : []),
-      ...(!isWidgetHidden("pushup-reminder")
-        ? [
-            {
-              id: "widget-pushup-reminder",
-              label: "Push-up reminder",
-              title: "Float Push-up Reminder widget",
-              ariaLabel: "Push-up reminder",
-              icon: Dumbbell,
-              ariaPressed: desktopWidgets.isWidgetEnabled("pushup-reminder"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("pushup-reminder");
-              }
-            }
-          ]
-        : []),
-      ...(!isWidgetHidden("spaceapp-promo")
-        ? [
-            {
-              id: "widget-spaceapp-promo",
-              label: "SpaceApp.dev promo",
-              title: "Float SpaceApp.dev promo widget",
-              ariaLabel: "SpaceApp.dev promo",
-              icon: Rocket,
-              ariaPressed: desktopWidgets.isWidgetEnabled("spaceapp-promo"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("spaceapp-promo");
-              }
-            }
-          ]
-        : []),
-      ...(!isWidgetHidden("streaming-metrics")
-        ? [
-            {
-              id: "widget-streaming-metrics",
-              label: "Streaming metrics",
-              title: "Float Streaming Metrics widget",
-              ariaLabel: "Streaming metrics widget",
-              icon: Radio,
-              ariaPressed: desktopWidgets.isWidgetEnabled("streaming-metrics"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("streaming-metrics");
-              }
-            }
-          ]
-        : []),
-      ...(!isWidgetHidden("ai-quota")
-        ? [
-            {
-              id: "widget-ai-quota",
-              label: "AI Quota & Usage",
-              title: "Float AI Quota & Usage: account availability and reset alerts for Codex, Antigravity and Claude",
-              ariaLabel: "AI Quota & Usage",
-              icon: Gauge,
-              ariaPressed: desktopWidgets.isWidgetEnabled("ai-quota"),
-              onClick: () => {
-                desktopWidgets.toggleWidget("ai-quota");
-              }
-            }
-          ]
-        : []),
-      {
-        id: "pane-layout",
-        label: "Pane layout",
-        title: "Pane layout",
-        ariaLabel: "Pane layout",
-        icon: PanelsTopLeft,
-        onClick: () => {
-          setPaneLayoutError(null);
-          if (isRoomToolbarHidden) {
-            setIsCollapsedPaneLayoutMenuOpen((current) => !current);
-          } else {
-            setIsPaneLayoutMenuOpen((current) => !current);
-          }
-        },
-        ariaControls: PANE_LAYOUT_MENU_ID,
-        ariaExpanded: isPaneLayoutMenuOpen,
-        ariaHasPopup: "menu",
-        disabled: !activeRoom || paneLayoutPending
-      },
-      {
-        id: "theme",
-        label: "Room theme",
-        title: "Room theme",
-        ariaLabel: "Room theme",
-        icon: Palette,
-        onClick: () => setIsThemeMenuOpen((current) => !current),
-        ariaControls: ROOM_THEME_MENU_ID,
-        ariaExpanded: isThemeMenuOpen,
-        ariaHasPopup: "menu",
-        disabled: !activeRoom
-      },
-      {
-        id: "category-color-filter",
-        label: activeRoomCategoryFilter
-          ? `Filter panes by color: ${activeRoomCategoryFilter}`
-          : "Filter panes by color",
-        title: activeRoomCategoryFilter
-          ? `Filter panes by color: ${activeRoomCategoryFilter}. Scroll over the icon to cycle colors.`
-          : "Filter panes by color. Scroll over the icon to cycle colors.",
-        ariaLabel: activeRoomCategoryFilter
-          ? `Color filter: ${activeRoomCategoryFilter}`
-          : "Color filter: off",
-        icon: ListFilter,
-        onClick: () => {
-          if (activeRoom) cycleRoomCategoryColor(activeRoom.id, 1);
-        },
-        onWheel: (event) => {
-          event.preventDefault();
-          if (activeRoom) cycleRoomCategoryColor(activeRoom.id, event.deltaY);
-        },
-        ariaPressed: activeRoomCategoryFilter !== null,
-        hideable: true,
-        disabled: !activeRoom || activeRoomCategoryColors.length === 0,
-        disabledReason: !activeRoom ? "Choose a room first" : "No pane colors assigned"
-      },
-      ...(auth?.user?.role === "ADMIN" ? [{
-        id: "agents-dashboard",
-        label: "Agents Dashboard",
-        title: agentsDashboardSummary?.loaded
-          ? `Agents Dashboard · ${agentsDashboardSummary.total} agents (${agentsDashboardSummary.working} working, ${agentsDashboardSummary.waiting} waiting, ${agentsDashboardSummary.done} done)`
-          : "Agents Dashboard",
-        ariaLabel: "Open agents dashboard",
-        icon: LayoutDashboard,
-        onClick: () => setIsAgentsDashboardOpen(true),
-        hideable: true
-      }, {
-        id: "system-resources",
-        label: "System resources",
-        title: "Live system resources, CLI sessions, memory & CPU analysis",
-        ariaLabel: "System resources",
-        icon: Activity,
-        onClick: () => openSystemResources(),
-        hideable: true
-      }, {
-        id: "resources",
-        label: "Resources",
-        title: "Resources & account quotas",
-        ariaLabel: "Resources",
-        icon: Activity,
-        onClick: () => openSystemResources(),
-        hideable: true
-      }] : []),
-      ...(auth?.user ? [{
-        id: "resource-indicators",
-        label: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
-        title: "Live resource values at the top right",
-        ariaLabel: resourceIndicatorsVisible ? "Hide resource indicators" : "Show resource indicators",
-        icon: Cpu,
-        onClick: toggleResourceIndicators,
-        ariaPressed: resourceIndicatorsVisible
-      }] : []),
-      {
-        id: "cli-floats",
-        label: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
-        title: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
-        ariaLabel: cliFloatsHidden ? "Show CLI floats" : "Hide CLI floats",
-        icon: cliFloatsHidden ? Eye : EyeOff,
-        onClick: toggleCliFloats,
-        ariaPressed: cliFloatsHidden
-      },
-      {
-        id: "sensitive-data",
-        label: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
-        title: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
-        ariaLabel: maskSensitiveData ? "Show sensitive data" : "Hide sensitive data",
-        icon: maskSensitiveData ? EyeOff : Eye,
-        onClick: toggleMaskSensitiveData,
-        ariaPressed: maskSensitiveData,
-        hideable: false,
-        dataSensitiveIgnore: true
-      },
-      {
-        id: "debug-mode",
-        label: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
-        title: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
-        ariaLabel: isDebugModeActive ? "Turn off Debug (App diagnostics)" : "Turn on Debug (App diagnostics)",
-        icon: Activity,
-        onClick: () => void toggleDebugMode(),
-        ariaPressed: isDebugModeActive,
-        disabled: debugModePending,
-        hideable: true
-      },
-      {
-        id: "font-down",
-        label: "Workspace text size",
-        title: `Workspace text size: ${terminalFontSize} px`,
-        ariaLabel: "Workspace text size",
-        icon: ALargeSmall,
-        onClick: () => setIsWorkspaceTextSizePickerOpen((current) => !current),
-        ariaControls: WORKSPACE_TEXT_SIZE_PICKER_ID,
-        ariaExpanded: isWorkspaceTextSizePickerOpen,
-        ariaHasPopup: "listbox",
-        disabled: !activeRoom || !panes.some((pane) => pane.mode === "TERMINAL" || pane.mode === "CHAT"),
-        disabledReason: !activeRoom ? "Choose a room first" : "Open a terminal or chat pane"
-      },
-      ...(!isPaneHidden("chat")
-        ? [{
-            id: "add-chat",
-            label: "Add chat pane",
-            title: isCodexEnabled ? "Add chat pane" : "Enable Codex in Settings",
-            ariaLabel: "Add chat pane",
-            icon: MessageSquare,
-            onClick: toggleChatLauncher,
-            ariaControls: CHAT_LAUNCHER_MENU_ID,
-            ariaExpanded: isChatLauncherOpen,
-            ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
-            disabled: !isCodexEnabled || !selectedRoomId || panes.length >= 16
-          }]
-        : []),
-      {
-        id: "add-cli",
-        label: "Add CLI pane",
-        title: "Add CLI pane",
-        ariaLabel: "Add CLI pane",
-        icon: Terminal,
-        onClick: toggleCliLauncher,
-        ariaControls: CLI_LAUNCHER_MENU_ID,
-        ariaExpanded: isCliLauncherOpen,
-        ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
-        disabled: !selectedRoomId || cliPaneCreationPending
-      },
-      ...(auth?.user?.role === "ADMIN"
-        ? [{
-            id: "add-root-admin-cli",
-            label: "Add CLI ROOT",
-            title: "Add CLI ROOT",
-            ariaLabel: "Add CLI ROOT",
-            icon: ShieldCheck,
-            onClick: () => void addRootAdminPane(),
-            disabled: !selectedRoomId || panes.length >= 16
-          },
-          {
-            id: "server-restart",
-            label: "Manage",
-            title: "Manage",
-            ariaLabel: "Manage",
-            icon: ServerCog,
-            onClick: () => openManage(),
-            ariaControls: SERVER_ACTIONS_MENU_ID,
-            ariaExpanded: isServerActionsMenuOpen,
-            ariaHasPopup: shellMode === "mobile" ? "dialog" as const : "menu" as const,
-            hideable: false
-          }]
-        : []),
-      ...(!isPaneHidden("browser")
-        ? [{
-            id: "add-browser",
-            label: "Add browser pane",
-            title: "Add browser pane",
-            ariaLabel: "Add browser pane",
-            icon: Eye,
-            onClick: () => addPane("BROWSER"),
-            disabled: !selectedRoomId || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("files")
-        ? [{
-            id: "add-files",
-            label: "File Manager",
-            title: "Add File Manager pane",
-            ariaLabel: "Add File Manager pane",
-            icon: FolderPlus,
-            onClick: () => {
-              if (!activeRoom) return;
-              void addFilesPane();
-            },
-            disabled: !activeRoom || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("databases")
-        ? [{
-            id: "add-databases",
-            label: "Databases",
-            title: "Add Databases pane",
-            ariaLabel: "Add Databases pane",
-            icon: Database,
-            onClick: () => {
-              if (!activeRoom) return;
-              void addDatabasesPane();
-            },
-            disabled: !activeRoom || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("demos")
-        ? [{
-            id: "add-demos",
-            label: "Demo Projects",
-            title: "Add Demo Projects pane",
-            ariaLabel: "Add Demo Projects pane",
-            icon: Boxes,
-            onClick: () => {
-              if (!activeRoom) return;
-              void addDemosPane();
-            },
-            disabled: !activeRoom || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("t3code")
-        ? [{
-            id: "add-t3code",
-            label: "T3 Code",
-            title: "Add T3 Code pane",
-            ariaLabel: "Add T3 Code pane",
-            icon: Cpu,
-            onClick: () => {
-              if (!activeRoom) return;
-              void addT3CodePane();
-            },
-            disabled: !activeRoom || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("youtube")
-        ? [{
-            id: "add-youtube",
-            label: "Add YouTube pane",
-            title: "Add YouTube pane",
-            ariaLabel: "Add YouTube pane",
-            icon: Youtube,
-            onClick: () => addPane("YOUTUBE"),
-            disabled: !selectedRoomId || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("vnc")
-        ? [{
-            id: "add-vnc",
-            label: "Add VNC pane",
-            title: "Add VNC pane",
-            ariaLabel: "Add VNC pane",
-            icon: Monitor,
-            onClick: () => addPane("VNC"),
-            disabled: !selectedRoomId || panes.length >= 16
-          }]
-        : []),
-      ...(!isPaneHidden("live")
-        ? [{
-            id: "add-live",
-            label: "Add Live audio pane",
-            title: "Add Live audio pane",
-            ariaLabel: "Add Live audio pane",
-            icon: Mic,
-            onClick: () => void addLivePane(),
-            disabled: !selectedRoomId || panes.length >= 16
-          }]
-        : []),
-      {
-        id: "vpn-city",
-        label: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
-        title: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
-        ariaLabel: `Change ${toolbarVpnRoute === "nord" ? "NordVPN" : toolbarVpnRoute === "mullvad" ? "Mullvad" : "VPN"} city`,
-        icon: Globe,
-        onClick: () => void rotateVpnCityFromToolbar(),
-        disabled: vpnCityPending || !toolbarVpnRoute
-      },
-      {
-        id: "reload-room",
-        label: "Reload window",
-        title: "Reload window",
-        ariaLabel: "Reload window",
-        icon: RefreshCw,
-        onClick: () => void reloadRoomWindow(),
-        disabled: false
-      },
-      {
-        id: "browser-fullscreen",
-        label: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
-        title: isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)",
-        ariaLabel: isBrowserFullscreen ? "Exit full screen" : "Full screen browser",
-        icon: isBrowserFullscreen ? Minimize2 : Maximize2,
-        onClick: () => void toggleBrowserFullscreen(),
-        ariaPressed: isBrowserFullscreen,
-        disabled: false
-      },
-      {
-        id: "snip-tool",
-        label: "Snip Tool",
-        title: "Snip Tool (Capture, edit and share)",
-        ariaLabel: "Snip Tool",
-        icon: Crop,
-        onClick: () => {
-          setIsSnipToolOpen((current) => !current);
-        },
-        ariaPressed: isSnipToolOpen,
-        disabled: !activeRoom
-      },
-      {
-        id: "clip-tool",
-        label: "Clip Tool",
-        title: "Clip Tool",
-        ariaLabel: "Clip Tool",
-        icon: Camera,
-        onClick: () => void captureRoomScreen(),
-        disabled: !activeRoom
-      },
-      {
-        id: "osk-keyboard",
-        label: "On-screen keyboard",
-        title: "On-screen keyboard",
-        ariaLabel: "On-screen keyboard",
-        icon: Keyboard,
-        onClick: () => setIsOskKeyboardOpen((current) => !current),
-        ariaPressed: isOskKeyboardOpen,
-        ariaControls: OSK_PANEL_ID,
-        ariaExpanded: isOskKeyboardOpen,
-        ariaHasPopup: "dialog"
-      },
-      {
-        id: "help",
-        label: "Help",
-        title: "Help",
-        ariaLabel: "Help",
-        icon: CircleHelp,
-        onClick: openHelp
-      },
-      ...(auth?.user?.role === "ADMIN" ? [{
-        id: "demo-mode",
-        label: "Demo mode",
-        title: "Explore all Space App features with an interactive guided tour",
-        ariaLabel: "Demo mode",
-        icon: Sparkles,
-        onClick: () => setIsDemoModeActive(true),
-        ariaPressed: isDemoModeActive,
-        hideable: false
-      }, {
-        id: "token-usage",
-        label: "Token usage",
-        title: "Token usage history by provider and model",
-        ariaLabel: "Token usage",
-        icon: Database,
-        onClick: () => openSystemHealth("usage")
-      }, {
-        id: "advanced-settings",
-        label: "Advanced settings",
-        title: "All advanced settings in one place",
-        ariaLabel: "Advanced settings",
-        icon: Settings2,
-        onClick: () => {
-          setAdminModeRequested(true);
-          toggleSideSurface("settings");
-        }
-      }, {
-        id: "setup-connections",
-        label: "Setup wizard",
-        title: "Set up tools and connections",
-        ariaLabel: "Setup wizard",
-        icon: SlidersHorizontal,
-        onClick: () => openManage("setup-connections")
-      }, {
-        id: "system-analytics",
-        label: "System analytics",
-        title: "Live system telemetry, model performance, CPU & RAM, and CLI sessions",
-        ariaLabel: "System analytics",
-        icon: Monitor,
-        onClick: () => {
-          setIsMemoryWorkspaceOpen(false);
-          setSystemAnalyticsTab("overview");
-        }
-      }, {
-        id: "system-services",
-        label: "System services",
-        title: "Inspect and control systemd services, background workers, and timers",
-        ariaLabel: "System services",
-        icon: ServerCog,
-        onClick: () => openManage("system-services")
-      }] : []),
-      {
-        id: "benchmark",
-        label: "Games Benchmark",
-        title: "Open the AI Games Benchmark: Asteroids and Chess",
-        ariaLabel: "Games Benchmark",
-        icon: Crosshair,
-        onClick: openBenchmark
-      },
-      {
-        id: "vibe-music",
-        label: "Vibe music",
-        title: "Vibe music with freeCodeCamp Code Radio",
-        ariaLabel: "Music",
-        icon: Music2,
-        onClick: () => {
-          setIsQuickLinksOpen(false);
-          setIsThemeMenuOpen(false);
-          setIsPaneLayoutMenuOpen(false);
-          setIsPaneSpanAllMenuOpen(false);
-          setIsWorkspaceTextSizePickerOpen(false);
-          setIsServerActionsMenuOpen(false);
-          setIsCliLauncherOpen(false);
-          setIsVibeMusicOpen((current) => !current);
-        },
-        ariaControls: VIBE_MUSIC_PANEL_ID,
-        ariaExpanded: isVibeMusicOpen,
-        ariaPressed: isVibeMusicOpen,
-        ariaHasPopup: "dialog",
-        hideable: false
-      },
-      {
-        id: "sign-out",
-        label: "Sign out",
-        title: "Sign out",
-        ariaLabel: "Sign out",
-        icon: LogOut,
-        onClick: () => void signOut(),
-        hideable: false
-      },
-      {
-        id: "room-focus",
-        label: isRoomFocusMode ? "Restore room" : "Maximize room",
-        title: isRoomFocusMode ? "Restore room" : "Maximize room",
-        ariaLabel: isRoomFocusMode ? "Restore room" : "Maximize room",
-        icon: isRoomFocusMode ? Minimize2 : Maximize2,
-        onClick: () => {
-          setIsPaneLayoutMenuOpen(false);
-          setIsCliLauncherOpen(false);
-          toggleRoomFocusMode();
-        },
-        ariaPressed: isRoomFocusMode,
-        hideable: false,
-        disabled: !activeRoom
-      },
-      {
-        id: "more-actions",
-        label: "More room actions",
-        title: "More room actions",
-        ariaLabel: "More room actions",
-        icon: MoreHorizontal,
-        onClick: () => {},
-        ariaControls: "room-actions-popup",
-        ariaHasPopup: shellMode === "mobile" ? "dialog" : "menu",
-        hideable: false
-      }
-      ];
-      return actions.filter(action => !consolidatedResourceActions.has(action.id) && !consolidatedManageActions.has(action.id));
+      });
     },
     [
       activeRoom,
@@ -6784,152 +4821,15 @@ export function App() {
       hiddenWidgetIds
     ]
   );
-  const serverActionCommands: ServerActionCommand[] = auth?.user?.role === "ADMIN"
-    ? [
-        {
-          id: "user-management",
-          categoryHeader: "Users & Security",
-          label: "Users & permissions",
-          description: "Manage Space users, modify user/admin roles, and inspect rooms and Google account links.",
-          icon: Users,
-          onSelect: () => {
-            userManagementTriggerRef.current = serverActionsButtonRef.current;
-            openManage("user-management");
-          }
-        },
-        {
-          id: "setup-connections",
-          categoryHeader: "Setup & Release",
-          label: "Setup & connections",
-          description: "Inspect and verify live provider connections, test API credentials, and complete setup.",
-          icon: LinkIcon,
-          onSelect: () => openManage("setup-connections")
-        },
-        {
-          id: "publish-space-release",
-          label: "Publish Space release",
-          description: "Preview git state, tag a release version, and publish commits to Gitea and GitHub.",
-          icon: Rocket,
-          onSelect: () => {
-            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("publish-space-release");
-          }
-        },
-        {
-          id: "restart-server",
-          categoryHeader: "Services & Runtimes",
-          label: "Restart server",
-          description: "Restart Space web, API, and worker services while keeping active CLI and browser panes alive.",
-          icon: ServerCog,
-          disabled: serverRestartPending,
-          onSelect: openServerRestartDialog
-        },
-        {
-          id: "restart-all-cli-runtimes",
-          label: "Restart all CLI runtimes",
-          description: "Sequentially restart sessions for all CLI types (codex, claude, gemini, opencode, kimi).",
-          icon: Terminal,
-          disabled: cliRuntimeRestartAllPending,
-          onSelect: openCliRuntimeRestartAllDialog
-        },
-        {
-          id: "space-cli-maintenance",
-          categoryHeader: "Maintenance & Speed",
-          label: "Space & CLI maintenance",
-          description: "Run Space health checks, doctor diagnostics, package repairs, and guarded updates with rollback.",
-          icon: Wrench,
-          onSelect: () => {
-            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("space-cli-maintenance");
-          }
-        },
-        {
-          id: "space-gateway",
-          label: "Space Gateway",
-          description: "Pool provider accounts, issue gateway API keys, and control routing and context compression.",
-          icon: Network,
-          onSelect: () => openManage("space-gateway")
-        },
-        {
-          id: "codex-lb-speed-control",
-          label: "Codex-LB speed control",
-          description: isCodexEnabled
-            ? "Configure global default speed tiers (Standard or Fast) for active AI provider models."
-            : "OFF · Enable Codex in Settings.",
-          icon: Gauge,
-          disabled: !isCodexEnabled,
-          title: !isCodexEnabled ? "Enable Codex in Settings" : undefined,
-          onSelect: () => {
-            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("codex-lb-speed-control");
-          }
-        },
-        {
-          id: "cli-session-cleanup",
-          categoryHeader: "Cleanup & Storage",
-          label: "Clean CLI sessions & storage",
-          description: anyCliEnabled
-            ? "Safely remove empty tasks (0 turns/messages), orphaned pane homes, and temporary store files."
-            : "OFF · Enable a CLI in Settings.",
-          icon: Trash2,
-          disabled: !anyCliEnabled,
-          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
-          onSelect: () => {
-            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("cli-session-cleanup");
-          }
-        },
-        {
-          id: "codex-history-purge",
-          label: "Purge inactive history",
-          description: anyCliEnabled
-            ? "Permanently remove inactive task history across CLIs not currently open in an active pane."
-            : "OFF · Enable a CLI in Settings.",
-          icon: Eraser,
-          disabled: !anyCliEnabled,
-          title: !anyCliEnabled ? "Enable a CLI in Settings" : undefined,
-          onSelect: () => {
-            adminCodexToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("codex-history-purge");
-          }
-        },
-        {
-          id: "reclaim-safe-memory",
-          label: "Reclaim safe memory",
-          description: "Free page cache and stop leftover CLIs of closed panes; CLIs of open panes keep running.",
-          icon: RefreshCw,
-          onSelect: () => toolbarMetricsRef.current?.openMemoryReclaim(serverActionsButtonRef.current)
-        },
-        {
-          id: "system-analytics",
-          categoryHeader: "Monitoring",
-          label: "System analytics",
-          description: "Live system telemetry, model performance, CPU & RAM, and CLI sessions.",
-          icon: Activity,
-          onSelect: () => {
-            setIsMemoryWorkspaceOpen(false);
-            setSystemAnalyticsTab("overview");
-          }
-        },
-        {
-          id: "system-services",
-          label: "System services",
-          description: "Inspect and control systemd services, background workers, and timers.",
-          icon: Boxes,
-          onSelect: () => openManage("system-services")
-        },
-        {
-          id: "cli-update-all",
-          label: "Update all CLIs",
-          description: "Detect and apply available updates across all CLI runtimes.",
-          icon: RefreshCw,
-          onSelect: () => {
-            adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
-            openManage("cli-update-all");
-          }
-        }
-      ]
-    : [];
+  const serverActionCommands = manage.buildCommands({
+    isCodexEnabled,
+    anyCliEnabled,
+    reclaimMemory: (anchor) => toolbarMetricsRef.current?.openMemoryReclaim(anchor),
+    openSystemAnalytics: () => {
+      setIsMemoryWorkspaceOpen(false);
+      setSystemAnalyticsTab("overview");
+    }
+  });
   const roomToolbar = usePersistentIconToolbar({
     actions: roomToolbarActions,
     hiddenStorageKey: roomToolbarStorageKeys.hidden,
@@ -6979,19 +4879,19 @@ export function App() {
     id: "live-model",
     label: "Live voice model",
     title:
-      liveRailStatus === "listening"
+      liveRail.liveRailStatus === "listening"
         ? "User speaking..."
-        : liveRailStatus === "speaking"
+        : liveRail.liveRailStatus === "speaking"
         ? "Agent speaking..."
-        : liveRailStatus === "active"
+        : liveRail.liveRailStatus === "active"
         ? "Live voice active (Listening)"
-        : liveRailStatus === "connecting"
+        : liveRail.liveRailStatus === "connecting"
         ? "Connecting Live voice model..."
         : "Start Live voice conversation",
     ariaLabel: "Live voice model",
     icon: Mic,
     onClick: activateLiveFromRail,
-    ariaPressed: liveRailStatus !== "idle" && liveRailStatus !== "error",
+    ariaPressed: liveRail.liveRailStatus !== "idle" && liveRail.liveRailStatus !== "error",
     disabled: !selectedRoomId
   }, {
     id: "create",
@@ -7096,6 +4996,7 @@ export function App() {
       else if (action.id === "add-databases") void addDatabasesPane(count);
       else if (action.id === "add-demos") void addDemosPane(count);
       else if (action.id === "add-t3code") void addT3CodePane(count);
+      else if (action.id === "add-jobs") void addJobApplyPane(count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }
@@ -7240,15 +5141,7 @@ export function App() {
       setIsServerActionsMenuOpen(false);
       setIsCliLauncherOpen(false);
     }
-    try {
-      runtime.platform.localStorage.setItem(ROOM_TOOLBAR_HIDDEN_STORAGE_KEY, String(hidden));
-    } catch {
-      // Best effort only.
-    }
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("roomToolbarHidden", hidden);
-    }
-    setIsRoomToolbarHidden(hidden);
+    userPreferences.setRoomToolbarHidden(hidden);
   }
   useLayoutEffect(() => {
     const toolbar = boardToolbarRef.current;
@@ -7355,68 +5248,6 @@ export function App() {
     if (!dockBrowserPane) return;
     setSelectedPaneId(dockBrowserPane.id);
     window.requestAnimationFrame(() => dispatchBrowserPaneAction(dockBrowserPane.id, action));
-  }
-
-  function beginRoomRename() {
-    if (!activeRoom || roomRenamePending) return;
-    setRoomNameDraft(activeRoom.name);
-    setRoomProjectPathDraft(activeRoom.projectPath ?? "");
-    setRoomRenameError(null);
-    setIsThemeMenuOpen(false);
-    setIsWorkspaceTextSizePickerOpen(false);
-    roomToolbar.closeMenus();
-    setIsRoomRenameOpen(true);
-  }
-
-  function cancelRoomRename() {
-    setIsRoomRenameOpen(false);
-    setRoomRenamePending(false);
-    setRoomRenameError(null);
-    setRoomNameDraft(activeRoom?.name ?? "");
-    setRoomProjectPathDraft(activeRoom?.projectPath ?? "");
-  }
-
-  function toggleRoomFocusMode() {
-    const nextValue = !isRoomFocusMode;
-    try {
-      runtime.platform.localStorage.setItem(ROOM_FOCUS_MODE_STORAGE_KEY, String(nextValue));
-    } catch {
-      // Best effort only.
-    }
-    if (auth?.isAuthenticated) {
-      saveUserSettingDebounced("roomFocusMode", nextValue);
-    }
-    setIsRoomFocusMode(nextValue);
-  }
-
-  async function submitRoomRename(event: FormEvent<HTMLFormElement>, onComplete?: () => void) {
-    event.preventDefault();
-    if (!activeRoom || roomRenamePending) return;
-    const nextName = roomNameDraft.trim();
-    if (!nextName) {
-      setRoomRenameError("Room name is required.");
-      return;
-    }
-    if (nextName === activeRoom.name) {
-      cancelRoomRename();
-      onComplete?.();
-      return;
-    }
-    setRoomRenamePending(true);
-    setRoomRenameError(null);
-    try {
-      const updated = await api.updateRoom(activeRoom.id, {
-        name: nextName
-      });
-      setRooms((current) => current.map((room) => (room.id === updated.id ? updated : room)));
-      setRoomNameDraft(updated.name);
-      setIsRoomRenameOpen(false);
-      onComplete?.();
-    } catch (err) {
-      setRoomRenameError(err instanceof Error ? err.message : "Room rename failed");
-    } finally {
-      setRoomRenamePending(false);
-    }
   }
 
   useEffect(() => {
@@ -7593,9 +5424,9 @@ export function App() {
         paneMode: activePane?.mode ?? null
       };
       setError(null);
-      setClipToolNotice(null);
+      notices.setClipToolNotice(null);
       if (runtimeKind === "demo") {
-        setClipToolNotice(DEMO_LOCAL_REPLY);
+        notices.setClipToolNotice(DEMO_LOCAL_REPLY);
         return;
       }
       const desktopBridge = (window as any).spaceDesktop;
@@ -7665,87 +5496,6 @@ export function App() {
     }
   }
 
-  const snipToolInitialModeRef = useRef<"float" | "capturing">("float");
-  const lastPrintScreenRef = useRef({ keyDownAt: 0, triggeredAt: 0 });
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    // A PrtScn open is one-shot: reopening from the rail shows the capsule again.
-    if (!isSnipToolOpen) snipToolInitialModeRef.current = "float";
-
-    const triggerSnipShortcut = () => {
-      const now = Date.now();
-      if (now - lastPrintScreenRef.current.triggeredAt < 350) return;
-      lastPrintScreenRef.current.triggeredAt = now;
-
-      console.log("[SpaceApp Web] Triggering Snip Tool shortcut (PrtScn)");
-      if (isSnipToolOpen) {
-        window.dispatchEvent(new CustomEvent("space:snip-tool:trigger"));
-      } else {
-        snipToolInitialModeRef.current = "capturing";
-        setIsSnipToolOpen(true);
-      }
-    };
-
-    const isPrintScreenEvent = (event: KeyboardEvent) => {
-      return (
-        event.key === "PrintScreen" ||
-        event.code === "PrintScreen" ||
-        (event as any).key === "Snapshot" ||
-        (event as any).key === "Print" ||
-        event.keyCode === 44 ||
-        event.which === 44
-      );
-    };
-
-    const handlePrintScreenKey = (event: KeyboardEvent) => {
-      if (!isPrintScreenEvent(event)) return;
-
-      console.log(`[SpaceApp] PrintScreen caught: type=${event.type}, key=${event.key}, code=${event.code}, keyCode=${event.keyCode}`);
-
-      event.preventDefault();
-      event.stopPropagation();
-
-      // Most platforms send keydown + keyup; Windows sends only keyup. Act once per press,
-      // otherwise a slower press opens the selection on keydown and cancels it on keyup.
-      if (event.type === "keydown") {
-        if (event.repeat) return;
-        lastPrintScreenRef.current.keyDownAt = Date.now();
-      } else if (Date.now() - lastPrintScreenRef.current.keyDownAt < 2000) {
-        return;
-      }
-
-      // Clear any multi-monitor screenshot Windows may have placed on clipboard
-      try {
-        if (navigator?.clipboard?.writeText) {
-          void navigator.clipboard.writeText("").catch(() => {});
-        }
-      } catch {}
-
-      triggerSnipShortcut();
-    };
-
-    window.addEventListener("keydown", handlePrintScreenKey, true);
-    window.addEventListener("keyup", handlePrintScreenKey, true);
-
-    const desktopBridge = (window as any).spaceDesktop;
-    let unsubscribePrintScreen: (() => void) | undefined;
-    if (typeof desktopBridge?.onPrintScreen === "function") {
-      const unsub = desktopBridge.onPrintScreen(() => {
-        triggerSnipShortcut();
-      });
-      if (typeof unsub === "function") {
-        unsubscribePrintScreen = unsub;
-      }
-    }
-
-    return () => {
-      window.removeEventListener("keydown", handlePrintScreenKey, true);
-      window.removeEventListener("keyup", handlePrintScreenKey, true);
-      unsubscribePrintScreen?.();
-    };
-  }, [isSnipToolOpen]);
-
   function openClipImagePicker(target: ClipImageTarget) {
     pendingClipImageTargetRef.current = target;
     const input = clipImageInputRef.current;
@@ -7801,83 +5551,6 @@ export function App() {
       paneId: activePane?.id ?? null
     });
     runtime.platform.reloadPage();
-  }
-
-  function clearRoomReorderState() {
-    roomPointerDragCleanupRef.current?.();
-    roomPointerDragCleanupRef.current = null;
-    dragOverRoomIdRef.current = null;
-    setDraggedRoomId(null);
-    setDragOverRoomId(null);
-  }
-
-  function handleRoomRightPointerDown(event: ReactPointerEvent<HTMLElement>, roomId: string) {
-    if (event.button !== 2 || roomReorderPending) return;
-    event.preventDefault();
-    roomPointerDragCleanupRef.current?.();
-    setDraggedRoomId(roomId);
-    dragOverRoomIdRef.current = roomId;
-    setDragOverRoomId(roomId);
-    const pointerId = event.pointerId;
-    const roomAtPoint = (clientX: number, clientY: number) =>
-      document.elementFromPoint?.(clientX, clientY)?.closest<HTMLElement>(".room-item[data-room-id]")?.dataset.roomId ?? null;
-    const roomFromEvent = (pointerEvent: PointerEvent) =>
-      pointerEvent.target instanceof Element
-        ? pointerEvent.target.closest<HTMLElement>(".room-item[data-room-id]")?.dataset.roomId ?? null
-        : null;
-    const cleanup = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerCancel);
-    };
-    const handlePointerMove = (pointerEvent: PointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId || (pointerEvent.buttons & 2) === 0) return;
-      pointerEvent.preventDefault();
-      const targetRoomId = roomFromEvent(pointerEvent) ?? roomAtPoint(pointerEvent.clientX, pointerEvent.clientY);
-      if (!targetRoomId || targetRoomId === dragOverRoomIdRef.current) return;
-      dragOverRoomIdRef.current = targetRoomId;
-      setDragOverRoomId(targetRoomId);
-    };
-    const handlePointerUp = (pointerEvent: PointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId || pointerEvent.button !== 2) return;
-      pointerEvent.preventDefault();
-      const targetRoomId = roomFromEvent(pointerEvent) ?? roomAtPoint(pointerEvent.clientX, pointerEvent.clientY) ?? dragOverRoomIdRef.current ?? roomId;
-      cleanup();
-      roomPointerDragCleanupRef.current = null;
-      void handleRoomDrop(targetRoomId, roomId);
-    };
-    const handlePointerCancel = (pointerEvent: PointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId) return;
-      cleanup();
-      roomPointerDragCleanupRef.current = null;
-      clearRoomReorderState();
-    };
-    window.addEventListener("pointermove", handlePointerMove, { passive: false });
-    window.addEventListener("pointerup", handlePointerUp, { passive: false });
-    window.addEventListener("pointercancel", handlePointerCancel);
-    roomPointerDragCleanupRef.current = cleanup;
-  }
-
-  async function handleRoomDrop(roomId: string, sourceRoomId = draggedRoomId) {
-    if (!sourceRoomId || sourceRoomId === roomId || roomReorderPending) {
-      clearRoomReorderState();
-      return;
-    }
-    const previousRooms = rooms;
-    const nextRooms = reorderRoomsById(previousRooms, sourceRoomId, roomId);
-    clearRoomReorderState();
-    setRooms(nextRooms);
-    setRoomReorderPending(true);
-    setError(null);
-    try {
-      const reorderedRooms = await api.reorderRooms(nextRooms.map((room) => room.id));
-      setRooms(sortRoomsByOrder(reorderedRooms));
-    } catch (err) {
-      setRooms(previousRooms);
-      setError(err instanceof Error ? err.message : "Room reorder failed");
-    } finally {
-      setRoomReorderPending(false);
-    }
   }
 
   function clearPaneReorderState() {
@@ -7965,661 +5638,29 @@ export function App() {
     }
   }
 
-  const filteredRoomEntries = rooms.map(room => ({
-    room,
-    activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], paneCompletionLifecycle.panes, roomCliActivityCounts[room.id])
-  })).filter(({ room }) => {
-    if (!isAdminMode) {
-      if (room.ownerUserId && room.ownerUserId !== auth?.user?.id) return false;
-    } else {
-      if (adminRoomFilterMode === "mine") {
-        if (room.ownerUserId && room.ownerUserId !== auth?.user?.id) return false;
-      } else if (adminRoomFilterMode === "user") {
-        if (adminSelectedUserId && room.ownerUserId !== adminSelectedUserId) return false;
-      }
-    }
-    if (roomSearch.trim()) {
-      const q = roomSearch.trim().toLowerCase();
-      const nameMatch = room.name.toLowerCase().includes(q);
-      const ownerEmail = room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? "" : "";
-      return nameMatch || ownerEmail.toLowerCase().includes(q);
-    }
-    return true;
+  const { entries: filteredRoomEntries, isRoomListFiltered } = selectRoomEntries({
+    rooms, selectedRoomId, panes, roomRuntimes, completions: paneCompletionLifecycle.panes, roomCliActivityCounts,
+    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById
   });
-  const isRoomListFiltered = Boolean(roomSearch.trim()) || (isAdminMode && adminRoomFilterMode !== "mine");
   const roomsSurfaceContent = (
-    <div
-      ref={roomsPanelRef}
-      className="side-surface-panel side-surface-room-panel"
-      data-show-banner={showDownloadBanner ? "true" : "false"}
-    >
-      <div className="rooms-controls">
-      <div className="rail-actions">
-        <button
-          type="button"
-          onClick={() => void createRoom()}
-          disabled={roomCreationPending || rooms.length >= MAX_ROOMS}
-          aria-busy={roomCreationPending}
-          title={rooms.length >= MAX_ROOMS ? `Maximum room limit (${MAX_ROOMS}) reached` : "Create empty room"}
-        >
-          <Plus aria-hidden="true" />
-          New room
-        </button>
-      </div>
-      <label className="rooms-search">
-        <Search aria-hidden="true" />
-        <input type="search" name="room-search" aria-label="Find a room" placeholder="Find a room…" value={roomSearch} onChange={event => setRoomSearch(event.target.value)} />
-      </label>
-      {isAdminMode ? (
-        <div className="rooms-admin-account-filter">
-          <div className="rooms-filter" role="group" aria-label="Filter rooms by account">
-            <button
-              type="button"
-              aria-pressed={adminRoomFilterMode === "mine"}
-              title="Show only rooms owned by your account"
-              onClick={() => setAdminRoomFilterMode("mine")}
-            >
-              My rooms
-            </button>
-            <button
-              type="button"
-              aria-pressed={adminRoomFilterMode === "all"}
-              title="Show rooms from all accounts"
-              onClick={() => setAdminRoomFilterMode("all")}
-            >
-              All accounts
-            </button>
-            <button
-              type="button"
-              aria-pressed={adminRoomFilterMode === "user"}
-              title="Show rooms for a selected account"
-              onClick={() => {
-                setAdminRoomFilterMode("user");
-                if (!adminSelectedUserId && adminUsersList.length > 0) {
-                  const otherUser = adminUsersList.find((u) => u.id !== auth?.user?.id) ?? adminUsersList[0];
-                  if (otherUser) setAdminSelectedUserId(otherUser.id);
-                }
-              }}
-            >
-              Selected account
-            </button>
-          </div>
-          {adminRoomFilterMode === "user" ? (
-            <div className="rooms-user-selector">
-              <select
-                className="rooms-account-select"
-                aria-label="Select account to view rooms"
-                value={adminSelectedUserId}
-                onChange={(e) => setAdminSelectedUserId(e.target.value)}
-              >
-                <option value="" disabled>Choose account…</option>
-                {adminUsersListWithLiveCounts.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.email || u.id} ({u.role}) — {u.roomCount ?? 0} {u.roomCount === 1 ? "room" : "rooms"}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {isRoomListFiltered ? <div className="rooms-filter-summary"><span role="status">{filteredRoomEntries.length} of {rooms.length} rooms</span>
-        <button type="button" onClick={() => { setRoomSearch(""); if (isAdminMode) setAdminRoomFilterMode("mine"); }}>Clear filters</button></div> : null}
-      </div>
-      <div
-        className={`room-list${draggedRoomId ? " is-room-dragging" : ""}`}
-        data-room-count={filteredRoomEntries.length}
-        data-room-overflow={roomListOverflow ? "true" : "false"}
-        style={{
-          "--room-count": filteredRoomEntries.length,
-          ...(roomListMaxHeight !== null ? { "--room-list-max-height": `${roomListMaxHeight}px` } : {})
-        } as React.CSSProperties}
-      >
-        {filteredRoomEntries.length === 0 ? <p className="rooms-empty" role="status">{rooms.length === 0 ? "Create a room to get started." : "No rooms match these filters."}</p> : null}
-        {filteredRoomEntries.map(({ room, activity }) => {
-          const isExpanded = dockExpandedRoomId === room.id;
-          // "Warm" must mean truly ready: pane data loaded AND every visible
-          // terminal pane bootstrapped (socket attached). Rooms whose data is
-          // loaded but whose terminals are still attaching show "Warming".
-          // User-approved 2026-08-14 (dock showed warm before it was true).
-          const roomTerminalsBootstrapped = (roomId: string): boolean => {
-            const runtime = roomRuntimes[roomId];
-            if (!runtime) return false;
-            const terminals = runtime.panes.filter(
-              (pane) => pane.mode === "TERMINAL" && !pane.isMinimized
-            );
-            if (terminals.length === 0) return true;
-            const bootstrapped = new Set(runtime.bootstrappedPaneIds ?? []);
-            return terminals.every((pane) => bootstrapped.has(pane.id));
-          };
-          const warmPresentation = classifyRoomWarmPresentation({
-            roomId: room.id,
-            activeRoomId: selectedRoomId,
-            warmRoomIds,
-            hydratingRoomIds: new Set(
-              Object.entries(roomPaneLoadStates)
-                .filter(([roomId, state]) => (
-                  state === "loading" ||
-                  (state === "loaded" && !roomTerminalsBootstrapped(roomId))
-                ))
-                .map(([roomId]) => roomId)
-            ),
-            loadedRoomIds: new Set(
-              Object.entries(roomPaneLoadStates)
-                .filter(([roomId, state]) => (
-                  state === "loaded" && roomTerminalsBootstrapped(roomId)
-                ))
-                .map(([roomId]) => roomId)
-            )
-          });
-          const roomCliPresentations = [...new Set(roomCliRuntimeIds[room.id] ?? [])].flatMap((runtimeId) => {
-            const presentation = cliRuntimePresentation(runtimeId);
-            return presentation ? [presentation] : [];
-          });
-          return (
-          <div
-            key={room.id}
-            className={[
-              "room-item",
-              room.id === selectedRoomId ? "selected" : "",
-              isExpanded ? "is-expanded" : "",
-              draggedRoomId === room.id ? "is-dragging" : "",
-              dragOverRoomId === room.id && draggedRoomId !== room.id ? "is-drop-target" : ""
-            ].filter(Boolean).join(" ")}
-            data-room-id={room.id}
-            data-warm-presentation={warmRoomEnabled ? warmPresentation : undefined}
-            title={isRoomListFiltered ? room.name : `Hold the right mouse button to reorder ${room.name}`}
-            onPointerDown={(event) => { if (!isRoomListFiltered) handleRoomRightPointerDown(event, room.id); }}
-            onContextMenu={(event) => event.preventDefault()}
-            onAnimationEnd={(event) => {
-              if (event.animationName.includes("room-card-press-pop") || event.animationName.includes("shockwave")) {
-                event.currentTarget.classList.remove("is-clicked");
-              }
-            }}
-          >
-            <div className="room-item-row">
-              <button
-                className="room-select"
-                data-room-id={room.id}
-                onClick={(event) => {
-                  const item = event.currentTarget.closest<HTMLElement>(".room-item");
-                  if (item) {
-                    item.classList.remove("is-clicked");
-                    void item.offsetWidth;
-                    item.classList.add("is-clicked");
-                  }
-                  void selectRoom(room.id, { keepCompactSurfaceOpen: true });
-                }}
-                onPointerDown={(event) => {
-                  if (event.button === 0) {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    event.currentTarget.style.setProperty("--room-press-x", `${event.clientX - rect.left}px`);
-                    event.currentTarget.style.setProperty("--room-press-y", `${event.clientY - rect.top}px`);
-                  }
-                }}
-                disabled={deletePendingRoomId === room.id || roomReorderPending}
-                aria-label={`Open ${room.name}`}
-                aria-current={room.id === selectedRoomId ? "true" : undefined}
-              >
-                <span className="room-title-row">
-                  <span className="room-name">{room.name}</span>
-                  {room.id === selectedRoomId ? (
-                    <span className="room-active-badge" aria-label="Active room" title="Active room">
-                      <span className="room-active-pulse" aria-hidden="true">
-                        <span className="room-active-dot" />
-                      </span>
-                      <Radio className="room-active-icon" aria-hidden="true" />
-                      <span className="room-active-label">Active</span>
-                    </span>
-                  ) : null}
-                </span>
-                <span className="room-badge-row">
-                  {(() => {
-                    const effectivePath = room.projectPath || "/opt/spaceapp";
-                    const folderName = effectivePath.split("/").filter(Boolean).pop() || effectivePath;
-                    return (
-                      <span
-                        className="room-project-tag"
-                        title={`Project: ${effectivePath}`}
-                        aria-label={`Project: ${effectivePath}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDockExpandedRoomId(current => current === room.id ? null : room.id);
-                          if (!dockProjectPathDrafts[room.id]) {
-                            setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: effectivePath }));
-                          }
-                        }}
-                      >
-                        📁 {folderName}
-                      </span>
-                    );
-                  })()}
-                  <span className="room-cli-badge">
-                    Panes {roomPaneCounts[room.id] ?? (room.id === selectedRoomId && roomPaneLoadStates[room.id] === "loaded"
-                      ? panes.filter((pane) => !pane.isClosed).length
-                      : roomRuntimes[room.id]?.panes.filter((pane) => !pane.isClosed).length ?? "—")}
-                  </span>
-                  {roomCliPresentations.length ? (
-                    <span
-                      className="room-cli-runtime-icons"
-                      aria-label={`Active CLI types: ${roomCliPresentations.map((presentation) => presentation.shortLabel).join(", ")}`}
-                    >
-                      {roomCliPresentations.map((presentation) => (
-                        <img
-                          key={presentation.id}
-                          className="room-cli-runtime-icon"
-                          src={presentation.iconSrc}
-                          alt=""
-                          aria-hidden="true"
-                          title={presentation.shortLabel}
-                          data-terminal-runtime-brand={presentation.brand}
-                          draggable={false}
-                        />
-                      ))}
-                    </span>
-                  ) : null}
-                  {activity.attention ? <span className="room-attention-badge">Needs attention</span> : null}
-                  {room.kind === "AGENT_PROOF" ? <span className="room-kind-badge">Agent Proof</span> : null}
-                  {room.kind === "CLI_RECOVERY" ? <span className="room-kind-badge">CLI Recovery</span> : null}
-                  {isAdminMode && adminRoomFilterMode !== "mine" ? (
-                    <span
-                      className={`room-owner-badge${room.ownerUserId === auth?.user?.id ? " is-mine" : ""}`}
-                      title={`Owner: ${room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? room.ownerUserId : "System"}`}
-                    >
-                      {room.ownerUserId === auth?.user?.id
-                        ? "You"
-                        : (room.ownerUserId ? userEmailById.get(room.ownerUserId) ?? room.ownerUserId : "System")}
-                    </span>
-                  ) : null}
-                </span>
-              </button>
-              <button
-                type="button"
-                className={`room-dock-expand-btn${isExpanded ? " is-expanded" : ""}`}
-                title={isExpanded ? "Collapse room project details" : "Open room project settings"}
-                aria-label={isExpanded ? `Collapse ${room.name}` : `Configure project for ${room.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDockExpandedRoomId(current => current === room.id ? null : room.id);
-                  if (!dockProjectPathDrafts[room.id]) {
-                    setDockProjectPathDrafts(prev => ({ ...prev, [room.id]: room.projectPath || "/opt/spaceapp" }));
-                  }
-                }}
-              >
-                <ChevronDown aria-hidden="true" />
-              </button>
-              <button
-                className="room-delete"
-                onClick={() => void requestRoomDelete(room)}
-                disabled={deletePendingRoomId === room.id || roomReorderPending}
-                title={`Delete ${room.name}`}
-                aria-label={`Delete ${room.name}`}
-              >
-                <Trash2 aria-hidden="true" />
-              </button>
-            </div>
-            {isExpanded && (
-              <div className="room-dock-expansion" onClick={(e) => e.stopPropagation()}>
-                <div className="room-dock-field-header">
-                  <span className="room-dock-field-title">
-                    <Folder aria-hidden="true" /> Project Directory:
-                  </span>
-                  {runtimeKind === "live" && auth?.isAuthenticated ? (
-                    <button
-                      type="button"
-                      className="room-dock-choose-project-btn"
-                      disabled={dockProjectSavingRoomId === room.id}
-                      title="Choose a new project, local folder, Git URL or repository"
-                      aria-label={`Choose project for ${room.name}`}
-                      onClick={() => setProjectPickerRoom({ id: room.id, name: room.name })}
-                    >
-                      <FolderOpen aria-hidden="true" />
-                      <span>Choose project</span>
-                    </button>
-                  ) : null}
-                  {room.projectPath ? (
-                    <button
-                      type="button"
-                      className="room-dock-clear-btn"
-                      disabled={dockProjectSavingRoomId === room.id}
-                      title="Clear project directory"
-                      aria-label="Clear project directory"
-                      onClick={async () => {
-                        setDockProjectSavingRoomId(room.id);
-                        try {
-                          const updated = await api.updateRoom(room.id, { name: room.name, projectPath: null });
-                          setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
-                          setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: "" }));
-                        } catch (err) {
-                          setError(err instanceof Error ? `The project directory could not be cleared: ${err.message}` : "The project directory could not be cleared.");
-                        } finally {
-                          setDockProjectSavingRoomId(null);
-                        }
-                      }}
-                    >
-                      <X aria-hidden="true" />
-                      <span>Clear</span>
-                    </button>
-                  ) : null}
-                </div>
-                <div className="room-dock-input-row">
-                  <input
-                    type="text"
-                    className="room-dock-project-input"
-                    placeholder="e.g. /opt/spaceapp"
-                    value={dockProjectPathDrafts[room.id] ?? (room.projectPath || "/opt/spaceapp")}
-                    disabled={dockProjectSavingRoomId === room.id}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: val }));
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void saveDockProject(room.id);
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="room-dock-save-btn"
-                    disabled={dockProjectSavingRoomId === room.id}
-                    title="Save project directory"
-                    onClick={() => void saveDockProject(room.id)}
-                  >
-                    <Save aria-hidden="true" />
-                  </button>
-                </div>
-                {roomProjectSources[room.id] && room.projectPath ? (
-                  <p className="room-dock-project-source" title={room.projectPath}>Source: {roomProjectSources[room.id]}</p>
-                ) : null}
-                <div className="room-dock-presets-row">
-                  <span className="room-dock-presets-label">Presets:</span>
-                  {projectPresets.map((preset) => {
-                    const currentVal = dockProjectPathDrafts[room.id] ?? (room.projectPath || "/opt/spaceapp");
-                    const isActive = currentVal === preset.path || (preset.label === "olla" && currentVal === "/srv/olla");
-                    return (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        className={`room-dock-preset-chip ${isActive ? "active" : ""}`}
-                        onClick={async () => {
-                          setDockProjectPathDrafts((prev) => ({ ...prev, [room.id]: preset.path }));
-                          await ensureProjectFolder(preset.path);
-                          try {
-                            const updated = await api.updateRoom(room.id, { name: room.name, projectPath: preset.path });
-                            setRooms((current) => current.map((r) => (r.id === room.id ? updated : r)));
-                          } catch (err) {
-                            setError(err instanceof Error ? `The project preset could not be saved: ${err.message}` : "The project preset could not be saved.");
-                          }
-                        }}
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    className="room-dock-preset-add-btn"
-                    title="Add a project preset"
-                    aria-label="Add a project preset"
-                    onClick={() => {
-                      setIsAddingPresetRoomId(isAddingPresetRoomId === room.id ? null : room.id);
-                      setNewPresetDraft("");
-                    }}
-                  >
-                    + New
-                  </button>
-                </div>
-                {isAddingPresetRoomId === room.id ? (
-                  <div className="room-dock-new-preset-box">
-                    <input
-                      type="text"
-                      className="room-dock-new-preset-input"
-                      placeholder="preset name (e.g. space3)"
-                      value={newPresetDraft}
-                      onChange={(e) => {
-                        const cleaned = e.target.value.replace(/[^a-zA-Z0-9_-]/g, "");
-                        setNewPresetDraft(cleaned);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void handleAddNewPreset(room.id);
-                        } else if (e.key === "Escape") {
-                          setIsAddingPresetRoomId(null);
-                          setNewPresetDraft("");
-                        }
-                      }}
-                      autoFocus
-                    />
-                    <button
-                      type="button"
-                      className="room-dock-new-preset-confirm-btn"
-                      disabled={!newPresetDraft.trim()}
-                      onClick={() => void handleAddNewPreset(room.id)}
-                    >
-                      Add & Create
-                    </button>
-                    <button
-                      type="button"
-                      className="room-dock-new-preset-cancel-btn"
-                      onClick={() => {
-                        setIsAddingPresetRoomId(null);
-                        setNewPresetDraft("");
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : null}
-                <div
-                  className="room-dock-worktree-setting"
-                  style={{
-                    margin: "10px 0 8px 0",
-                    padding: "8px 10px",
-                    background: "rgba(255, 255, 255, 0.03)",
-                    borderRadius: "6px",
-                    border: "1px solid rgba(255, 255, 255, 0.06)"
-                  }}
-                >
-                  <SpaceToggle
-                    className="room-dock-worktree-toggle"
-                    label={
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                        <GitBranch size={13} aria-hidden="true" /> Isolated Worktrees (Git)
-                      </span>
-                    }
-                    detail={`Dedicated Git branches for CLI tools in this room (${isRoomWorktreeEnabled(room.id) ? "Enabled" : "Disabled"})`}
-                    checked={isRoomWorktreeEnabled(room.id)}
-                    onChange={(enabled) => setRoomWorktreeEnabled(room.id, enabled)}
-                  />
-                </div>
-                {room.projectPath || dockProjectPathDrafts[room.id] ? (
-                  <div className="room-dock-actions-row">
-                    <button
-                      type="button"
-                      className="room-dock-action-btn"
-                      onClick={async () => {
-                        await selectRoom(room.id);
-                        const effective = room.projectPath || dockProjectPathDrafts[room.id];
-                        if (effective) {
-                          await ensureProjectFolder(effective);
-                        }
-                        const existingFiles = (room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? []).find((p) => !p.isClosed && p.mode === "FILES");
-                        if (existingFiles) {
-                          setSelectedPaneId(existingFiles.id);
-                          if (effective) {
-                            window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: effective } }));
-                          }
-                        } else {
-                          await addFilesPane(1, room.id);
-                        }
-                      }}
-                    >
-                      <FolderOpen aria-hidden="true" /> Files
-                    </button>
-                    <button
-                      type="button"
-                      className="room-dock-action-btn"
-                      onClick={async () => {
-                        await selectRoom(room.id);
-                        const effective = room.projectPath || dockProjectPathDrafts[room.id];
-                        if (effective) {
-                          await ensureProjectFolder(effective);
-                        }
-                        await addRootAdminPane(room.id);
-                      }}
-                    >
-                      <Terminal aria-hidden="true" /> Terminal
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            )}
-          </div>
-          );
-        })}
-      </div>
-      {projectPickerRoom ? (
-        <RecoverableSurface fallback={null}>
-          <LazyProjectSourcePicker
-            context={{ kind: "room", roomId: projectPickerRoom.id, roomName: projectPickerRoom.name }}
-            isAdmin={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"}
-            defaultParent="/opt/spaceapp/projects"
-            onOpened={(result) => assignPickedProjectToRoom(projectPickerRoom.id, result)}
-            onClose={() => setProjectPickerRoom(null)}
-          />
-        </RecoverableSurface>
-      ) : null}
-      <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
-        {showDownloadBanner ? (
-          <a
-            className="spaceapp-download-banner"
-            href="https://spaceapp.dev"
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Download SpaceApp from SpaceApp.dev"
-          >
-            <img
-              src={modernColorMode === "light" ? "/brand/spaceapp-open-source-banner-light.svg" : "/brand/spaceapp-open-source-banner.webp"}
-              alt="SpaceApp is open source and free to download."
-              decoding="async"
-            />
-          </a>
-        ) : null}
-        <RoomPaneComposer
-          mobile={shellMode === "mobile"}
-          activePaneCount={presentationPanes.length}
-          onApply={addRoomPanes}
-          onOpenSettings={openSettingsSurface}
-          room={presentationRoom}
-          isWorktreeEnabled={presentationRoom ? isRoomWorktreeEnabled(presentationRoom.id) : false}
-          defaultCollapsed={true}
-        />
-      </div>
-      {roomDeleteConfirm.confirmDialog}
-    </div>
+    <RoomsDockPanel
+      panelRef={roomsDock.roomsPanelRef}
+      dock={roomsDock}
+      adminUsers={adminUsers}
+      entries={filteredRoomEntries}
+      isRoomListFiltered={isRoomListFiltered}
+      catalog={{ rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds }}
+      access={{ auth, isAdminMode, runtimeKind }}
+      actions={{
+        createRoom, roomCreationPending, selectRoom, requestRoomDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
+        isRoomWorktreeEnabled, setRoomWorktreeEnabled: userPreferences.setRoomWorktreeEnabled, projectPresets, reportError: setError,
+        roomDeleteConfirmDialog: roomDeleteConfirm.confirmDialog
+      }}
+      composer={{ preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface, shellMode, modernColorMode }}
+    />
   );
 
-  useLayoutEffect(() => {
-    if (activeSideSurface !== "rooms") return;
-    const panel = roomsPanelRef.current;
-    if (!panel) return;
-
-    const checkBannerFit = () => {
-      const controls = panel.querySelector<HTMLElement>(".rooms-controls");
-      const roomList = panel.querySelector<HTMLElement>(".room-list");
-      const composer = panel.querySelector<HTMLElement>(".room-pane-composer");
-      const mix = composer?.querySelector<HTMLElement>(".room-pane-mix");
-      const banner = panel.querySelector<HTMLElement>(".spaceapp-download-banner");
-
-      const availableHeight = panel.clientHeight;
-      if (availableHeight <= 0) return;
-
-      const controlsHeight = controls?.offsetHeight ?? 0;
-      const roomChildren = roomList ? (Array.from(roomList.children) as HTMLElement[]) : [];
-      let naturalRoomSpan = 0;
-      if (roomChildren.length > 0) {
-        const gapPx = 7.2; // 0.45rem gap in .room-list
-        const sumOfCards = roomChildren.reduce((acc, el) => acc + (el.offsetHeight || 70), 0);
-        naturalRoomSpan = Math.round(sumOfCards + Math.max(0, roomChildren.length - 1) * gapPx);
-      }
-
-      const isComposerCollapsed = composer?.getAttribute("data-collapsed") === "true";
-      const composerNaturalHeight = isComposerCollapsed
-        ? (composer?.offsetHeight ?? 44)
-        : (mix && composer
-            ? composer.scrollHeight - mix.clientHeight + mix.scrollHeight
-            : (composer?.scrollHeight ?? 0));
-
-      const bannerWidth = banner?.offsetWidth || (panel.clientWidth - 24);
-      const bannerHeight = banner?.offsetHeight || (Math.round(bannerWidth * 34 / 121) + 2);
-      const bannerTotalHeight = bannerHeight + 12;
-
-      // Spacing: padding (0.75rem * 2 = 24px) + grid gaps (0.75rem * 2 = 24px) = 48px
-      const panelSpacing = 48;
-      const netAvailable = Math.max(0, availableHeight - controlsHeight - panelSpacing);
-
-      // Check if everything fits with the download banner
-      const totalNeededWithBanner = controlsHeight + naturalRoomSpan + composerNaturalHeight + bannerTotalHeight + panelSpacing;
-      const bannerFits = totalNeededWithBanner <= availableHeight;
-
-      // Available height allocated for the room list:
-      const currentBannerHeight = bannerFits ? bannerTotalHeight : 0;
-      const spaceForRooms = netAvailable - composerNaturalHeight - currentBannerHeight;
-
-      // On smaller screens where composer is expanded, ensure rooms get at least minimum reasonable height
-      const composerMinHeight = isComposerCollapsed ? (composer?.offsetHeight ?? 44) : 180;
-      const effectiveAvailableForRooms = Math.max(
-        spaceForRooms,
-        Math.min(naturalRoomSpan, netAvailable - composerMinHeight)
-      );
-      const finalAvailableForRooms = Math.max(effectiveAvailableForRooms, 72);
-
-      // Overflows only when natural height exceeds available space and more than 3 rooms
-      const overflows = roomChildren.length > 3 && naturalRoomSpan > (finalAvailableForRooms + 2);
-
-      setShowDownloadBanner((prev) => (prev !== bannerFits ? bannerFits : prev));
-      setRoomListOverflow((prev) => (prev !== overflows ? overflows : prev));
-      setRoomListMaxHeight((prev) => {
-        const nextVal = overflows ? Math.round(finalAvailableForRooms) : null;
-        return prev !== nextVal ? nextVal : prev;
-      });
-
-      // Synchronously set properties on roomList DOM element to avoid visual paint flicker
-      if (roomList) {
-        const overflowValue = overflows ? "true" : "false";
-        if (roomList.getAttribute("data-room-overflow") !== overflowValue) {
-          roomList.setAttribute("data-room-overflow", overflowValue);
-        }
-        if (overflows) {
-          const height = `${Math.round(finalAvailableForRooms)}px`;
-          if (roomList.style.getPropertyValue("--room-list-max-height") !== height) {
-            roomList.style.setProperty("--room-list-max-height", height);
-          }
-        } else if (roomList.style.getPropertyValue("--room-list-max-height")) {
-          roomList.style.removeProperty("--room-list-max-height");
-        }
-      }
-    };
-
-    checkBannerFit();
-    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(checkBannerFit) : null;
-    observer?.observe(panel);
-    const roomList = panel.querySelector<HTMLElement>(".room-list");
-    if (roomList) observer?.observe(roomList);
-    const composer = panel.querySelector<HTMLElement>(".room-pane-composer");
-    if (composer) observer?.observe(composer);
-    const mix = panel.querySelector<HTMLElement>(".room-pane-mix");
-    if (mix) observer?.observe(mix);
-
-    window.addEventListener("resize", checkBannerFit);
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener("resize", checkBannerFit);
-    };
-  }, [activeSideSurface, filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, presentationPanes.length]);
+  useRoomsDockFit(roomsDock, activeSideSurface, [filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, presentationPanes.length]);
 
   function resumeAgentSessionCodexThread(threadId: string) {
     if (!activePane || !isCodexEnabled) return;
@@ -8676,30 +5717,18 @@ export function App() {
       cliImagePreviewLimit={cliImagePreviewLimit}
       warmRoomEnabled={warmRoomEnabled}
       warmConnectedPaneLimit={warmConnectedPaneLimit}
-      defaultWorktreeEnabled={defaultWorktreeEnabled}
-      onDefaultWorktreeEnabledChange={(enabled) => {
-        setDefaultWorktreeEnabled(enabled);
-        try {
-          localStorage.setItem("space.worktree.defaultEnabled", String(enabled));
-        } catch {}
-        if (auth?.isAuthenticated) {
-          saveUserSettingDebounced("worktreeDefaultEnabled", enabled);
-        }
-      }}
-      onCliImagePreviewLimitChange={(limit) => setCliImagePreviewLimit(writeStoredCliImagePreviewLimit(limit))}
-      onWarmRoomEnabledChange={(enabled) => {
-        setWarmRoomEnabled(writeStoredWarmRoomEnabled(enabled));
-      }}
-      onWarmConnectedPaneLimitChange={(limit) => {
-        setWarmConnectedPaneLimit(writeStoredWarmRoomConnectedPaneLimit(limit));
-      }}
-      onOpenRestartAll={openCliRuntimeRestartAllDialog}
-      restartAllPending={cliRuntimeRestartAllPending}
+      defaultWorktreeEnabled={userPreferences.defaultWorktreeEnabled}
+      onDefaultWorktreeEnabledChange={userPreferences.changeDefaultWorktreeEnabled}
+      onCliImagePreviewLimitChange={userPreferences.changeCliImagePreviewLimit}
+      onWarmRoomEnabledChange={userPreferences.changeWarmRoomEnabled}
+      onWarmConnectedPaneLimitChange={userPreferences.changeWarmConnectedPaneLimit}
+      onOpenRestartAll={manage.cliRuntimeRestartAll.open}
+      restartAllPending={manage.cliRuntimeRestartAll.pending}
     />
   );
   const renderSideSurfaceContent = (surface: SideSurface, onClose?: () => void, onNavigate?: (id: string) => void) =>
     surface === "rooms" ? (
-      onNavigate ? cloneElement(roomsSurfaceContent, { ref: undefined }) : roomsSurfaceContent
+      onNavigate ? cloneElement(roomsSurfaceContent, { panelRef: undefined }) : roomsSurfaceContent
     ) : surface === "room-agent" ? (
       <LazyRoomAgentDock
         activeRoom={activeRoom}
@@ -8709,6 +5738,9 @@ export function App() {
       />
     ) : surface === "settings" ? (
       <AgentSettingsDock
+        cards={agentSettingsCards}
+        roomId={selectedRoomId}
+        dotSettingsRequest={dotSettingsRequest}
         adminMode={shellMode !== "desktop" || isAdminMode}
         onOpenSetup={() => onNavigate ? onNavigate("setup-connections") : openManage("setup-connections")}
         activePane={activePane}
@@ -8726,9 +5758,7 @@ export function App() {
         providers={providers}
         gitPluginsActive={sourceControlEnabled}
         isHarnessEnabled={isHarnessEnabled}
-        onSuppressNotificationsChange={(suppressed) => {
-          setSuppressNotifications(writeStoredSuppressNotifications(suppressed));
-        }}
+        onSuppressNotificationsChange={userPreferences.changeSuppressNotifications}
         onProviderSettingsRefresh={setProviderSettings}
         onUiThemeApply={async ({ appearance, background, iconPack, theme }) => {
           writeModernAppearance(runtime.platform.localStorage, appearance);
@@ -8757,7 +5787,7 @@ export function App() {
     ) : surface === "source-control" ? (
       <LazySourceControlDock userId={auth?.user?.id || ""} currentProjectPath={activeRoom?.projectPath}
         projects={[...projectPresets, ...rooms.filter(room => room.projectPath).map(room => ({ label: room.name, path: room.projectPath! }))]}
-        isAdmin={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} onProjectOpened={addOpenedProjectPreset} />
+        isAdmin={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} canViewDeploys={auth?.user?.role === "ADMIN"} onProjectOpened={userPreferences.addOpenedProjectPreset} />
     ) : surface === "cli" ? (
       cliDockContent
     ) : surface === "agent-sessions" ? (
@@ -9733,450 +6763,27 @@ export function App() {
     return <RecoverableSurface resetKey={id} fallback={sideSurfaceLoadingFallback}>{content}</RecoverableSurface>;
   }
 
-  function renderCollapsedToolbar() {
-    if (isMobilePaneFocused || !isRoomToolbarHidden || showOverlaySideSurface || systemAnalyticsTab) {
-      return null;
-    }
-    return (
-      <div
-        ref={collapsedToolbarRef}
-        className="room-toolbar-collapsed room-toolbar-floating-controls"
-        role="region"
-        aria-label="Room toolbar hidden"
-        {...lowerRailTouchContext}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setIsCollapsedPaneLayoutMenuOpen(false);
-          setIsPaneSpanAllMenuOpen(false);
-          setIsWorkspaceTextSizePickerOpen(false);
-          setIsVibeMusicOpen(false);
-          setLowerRailVisibilityMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
-        }}
-      >
-        {previousRoom && lowerRailVisibility.isVisible("previous") ? (
-          <button
-            type="button"
-            className="room-toolbar-visibility-button room-rail-secondary"
-            title={`Previous room: ${previousRoom.name}`}
-            data-rail-id="previous"
-            aria-label="Previous room"
-            onClick={() => { void selectRoom(previousRoom.id); }}
-          >
-            <ChevronLeft aria-hidden="true" />
-          </button>
-        ) : null}
-        {nextRoom && lowerRailVisibility.isVisible("next") ? (
-          <button
-            type="button"
-            className="room-toolbar-visibility-button room-rail-secondary"
-            title={`Next room: ${nextRoom.name}`}
-            data-rail-id="next"
-            aria-label="Next room"
-            onClick={() => { void selectRoom(nextRoom.id); }}
-          >
-            <ChevronRight aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("rooms") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button${isSideSurfaceOpen && activeSideSurface === "rooms" ? " is-active" : ""}`}
-            title={sideSurfaceToggleLabel("rooms")}
-            data-rail-id="rooms"
-            aria-label={sideSurfaceToggleLabel("rooms")}
-            aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              toggleSideSurface("rooms");
-            }}
-          >
-            <PanelLeft aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("live-model") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button room-live-rail-button ${
-              isLiveRailGraphicDisabled ? "is-graphic-disabled" : ""
-            } ${
-              liveRailStatus === "active" || liveRailStatus === "listening" || liveRailStatus === "thinking" || liveRailStatus === "speaking" ? "is-connected" : ""
-            } ${liveRailStatus === "listening" ? "is-listening is-user-speaking" : ""} ${
-              liveRailStatus === "speaking" ? "is-speaking is-agent-speaking" : ""
-            } ${liveRailStatus === "connecting" ? "is-connecting" : ""}`}
-            title={
-              liveRailStatus === "listening"
-                ? "User speaking..."
-                : liveRailStatus === "speaking"
-                ? "Agent speaking..."
-                : liveRailStatus === "active"
-                ? "Live voice active (Listening)"
-                : liveRailStatus === "connecting"
-                ? "Connecting Live voice model..."
-                : liveRailStatus === "thinking"
-                ? "Live voice is thinking..."
-                : liveRailStatus === "error"
-                ? "Live voice disconnected. Tap to retry."
-                : "Start Live voice conversation"
-            }
-            data-rail-id="live-model"
-            data-live-status={liveRailStatus}
-            data-graphic-disabled={isLiveRailGraphicDisabled ? "true" : undefined}
-            aria-label={
-              liveRailStatus === "connecting"
-                ? "Connecting Live voice model"
-                : liveRailStatus === "listening"
-                ? "User speaking"
-                : liveRailStatus === "speaking"
-                ? "Agent speaking"
-                : liveRailStatus === "thinking"
-                ? "Live voice is thinking"
-                : liveRailStatus === "error"
-                ? "Retry Live voice conversation"
-                : "Start Live voice conversation"
-            }
-            aria-pressed={liveRailStatus !== "idle" && liveRailStatus !== "error"}
-            aria-busy={liveRailStatus === "connecting"}
-            onClick={activateLiveFromRail}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setLiveRailContextMenu((current) => current ? null : { x: event.clientX, y: event.clientY });
-            }}
-            disabled={!selectedRoomId && !activeRoom && rooms.length === 0}
-          >
-            {!isLiveRailGraphicDisabled ? (
-              <>
-                <span className="room-live-rail-glow" aria-hidden="true" />
-                <span className="room-live-rail-sphere" aria-hidden="true">
-                  <span className="room-live-rail-line line-one" />
-                  <span className="room-live-rail-line line-two" />
-                  <span className="room-live-rail-line line-three" />
-                  <span className="room-live-rail-line line-four" />
-                  <span className="room-live-rail-core" />
-                </span>
-              </>
-            ) : null}
-          </button>
-        ) : null}
-        {liveRailContextMenu ? (
-          <LiveRailContextMenu
-            x={liveRailContextMenu.x}
-            y={liveRailContextMenu.y}
-            isGraphicDisabled={isLiveRailGraphicDisabled}
-            onToggleGraphic={toggleLiveRailGraphic}
-            onClose={() => setLiveRailContextMenu(null)}
-          />
-        ) : null}
-        {lowerRailVisibility.isVisible("create") ? (
-          <DesktopNavigation createOnly actions={desktopToolbarActions}
-            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-            onModeChange={() => undefined} onAction={runDesktopAction}
-            renderCreateTools={renderDesktopCreateTools}
-            availablePanes={Math.max(0, 16 - panes.length)}
-            emptySlots={activeRoomEmptySlotsMetrics ?? undefined} />
-        ) : null}
-        {lowerRailVisibility.isVisible("layout") ? (
-          <button
-            ref={paneLayoutCollapsedButtonRef}
-            type="button"
-            className={`room-toolbar-visibility-button${isCollapsedPaneLayoutMenuOpen ? " is-active" : ""}`}
-            title="Pane layout"
-            data-rail-id="layout"
-            aria-label="Pane layout"
-            aria-controls="pane-layout-presets-collapsed"
-            aria-expanded={isCollapsedPaneLayoutMenuOpen}
-            aria-pressed={isCollapsedPaneLayoutMenuOpen}
-            aria-haspopup="menu"
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setLowerRailVisibilityMenu(null);
-              setIsCollapsedPaneLayoutMenuOpen((current) => !current);
-            }}
-            disabled={!activeRoom || paneLayoutPending}
-          >
-            <PanelsTopLeft aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("sticky") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary${stickyWindows.length > 0 ? " is-active" : ""}`}
-            title="Sticky note"
-            data-rail-id="sticky"
-            aria-label="Sticky note"
-            aria-pressed={stickyWindows.length > 0}
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              openStickyNote();
-            }}
-          >
-            <StickyNote aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("keyboard") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary${isOskKeyboardOpen ? " is-active" : ""}`}
-            title="On-screen keyboard"
-            data-rail-id="keyboard"
-            aria-label="On-screen keyboard"
-            aria-controls={OSK_PANEL_ID}
-            aria-expanded={isOskKeyboardOpen}
-            aria-pressed={isOskKeyboardOpen}
-            aria-haspopup="dialog"
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              setIsOskKeyboardOpen((current) => !current);
-            }}
-          >
-            <Keyboard aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("music") ? (
-          <button
-            ref={vibeMusicButtonRef}
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary${isVibeMusicOpen ? " is-active" : ""}`}
-            title="Vibe music with freeCodeCamp Code Radio"
-            data-rail-id="music"
-            aria-label="Music"
-            aria-controls={VIBE_MUSIC_PANEL_ID}
-            aria-expanded={isVibeMusicOpen}
-            aria-pressed={isVibeMusicOpen}
-            aria-haspopup="dialog"
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setLowerRailVisibilityMenu(null);
-              setIsVibeMusicOpen((current) => !current);
-            }}
-          >
-            <Music2 aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("snip-tool") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary${isSnipToolOpen ? " is-active" : ""}`}
-            title={isSnipToolOpen ? "Close Snip Tool" : "Snip Tool (Capture, edit and share)"}
-            data-rail-id="snip-tool"
-            aria-label="Snip Tool"
-            aria-pressed={isSnipToolOpen}
-            onClick={() => {
-              setIsSnipToolOpen((current) => !current);
-            }}
-            disabled={!activeRoom}
-          >
-            <Crop aria-hidden="true" />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("quick-links") ? (
-          <button
-            ref={quickLinksButtonRef}
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary${isQuickLinksOpen ? " is-active" : ""}`}
-            title="Quick Links"
-            data-rail-id="quick-links"
-            aria-label="Quick Links"
-            aria-controls="quick-links-popover"
-            aria-haspopup="dialog"
-            aria-expanded={isQuickLinksOpen}
-            aria-pressed={isQuickLinksOpen}
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              setIsQuickLinksOpen((current) => !current);
-            }}
-          >
-            <Star aria-hidden="true" fill={isQuickLinksOpen ? "currentColor" : "none"} />
-          </button>
-        ) : null}
-        {lowerRailVisibility.isVisible("docks") ? (
-          <DesktopNavigation docksOnly actions={roomToolbarActions}
-            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-            onModeChange={() => undefined}
-            onAction={(action, anchor) => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              runDesktopAction(action, anchor);
-            }} />
-        ) : null}
-        {lowerRailVisibility.isVisible("tools") ? (
-          <DesktopNavigation toolsOnly actions={workspaceNavigationActions}
-            adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-            onModeChange={() => {
-              setAdminModeRequested(!isAdminMode);
-              setIsServerActionsMenuOpen(false);
-              if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
-            }}
-            onAction={(action, anchor) => {
-              setIsThemeMenuOpen(false);
-              if (action.id !== "pane-layout") {
-                setIsPaneLayoutMenuOpen(false);
-                setIsCollapsedPaneLayoutMenuOpen(false);
-              }
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              if (action.id !== "vibe-music") setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              runDesktopAction(action, anchor);
-            }}
-            hiddenRailIds={lowerRailVisibility.hiddenIds} />
-        ) : null}
-        {lowerRailVisibility.isVisible("fullscreen") ? (
-          <button
-            type="button"
-            className={`room-toolbar-visibility-button room-rail-secondary dock-fullscreen-toggle${isBrowserFullscreen ? " is-active" : ""}`}
-            title={isBrowserFullscreen ? "Exit full screen (F11)" : "Full screen browser (F11)"}
-            data-rail-id="fullscreen"
-            aria-label={isBrowserFullscreen ? "Exit full screen" : "Full screen browser"}
-            aria-pressed={isBrowserFullscreen}
-            onClick={() => {
-              setIsThemeMenuOpen(false);
-              setIsPaneLayoutMenuOpen(false);
-              setIsCollapsedPaneLayoutMenuOpen(false);
-              setIsPaneSpanAllMenuOpen(false);
-              setIsWorkspaceTextSizePickerOpen(false);
-              setIsVibeMusicOpen(false);
-              setLowerRailVisibilityMenu(null);
-              void toggleBrowserFullscreen();
-            }}
-          >
-            {isBrowserFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          </button>
-        ) : null}
-        {showMinimizedBarToggle && auth?.user?.role !== "ADMIN" && lowerRailVisibility.isVisible("minimized-bar") ? (
-          <MinimizedPaneBarToggle
-            count={minimizedPanes.length}
-            runningCount={minimizedPaneRunningCount}
-            expanded={showMinimizedBar}
-            onToggle={() => setMinimizedBarExpanded((value) => !value)}
-          />
-        ) : null}
-        <button
-          type="button"
-          className="room-toolbar-visibility-button"
-          title="Show room toolbar"
-          data-rail-id="expand"
-          aria-label="Show room toolbar"
-          onClick={() => updateRoomToolbarVisibility(false)}
-        >
-          <PanelTopOpen aria-hidden="true" />
-        </button>
-        {lowerRailVisibility.isVisible("more") ? (
-          <div className="room-rail-more">
-            <DesktopNavigation workspaceOnly actions={workspaceNavigationActions}
-              renderWorkspaceAction={renderWorkspaceAction} onWorkspaceDetailChange={setWorkspaceNavigationDetail} workspaceDetailActionIds={workspaceDetailActionIds}
-              renderCreateTools={renderDesktopCreateTools} hiddenRailIds={lowerRailVisibility.hiddenIds}
-              adminMode={isAdminMode} canAdmin={auth?.user?.role === "ADMIN"}
-              availablePanes={Math.max(0, 16 - panes.length)}
-              onModeChange={() => {
-                setAdminModeRequested(!isAdminMode);
-                setIsServerActionsMenuOpen(false);
-                if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
-              }} onAction={runDesktopAction} />
-          </div>
-        ) : null}
-        {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
-          <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-            <LazyPaneLayoutMenu
-              automaticColumns={layoutAutomaticPaneGridColumnCount}
-              currentColumns={activeRoom.paneLayoutColumns ?? null}
-              currentHeight={activeRoom.paneLayoutHeight ?? 1}
-              error={paneLayoutError}
-              maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
-              menuId="pane-layout-presets-collapsed"
-              onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
-              onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
-              onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
-              pending={paneLayoutPending}
-              triggerRef={paneLayoutCollapsedButtonRef}
-              visiblePaneCount={effectiveLayoutPaneCount}
-              emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
-            />
-          </RecoverableSurface>
-        ) : null}
-        {isPaneSpanAllMenuOpen && activeRoom ? (
-          <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-            <LazyPaneSpanAllMenu
-              activeColumnCount={paneGridColumnCount}
-              currentSpan={commonPaneColumnSpan(visiblePanes)}
-              error={paneSpanAllError}
-              onClose={() => setIsPaneSpanAllMenuOpen(false)}
-              onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
-              pending={paneSpanAllPending}
-              triggerRef={paneSpanAllButtonRef}
-              visiblePaneCount={visiblePanes.length}
-            />
-          </RecoverableSurface>
-        ) : null}
-        <WorkspaceTextSizePicker
-          anchorRef={workspaceTextSizeButtonRef}
-          open={isWorkspaceTextSizePickerOpen}
-          value={terminalFontSize}
-          onChange={setTerminalFontSize}
-          onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
-        />
-        {lowerRailVisibilityMenu ? (
-          <RailVisibilityMenu
-            anchorRef={collapsedToolbarRef}
-            items={
-              showMinimizedBarToggle && auth?.user?.role !== "ADMIN"
-                ? [
-                    ...DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more"),
-                    ...railVisibilityItems(["minimized-bar"], LOWER_RAIL_LABELS, LOWER_RAIL_NON_HIDEABLE),
-                  ]
-                : DEFAULT_LOWER_RAIL_ITEMS.filter((item) => item.id !== "expand" && item.id !== "more")
-            }
-            hiddenIds={lowerRailVisibility.hiddenIds}
-            label="Rail icons"
-            x={lowerRailVisibilityMenu.x}
-            y={lowerRailVisibilityMenu.y}
-            onClose={() => setLowerRailVisibilityMenu(null)}
-            onHide={lowerRailVisibility.hide}
-            onShow={lowerRailVisibility.show}
-            onShowAll={lowerRailVisibility.showAll}
-          />
-        ) : null}
-      </div>
-    );
+  function toggleAdminMode() {
+    setAdminModeRequested(!isAdminMode);
+    setIsServerActionsMenuOpen(false);
+    if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
   }
+
+  const workspaceNavigation: WorkspaceNavigationBinding = {
+    desktopToolbarActions,
+    roomToolbarActions,
+    workspaceNavigationActions,
+    workspaceDetailActionIds,
+    isAdminMode,
+    canAdmin: auth?.user?.role === "ADMIN",
+    onModeChange: toggleAdminMode,
+    runDesktopAction,
+    renderDesktopCreateTools,
+    renderWorkspaceAction,
+    setWorkspaceNavigationDetail,
+    availablePanes: Math.max(0, 16 - panes.length),
+    emptySlots: activeRoomEmptySlotsMetrics ?? undefined
+  };
 
   return (
     <AppIconProvider pack={modernIconPack}>
@@ -10187,7 +6794,7 @@ export function App() {
       {desktopWidgetsLayer}
       {snipToolOverlay}
       <StreamingOverlayProvider active={auth.user?.role === "ADMIN"}>
-      {setupConnectionsMounted.current ? (
+      {manage.setupConnectionsMounted.current ? (
         <RecoverableSurface
           fallback={(
             <div className="setup-connections-backdrop" role="status">
@@ -10290,100 +6897,50 @@ export function App() {
           handleClipImageSelection(file);
         }}
       />
-      {watchdogAlerts.map((alert) => (
-        <div key={alert.id} className="banner bad" role="alert">
-          <div className="notice-row">
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <ShieldAlert size={16} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <span>{alert.message}</span>
-            </div>
-            <button
-              type="button"
-              className="notice-close"
-              aria-label="Dismiss watchdog alert"
-              title="Dismiss watchdog alert"
-              onClick={() => setWatchdogAlerts((current) => current.filter((item) => item.id !== alert.id))}
-            >
-              <X aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      ))}
+      <AppNoticeBanners
+        notices={notices}
+        actionError={error}
+        onDismissActionError={() => setError(null)}
+        vpnCityNotice={vpnCityNotice}
+        vpnCityNoticeRef={vpnCityNoticeRef}
+        onDismissVpnCityNotice={() => setVpnCityNotice(null)}
+        isRoomFocusMode={isRoomFocusMode}
+        isDemoRuntime={runtimeKind === "demo"}
+      />
 
-      <GlobalApiErrorAlert actionError={error} onDismissActionError={() => setError(null)} />
-      {storageWarning && (!isRoomFocusMode || runtimeKind === "demo") && dismissedStorageWarning !== storageWarning ? (
-        <div className="banner warn" role="status">
-          <div className="notice-row">
-            <span>{storageWarning}</span>
-            <button
-              type="button"
-              className="notice-close"
-              aria-label="Dismiss message"
-              title="Dismiss message"
-              onClick={() => {
-                setDismissedStorageWarning(storageWarning);
-                writeStoredSessionString(DISMISSED_STORAGE_WARNING_STORAGE_KEY, storageWarning);
-              }}
-            >
-              <X aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {clipToolNotice ? (
-        <div className="banner warn" role="status">
-          <div className="notice-row"><span>{clipToolNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipToolNotice(null)}><X aria-hidden="true" /></button></div>
-        </div>
-      ) : null}
-      {vpnCityNotice ? (
-        <div ref={vpnCityNoticeRef} className="banner ok" role="status">
-          <div className="notice-row"><span>{vpnCityNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setVpnCityNotice(null)}><X aria-hidden="true" /></button></div>
-        </div>
-      ) : null}
-      {!isRoomFocusMode && clipboardNotice ? (
-        <div className="banner warn" role="status">
-          <div className="notice-row"><span>{clipboardNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setClipboardNotice(null)}><X aria-hidden="true" /></button></div>
-        </div>
-      ) : null}
-      {accountNotice ? (
-        <div className="banner ok" role="status">
-          <div className="notice-row"><span>{accountNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setAccountNotice(null)}><X aria-hidden="true" /></button></div>
-        </div>
-      ) : null}
-      {accountError ? (
-        <div className="banner warn" role="alert">
-          <div className="notice-row"><span>{accountError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setAccountError(null)}><X aria-hidden="true" /></button></div>
-        </div>
-      ) : null}
-
-      {auth?.user?.role === "ADMIN" && adminCodexTool ? (
+      {auth?.user?.role === "ADMIN" && manage.adminCodexTool ? (
         <RecoverableSurface fallback={<div role="status">Loading Codex tools…</div>}>
           <LazyAdminCodexToolsDialog
-            initialTool={adminCodexTool}
+            initialTool={manage.adminCodexTool}
             isCodexEnabled={isCodexEnabled}
             anyCliEnabled={anyCliEnabled}
-            onClose={closeAdminCodexTool}
+            onClose={manage.closeAdminCodexTool}
           />
         </RecoverableSurface>
       ) : null}
 
-      {auth?.user?.role === "ADMIN" && adminOperationTool ? (
+      {auth?.user?.role === "ADMIN" && manage.adminOperationTool ? (
         <RecoverableSurface fallback={<div role="status">Loading admin operation…</div>}>
-          <LazyAdminOperationsDialog initialTool={adminOperationTool} onClose={closeAdminOperationTool} />
+          <LazyAdminOperationsDialog initialTool={manage.adminOperationTool} onClose={manage.closeAdminOperationTool} />
+        </RecoverableSurface>
+      ) : null}
+      {jobCopilotLaunch ? (
+        <RecoverableSurface fallback={<div role="status">Loading Job Copilot…</div>}>
+          <LazyJobCopilotLaunchDialog onClose={() => setJobCopilotLaunch(null)} onCreate={createJobCopilotPanes} />
         </RecoverableSurface>
       ) : null}
 
-      {auth?.user?.role === "ADMIN" && isSystemServicesDialogOpen ? (
+      {auth?.user?.role === "ADMIN" && manage.isSystemServicesDialogOpen ? (
         <RecoverableSurface fallback={<div role="status">Loading system services…</div>}>
-          <LazySystemServicesDialog onClose={() => setIsSystemServicesDialogOpen(false)} />
+          <LazySystemServicesDialog onClose={manage.closeSystemServicesDialog} />
         </RecoverableSurface>
       ) : null}
 
-      {auth?.user?.role === "ADMIN" && isUserManagementOpen ? (
+      {auth?.user?.role === "ADMIN" && manage.isUserManagementOpen ? (
         <RecoverableSurface fallback={<div role="status">Loading user management…</div>}>
           <LazyUserManagementDialog
             currentUserId={auth.user?.id}
-            onClose={closeUserManagement}
+            onClose={manage.closeUserManagement}
           />
         </RecoverableSurface>
       ) : null}
@@ -10416,7 +6973,7 @@ export function App() {
           <LazyServerActionsMenu
             actions={serverActionCommands}
             suspended={!isServerActionsMenuOpen}
-            initialAction={manageInitialAction}
+            initialAction={manage.manageInitialAction}
             renderAction={renderWorkspaceManageAction}
             renderGroupIntro={renderManageGroupIntro}
             mobile={shellMode === "mobile"}
@@ -10426,105 +6983,9 @@ export function App() {
         </RecoverableSurface>
       ) : null}
 
-      {isServerRestartDialogOpen ? (
-        <div
-          className="attachment-modal server-restart-modal"
-          onClick={closeServerRestartDialog}
-        >
-          <section
-            className="attachment-modal-body server-restart-modal-body"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Restart Space server"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && !serverRestartPending) {
-                event.preventDefault();
-                closeServerRestartDialog();
-              }
-            }}
-          >
-            <header>
-              <span className="server-restart-modal-icon warning">
-                <ServerCog aria-hidden="true" />
-              </span>
-              <div>
-                <h3>Restart Space server</h3>
-                <p>Restarts space-worker.service, space-api.service, and space-web.service.</p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close Restart Space server"
-                disabled={serverRestartPending}
-                onClick={closeServerRestartDialog}
-              >
-                <X aria-hidden="true" />
-              </button>
-            </header>
-            <p>CLI and browser sessions stay protected because codex-pane-host, the admin host, and the browser host are not restarted.</p>
-            {serverRestartMessage ? <p className="server-restart-status" role="status"><span>{serverRestartMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartMessage(null)}><X aria-hidden="true" /></button></p> : null}
-            {serverRestartError ? <p className="server-restart-error" role="alert"><span>{serverRestartError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setServerRestartError(null)}><X aria-hidden="true" /></button></p> : null}
-            <div className="server-restart-modal-actions">
-              <button type="button" autoFocus onClick={closeServerRestartDialog} disabled={serverRestartPending}>
-                Cancel
-              </button>
-              <button type="button" className="danger" onClick={() => void confirmServerRestart()} disabled={serverRestartPending}>
-                {serverRestartPending ? "Restarting..." : "Restart server"}
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      {manage.serverRestart.isOpen ? <ServerRestartDialog controller={manage.serverRestart} /> : null}
 
-      {isCliRuntimeRestartAllDialogOpen ? (
-        <div
-          className="attachment-modal server-restart-modal"
-          onClick={closeCliRuntimeRestartAllDialog}
-        >
-          <section
-            className="attachment-modal-body server-restart-modal-body"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Restart all CLI runtimes"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && !cliRuntimeRestartAllPending) {
-                event.preventDefault();
-                closeCliRuntimeRestartAllDialog();
-              }
-            }}
-          >
-            <header>
-              <span className="server-restart-modal-icon">
-                <Terminal aria-hidden="true" />
-              </span>
-              <div>
-                <h3>Restart all CLI runtimes</h3>
-                <p>Stops and restarts the sessions of every CLI type one after another.</p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close Restart all CLI runtimes"
-                disabled={cliRuntimeRestartAllPending}
-                onClick={closeCliRuntimeRestartAllDialog}
-              >
-                <X aria-hidden="true" />
-              </button>
-            </header>
-            <p>Codex, claude, gemini, opencode, kimi, and the other CLI runtimes are restarted individually; the pane host service itself is not restarted.</p>
-            {cliRuntimeRestartAllMessage ? <p className="server-restart-status" role="status"><span>{cliRuntimeRestartAllMessage}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllMessage(null)}><X aria-hidden="true" /></button></p> : null}
-            {cliRuntimeRestartAllError ? <p className="server-restart-error" role="alert"><span>{cliRuntimeRestartAllError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setCliRuntimeRestartAllError(null)}><X aria-hidden="true" /></button></p> : null}
-            <div className="server-restart-modal-actions">
-              <button type="button" autoFocus onClick={closeCliRuntimeRestartAllDialog} disabled={cliRuntimeRestartAllPending}>
-                Cancel
-              </button>
-              <button type="button" className="danger" onClick={() => void confirmCliRuntimeRestartAll()} disabled={cliRuntimeRestartAllPending}>
-                {cliRuntimeRestartAllPending ? "Restarting..." : "Restart all CLI runtimes"}
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      {manage.cliRuntimeRestartAll.isOpen ? <CliRuntimeRestartAllDialog controller={manage.cliRuntimeRestartAll} /> : null}
 
       {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
       {auth.user?.role === "ADMIN" ? (
@@ -10555,76 +7016,84 @@ export function App() {
         onReopenAllDetached={auth.user.role === "ADMIN" ? reopenAllDetachedPanes : undefined}
         onCloseSession={auth.user.role === "ADMIN" ? closeDetachedPane : undefined} />}
 
-      {renderCollapsedToolbar()}
+      {isMobilePaneFocused || !isRoomToolbarHidden || showOverlaySideSurface || systemAnalyticsTab ? null : (
+        <CollapsedRoomRail
+          popovers={toolbarPopovers}
+          railVisibility={lowerRailVisibility}
+          touchContext={lowerRailTouchContext}
+          navigation={workspaceNavigation}
+          roomNavigation={{ previousRoom, nextRoom, selectRoom }}
+          docks={sideSurfaces}
+          liveRail={liveRail}
+          onActivateLive={activateLiveFromRail}
+          liveDisabled={!selectedRoomId && !activeRoom && rooms.length === 0}
+          hasActiveRoom={Boolean(activeRoom)}
+          paneLayoutPending={paneLayoutPending}
+          stickyWindowCount={stickyWindows.length}
+          openStickyNote={openStickyNote}
+          snip={snipTool}
+          isBrowserFullscreen={isBrowserFullscreen}
+          minimized={{
+            showInRail: showMinimizedBarToggle && auth?.user?.role !== "ADMIN",
+            count: minimizedPanes.length,
+            runningCount: minimizedPaneRunningCount,
+            expanded: showMinimizedBar,
+            onToggle: () => setMinimizedBarExpanded((value) => !value)
+          }}
+          onShowToolbar={() => updateRoomToolbarVisibility(false)}
+          paneMenus={(
+            <>
+          {isCollapsedPaneLayoutMenuOpen && activeRoom ? (
+            <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+              <LazyPaneLayoutMenu
+                automaticColumns={layoutAutomaticPaneGridColumnCount}
+                currentColumns={activeRoom.paneLayoutColumns ?? null}
+                currentHeight={activeRoom.paneLayoutHeight ?? 1}
+                error={paneLayoutError}
+                maximumColumns={shellMode === "mobile" ? 1 : shellMode === "tablet" ? 2 : 4}
+                menuId="pane-layout-presets-collapsed"
+                onClose={() => setIsCollapsedPaneLayoutMenuOpen(false)}
+                onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+                onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
+                pending={paneLayoutPending}
+                triggerRef={paneLayoutCollapsedButtonRef}
+                visiblePaneCount={effectiveLayoutPaneCount}
+                emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
+              />
+            </RecoverableSurface>
+          ) : null}
+          {isPaneSpanAllMenuOpen && activeRoom ? (
+            <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+              <LazyPaneSpanAllMenu
+                activeColumnCount={paneGridColumnCount}
+                currentSpan={commonPaneColumnSpan(visiblePanes)}
+                error={paneSpanAllError}
+                onClose={() => setIsPaneSpanAllMenuOpen(false)}
+                onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+                pending={paneSpanAllPending}
+                triggerRef={paneSpanAllButtonRef}
+                visiblePaneCount={visiblePanes.length}
+              />
+            </RecoverableSurface>
+          ) : null}
+          <WorkspaceTextSizePicker
+            anchorRef={workspaceTextSizeButtonRef}
+            open={isWorkspaceTextSizePickerOpen}
+            value={terminalFontSize}
+            onChange={setTerminalFontSize}
+            onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
+          />
+            </>
+          )}
+        />
+      )}
 
       <div className="workspace-stage">
       <section className={workspaceClassName}
         inert={isMemoryWorkspaceOpen || undefined}
         aria-hidden={isMemoryWorkspaceOpen || undefined}>
-        {mountInlineSideSurface ? (
-          <aside className="side-surface side-surface-inline" aria-label={activeSideSurfaceLabel} data-surface={activeSideSurface}
-            style={showInlineSideSurface ? undefined : { display: "none" }}
-            aria-hidden={showInlineSideSurface ? undefined : true}
-            inert={showInlineSideSurface ? undefined : true}>
-            <div className="desktop-dock-header">
-              <span><strong>{activeSideSurfaceDockTitle}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
-              <div className="dock-nav-controls">
-                <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
-                  onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
-                <button type="button" className="icon-button" aria-label="Next dock" title="Next dock"
-                  onClick={() => navigateDock("next")}><ChevronRight aria-hidden="true" /></button>
-                <button type="button" className="icon-button" aria-label={activeSideSurfaceCloseLabel}
-                  title={activeSideSurfaceCloseLabel}
-                  onClick={() => setIsDesktopSideSurfaceOpen(false)}><X aria-hidden="true" /></button>
-              </div>
-            </div>
-            <DockKeepAliveHost
-              activeSurface={activeSideSurface}
-              isOpen={showInlineSideSurface}
-              renderSurface={renderSideSurfaceContent}
-              fallback={sideSurfaceLoadingFallback}
-            />
-          </aside>
-        ) : null}
-        {showOverlaySideSurface ? (
-          <>
-            <button className="surface-dismiss-layer" type="button" aria-label={activeSideSurfaceCloseLabel} onClick={closeCompactSideSurface} />
-            <aside
-              ref={compactSideSurfaceRef}
-              className="side-surface side-surface-drawer"
-              role="dialog"
-              aria-modal="true"
-              aria-label={activeSideSurfaceLabel}
-              data-surface={activeSideSurface}
-              data-surface-mode="drawer"
-            >
-              <div className="surface-header">
-                <span><strong>{activeSideSurfaceDockTitle}</strong><small>{desktopActionDescriptions[`surface-${activeSideSurface}`]}</small></span>
-                <div className="dock-nav-controls">
-                  <button type="button" className="icon-button" aria-label="Previous dock" title="Previous dock"
-                    onClick={() => navigateDock("prev")}><ChevronLeft aria-hidden="true" /></button>
-                  <button type="button" className="icon-button" aria-label="Next dock" title="Next dock"
-                    onClick={() => navigateDock("next")}><ChevronRight aria-hidden="true" /></button>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={activeSideSurfaceCloseLabel}
-                    title={activeSideSurfaceCloseLabel}
-                    onClick={closeCompactSideSurface}
-                  >
-                    <X aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-              <DockKeepAliveHost
-                activeSurface={activeSideSurface}
-                isOpen={showOverlaySideSurface}
-                renderSurface={renderSideSurfaceContent}
-                fallback={sideSurfaceLoadingFallback}
-              />
-            </aside>
-          </>
-        ) : null}
+        <InlineSideSurface sideSurfaces={sideSurfaces} launcherActions={roomToolbar.orderedActions} renderSurface={renderSideSurfaceContent} fallback={sideSurfaceLoadingFallback} />
+        <CompactSideSurfaceDrawer sideSurfaces={sideSurfaces} launcherActions={roomToolbar.orderedActions} renderSurface={renderSideSurfaceContent} fallback={sideSurfaceLoadingFallback} />
 
         <section className={boardClassName} aria-label="Pane board">
           {!isMobilePaneFocused && !isRoomToolbarHidden ? (
@@ -10636,436 +7105,137 @@ export function App() {
               aria-disabled={preparingRoomId ? "true" : undefined}
               inert={preparingRoomId ? true : undefined}
             >
-            <div className="board-toolbar-main">
-              <div className="board-title-row">
-                <button type="button" className="desktop-rooms-toggle"
-                  aria-label={sideSurfaceToggleLabel("rooms")} title={sideSurfaceToggleLabel("rooms")}
-                  aria-pressed={isSideSurfaceOpen && activeSideSurface === "rooms"}
-                  onClick={() => toggleSideSurface("rooms")}><PanelLeft aria-hidden="true" /></button>
-                <SpaceBrand onActivate={() => void minimizeAllPanes()} />
-                <div className="board-title-heading">
-                  {isRoomRenameOpen && presentationRoom ? (
-                    <form className="room-title-form" onSubmit={submitRoomRename}>
-                      <input
-                        aria-label="Room name"
-                        placeholder="Room name"
-                        value={roomNameDraft}
-                        disabled={roomRenamePending}
-                        onChange={(event) => setRoomNameDraft(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            cancelRoomRename();
-                          }
-                        }}
-                        autoFocus
-                      />
-                      <button
-                        type="submit"
-                        className="room-title-save"
-                        title="Save room name"
-                        aria-label="Save room name"
-                        disabled={roomRenamePending}
-                      >
-                        <Save aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        className="room-title-cancel"
-                        title="Cancel room rename"
-                        aria-label="Cancel room rename"
-                        onClick={cancelRoomRename}
-                        disabled={roomRenamePending}
-                      >
-                        <Undo2 aria-hidden="true" />
-                      </button>
-                    </form>
-                  ) : (
-                    <>
-                      <h2 title={presentationRoom?.name ?? "No room"} onContextMenu={(event) => {
-                        if (shellMode !== "mobile") return;
-                        event.preventDefault();
-                        setRoomNamePreview(presentationRoom?.name ?? "No room");
-                      }} onTouchStart={shellMode === "mobile" ? () => {
-                        const name = presentationRoom?.name ?? "No room";
-                        roomNameHoldTimerRef.current = window.setTimeout(() => setRoomNamePreview(name), 500);
-                      } : undefined} onTouchEnd={() => {
-                        if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
-                      }} onTouchMove={() => {
-                        if (roomNameHoldTimerRef.current !== null) window.clearTimeout(roomNameHoldTimerRef.current);
-                      }}>{presentationRoom?.name ?? "No room"}</h2>
-                      {presentationRoom ? (() => {
-                        const effectiveProj = presentationRoom.projectPath || "/opt/spaceapp";
-                        return (
-                          <button
-                            type="button"
-                            className="room-project-pill"
-                            title={`Project: ${effectiveProj} • Click to open/focus File Manager`}
-                            aria-label={`Project: ${effectiveProj}`}
-                            onClick={async () => {
-                              const existingFilesPane = panes.find((p) => !p.isClosed && p.mode === "FILES");
-                              if (existingFilesPane) {
-                                setSelectedPaneId(existingFilesPane.id);
-                                window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: effectiveProj } }));
-                              } else {
-                                await addFilesPane(1, presentationRoom.id);
-                              }
-                            }}
-                          >
-                            <Folder aria-hidden="true" />
-                            <span>{effectiveProj.split("/").filter(Boolean).pop() || effectiveProj}</span>
-                          </button>
-                        );
-                      })() : null}
-                    </>
-                  )}
-                  {roomNamePreview && shellMode === "mobile" ? (
-                    <button type="button" className="mobile-room-name-preview" role="tooltip" aria-label={`Full room name: ${roomNamePreview}. Tap to dismiss`} onClick={() => setRoomNamePreview(null)}>{roomNamePreview}</button>
-                  ) : null}
-                  {presentationRoom ? (
-                    <div className="board-title-controls">
-                      {!isRoomRenameOpen ? (
-                        <button
-                          type="button"
-                          className="room-title-edit"
-                          title={`Rename ${presentationRoom.name}`}
-                          aria-label={`Rename ${presentationRoom.name}`}
-                          onClick={beginRoomRename}
-                        >
-                          <Pencil aria-hidden="true" />
-                        </button>
-                      ) : null}
-                      {userNavigableRooms.length > 1 ? (
-                        <div className="room-title-nav" role="group" aria-label="Room navigation">
-                          <button
-                            type="button"
-                            title="Previous room"
-                            aria-label="Previous room"
-                            disabled={!previousRoom}
-                            onClick={() => {
-                              if (previousRoom) {
-                                void selectRoom(previousRoom.id);
-                              }
-                            }}
-                          >
-                            <ChevronLeft aria-hidden="true" />
-                          </button>
-                          <button
-                            type="button"
-                            title="Next room"
-                            aria-label="Next room"
-                            disabled={!nextRoom}
-                            onClick={() => {
-                              if (nextRoom) {
-                                void selectRoom(nextRoom.id);
-                              }
-                            }}
-                          >
-                            <ChevronRight aria-hidden="true" />
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-              {roomRenameError ? <p className="room-title-error" role="alert"><span>{roomRenameError}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setRoomRenameError(null)}><X aria-hidden="true" /></button></p> : null}
-              {paneMoveNotice ? (
-                <div className="validation-result" role="status" aria-live="polite">
-                  <div className="notice-row"><span>{paneMoveNotice}</span><button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setPaneMoveNotice(null)}><X aria-hidden="true" /></button></div>
-                </div>
-              ) : null}
-            </div>
+            <RoomTitleBar
+              room={presentationRoom}
+              rename={roomRename}
+              shellMode={shellMode}
+              docks={sideSurfaces}
+              onMinimizeAllPanes={() => void minimizeAllPanes()}
+              onOpenProjectFiles={async (room, effectiveProj) => {
+                const existingFilesPane = panes.find((p) => !p.isClosed && p.mode === "FILES");
+                if (existingFilesPane) {
+                  setSelectedPaneId(existingFilesPane.id);
+                  window.dispatchEvent(new CustomEvent("space:files:navigate", { detail: { path: effectiveProj } }));
+                } else {
+                  await addFilesPane(1, room.id);
+                }
+              }}
+              canNavigateRooms={userNavigableRooms.length > 1}
+              previousRoom={previousRoom}
+              nextRoom={nextRoom}
+              selectRoom={selectRoom}
+              paneMoveNotice={paneMoveNotice}
+              setPaneMoveNotice={setPaneMoveNotice}
+            />
             <div
               id="toolbar-docked-widgets"
               className="toolbar-docked-widgets"
               role="region"
               aria-label="Docked toolbar widgets"
             />
-            <div className="toolbar-actions" ref={roomToolbarActionsRef} {...roomToolbarTouchContext}>
-              {presentationRoom ? (
-                renderToolbarMetrics()
-              ) : null}
-              <div ref={roomToolbarScrollRef} className="toolbar-actions-scroll">
-                <DesktopNavigation
-                  actions={workspaceNavigationActions}
-                  renderWorkspaceAction={renderWorkspaceAction} onWorkspaceDetailChange={setWorkspaceNavigationDetail} workspaceDetailActionIds={workspaceDetailActionIds}
-                  hiddenRailIds={lowerRailVisibility.hiddenIds}
-                  adminMode={isAdminMode}
-                  canAdmin={auth?.user?.role === "ADMIN"}
-                  availablePanes={Math.max(0, 16 - panes.length)}
-                  onModeChange={() => {
-                    setAdminModeRequested(!isAdminMode);
-                    setIsServerActionsMenuOpen(false);
-                    if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
-                  }}
-                  onAction={runDesktopAction}
-                  renderCreateTools={renderDesktopCreateTools}
-                  emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
-                  footer={runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
-                />
-              </div>
-              {roomToolbar.isOverflowOpen ? (
-                shellMode === "mobile" ? (
-                  <MobileActionSheet
-                    actionSections={uiTheme !== "classic" ? groupModernRoomActions(availableRoomActions) : undefined}
-                    actions={availableRoomActions}
-                    hiddenActionIds={roomToolbar.hiddenActionIds}
-                    label="Room actions"
-                    onClose={roomToolbar.closeMenus}
-                    onHideAction={roomToolbar.hideAction}
-                    onShowAction={roomToolbar.showAction}
-                    onRunAction={(action) => {
-                      roomToolbar.closeMenus();
-                      if (action.id !== "theme") setIsThemeMenuOpen(false);
-                      if (action.id !== "pane-layout") setIsPaneLayoutMenuOpen(false);
-                      if (action.id !== "pane-span-all") setIsPaneSpanAllMenuOpen(false);
-                      if (action.id !== "font-down") setIsWorkspaceTextSizePickerOpen(false);
-                      if (action.id !== "add-cli") setIsCliLauncherOpen(false);
-                      action.onClick();
-                    }}
-                    popupId="room-actions-popup"
-                    summary={<ToolbarMetricsSummary environment={codexEnvironmentSummary} />}
-                    triggerRef={roomOverflowTriggerRef}
-                  />
-                ) : (
-                  <DesktopActionManager
-                    actions={availableRoomActions}
-                    hiddenActionIds={roomToolbar.hiddenActionIds}
-                    label="Room actions"
-                    onClose={roomToolbar.closeMenus}
-                    onHideAction={roomToolbar.hideAction}
-                    onReorderAction={roomToolbar.moveAction}
-                    onShowAction={roomToolbar.showAction}
-                    popupId="room-actions-popup"
-                    triggerRef={roomOverflowTriggerRef}
-                  />
-                )
-              ) : null}
-              <div className="toolbar-actions-fixed" role="group" aria-label="Room utility controls">
-                {showMinimizedBarToggle ? (
-                  <MinimizedPaneBarToggle
-                    count={minimizedPanes.length}
-                    runningCount={minimizedPaneRunningCount}
-                    expanded={showMinimizedBar}
-                    onToggle={() => setMinimizedBarExpanded((value) => !value)}
-                  />
-                ) : null}
-                <button
-                  type="button"
-                  className="room-toolbar-visibility-button"
-                  title="Hide room toolbar"
-                  aria-label="Hide room toolbar"
-                  onClick={() => updateRoomToolbarVisibility(true)}
-                >
-                  <Minus aria-hidden="true" />
-                </button>
-              </div>
-              {shellMode !== "mobile" && isPaneLayoutMenuOpen && activeRoom ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyPaneLayoutMenu
-                    automaticColumns={layoutAutomaticPaneGridColumnCount}
-                    currentColumns={activeRoom.paneLayoutColumns ?? null}
-                    currentHeight={activeRoom.paneLayoutHeight ?? 1}
-                    error={paneLayoutError}
-                    maximumColumns={shellMode === "tablet" ? 2 : 4}
-                    onClose={() => setIsPaneLayoutMenuOpen(false)}
-                    onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
-                    onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
-                    pending={paneLayoutPending}
-                    triggerRef={paneLayoutButtonRef}
-                    visiblePaneCount={effectiveLayoutPaneCount}
-                    emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isPaneSpanAllMenuOpen && activeRoom ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyPaneSpanAllMenu
-                    activeColumnCount={paneGridColumnCount}
-                    currentSpan={commonPaneColumnSpan(visiblePanes)}
-                    error={paneSpanAllError}
-                    onClose={() => setIsPaneSpanAllMenuOpen(false)}
-                    onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
-                    pending={paneSpanAllPending}
-                    triggerRef={paneSpanAllButtonRef}
-                    visiblePaneCount={visiblePanes.length}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isCliLauncherOpen ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyCliLauncherMenu
-                    refreshOnOpen={true}
-                    atPaneCap={panes.length >= 16}
-                    availablePanes={Math.max(0, 16 - panes.length)}
-                    isCodexEnabled={isCodexEnabled}
-                    mobile={shellMode === "mobile"}
-                    onClose={() => setIsCliLauncherOpen(false)}
-                    onCreate={addCliRuntimePane}
-                    onLogin={openCliRuntimeLogin}
-                    onOpenSettings={openSettingsSurface}
-                    triggerRef={cliLauncherReturnFocusRef}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isChatLauncherOpen ? (
-                <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
-                  <LazyChatLauncherMenu
-                    mobile={shellMode === "mobile"}
-                    onClose={closeChatLauncher}
-                    onSelectChat={() => void addPane("CHAT")}
-                    onSelectHarness={() => void addHarnessPane()}
-                    onSelectLive={() => void addLivePane()}
-                    triggerRef={chatLauncherButtonRef}
-                    chatDisabled={!isCodexEnabled || panes.length >= 16}
-                    chatHidden={isPaneHidden("chat")}
-                    harnessDisabled={panes.length >= 16}
-                    harnessHidden={!isHarnessEnabled || isPaneHidden("harness")}
-                    liveDisabled={isPaneHidden("live") || panes.length >= 16}
-                    liveHidden={isPaneHidden("live")}
-                  />
-                </RecoverableSurface>
-              ) : null}
-              {isThemeMenuOpen ? (
-                <RoomThemeMenu
-                  currentTheme={roomTheme}
-                  mobile={shellMode === "mobile"}
-                  onClose={() => setIsThemeMenuOpen(false)}
-                  onSelect={setRoomTheme}
-                  triggerRef={roomThemeButtonRef}
-                />
-              ) : null}
-              <WorkspaceTextSizePicker
-                anchorRef={workspaceTextSizeButtonRef}
-                open={isWorkspaceTextSizePickerOpen}
-                value={terminalFontSize}
-                onChange={setTerminalFontSize}
-                onClose={() => setIsWorkspaceTextSizePickerOpen(false)}
-              />
-              {roomToolbar.actionMenu ? (
-                <div
-                  className="icon-context-menu"
-                  role="menu"
-                  aria-label={`Action menu ${roomToolbar.actionMenu.actionLabel}`}
-                  style={{ left: `${roomToolbar.actionMenu.x}px`, top: `${roomToolbar.actionMenu.y}px` }}
-                >
-                  {roomToolbar.actionMenu.actionId === "sensitive-data" ? (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        if (roomToolbar.actionMenu) {
-                          roomToolbar.closeMenus();
-                          toggleMaskSensitiveData();
-                        }
-                      }}
-                    >
-                      {maskSensitiveData ? "Show sensitive data" : "Hide sensitive data"}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        if (roomToolbar.actionMenu) {
-                          roomToolbar.hideAction(roomToolbar.actionMenu.actionId);
-                        }
-                      }}
-                    >
-                      Hide
-                    </button>
-                  )}
-                </div>
-              ) : null}
-            </div>
+            <RoomToolbarActions
+              popovers={toolbarPopovers}
+              touchContext={roomToolbarTouchContext}
+              roomToolbar={roomToolbar}
+              availableRoomActions={availableRoomActions}
+              navigation={workspaceNavigation}
+              hiddenRailIds={lowerRailVisibility.hiddenIds}
+              footer={runtimeKind === "demo" ? <DemoVersionMeta /> : <AppVersionMeta />}
+              metrics={presentationRoom ? renderToolbarMetrics() : null}
+              shellMode={shellMode}
+              uiTheme={uiTheme}
+              environment={codexEnvironmentSummary}
+              minimizedBar={minimizedPaneBar}
+              preferences={userPreferences}
+              onHideToolbar={() => updateRoomToolbarVisibility(true)}
+              menus={
+                <>
+                  {shellMode !== "mobile" && isPaneLayoutMenuOpen && activeRoom ? (
+                    <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                      <LazyPaneLayoutMenu
+                        automaticColumns={layoutAutomaticPaneGridColumnCount}
+                        currentColumns={activeRoom.paneLayoutColumns ?? null}
+                        currentHeight={activeRoom.paneLayoutHeight ?? 1}
+                        error={paneLayoutError}
+                        maximumColumns={shellMode === "tablet" ? 2 : 4}
+                        onClose={() => setIsPaneLayoutMenuOpen(false)}
+                        onSelect={(paneLayoutColumns) => void applyPaneLayoutPreset(paneLayoutColumns)}
+                        onSelectHeight={(paneLayoutHeight) => void applyPaneLayoutPreset(undefined, paneLayoutHeight, true)}
+                        pending={paneLayoutPending}
+                        triggerRef={paneLayoutButtonRef}
+                        visiblePaneCount={effectiveLayoutPaneCount}
+                        emptySlots={activeRoomEmptySlotsMetrics ?? undefined}
+                      />
+                    </RecoverableSurface>
+                  ) : null}
+                  {isPaneSpanAllMenuOpen && activeRoom ? (
+                    <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                      <LazyPaneSpanAllMenu
+                        activeColumnCount={paneGridColumnCount}
+                        currentSpan={commonPaneColumnSpan(visiblePanes)}
+                        error={paneSpanAllError}
+                        onClose={() => setIsPaneSpanAllMenuOpen(false)}
+                        onSelect={(columnSpan) => void applyPaneSpanToAll(columnSpan)}
+                        pending={paneSpanAllPending}
+                        triggerRef={paneSpanAllButtonRef}
+                        visiblePaneCount={visiblePanes.length}
+                      />
+                    </RecoverableSurface>
+                  ) : null}
+                  {isCliLauncherOpen ? (
+                    <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                      <LazyCliLauncherMenu
+                        refreshOnOpen={true}
+                        atPaneCap={panes.length >= 16}
+                        availablePanes={Math.max(0, 16 - panes.length)}
+                        isCodexEnabled={isCodexEnabled}
+                        mobile={shellMode === "mobile"}
+                        onClose={() => setIsCliLauncherOpen(false)}
+                        onCreate={addCliRuntimePane}
+                        onLogin={openCliRuntimeLogin}
+                        onOpenSettings={openSettingsSurface}
+                        triggerRef={cliLauncherReturnFocusRef}
+                      />
+                    </RecoverableSurface>
+                  ) : null}
+                  {isChatLauncherOpen ? (
+                    <RecoverableSurface fallback={toolbarMenuLoadingFallback}>
+                      <LazyChatLauncherMenu
+                        mobile={shellMode === "mobile"}
+                        onClose={closeChatLauncher}
+                        onSelectChat={() => void addPane("CHAT")}
+                        onSelectHarness={() => void addHarnessPane()}
+                        onSelectLive={() => void addLivePane()}
+                        triggerRef={chatLauncherButtonRef}
+                        chatDisabled={!isCodexEnabled || panes.length >= 16}
+                        chatHidden={isPaneHidden("chat")}
+                        harnessDisabled={panes.length >= 16}
+                        harnessHidden={!isHarnessEnabled || isPaneHidden("harness")}
+                        liveDisabled={isPaneHidden("live") || panes.length >= 16}
+                        liveHidden={isPaneHidden("live")}
+                      />
+                    </RecoverableSurface>
+                  ) : null}
+                </>
+              }
+            />
             </div>
           ) : null}
           {showPaneNavigation ? (
             <div className="pane-navigation">
               {showMinimizedBar ? (
-                <section
-                  className={`minimized-pane-bar${minimizedBarPreviewMode ? " is-preview-mode" : ""}`}
-                  id={MINIMIZED_PANE_BAR_ID}
-                  aria-label="Minimized panes"
-                >
-                  <div className="minimized-pane-items">
-                    {visiblePanes.length === 0 ? (
-                      <span className="all-panes-minimized" role="status">All panes minimized</span>
-                    ) : null}
-                    {minimizedPanes.map((pane) => {
-                      const paneRunActive =
-                        paneCompletionLifecycle.panes[pane.id]?.activeRunKey != null;
-                      const fullTitle = formatPaneFullTitle(pane);
-                      const latestTurn = pane.mode === "CHAT" ? turns.find((t) => t.paneId === pane.id) ?? null : null;
-                      if (minimizedBarPreviewMode) {
-                        return (
-                          <MinimizedPanePreviewCard
-                            key={pane.id}
-                            pane={pane}
-                            icon={<PaneModeIcon pane={pane} />}
-                            title={displayPaneTitle(pane)}
-                            subtitle={minimizedPaneSubtitle(pane)}
-                            fullTitle={fullTitle}
-                            modeLabel={paneModeLabel(pane.mode)}
-                            isRunning={paneRunActive}
-                            latestTurn={latestTurn}
-                            onRestore={() => void restorePane(pane)}
-                          />
-                        );
-                      }
-                      return (
-                        <MinimizedPaneChip
-                          key={pane.id}
-                          pane={pane}
-                          icon={<PaneModeIcon pane={pane} />}
-                          title={displayPaneTitle(pane)}
-                          fullTitle={fullTitle}
-                          isRunning={paneRunActive}
-                          latestTurn={latestTurn}
-                          buttonRef={(element) => {
-                            if (element) minimizedPaneRestoreRefs.current.set(pane.id, element);
-                            else minimizedPaneRestoreRefs.current.delete(pane.id);
-                          }}
-                          onRestore={() => void restorePane(pane)}
-                        />
-                      );
-                    })}
-                  </div>
-                  <div className="minimized-pane-bar-actions">
-                    <button
-                      type="button"
-                      className={`minimized-preview-toggle${minimizedBarPreviewMode ? " is-active" : ""}`}
-                      aria-label={minimizedBarPreviewMode ? "Collapse pane preview" : "Expand pane preview"}
-                      title={minimizedBarPreviewMode ? "Collapse pane preview" : "Expand pane preview"}
-                      aria-pressed={minimizedBarPreviewMode}
-                      onClick={toggleMinimizedBarPreviewMode}
-                    >
-                      <Eye aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="minimize-all-panes"
-                      aria-label="Minimize all visible panes"
-                      title="Minimize all visible panes"
-                      disabled={minimizeAllPending || visiblePanes.length === 0}
-                      onClick={() => void minimizeAllPanes()}
-                    >
-                      <Minus aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="restore-all-panes"
-                      aria-label="Restore all minimized panes"
-                      title="Restore all minimized panes"
-                      aria-busy={restoreAllPending}
-                      disabled={restoreAllPending}
-                      onClick={() => void restoreAllPanes()}
-                    >
-                      <Grid2X2 aria-hidden="true" />
-                    </button>
-                  </div>
-                </section>
+                <MinimizedPaneBar
+                  bar={minimizedPaneBar}
+                  visiblePaneCount={visiblePanes.length}
+                  paneCompletionLifecycle={paneCompletionLifecycle}
+                  turns={turns}
+                  restoreRefs={minimizedPaneRestoreRefs}
+                  restorePane={restorePane}
+                  minimizeAllPanes={minimizeAllPanes}
+                  restoreAllPanes={restoreAllPanes}
+                  minimizeAllPending={minimizeAllPending}
+                  restoreAllPending={restoreAllPending}
+                />
               ) : null}
             </div>
           ) : null}
@@ -11118,26 +7288,7 @@ export function App() {
           <LazyEmbeddedDashboardDialog link={activeUserLink} onClose={() => setActiveUserLink(null)} />
         </RecoverableSurface>
       ) : null}
-      {liveDebugToast ? (
-        <aside
-          className={`live-debug-toast is-${liveDebugToast.type}`}
-          role="status"
-          aria-live="polite"
-          onClick={() => setLiveDebugToast(null)}
-        >
-          <span>{liveDebugToast.message}</span>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={(e) => {
-              e.stopPropagation();
-              setLiveDebugToast(null);
-            }}
-          >
-            ×
-          </button>
-        </aside>
-      ) : null}
+      <LiveDebugToastView notices={notices} />
       </main>
       <StreamingOverlay theme={uiTheme !== "classic" ? "modern" : "classic"} />
       </StreamingOverlayProvider>
@@ -11145,362 +7296,6 @@ export function App() {
     </AppIconProvider>
   );
 }
-
-
-const providerTypeOptions: CreateProviderInput["type"][] = ["CODEX_LB", "OPENAI", "ANTHROPIC", "LOCAL", "CUSTOM"];
-const providerRouteProfileOptions: NonNullable<Provider["routeProfile"]>[] = [
-  "headroom",
-  "direct-primary",
-  "direct-auto",
-  "direct-fallback",
-  "openai-direct",
-  "custom"
-];
-
-interface ProviderFormState {
-  id: string;
-  displayName: string;
-  type: CreateProviderInput["type"];
-  baseUrl: string;
-  routeProfile: NonNullable<Provider["routeProfile"]>;
-  backingProviderId: string;
-  credentialRef: string;
-}
-
-const emptyProviderForm: ProviderFormState = {
-  id: "",
-  displayName: "",
-  type: "CUSTOM",
-  baseUrl: "",
-  routeProfile: "custom",
-  backingProviderId: "",
-  credentialRef: ""
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const AGENT_PANE_SETTINGS_EVENT = "space:agent-pane-settings-updated";
-
-function dispatchAgentPaneSettingsUpdated(paneId: string | null, session?: AgentPaneSession) {
-  window.dispatchEvent(new CustomEvent(AGENT_PANE_SETTINGS_EVENT, { detail: { paneId, session } }));
-}
-
-function providerRouteLabel(provider: Provider): string {
-  return [provider.routeProfile ?? "custom", provider.backingProviderId ?? provider.type.toLowerCase()].join(" / ");
-}
-
-function AgentSettingsDock({
-  adminMode,
-  onOpenSetup,
-  activePane: _activePane,
-  canManageCliRuntimes,
-  canManageDiagnostics,
-  canManageSourceControl,
-  canManageTelegram,
-  currentAppearance,
-  currentBackground = "spaceapp",
-  currentIconPack,
-  currentUiTheme,
-  isCodexEnabled,
-  isHarnessEnabled = true,
-  suppressNotifications,
-  providerSettings,
-  providers,
-  gitPluginsActive,
-  onUiThemeApply,
-  onSuppressNotificationsChange,
-  onProviderSettingsRefresh,
-  auth,
-  onAuthRefresh
-}: {
-  adminMode: boolean;
-  onOpenSetup: () => void;
-  activePane?: Pane | null;
-  canManageCliRuntimes: boolean;
-  canManageDiagnostics: boolean;
-  canManageSourceControl: boolean;
-  canManageTelegram: boolean;
-  currentAppearance: ModernAppearance;
-  currentBackground?: UiBackground;
-  currentIconPack: ModernIconPack;
-  currentUiTheme: UiTheme;
-  isCodexEnabled: boolean;
-  isHarnessEnabled?: boolean;
-  suppressNotifications: boolean;
-  providerSettings: ProviderSettings | null;
-  providers: Provider[];
-  gitPluginsActive?: boolean;
-  onUiThemeApply: (selection: { appearance: ModernAppearance; background: UiBackground; iconPack: ModernIconPack; theme: UiTheme }) => void;
-  onSuppressNotificationsChange: (suppressed: boolean) => void;
-  onProviderSettingsRefresh: (settings: ProviderSettings) => void;
-  auth?: AuthMe | null;
-  onAuthRefresh?: () => Promise<void>;
-}) {
-  const [providerPending, setProviderPending] = useState(false);
-  const [providerError, setProviderError] = useState<string | null>(null);
-  const [defaultWorktree, setDefaultWorktree] = useState<boolean>(() => {
-    try {
-      const stored = localStorage.getItem("space.worktree.defaultEnabled");
-      if (stored !== null) return stored === "true";
-    } catch {}
-    return true;
-  });
-
-  const defaultProvider = providers.find((provider) => provider.id === providerSettings?.defaultProviderId) ?? null;
-
-  async function selectDefaultProvider(providerId: string) {
-    if (!isCodexEnabled || !providerId || providerId === providerSettings?.defaultProviderId) return;
-    setProviderPending(true);
-    setProviderError(null);
-    try {
-      const updated = await api.updateProviderSettings({ defaultProviderId: providerId });
-      onProviderSettingsRefresh(updated);
-      dispatchAgentPaneSettingsUpdated(null);
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : "Default provider update failed");
-    } finally {
-      setProviderPending(false);
-    }
-  }
-
-  return (
-    <div className="dock-panel agent-settings-dock basic-settings-dock">
-      <SettingsSections>
-      <header className="settings-dock-title settings-flat-dock-title">
-        <Settings2 aria-hidden="true" />
-        <span>
-          <h2>{adminMode ? "Advanced settings" : "Settings"}</h2>
-          <small>{adminMode ? "Preferences and advanced installation settings." : "Your everyday preferences. Open a section to change it."}</small>
-        </span>
-      </header>
-
-      <RecoverableSurface fallback={settingsCardLoadingFallback}>
-        <LazyEnvironmentPresetCard
-          isAdmin={auth?.user?.role === "ADMIN"}
-          canManageCliRuntimes={canManageCliRuntimes}
-          userId={auth?.user?.id}
-        />
-      </RecoverableSurface>
-
-      {adminMode && canManageCliRuntimes ? <div className="settings-setup-shortcut">
-        <strong>Need to set up a tool?</strong>
-        <p>The wizard guides you through tools and connections. You can return at any time.</p>
-        <button type="button" onClick={onOpenSetup}>Open setup wizard</button>
-      </div> : null}
-      <SettingsDisclosure title="Account & Google" description="Link or manage your Google single sign-on connection." scope="Installation" icon={Users}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <LazyGoogleAccountSettingsCard auth={auth ?? null} onAuthRefresh={onAuthRefresh ?? (async () => {})} />
-        </RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Appearance" description="Theme, colors, and icon style." scope="Your account" icon={Palette}>
-      <RecoverableSurface fallback={settingsCardLoadingFallback}>
-        <LazyUiThemeSettingsCard
-          currentAppearance={currentAppearance}
-          currentBackground={currentBackground}
-          currentIconPack={currentIconPack}
-          currentTheme={currentUiTheme}
-          onChange={onUiThemeApply}
-        />
-      </RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Docks" description="Choose which docks appear in your workspace navigation and toolbar." scope="Your account" icon={Grid2X2}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <LazyDocksSettingsCard
-            gitPluginsActive={gitPluginsActive}
-            isAdmin={auth?.user?.role === "ADMIN"}
-          />
-        </RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Panes" description="Choose which non-CLI panes appear in your workspace creation menu and toolbar." scope="Your account" icon={PanelsTopLeft}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <LazyPanesSettingsCard
-            isHarnessEnabled={isHarnessEnabled}
-          />
-        </RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Widgets" description="Choose which desktop widgets are enabled and float in your workspace." scope="Your account" icon={Sparkles}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyWidgetsSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Date & time" description="Time zone, UTC reference, and 24-hour display format." scope="Your account" icon={Clock3}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDateTimeSettingsCard userId={auth?.user?.id} /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      {canManageDiagnostics ? <SettingsDisclosure title="Diagnostics" description="Debug events and screen recording." scope="Installation" icon={Activity}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyAppDiagnosticsSettingsCard canManage={canManageDiagnostics} /></RecoverableSurface>
-      </SettingsDisclosure> : null}
-
-      {canManageDiagnostics ? <SettingsDisclosure title="Deploy queue" description="Agent changes on their way to live." scope="Installation" icon={GitMerge}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDeployQueueSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure> : null}
-
-      {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="Choose the provider for new conversations." scope="New sessions" icon={ServerCog}>
-      <section className="agent-settings-card settings-flat-card settings-provider-card" aria-label="Global provider settings">
-        <div className="agent-settings-section-title settings-flat-heading codex-gated-settings-title">
-          <ServerCog aria-hidden="true" />
-          <span>
-            <strong>Default provider</strong>
-            <small>{defaultProvider ? `${defaultProvider.displayName} / ${providerRouteLabel(defaultProvider)}` : "Provider settings loading"}</small>
-          </span>
-          {!isCodexEnabled ? <span className="status muted">OFF</span> : null}
-        </div>
-        <label className="provider-default-select settings-flat-row">
-          <span className="settings-flat-row-copy">
-            <strong>Provider</strong>
-            <small>Used by new Chat and agent sessions.</small>
-          </span>
-          <select
-            aria-label="Default provider"
-            name="settings-default-provider"
-            value={providerSettings?.defaultProviderId ?? ""}
-            onChange={(event) => void selectDefaultProvider(event.target.value)}
-            disabled={!isCodexEnabled || providerPending || providers.length === 0}
-            title={!isCodexEnabled ? "Enable Codex in Settings" : undefined}
-          >
-            {providers.length ? (
-              providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.displayName}
-                </option>
-              ))
-            ) : (
-              <option value="">No providers</option>
-            )}
-          </select>
-        </label>
-        {providerError ? (
-          <DockNotice onDismiss={() => setProviderError(null)}>The default provider could not be changed: {providerError}</DockNotice>
-        ) : null}
-      </section>
-
-      </SettingsDisclosure> : null}
-      {canManageSourceControl ? <SettingsDisclosure hidden={!adminMode} title="GitHub & Gitea" description="Connect repositories and manage publishing credentials." scope="Installation" icon={GitBranch}>
-      <RecoverableSurface fallback={settingsCardLoadingFallback}>
-        <LazySourceControlPublishingCard canManage={canManageSourceControl} />
-      </RecoverableSurface>
-      </SettingsDisclosure> : null}
-
-      {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Codex CLI defaults" description="Default model and behavior for new CLI sessions." scope="New sessions" icon={Terminal}>
-      <RecoverableSurface fallback={settingsCardLoadingFallback}>
-        <LazyCodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} />
-      </RecoverableSurface>
-      </SettingsDisclosure> : null}
-
-      <SettingsDisclosure title="Git worktrees" description="Default worktree isolation mode for CLI tools." scope="Your account" icon={GitBranch}>
-        <section className="agent-settings-card settings-flat-card cli-worktree-settings-card" aria-label="Git Worktrees default settings">
-          <div className="agent-settings-section-title settings-flat-heading">
-            <GitBranch aria-hidden="true" />
-            <span>
-              <strong>Git Worktrees</strong>
-              <small>{defaultWorktree ? "CLI tools launch in isolated Git branches by default." : "Direct project execution by default."}</small>
-            </span>
-          </div>
-          <SpaceToggle
-            className="settings-flat-row settings-flat-toggle-row default-worktree-toggle"
-            name="default-worktree-enabled-global"
-            ariaLabel="Enable isolated worktrees by default"
-            label="Isolated worktrees by default"
-            detail="Automatically isolate CLI tools (Gemini, Codex, OpenCode, Hermes) in dedicated Git worktrees for rooms with a project directory."
-            checked={defaultWorktree}
-            onChange={(checked) => {
-              setDefaultWorktree(checked);
-              try {
-                localStorage.setItem("space.worktree.defaultEnabled", String(checked));
-              } catch {}
-              if (auth?.isAuthenticated) {
-                saveUserSettingDebounced("worktreeDefaultEnabled", checked);
-              }
-            }}
-          />
-        </section>
-      </SettingsDisclosure>
-
-      {canManageTelegram ? <SettingsDisclosure hidden={!adminMode} title="Telegram notifications" description="Connect Telegram and choose which updates to send." scope="Installation" icon={Bell}>
-      <RecoverableSurface fallback={settingsCardLoadingFallback}>
-        <LazyTelegramIntegrationCard canManage={canManageTelegram} isCodexEnabled={isCodexEnabled} />
-      </RecoverableSurface>
-      </SettingsDisclosure> : null}
-
-      <SettingsDisclosure title="Plugins" description="Accounts and services your agents can act through." scope="Installation" icon={Plug}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyPluginsSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Voice input" description="Microphone and speech preferences." scope="Your account" icon={Mic}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><VoiceSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Keyboard autocorrection" description="Layout detection, Alt+G suggestions, audio alert, and languages." scope="Your account" icon={Keyboard}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyKeyboardAutocorrectSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Prompt variables" description="Custom #variable shortcuts, quick expansions, and technical context." scope="Your account" icon={Hash}>
-        <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyPromptVariablesSettingsCard /></RecoverableSurface>
-      </SettingsDisclosure>
-
-      <SettingsDisclosure title="Notifications" description="Choose whether your account shows notices." scope="Your account" icon={Bell}>
-      <section className="agent-settings-card settings-flat-card suppress-notifications-settings-card" aria-label="Notification settings">
-        <div className="agent-settings-section-title settings-flat-heading">
-          <Bell aria-hidden="true" />
-          <span>
-            <strong>Notifications</strong>
-            <small>Account-wide toast and status controls.</small>
-          </span>
-        </div>
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row suppress-notifications-toggle"
-          name="suppress-notifications-enabled"
-          label="Suppress all notifications"
-          detail={suppressNotifications ? "All notices are hidden for your account." : "Notices appear normally."}
-          checked={suppressNotifications}
-          onChange={onSuppressNotificationsChange}
-        />
-      </section>
-
-      </SettingsDisclosure>
-
-      <SettingsDisclosure
-        title="Backup & migration"
-        description="Export and import rooms, panes, bookmarks, plans, and settings."
-        scope="Installation"
-        icon={ArrowUpDown}
-      >
-        <RecoverableSurface fallback={settingsCardLoadingFallback}>
-          <LazyConfigurationMigrationCard canManageInstallation={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
-        </RecoverableSurface>
-      </SettingsDisclosure>
-      </SettingsSections>
-    </div>
-  );
-}
-
-
-
-
-
-
-
-
-
-
-
-
 
 function mergeSpaceEvents(current: SpaceEvent[], incoming: SpaceEvent | SpaceEvent[]): SpaceEvent[] {
   const next = new Map<string, SpaceEvent>();
@@ -11513,48 +7308,3 @@ function mergeSpaceEvents(current: SpaceEvent[], incoming: SpaceEvent | SpaceEve
   return [...next.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, roomEventLimit);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-const swarmRoles: SwarmTaskRole[] = ["PLANNER", "WORKER", "REVIEWER"];
-const swarmTaskStatuses: SwarmTaskStatus[] = ["READY", "RUNNING", "BLOCKED", "DONE"];
-const reconcileDecisions: SwarmReconcileDecision[] = ["MERGED", "BLOCKED", "NEEDS_HUMAN"];
-
-
-
-
-
-
-
-
-
-
-
-
-const artifactKinds: Artifact["kind"][] = [
-  "SCREENSHOT",
-  "DOM_SNAPSHOT",
-  "CONSOLE_LOG",
-  "NETWORK_LOG",
-  "TRACE",
-  "VIDEO",
-  "PATCH",
-  "TRANSCRIPT",
-  "EXPORT"
-];
-
-const browserEvidenceViewports: BrowserEvidenceViewport[] = ["mobile", "tablet", "desktop", "wide", "ultrawide"];
-
-
-
-const reviewCheckStatuses: ReviewCheck["status"][] = ["PASS", "WARN", "FAIL", "SKIPPED", "RUNNING"];
-const reviewDiffStatuses: ReviewDiffSummary["status"][] = ["MODIFIED", "ADDED", "DELETED", "RENAMED"];

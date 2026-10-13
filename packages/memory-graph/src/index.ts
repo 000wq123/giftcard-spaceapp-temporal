@@ -1,5 +1,5 @@
 export { buildMemoryGraphSnapshot, calculateMemoryGraphSourceHash, parseMemorySourceRecords } from "./parser.js";
-export { searchMemoryDocuments, normalizeMemoryQuery } from "./retrieval.js";
+export { searchMemoryDocuments, normalizeMemoryQuery, type MemorySearchTextHint } from "./retrieval.js";
 export { normalizeMemoryDates, memoryQueryTerms, memoryTermMatches } from "./query-normalization.js";
 export { memoryExcerpt } from "./excerpt.js";
 export { positionMemoryGraphNodes } from "./layout.js";
@@ -12,9 +12,9 @@ export {
 } from "./evaluation.js";
 export { evaluateMemoryPerformanceGates, type MemoryPerformanceGateInput } from "./performance-gates.js";
 export { createMemoryGraphSnapshotStore, type MemoryGraphSnapshotStore } from "./snapshot-store.js";
+export { MONTHLY_MEMORY_FILE_PATTERN, memorySourceIdentityPath } from "./memory-files.js";
 export {
   ALL_MONTHS_SNAPSHOT_FILENAME,
-  MONTHLY_MEMORY_FILE_PATTERN,
   buildMemoryGraphArchiveSnapshot,
   listMonthlyMemorySourcePaths,
   readMemoryGraphArchiveSources

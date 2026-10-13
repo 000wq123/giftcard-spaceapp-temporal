@@ -1,5 +1,6 @@
 import { qwenNativeSessionIdPattern, type NativeTaskTitles } from "./task-title-native.js";
 import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import {
   boundedTaskText,
   cleanTaskText,
@@ -7,11 +8,20 @@ import {
   isSubstantiveTaskRequest,
   taskRequestFingerprint,
   taskMetadataSchema,
+  taskTopicsMax,
+  titleEchoesRequest,
   type Pane,
   type TaskTitleState,
   type TaskMetadata,
+  type TaskTopic,
   type PaneCliSession,
 } from "@space/contracts";
+import {
+  hasTaskImageReference,
+  readableTaskImages,
+  taskImageReferences,
+  type TaskImageScope,
+} from "./task-title-images.js";
 import {
   redactMemoryText,
   SpaceNotFoundError,
@@ -53,12 +63,25 @@ export interface TaskTitleContext {
   requests: string[];
   nativeTitle: string | null;
   nativeManual?: boolean;
+  /** Validated image uploads attached to the latest request. */
+  images?: string[];
 }
-/** Reconstruct submitted lines, not individual keystrokes or unsubmitted drafts. */
-export function submittedTaskRequests(
+/** The request text of a submission that is only an attached image. */
+export const imageOnlyTaskRequest = "Attached image";
+export interface SubmittedTaskEntry {
+  text: string;
+  /** Raw submitted line, kept only when it names an image upload. */
+  raw: string | null;
+}
+/**
+ * Reconstruct submitted lines, not individual keystrokes or unsubmitted drafts.
+ * A submission naming an image upload counts even with a short instruction
+ * such as "fix this", because the image carries the task.
+ */
+export function submittedTaskEntries(
   chunks: Array<{ stream: string; content: string }>,
-): string[] {
-  const requests: string[] = [];
+): SubmittedTaskEntry[] {
+  const entries: SubmittedTaskEntry[] = [];
   let line = "";
   let pasted = false;
   const input = chunks
@@ -93,11 +116,20 @@ export function submittedTaskRequests(
         line += " ";
         continue;
       }
-      if (isSubstantiveTaskRequest(line)) requests.push(cleanTaskText(line));
+      const image = hasTaskImageReference(line);
+      if (isSubstantiveTaskRequest(line) || image)
+        entries.push({ text: cleanTaskText(line) || imageOnlyTaskRequest, raw: image ? line : null });
       line = "";
     } else if (char >= " ") line = (line + char).slice(-8000);
   }
-  return requests.slice(-12);
+  return entries.slice(-12);
+}
+export function submittedTaskRequests(
+  chunks: Array<{ stream: string; content: string }>,
+): string[] {
+  return submittedTaskEntries(chunks)
+    .filter((entry) => isSubstantiveTaskRequest(entry.text))
+    .map((entry) => entry.text);
 }
 /** Plan handoff prompts end with "Plan ID: <clipboard item id>" (see TerminalPane). */
 export function extractReferencedPlanId(request: string): string | null {
@@ -105,81 +137,119 @@ export function extractReferencedPlanId(request: string): string | null {
   const id = match?.[1]?.replace(/[.:]+$/, "");
   return id && id.length >= 8 ? id : null;
 }
-const hash = (text: string) =>
-  createHash("sha256").update(taskRequestFingerprint(text)).digest("hex");
+/** Images change the request: "fix this" with another screenshot is new work. */
+export function taskRequestHash(text: string, images: readonly string[] = []) {
+  const digest = createHash("sha256").update(taskRequestFingerprint(text));
+  if (images.length) digest.update(`\n${images.map((image) => basename(image)).join("\n")}`);
+  return digest.digest("hex");
+}
 const safe = (text: string, limit: number) =>
   boundedTaskText(cleanTaskText(redactMemoryText(text)), limit);
-export function titleSummaryPrompt(state: TaskTitleState): string {
+const titleLines = (topics: readonly TaskTopic[]) => topics.slice(-5).map((topic) => topic.title);
+export const titlePromptMaxBytes = 4000;
+export function titleSummaryPrompt(
+  state: TaskTitleState,
+  attachments: { shown?: number; unseen?: number } = {},
+): string {
   // UTF-8 bytes are a conservative token upper bound, including JSON framing.
   const bytes = (value: string, limit: number) => {
     let result = "",
       size = 0;
-    for (const point of safe(value, 1800)) {
+    for (const point of safe(value, 3000)) {
       size += Buffer.byteLength(point);
       if (size > limit) break;
       result += point;
     }
     return result;
   };
-  const context = {
-    currentTitle: bytes(state.title, 100),
-    latestRequest: bytes(state.request, 800),
-    previousSummary: bytes(
-      state.previousSummary ?? state.metadata.description,
-      260,
+  const requests = (state.pendingRequests?.length ? state.pendingRequests : [state.request]).slice(-3);
+  const context: {
+    topics: Array<{ title: string; summary: string }>;
+    earlierWork: string;
+    newRequests: string[];
+    attachedImages?: number;
+    unseenImages?: string;
+  } = {
+    topics: (state.metadata.topics ?? []).slice(-4).map((topic) => ({
+      title: bytes(topic.title, 120),
+      summary: bytes(topic.summary, 240),
+    })),
+    earlierWork: bytes(state.metadata.earlierWork, 160),
+    newRequests: requests.map((request, index) =>
+      bytes(request, index === requests.length - 1 ? 1600 : 320),
     ),
-    earlierWork: bytes(state.metadata.earlierWork, 60),
-    steps: state.metadata.steps.slice(-2).map((s) => bytes(s, 35)),
+    ...(attachments.shown ? { attachedImages: attachments.shown } : {}),
+    ...(attachments.unseen
+      ? { unseenImages: `${attachments.unseen} attached image(s) could not be shown; name the task from the text.` }
+      : {}),
   };
   // Reduce by UTF-8 bytes, not UTF-16 length or grapheme count (a single
   // grapheme may contain thousands of combining characters). Every iteration
   // removes data and therefore terminates even with adversarial Unicode.
-  for (const key of [
-    "steps",
-    "earlierWork",
-    "currentTitle",
-    "previousSummary",
-    "latestRequest",
-  ] as const) {
-    while (Buffer.byteLength(JSON.stringify(context), "utf8") > 1400) {
-      if (key === "steps") {
-        if (!context.steps.length) break;
-        context.steps.pop();
-      } else {
-        const points = Array.from(context[key]);
-        if (!points.length) break;
-        context[key] = points
-          .slice(0, Math.floor(points.length * 0.75))
-          .join("");
-      }
-    }
-  }
+  const oversized = () => Buffer.byteLength(JSON.stringify(context), "utf8") > titlePromptMaxBytes;
+  while (oversized() && context.topics.length) context.topics.shift();
+  const shorten = (value: string) => {
+    const points = Array.from(value);
+    return points.slice(0, Math.floor(points.length * 0.75)).join("");
+  };
+  while (oversized() && context.earlierWork) context.earlierWork = shorten(context.earlierWork);
+  while (oversized() && context.newRequests.length > 1) context.newRequests.shift();
+  while (oversized() && context.newRequests[0]) context.newRequests[0] = shorten(context.newRequests[0]);
   return JSON.stringify(context);
 }
+/** The model's verdict for the latest request: same work, or a new summarized title line. */
 export function parseTaskSummary(raw: string) {
   if (raw.length > 12_000) throw new Error("Oversized task metadata");
-  const value = JSON.parse(
-    raw.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""),
-  );
-  if (
-    typeof value.title !== "string" ||
-    typeof value.description !== "string" ||
-    !Array.isArray(value.steps) ||
-    value.steps.some((s: unknown) => typeof s !== "string")
-  )
+  const unfenced = raw.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  // Some models wrap the object in a sentence; take the outermost object only.
+  const body = unfenced.startsWith("{") ? unfenced : unfenced.slice(unfenced.indexOf("{"), unfenced.lastIndexOf("}") + 1);
+  const value = JSON.parse(body);
+  const summaryText = typeof value?.summary === "string" ? value.summary : value?.description;
+  if (typeof value?.title !== "string" || typeof summaryText !== "string")
     throw new Error("Invalid task metadata");
   const title = shortTaskTitle(value.title),
-    description = safe(value.description, 1800);
-  if (!title || !description) throw new Error("Empty task metadata");
-  return {
-    title,
-    description,
-    steps: value.steps.slice(-5).map((s: string) => safe(s, 220)),
-    earlierWork: safe(
-      typeof value.earlierWork === "string" ? value.earlierWork : "",
-      400,
-    ),
-  };
+    summary = safe(summaryText, 400);
+  if (!title || !summary) throw new Error("Empty task metadata");
+  // Some models rename the flag; "isNewTopic": false means the same work.
+  return { sameTopic: value.sameTopic === true || value.isNewTopic === false, title, summary };
+}
+
+/** How each CLI type labels the title it saved for the task. */
+const nativeTitleLabels: Record<string, string> = {
+  "cli:claude": "Claude Code",
+  "cli:codex": "Codex",
+  codex: "Codex",
+  "cli:opencode": "OpenCode",
+  opencode: "OpenCode",
+  "cli:qwen": "Qwen Code",
+  "cli:hermes": "Hermes",
+  harness: "Harness",
+};
+/** Space can rename the task inside these CLIs; others only report their title. */
+const writableNativeTitleRuntimes = new Set(["cli:codex", "codex", "cli:opencode", "opencode", "cli:qwen", "cli:hermes", "harness"]);
+/**
+ * CLIs whose saved title is a real summary (Claude Code's AI title, OpenCode's
+ * generated session title, a named Codex thread). It becomes the first line.
+ */
+const trustedFirstTitleRuntimes = new Set(["cli:claude", "cli:codex", "codex", "cli:opencode", "opencode"]);
+// Defaults, and envelope tags such as "<send_user_message_question_reply>".
+const placeholderNativeTitle = /^(?:New|Child) session|Untitled|^CLI \d|^<[^<>]+>$/i;
+/** A CLI title usable as a pane title: short, not a placeholder, not an echo of the prompt. */
+export function usableNativeTitle(context: Pick<TaskTitleContext, "nativeTitle" | "nativeManual" | "requests">, ownTitle?: string | null) {
+  const native = context.nativeTitle;
+  if (!native || shortTaskTitle(native) !== native || placeholderNativeTitle.test(native)) return null;
+  if (!context.nativeManual && native !== ownTitle && titleEchoesRequest(native, context.requests)) return null;
+  return native;
+}
+/** The CLI's saved title as shown to the user (may be longer than a pane title). */
+export function displayedNativeTitle(context: Pick<TaskTitleContext, "nativeTitle" | "nativeManual" | "requests">, ownTitle?: string | null) {
+  const native = context.nativeTitle ? boundedTaskText(cleanTaskText(context.nativeTitle), 160) : "";
+  if (!native || placeholderNativeTitle.test(native)) return null;
+  if (!context.nativeManual && native !== ownTitle && titleEchoesRequest(native, context.requests)) return null;
+  return native;
+}
+function trustedFirstTitle(context: TaskTitleContext, ownTitle?: string | null) {
+  return trustedFirstTitleRuntimes.has(context.runtimeId) ? usableNativeTitle(context, ownTitle) : null;
 }
 
 export class TaskTitleService {
@@ -227,10 +297,25 @@ export class TaskTitleService {
         threadId: string,
         title: string,
       ) => Promise<void>;
+      /** Claude Code's own saved session title (read-only: Space cannot rename it). */
+      readClaudeTitle?: (session: PaneCliSession) => Promise<{
+        nativeId: string;
+        title: string | null;
+        manual: boolean;
+        /** The session's typed prompts from its transcript, oldest first. */
+        requests?: string[];
+      } | null>;
+      /** Root of `cli-uploads`; without it attached images are not read. */
+      artifactRoot?: string;
       now?: () => Date;
       onError?: (error: unknown) => void;
     },
   ) {}
+  private imageScope(pane: Pane, cwd: string | null = null): TaskImageScope | null {
+    return this.options.artifactRoot
+      ? { artifactRoot: this.options.artifactRoot, roomId: pane.roomId, paneId: pane.id, cwd: cwd ?? pane.cwd ?? null }
+      : null;
+  }
   private now() {
     return this.options.now?.() ?? new Date();
   }
@@ -340,7 +425,7 @@ export class TaskTitleService {
           if (
             this.versions.get(pane.id) !== stamp ||
             !pane.taskMetadata ||
-            ["cli:codex", "cli:opencode", "cli:qwen", "cli:hermes"].includes(
+            ["cli:codex", "cli:opencode", "cli:qwen", "cli:hermes", "cli:claude"].includes(
               pane.terminalRuntimeId ?? "",
             )
           ) {
@@ -370,7 +455,11 @@ export class TaskTitleService {
       accountKey = "default",
       requests: string[] = [],
       nativeTitle: string | null = null,
-      nativeManual = false;
+      nativeManual = false,
+      images: string[] = [],
+      cwd: string | null = null;
+    // Submissions that named an image upload, matched to the latest request below.
+    let imageEntries: Array<{ text: string; raw: string }> = [];
     if (pane.mode === "HARNESS") {
       const native = await this.options.harness?.read(
         pane.id,
@@ -398,9 +487,12 @@ export class TaskTitleService {
           ? session.threadId
           : null;
       key = `chat:${session.sessionId}`;
-      requests = (await store.listSpaceAgentMessages(sessionId, 40))
-        .filter((m) => m.role === "user")
-        .map((m) => m.content);
+      const messages = (await store.listSpaceAgentMessages(sessionId, 40))
+        .filter((m) => m.role === "user");
+      requests = messages.map((m) => m.content);
+      const last = messages.at(-1);
+      if (last && hasTaskImageReference(last.content))
+        imageEntries = [{ text: last.content, raw: last.content }];
     } else if (pane.mode === "TERMINAL") {
       const session = await store.getActivePaneCliSession(pane.id);
       if (!session || session.purpose !== "NORMAL") return null;
@@ -415,11 +507,27 @@ export class TaskTitleService {
       if (!nativeId && runtimeId === "cli:codex")
         nativeId = (await this.options.resolveCodexThread?.(session)) ?? null;
       key = `cli:${runtimeId}:${session.accountProfileId ?? "default"}:${session.cliTaskId ?? sessionId}`;
-      requests = submittedTaskRequests(
+      cwd = session.cwd ?? null;
+      const entries = submittedTaskEntries(
         await store.listPaneCliTranscriptChunks(sessionId, 200),
       );
+      requests = entries.map((entry) => entry.text);
+      imageEntries = entries.flatMap((entry) => entry.raw ? [{ text: entry.text, raw: entry.raw }] : []);
       if (!requests.length && revision?.firstUserMessage)
         requests = [revision.firstUserMessage];
+      if (runtimeId === "cli:claude" && this.options.readClaudeTitle) {
+        try {
+          const claude = await this.options.readClaudeTitle(session);
+          if (claude?.nativeId) {
+            nativeId = claude.nativeId;
+            nativeTitle = claude.title;
+            nativeManual = claude.manual;
+            // A resumed pane starts a new CLI session whose stdin may hold only
+            // "continue"; Claude's transcript keeps every prompt of the task.
+            if (claude.requests?.some(isSubstantiveTaskRequest)) requests = claude.requests;
+          }
+        } catch {}
+      }
       if (this.options.nativeTitles) {
         try {
           const native = await this.options.nativeTitles.metadata(
@@ -471,10 +579,9 @@ export class TaskTitleService {
             },
           );
           if (response.ok) {
-            const messages = (await response.json()) as any[];
-            const native = messages
-              .filter((m) => m.info?.role === "user")
-              .map((m) =>
+            const messages = ((await response.json()) as any[])
+              .filter((m) => m.info?.role === "user");
+            const native = messages.map((m) =>
                 (m.parts ?? [])
                   .filter(
                     (p: any) => p.type === "text" && !p.synthetic && !p.ignored,
@@ -483,6 +590,13 @@ export class TaskTitleService {
                   .join(" "),
               );
             if (native.length) requests = native;
+            // OpenCode attaches pasted images as file parts of the message.
+            const files = (messages.at(-1)?.parts ?? [])
+              .filter((p: any) => p.type === "file" && typeof p.url === "string")
+              .map((p: any) => { try { return decodeURI(p.url); } catch { return ""; } })
+              .join(" ");
+            if (native.length && hasTaskImageReference(files))
+              imageEntries = [{ text: native.at(-1)!, raw: files }];
           }
         } catch {}
       }
@@ -520,6 +634,14 @@ export class TaskTitleService {
     }
     // A reused pane that switched native sessions must never inherit mutable metadata.
     if (nativeId) key = `native:${runtimeId}:${accountKey}:${nativeId}`;
+    // Images belong to the latest request only when that exact submission named them.
+    const latest = requests.at(-1);
+    const imageEntry = imageEntries.at(-1);
+    const scope = this.imageScope(pane, cwd);
+    if (scope && latest !== undefined && imageEntry &&
+      taskRequestFingerprint(cleanTaskText(imageEntry.text) || imageOnlyTaskRequest) ===
+        taskRequestFingerprint(cleanTaskText(latest) || imageOnlyTaskRequest))
+      images = taskImageReferences(imageEntry.raw, scope);
     return {
       key,
       pane,
@@ -527,9 +649,11 @@ export class TaskTitleService {
       runtimeId,
       nativeId,
       revisionId,
-      requests: requests.filter(isSubstantiveTaskRequest),
+      requests: requests.filter((request, index, all) =>
+        isSubstantiveTaskRequest(request) || (index === all.length - 1 && images.length > 0)),
       nativeTitle,
       nativeManual,
+      images,
     };
   }
   /**
@@ -567,7 +691,9 @@ export class TaskTitleService {
     const context = await this.context(paneId);
     if (!context) return this.options.store.getPane(paneId);
     const request = context.requests.at(-1);
-    if (!request || !isSubstantiveTaskRequest(request)) return context.pane;
+    const images = context.images ?? [];
+    if (!request || (!isSubstantiveTaskRequest(request) && !images.length)) return context.pane;
+    const requestHash = taskRequestHash(request, images);
     let previous = await this.options.repository.get(context.key);
     // Preserve paid-for summaries when a temporary binding acquires its native ID.
     const priorKey = context.pane.taskMetadata?.taskKey;
@@ -592,43 +718,69 @@ export class TaskTitleService {
           previous = migrated;
       }
     }
-    const cleanNative =
-      context.nativeTitle &&
-      shortTaskTitle(context.nativeTitle) === context.nativeTitle &&
-      !/^(?:New|Child) session|Untitled|^CLI \d/i.test(context.nativeTitle)
-        ? context.nativeTitle
-        : null;
-    if (!force && previous?.requestHash === hash(request)) {
-      if (
-        cleanNative &&
-        ((cleanNative !== previous.lastNativeTitle &&
-          cleanNative !== previous.title) ||
-          Boolean(context.nativeManual) !==
-            Boolean(previous.metadata.nativeTitleManual)) &&
-        context.pane.titleSource !== "manual"
-      ) {
+    const cleanNative = usableNativeTitle(context, previous?.title);
+    const shownNative = displayedNativeTitle(context, previous?.title);
+    const nativeTitleLabel = nativeTitleLabels[context.runtimeId] ?? null;
+    // A placeholder or envelope tag adopted before it was recognized as one
+    // is summarized again, as "Regenerate summary" would.
+    const repair =
+      !force &&
+      context.pane.titleSource !== "manual" &&
+      // Once only: a failed retry must not repeat on every observation.
+      previous?.metadata.generationStatus === "ready" &&
+      placeholderNativeTitle.test(previous?.title ?? "");
+    if (repair) force = true;
+    if (!force && previous?.requestHash === requestHash) {
+      const topics = previous.metadata.topics ?? [];
+      const manualChanged =
+        Boolean(context.nativeManual) !== Boolean(previous.metadata.nativeTitleManual);
+      const nativeChanged =
+        cleanNative !== null &&
+        cleanNative !== previous.lastNativeTitle &&
+        cleanNative !== previous.title;
+      // A rename inside a writable CLI renames the current line. A read-only
+      // CLI's own title (Claude Code) names only the first line.
+      const adopt =
+        cleanNative !== null &&
+        (manualChanged || nativeChanged) &&
+        context.pane.titleSource !== "manual" &&
+        (writableNativeTitleRuntimes.has(context.runtimeId) ||
+          Boolean(context.nativeManual) ||
+          (trustedFirstTitleRuntimes.has(context.runtimeId) && topics.length <= 1));
+      if (adopt) {
         const version = previous.version + 1;
-        const adopted = {
+        const renamed: TaskTopic[] = topics.length
+          ? [...topics.slice(0, -1), { ...topics.at(-1)!, title: cleanNative!, source: "native" }]
+          : topics;
+        const adopted: TaskTitleState = {
           ...previous,
           paneId,
           sessionId: context.sessionId,
           revisionId: context.revisionId,
           version,
-          title: cleanNative,
+          title: cleanNative!,
           lastNativeTitle: cleanNative,
           metadata: {
             ...previous.metadata,
             version,
+            topics: renamed,
+            steps: renamed.length ? titleLines(renamed) : previous.metadata.steps,
             source: "native" as const,
-            nativeSyncStatus: "synced" as const,
+            nativeSyncStatus: writableNativeTitleRuntimes.has(context.runtimeId)
+              ? ("synced" as const)
+              : previous.metadata.nativeSyncStatus,
             nativeTitleManual: context.nativeManual ?? false,
+            nativeTitle: shownNative,
+            nativeTitleLabel,
           },
         };
         if (await this.options.repository.enqueue(adopted, previous.version))
           await this.project(adopted);
       } else if (
         previous.paneId !== paneId ||
-        previous.sessionId !== context.sessionId
+        previous.sessionId !== context.sessionId ||
+        // A failed native read reports no title; it never clears a known one.
+        (shownNative !== null && (previous.metadata.nativeTitle ?? null) !== shownNative)
       ) {
         const rebound = {
           ...previous,
@@ -637,7 +789,12 @@ export class TaskTitleService {
           revisionId: context.revisionId,
           version: previous.version + 1,
         };
-        rebound.metadata = { ...previous.metadata, version: rebound.version };
+        rebound.metadata = {
+          ...previous.metadata,
+          version: rebound.version,
+          nativeTitle: shownNative ?? previous.metadata.nativeTitle ?? null,
+          nativeTitleLabel,
+        };
         if (await this.options.repository.enqueue(rebound, previous.version))
           await this.project(rebound);
       } else if (
@@ -652,42 +809,44 @@ export class TaskTitleService {
     }
     const version = (previous?.version ?? 0) + 1,
       now = this.now().toISOString();
-    const initialNative = !previous ? cleanNative : null;
+    const firstTitle = trustedFirstTitle(context, previous?.title);
+    // Until the model has summarized the request, the raw prompt is never the
+    // title: keep the current line, else the CLI's own title, else a neutral name.
     const title =
       context.nativeManual &&
       context.nativeTitle &&
       !previous?.resetNativeManual
         ? context.nativeTitle
-        : force && previous
+        : previous
           ? previous.title
-          : (initialNative ?? shortTaskTitle(request, "Task"));
-    const allSteps = [
-      ...(previous?.metadata.steps ??
-        context.requests.slice(-5).map((r) => safe(r, 220))),
-      safe(request, 220),
-    ];
-    const steps = allSteps
-      .filter((s, i, all) => all.indexOf(s) === i)
-      .slice(-5);
+          : (firstTitle ?? cleanNative ?? "New task");
+    const fingerprint = taskRequestFingerprint(request);
+    const pendingRequests = force
+      ? [request]
+      : [
+          ...(previous?.pendingRequests ?? []).filter(
+            (pending) => taskRequestFingerprint(pending) !== fingerprint,
+          ),
+          request,
+        ].slice(-3);
 
     const extractedPlanId = await this.bindReferencedPlan(context);
     const planId = extractedPlanId ?? (previous?.metadata as { planId?: string | null } | undefined)?.planId ?? null;
+    const topics = previous?.metadata.topics ?? [];
 
     const metadata: TaskMetadata = taskMetadataSchema.parse({
       taskKey: context.key,
       version,
-      description: safe(request, 1800),
-      steps,
-      earlierWork: safe(
-        [previous?.metadata.earlierWork ?? "", ...allSteps.slice(0, -5)]
-          .filter(Boolean)
-          .join("; "),
-        400,
-      ),
-      source: initialNative ? "native" : "local",
+      description: previous?.metadata.description ?? "",
+      steps: previous?.metadata.steps ?? [],
+      earlierWork: previous?.metadata.earlierWork ?? "",
+      topics,
+      source: previous?.metadata.source ?? (firstTitle ? "native" : "local"),
       generationStatus: "pending",
       nativeSyncStatus: context.nativeId ? "pending" : "unsupported",
       nativeTitleManual: context.nativeManual ?? false,
+      nativeTitle: shownNative ?? previous?.metadata.nativeTitle ?? null,
+      nativeTitleLabel,
       harnessSessionId:
         context.pane.mode === "HARNESS"
           ? (context.nativeId ?? undefined)
@@ -705,16 +864,19 @@ export class TaskTitleService {
       runtimeId: context.runtimeId,
       nativeId: context.nativeId,
       revisionId: context.revisionId,
-      requestHash: hash(request),
+      requestHash,
       request: safe(request, 3000),
       title,
       metadata,
-      previousSummary: previous?.metadata.description ?? "",
+      images,
+      pendingRequests: pendingRequests.map((pending) => safe(pending, 3000)),
+      regenerateLatest: force && topics.length > 0,
       resetNativeManual: previous?.resetNativeManual,
-      lastNativeTitle: context.nativeTitle,
+      lastNativeTitle: previous ? previous.lastNativeTitle ?? null : cleanNative,
+      // The first summary runs at once; later ones keep the per-task minute gap.
       dueAt: new Date(
         Math.max(
-          this.now().getTime() + 5000,
+          this.now().getTime() + (previous ? 3000 : 0),
           previous?.lastAttemptAt
             ? Date.parse(previous.lastAttemptAt) + 60_000
             : 0,
@@ -845,7 +1007,7 @@ export class TaskTitleService {
           runtimeId: context.runtimeId,
           nativeId: context.nativeId,
           revisionId: context.revisionId,
-          requestHash: hash(""),
+          requestHash: taskRequestHash(""),
           request: "",
           title: context.pane.title,
           dueAt: null,
@@ -876,7 +1038,7 @@ export class TaskTitleService {
       syncOnly: true,
       resetNativeManual,
       ...(resetNativeManual && context.nativeManual && state.request
-        ? { title: shortTaskTitle(state.request), syncOnly: false }
+        ? { title: state.metadata.topics?.at(-1)?.title ?? shortTaskTitle(state.request), syncOnly: false }
         : {}),
       metadata: {
         ...state.metadata,
@@ -1024,6 +1186,62 @@ export class TaskTitleService {
       });
     return this.work;
   }
+  /**
+   * Apply one summary verdict: the first request becomes line 1 (named by a
+   * trusted CLI title when one exists), the same work changes nothing, and
+   * different work appends a new summarized line. `parsed` null is the local
+   * fallback when no model could summarize.
+   */
+  private applyTitleLine(
+    state: TaskTitleState,
+    context: TaskTitleContext,
+    parsed: { sameTopic: boolean; title: string; summary: string } | null,
+    hasImages: boolean,
+  ) {
+    const topics = [...(state.metadata.topics ?? [])];
+    const requests = state.pendingRequests?.length ? state.pendingRequests : [state.request];
+    const at = this.now().toISOString();
+    const line = (title: string, source: TaskTopic["source"]): TaskTopic => ({
+      title,
+      summary: parsed?.summary ?? "",
+      source,
+      at,
+      ...(hasImages ? { hasImages: true } : {}),
+    });
+    const fallback = shortTaskTitle(requests.at(-1) ?? "", "Task");
+    let earlierWork = state.metadata.earlierWork;
+    const last = topics.at(-1);
+    if (!last) {
+      const native = trustedFirstTitle(context, state.title);
+      topics.push(native ? line(native, "native") : parsed ? line(parsed.title, "ai") : line(fallback, "local"));
+    } else if (parsed && (state.regenerateLatest || last.source === "local")) {
+      // Regenerate, or replace a local placeholder line once a model answers.
+      topics[topics.length - 1] = { ...line(parsed.title, "ai"), at: last.at };
+    } else if (parsed?.sameTopic && !last.summary) {
+      // A line named by the CLI before any model answered gets its summary now.
+      topics[topics.length - 1] = { ...last, summary: parsed.summary };
+    } else if (parsed ? !parsed.sameTopic : fallback !== last.title) {
+      topics.push(parsed ? line(parsed.title, "ai") : line(fallback, "local"));
+      while (topics.length > taskTopicsMax) {
+        const dropped = topics.shift()!;
+        earlierWork = safe([earlierWork, dropped.title].filter(Boolean).join("; "), 400);
+      }
+    }
+    const current = topics.at(-1)!;
+    state.title =
+      context.nativeManual && context.nativeTitle && !state.resetNativeManual
+        ? context.nativeTitle
+        : current.title;
+    state.metadata = {
+      ...state.metadata,
+      topics,
+      description: current.summary || state.metadata.description,
+      steps: titleLines(topics),
+      earlierWork,
+    };
+    state.pendingRequests = [];
+    state.regenerateLatest = false;
+  }
   private async run() {
     const now = this.now().getTime();
     for (const [paneId, due] of [...this.dirty])
@@ -1051,20 +1269,26 @@ export class TaskTitleService {
         return;
       }
       const latest = context.requests.at(-1);
-      if (latest && hash(latest) !== state.requestHash) {
+      if (latest && taskRequestHash(latest, context.images ?? []) !== state.requestHash) {
         await this.observe(state.paneId);
         await this.options.repository.finish(lease, state);
         return;
       }
-      const candidates =
+      const wantsSummary =
         policy.enabled &&
         !state.syncOnly &&
-        state.metadata.generationStatus !== "ready"
-          ? await this.options.providers.eligible(
-              policy,
-              state.preferredCandidateId,
-            )
-          : [];
+        state.metadata.generationStatus !== "ready";
+      const scope = this.imageScope(context.pane);
+      const images = wantsSummary && scope && state.images?.length
+        ? await readableTaskImages(state.images, scope)
+        : [];
+      const candidates = wantsSummary
+        ? await this.options.providers.eligible(
+            policy,
+            state.preferredCandidateId,
+            { images: images.length > 0 },
+          )
+        : [];
       let generated = state.metadata.generationStatus === "ready",
         deferred = false;
       let deferredUntil: number | null = null;
@@ -1104,21 +1328,17 @@ export class TaskTitleService {
           }
           state.lastAttemptAt = this.now().toISOString();
           try {
+            const shown = candidate.vision ? images : [];
             const parsed = parseTaskSummary(
               await candidate.generate(
-                titleSummaryPrompt(state),
-                AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+                titleSummaryPrompt(state, { shown: shown.length, unseen: images.length - shown.length }),
+                AbortSignal.any([signal, AbortSignal.timeout(45_000)]),
+                shown.length ? shown : undefined,
               ),
             );
-            state.title =
-              context.nativeManual &&
-              context.nativeTitle &&
-              !state.resetNativeManual
-                ? context.nativeTitle
-                : parsed.title;
+            this.applyTitleLine(state, context, parsed, images.length > 0);
             state.metadata = {
               ...state.metadata,
-              ...parsed,
               source: "ai",
               generationStatus: "ready",
               providerId: candidate.providerId,
@@ -1146,8 +1366,14 @@ export class TaskTitleService {
       } finally {
         clearTimeout(timeout);
       }
-      if (!generated && !state.syncOnly)
+      if (!generated && !state.syncOnly) {
         state.metadata.generationStatus = deferred ? "deferred" : "unavailable";
+        // No model result: show a local title line rather than nothing. With
+        // summaries switched off every new request gets its own local line.
+        const topics = state.metadata.topics ?? [];
+        if (!topics.length || (!policy.enabled && state.pendingRequests?.length))
+          this.applyTitleLine(state, context, null, Boolean(state.images?.length));
+      }
       const current = await this.options.repository.get(state.key);
       if (current?.version !== state.version) {
         await this.options.repository.finish(lease, state);
