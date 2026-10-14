@@ -135,6 +135,11 @@ case "${1:-}" in
     printf '%s\n' "SPACE_$(printf '%s' "$runtime_name" | tr '[:lower:]' '[:upper:]')_OK"
     exit 0
     ;;
+  credential-install)
+    # A configuration import's login for this CLI arrives on stdin through the CLI host.
+    ensure_runtime_dirs
+    exec node /app/deploy/docker/credential-install.mjs "$runtime_name" "$state_root"
+    ;;
   inspect-env)
     printf 'runtime=%s\nhome=isolated\ncredential=%s\n' \
       "$runtime_name" "$(credential_ready && printf present || printf absent)"

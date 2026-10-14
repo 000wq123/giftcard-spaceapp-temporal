@@ -105,6 +105,7 @@ const publicScripts = new Set([
   "scripts/tests/portable-backup-restore.test.mjs",
   "scripts/tests/published-container-verification.test.mjs",
   "scripts/tests/public-compose-config.test.mjs",
+  "scripts/tests/public-credential-install.test.mjs",
   "scripts/tests/public-docker-distribution.test.mjs",
   "scripts/tests/public-export.test.mjs",
   "scripts/tests/public-package-metadata.test.mjs",
