@@ -80,6 +80,9 @@ export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"
 const publicScripts = new Set([
   // Loaded by apps/api/src/cli-render-proof-fixture.ts (proof rooms); missing, that path failed (review F18).
   "scripts/cli-render-fixture.mjs",
+  // Maintained here; listed so the CI re-export of this repository keeps them.
+  "scripts/verify-export-provenance.mjs",
+  "scripts/tests/verify-export-provenance.test.mjs",
   "scripts/publish-npm-candidate.mjs",
   "scripts/tests/publish-npm-candidate.test.mjs",
   "scripts/release-evidence.mjs",
