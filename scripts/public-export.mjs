@@ -465,6 +465,9 @@ export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
   if (/^apps\/(desktop|mobile)\//.test(normalized) || normalized.startsWith("apps/web/public/downloads/")) return false;
+  // HyperFrames' vendored fonts, sound effects and textures carry mixed licences (OFL for some fonts
+  // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
+  if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
   if (normalized.includes("/tests/")) {
     return publicScripts.has(normalized) ||
       normalized.startsWith("packages/run-spaceapp/tests/") ||
