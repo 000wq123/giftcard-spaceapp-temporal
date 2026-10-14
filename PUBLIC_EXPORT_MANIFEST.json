@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "sourceCommit": "aa53bc0a8d507cd7bd7a413b4ef144a167066daa",
   "fileCount": 2145,
-  "transformations": 186,
+  "transformations": 187,
   "files": [
     {
       "path": ".gitignore",
@@ -10028,8 +10028,8 @@
     {
       "path": "package-lock.json",
       "sourceObjectId": "041d8bebdd59e5185dd9d7f26d160941ce6f814c",
-      "sha256": "50a2915d4a38eb914c17634bf21fe0dbced85c57bd17314bd25e0007c93790c8",
-      "size": 530831
+      "sha256": "2a4030c08ce89ed28e2249ab3371353fd17ffd0b4d04c5dd69ef51ad123560c1",
+      "size": 418937
     },
     {
       "path": "package.json",

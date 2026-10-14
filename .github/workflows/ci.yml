@@ -29,6 +29,9 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      - name: Verify export provenance
+        run: node scripts/verify-export-provenance.mjs .
+
       - name: Create sanitized candidate
         run: >-
           node scripts/public-export.mjs

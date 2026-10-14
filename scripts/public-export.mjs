@@ -120,6 +120,7 @@ const publicScripts = new Set([
   // (test:architecture), npm run smoke:offline and npm run test:contributor.
   "scripts/domain-boundaries.mjs",
   "scripts/tests/domain-boundaries.test.mjs",
+  "scripts/tests/composition-root-size.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
   "scripts/tests/contributor-smoke.test.mjs"
