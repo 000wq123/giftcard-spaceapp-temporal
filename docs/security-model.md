@@ -14,8 +14,11 @@ SaaS control plane.
   workspace grants the selected CLI tools access to that path.
 - Provider CLIs and their upstream services are independent third parties with
   their own licenses, privacy policies, and credential formats.
-- Container images and npm artifacts are software-supply-chain inputs and must
-  be pinned, scanned, and produced by the public release workflow.
+- Container images and npm artifacts are software-supply-chain inputs. SpaceApp's
+  own images are built, scanned and published by the public release workflow,
+  which verifies their SBOM and provenance attestations; the launcher pulls them
+  by exact version tag. Third-party images (PostgreSQL, Temporal, codex-lb,
+  headroom) are pinned by digest in the compose template.
 
 ## Default protections
 

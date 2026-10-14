@@ -122,7 +122,7 @@ services:
       - spaceapp
 
   codex-lb:
-    image: ghcr.io/soju06/codex-lb:1.22.0
+    image: ghcr.io/soju06/codex-lb:1.22.0@sha256:3010b3c5567522fbb6e7225bdbe963fa1038c2584641fcec69094875e40e36e5
     profiles: ["companions"]
     restart: unless-stopped
     init: true
@@ -152,7 +152,7 @@ services:
       - spaceapp
 
   postgres:
-    image: pgvector/pgvector:0.8.3-pg17-trixie
+    image: pgvector/pgvector:0.8.3-pg17-trixie@sha256:3a3147ccd9a0aee952bb69e1acea1eb3cc7183544185b87a662f872cfa47ae3b
     restart: unless-stopped
     mem_limit: "${SPACEAPP_POSTGRES_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_POSTGRES_CPU_LIMIT}"
@@ -173,7 +173,7 @@ services:
       - spaceapp
 
   temporal:
-    image: temporalio/auto-setup:1.29.1
+    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
     profiles: ["workflows"]
     restart: unless-stopped
     mem_limit: "${SPACEAPP_TEMPORAL_MEMORY_LIMIT}"
