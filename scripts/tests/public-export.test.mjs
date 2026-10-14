@@ -124,11 +124,14 @@ test("public audit rejects credential-shaped values", async () => {
   );
 });
 
-test("public path policy excludes internal tests and keeps only reviewed public tests", () => {
-  assert.equal(isPublicExportPath("apps/api/tests/private-runtime.test.ts"), false);
-  assert.equal(isPublicExportPath("packages/runtime/tests/store.test.ts"), false);
+test("public path policy exports application tests except the reviewed private-only ones", () => {
+  // Review F15 (2026-10-14): every app and package test is public unless it cannot pass outside
+  // the private environment; scripts/public-test-exclusions.json names each one with its reason.
+  assert.equal(isPublicExportPath("apps/api/tests/private-runtime.test.ts"), true);
+  assert.equal(isPublicExportPath("packages/runtime/tests/store.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes.test.ts"), false);
   assert.equal(isPublicExportPath("apps/web/tests/public-deployment-config.test.ts"), false);
+  assert.equal(isPublicExportPath("scripts/tests/private-ops.test.mjs"), false);
   assert.equal(isPublicExportPath("apps/api/tests/constant-time-token.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/route-rate-limits.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/setup.test.ts"), true);

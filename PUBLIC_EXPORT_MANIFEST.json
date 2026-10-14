@@ -10034,8 +10034,8 @@
     {
       "path": "package.json",
       "sourceObjectId": "61621977d35e01492559b626dd9aada597fd7f3e",
-      "sha256": "17b0e88035392ddb970b0e820b6aec049710e0d7306dedf8c51c510e27b8c9a8",
-      "size": 4290
+      "sha256": "8cc951099843bdbeb4367de4332b8099ebbcd60c2fa683d04695c3059b902fd4",
+      "size": 3987
     },
     {
       "path": "packages/browser-host/package.json",

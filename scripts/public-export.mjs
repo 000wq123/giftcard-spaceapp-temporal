@@ -81,6 +81,7 @@ const publicScripts = new Set([
   // Loaded by apps/api/src/cli-render-proof-fixture.ts (proof rooms); missing, that path failed (review F18).
   "scripts/cli-render-fixture.mjs",
   // Maintained here; listed so the CI re-export of this repository keeps them.
+  "scripts/public-test-exclusions.json",
   "scripts/verify-export-provenance.mjs",
   "scripts/tests/verify-export-provenance.test.mjs",
   "scripts/publish-npm-candidate.mjs",
@@ -148,22 +149,11 @@ const byteStablePublicFiles = new Set([
   "scripts/tests/public-export.test.mjs"
 ]);
 
-const publicAppTests = new Set([
-  "apps/api/tests/cli-runtime-descriptors.test.ts",
-  "apps/api/tests/constant-time-token.test.ts",
-  "apps/api/tests/owner-setup-bootstrap.test.ts",
-  "apps/api/tests/route-rate-limits.test.ts",
-  "apps/api/tests/setup.test.ts",
-  "apps/api/tests/storage-warning.test.ts",
-  "apps/web/tests/clipboard-html.test.ts",
-  "apps/web/tests/owner-setup.test.tsx",
-  // Loaded by apps/web/vite.config.ts (test.setupFiles) for every web test.
-  "apps/web/tests/setup-testing-library.ts"
-]);
-
-const publicPackageTests = new Set([
-  "packages/runtime/tests/public-defaults.test.ts"
-]);
+// Every application and package test is public, except those that cannot pass outside the private
+// environment (review F15, measured on the exported tree 2026-10-14): each entry names its reason.
+const privateOnlyTests = new Map(Object.entries(JSON.parse(
+  readFileSync(new URL("./public-test-exclusions.json", import.meta.url), "utf8")
+)));
 
 const publicBinaryFiles = new Map([
   ["apps/web/public/brand/spaceapp-bg-ascii-orbital-optimized.gif", "42e0be38c08a14c7affca0cdb77583a2d015156a0ca741bef093ddf79078ebcc"],
@@ -472,11 +462,9 @@ export function isPublicExportPath(path) {
   // HyperFrames' vendored fonts, sound effects and textures carry mixed licences (OFL for some fonts
   // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
+  if (privateOnlyTests.has(normalized)) return false;
   if (normalized.includes("/tests/")) {
-    return publicScripts.has(normalized) ||
-      normalized.startsWith("packages/run-spaceapp/tests/") ||
-      publicAppTests.has(normalized) ||
-      publicPackageTests.has(normalized);
+    return publicScripts.has(normalized) || /^(apps|packages)\//.test(normalized);
   }
   return rootFiles.has(normalized) ||
     normalized.startsWith(".github/") ||

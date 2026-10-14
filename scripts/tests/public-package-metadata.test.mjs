@@ -113,18 +113,8 @@ test("public test command uses a portable one-file suite that imports every publ
     );
     previousBuildIndex = buildIndex;
   }
-  for (const testFile of [
-    "cli-runtime-descriptors.test.ts",
-    "constant-time-token.test.ts",
-    "owner-setup-bootstrap.test.ts",
-    "route-rate-limits.test.ts",
-    "setup.test.ts",
-    "storage-warning.test.ts",
-    "clipboard-html.test.ts",
-    "owner-setup.test.tsx"
-  ]) {
-    assert.match(rootPackage.scripts["test:public"], new RegExp(testFile.replaceAll(".", "\\.")));
-  }
+  // Review F15: after the builds, every workspace runs its whole exported suite.
+  assert.match(rootPackage.scripts["test:public"], / && npm test --workspaces --if-present$/);
   assert.deepEqual(importedModules, publicTestModules);
 });
 
