@@ -121,6 +121,8 @@ const publicScripts = new Set([
   "scripts/domain-boundaries.mjs",
   "scripts/tests/domain-boundaries.test.mjs",
   "scripts/tests/composition-root-size.test.mjs",
+  "scripts/quality-known-limitations.mjs",
+  "scripts/tests/quality-known-limitations.test.mjs",
   "scripts/contributor-smoke.mjs",
   "scripts/fixtures/offline-cli.mjs",
   "scripts/tests/contributor-smoke.test.mjs"
