@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   basename,
@@ -217,79 +218,24 @@ function joined(...parts) {
   return parts.join("");
 }
 
-function escaped(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// Operator-specific markers (hosts, paths, addresses, names) live in the private
+// source tree and reach this public script only through PUBLIC_EXPORT_PRIVATE_RULES.
+const privateRules = process.env.PUBLIC_EXPORT_PRIVATE_RULES
+  ? JSON.parse(readFileSync(process.env.PUBLIC_EXPORT_PRIVATE_RULES, "utf8"))
+  : { replacements: [], rules: [] };
 
 const textReplacements = [
-  [joined("https://space.", "oll4.com:4911"), "http://127.0.0.1:4911"],
-  [joined("https://space.", "oll4.com"), "http://127.0.0.1:4911"],
-  [joined("space.", "oll4.com"), "spaceapp.example"],
-  [joined("/srv/", "space"), "/opt/spaceapp"],
-  [joined("/home/", "proxmoxusr"), "/var/lib/spaceapp-user"],
-  [joined("/etc/", "docs"), "/opt/spaceapp/docs"],
-  [joined("10.", "100.0."), "192.0.2."],
-  [joined("olla", ".gr"), "example.invalid"],
-  [joined("oll4", ".com"), "example.invalid"],
-  [joined("coder-", "codex-", "rooms"), "spaceapp-rooms"],
-  [joined("VM", "100"), "public-host"],
-  [joined("YUN", "WU"), "LEGACY"],
-  [joined("Yun", "wu"), "Legacy"],
-  [joined("yun", "wu"), "legacy"],
-  [joined("proxmox", "usr"), "spaceapp-user"],
-  [joined("pirniramon7@", "gmail.com"), "operator@example.invalid"],
-  [joined("pirni", "ramon"), "operator"],
-  [joined("162.55.", "99.104"), "192.0.2.10"]
-].map(([from, to]) => [new RegExp(escaped(from), "g"), to]);
-// The private source repo shorthand must not become the public repo name
-// (which appends "app"), so replace it with a negative lookahead rule.
-textReplacements.push([
-  new RegExp(`${escaped(joined("oll4com/", "space"))}(?!app)`, "g"),
-  "spaceapp.example/spaceapp"
-]);
-// Any Proxmox VM identifier is private infra and must not leak into the
-// public installer; generic rule covers current and future ids.
-textReplacements.push([new RegExp("\\bVM\\d{2,4}\\b", "g"), "public-host"]);
+  ...privateRules.replacements.map(({ pattern, flags, to }) => [new RegExp(pattern, flags), to]),
+  // Any Proxmox VM identifier is private infra and must not leak into the
+  // public installer; generic rule covers current and future ids.
+  [new RegExp("\\bVM\\d{2,4}\\b", "g"), "public-host"]
+];
 
 const contentRules = [
-  {
-    rule: "private-home-path",
-    pattern: new RegExp(escaped(joined("/home/", "proxmoxusr")), "i")
-  },
-  {
-    rule: "private-runtime-path",
-    pattern: new RegExp(escaped(joined("/srv/", "space")), "i")
-  },
-  {
-    rule: "private-hostname",
-    pattern: new RegExp(escaped(joined("space.", "oll4.com")), "i")
-  },
-  {
-    rule: "private-network-ip",
-    pattern: new RegExp(escaped(joined("10.", "100.")))
-  },
-  {
-    rule: "private-business-domain",
-    pattern: new RegExp(escaped(joined("olla", ".gr")), "i")
-  },
-  {
-    rule: "private-provider-label",
-    pattern: new RegExp(joined("yun", "wu"), "i")
-  },
-  {
-    rule: "private-memory-path",
-    pattern: new RegExp(escaped(joined("/etc/docs/", "gemini")), "i")
-  },
+  ...privateRules.rules.map(({ rule, pattern, flags }) => ({ rule, pattern: new RegExp(pattern, flags) })),
   {
     rule: "private-vm-identifier",
     pattern: new RegExp(joined("\\b(?:V", "M|C", "T)\\d{2,4}\\b"))
-  },
-  {
-    rule: "private-repository",
-    pattern: new RegExp(
-      `${joined("coder-", "codex-", "rooms")}|${joined("oll4com/", "space")}(?!app)`,
-      "i"
-    )
   },
   {
     rule: "github-token",
@@ -320,18 +266,6 @@ const contentRules = [
   {
     rule: "private-key",
     pattern: new RegExp(joined("-----BEGIN ", "(?:RSA |EC |OPENSSH )?PRIVATE KEY-----"))
-  },
-  {
-    rule: "private-operator-email",
-    pattern: new RegExp(joined("pirniramon7@", "gmail\\.com"), "i")
-  },
-  {
-    rule: "private-operator-handle",
-    pattern: new RegExp(joined("\\bpirni", "ramon\\b"), "i")
-  },
-  {
-    rule: "private-proxmox-ip",
-    pattern: new RegExp(joined("162\\.55\\.", "99\\.104"))
   }
 ];
 
@@ -878,6 +812,9 @@ export async function publicRepositoryOwnedFiles(root) {
 export async function runCli(argv) {
   const options = parseArgs(argv);
   const sourceRoot = options.source ?? repoRoot;
+  if (resolve(sourceRoot) !== repoRoot && !privateRules.rules.length) {
+    throw new Error("Exporting a private tree needs PUBLIC_EXPORT_PRIVATE_RULES (the private sanitizer rules).");
+  }
   const status = git(["status", "--porcelain=v1", "--untracked-files=all"], sourceRoot);
   if (status) {
     throw new Error("Public export requires a clean source worktree.");

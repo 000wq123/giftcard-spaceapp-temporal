@@ -13,30 +13,38 @@ import {
   isPublicExportPath,
   publicRootPackage,
   publicRepositoryOwnedFiles,
+  runCli,
   sanitizePublicText,
   unlinkMissingTargets
 } from "../public-export.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
-test("public text sanitization replaces private infrastructure markers", () => {
-  const privateInput = [
-    ["https://space.", "oll4.com:4911"].join(""),
-    ["/srv/", "space"].join(""),
-    ["/home/", "proxmoxusr"].join(""),
-    ["10.", "100.0.207"].join(""),
-    ["Yun", "wu"].join(""),
-    ["olla", ".gr"].join(""),
-    ["/etc/docs/", "gemini_history.md"].join(""),
-    ["pirniramon7@", "gmail.com"].join(""),
-    ["pirni", "ramon"].join(""),
-    ["162.55.", "99.104"].join("")
-  ].join(" ");
-  const sanitized = sanitizePublicText(privateInput);
+test("public text sanitization applies the private rules file and the generic rules", async () => {
+  const rulesPath = join(await mkdtemp(join(tmpdir(), "spaceapp-private-rules-")), "rules.json");
+  await writeFile(rulesPath, JSON.stringify({
+    replacements: [{ pattern: "private\\.host\\.test", flags: "g", to: "spaceapp.example" }],
+    rules: [{ rule: "private-hostname", pattern: "private\\.host\\.test", flags: "i" }]
+  }));
+  process.env.PUBLIC_EXPORT_PRIVATE_RULES = rulesPath;
+  try {
+    const fresh = await import("../public-export.mjs?private-rules");
+    assert.equal(fresh.sanitizePublicText(`https://private.host.test on ${["VM", "207"].join("")}`), "https://spaceapp.example on public-host");
+    const root = await mkdtemp(join(tmpdir(), "spaceapp-private-audit-"));
+    await writeFile(join(root, "unsafe.txt"), "private.host.test\n");
+    assert.deepEqual((await fresh.auditPublicTree(root)).findings.map((finding) => finding.rule), ["private-hostname"]);
+  } finally {
+    delete process.env.PUBLIC_EXPORT_PRIVATE_RULES;
+  }
+  // Without the private file the public script carries only generic rules.
+  assert.equal(sanitizePublicText("private.host.test"), "private.host.test");
+});
 
-  assert.equal(
-    sanitized,
-    "http://127.0.0.1:4911 /opt/spaceapp /var/lib/spaceapp-user 192.0.2.207 Legacy example.invalid /opt/spaceapp/docs/gemini_history.md operator@example.invalid operator 192.0.2.10"
+test("public export of a private tree fails without the private rules", async () => {
+  const sourceRoot = await mkdtemp(join(tmpdir(), "spaceapp-private-source-"));
+  await assert.rejects(
+    runCli(["--source", sourceRoot, "--verify"]),
+    /PUBLIC_EXPORT_PRIVATE_RULES/
   );
 });
 
@@ -80,7 +88,7 @@ test("public export copies only allowlisted source and writes a clean manifest",
   await writeFile(join(sourceRoot, "AGENTS.md"), "private operator policy\n");
   await writeFile(
     join(sourceRoot, "apps", "api", "src", "example.ts"),
-    `export const root = "${["/srv/", "space"].join("")}";\n`
+    `export const host = "${["VM", "100"].join("")}";\n`
   );
   await writeFile(join(sourceRoot, "docs", "getting-started.md"), "# Start\n");
 
@@ -95,24 +103,24 @@ test("public export copies only allowlisted source and writes a clean manifest",
   assert.equal(result.manifest.transformations, 1);
   assert.equal(
     await readFile(join(outputRoot, "apps", "api", "src", "example.ts"), "utf8"),
-    'export const root = "/opt/spaceapp";\n'
+    'export const host = "public-host";\n'
   );
   await assert.rejects(() => readFile(join(outputRoot, "AGENTS.md"), "utf8"), /ENOENT/);
   assert.equal((await auditPublicTree(outputRoot)).findings.length, 0);
 });
 
-test("public audit rejects private markers and credential-shaped values", async () => {
+test("public audit rejects credential-shaped values", async () => {
   const root = await mkdtemp(join(tmpdir(), "spaceapp-public-audit-"));
   await writeFile(
     join(root, "unsafe.txt"),
-    `${["/home/", "proxmoxusr"].join("")} ${["gh", "p_abcdefghijklmnopqrstuvwxyz1234567890ABCD"].join("")}\n`
+    `${["VM", "207"].join("")} ${["gh", "p_abcdefghijklmnopqrstuvwxyz1234567890ABCD"].join("")}\n`
   );
 
   const result = await auditPublicTree(root);
 
   assert.deepEqual(
     result.findings.map((finding) => finding.rule),
-    ["private-home-path", "github-token"]
+    ["private-vm-identifier", "github-token"]
   );
 });
 
