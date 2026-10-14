@@ -54,6 +54,8 @@ const rootFiles = new Set([
 ]);
 
 const publicDocs = new Set([
+  // Linked from the README (review F4: the link was stripped because the file was not exported).
+  "docs/architecture.md",
   "docs/clean-room-testing.md",
   "docs/cli-providers.md",
   // Linked from CONTRIBUTING; the policy file drives npm run test:architecture.
@@ -76,6 +78,8 @@ const publicDocs = new Set([
 export const publicRepositoryMaintainedFiles = new Set(["docs/security-model.md"]);
 
 const publicScripts = new Set([
+  // Loaded by apps/api/src/cli-render-proof-fixture.ts (proof rooms); missing, that path failed (review F18).
+  "scripts/cli-render-fixture.mjs",
   "scripts/publish-npm-candidate.mjs",
   "scripts/tests/publish-npm-candidate.test.mjs",
   "scripts/release-evidence.mjs",
@@ -473,6 +477,8 @@ export function isPublicExportPath(path) {
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
     normalized.startsWith("agent-skills/") ||
+    // The quality evidence ships with the code it describes, so a review reads both at one commit.
+    normalized.startsWith("docs/quality/") ||
     publicDocs.has(normalized) ||
     publicScripts.has(normalized);
 }
@@ -597,8 +603,10 @@ export async function createPublicExport({
             sanitized = publicRootPackage(sanitized, packageContext).text;
             exportedScripts = JSON.parse(sanitized).scripts;
           }
-          // Internal documents stay private; README keeps their link text only.
-          if (normalized === "README.md") sanitized = unlinkMissingTargets(normalized, sanitized, linkTargetExists);
+          // Internal documents stay private; README and exported docs keep their link text only.
+          if (normalized === "README.md" || (normalized.startsWith("docs/") && normalized.endsWith(".md"))) {
+            sanitized = unlinkMissingTargets(normalized, sanitized, linkTargetExists);
+          }
           exported = Buffer.from(sanitized, "utf8");
           if (!exported.equals(original)) transformations += 1;
         }

@@ -48,7 +48,7 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSIO
     && rm -rf /tmp/npm-security-patches \
     && npm cache clean --force \
     && apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu liblzma5 postgresql-client procps ripgrep \
+    && apt-get install -y --no-install-recommends bash ca-certificates curl git gosu liblzma5 postgresql-client procps ripgrep sqlite3 \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 spaceapp \

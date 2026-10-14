@@ -2,8 +2,9 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published `0.1.x` release. Owners
-should update to the newest patch before reporting an already-fixed issue.
+Security fixes are provided for the latest published `run-spaceapp` release
+and the SpaceApp version it installs (`npx --yes run-spaceapp@latest install`
+updates both). Owners should update before reporting an already-fixed issue.
 
 ## Reporting a vulnerability
 

@@ -387,7 +387,10 @@ test("the documented contributor path is exported", () => {
   ]) {
     assert.equal(isPublicExportPath(path), true, `${path} must be exported`);
   }
-  assert.equal(isPublicExportPath("docs/quality/README.md"), false);
+  // The quality evidence ships with the code it describes (review 2026-10-14).
+  assert.equal(isPublicExportPath("docs/quality/README.md"), true);
+  assert.equal(isPublicExportPath("docs/architecture.md"), true);
+  assert.equal(isPublicExportPath("docs/internal-notes.md"), false);
   // The release workflow exports this repository itself and keeps its security model.
   assert.equal(isPublicExportPath("docs/security-model.md"), true);
 });
@@ -430,10 +433,10 @@ test("README links to files outside the public tree become their link text", () 
 
 test("the exported README never links to internal documents and the export checks it", async () => {
   const { sourceRoot, trackedPaths } = await writeSourceTree({
-    "README.md": "# SpaceApp\n\nSee the [architecture](docs/architecture.md#trust-boundaries), the\n[claims audit](docs/quality/claims-audit.md), the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n",
+    "README.md": "# SpaceApp\n\nSee the [architecture](docs/architecture.md#trust-boundaries), the\n[notes](docs/internal-notes.md), the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n",
     "CONTRIBUTING.md": "# Contributing\n\nSee the [README](README.md).\n",
-    "docs/architecture.md": "internal\n",
-    "docs/quality/claims-audit.md": "internal\n"
+    "docs/architecture.md": "See the [failure matrix](quality/failure-matrix.md).\n",
+    "docs/internal-notes.md": "internal\n"
   });
   const outputRoot = join(await mkdtemp(join(tmpdir(), "spaceapp-public-readme-output-")), "export");
 
@@ -447,10 +450,12 @@ test("the exported README never links to internal documents and the export check
   });
 
   const readme = await readFile(join(outputRoot, "README.md"), "utf8");
-  assert.equal(readme, "# SpaceApp\n\nSee the architecture, the\nclaims audit, the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n");
+  assert.equal(readme, "# SpaceApp\n\nSee the [architecture](docs/architecture.md#trust-boundaries), the\nnotes, the [security model](docs/security-model.md) and [CONTRIBUTING](CONTRIBUTING.md).\n");
   const exported = new Set(result.manifest.files.map((file) => file.path));
-  assert.equal(exported.has("docs/architecture.md"), false);
-  assert.equal(exported.has("docs/quality/claims-audit.md"), false);
+  assert.equal(exported.has("docs/architecture.md"), true);
+  assert.equal(exported.has("docs/internal-notes.md"), false);
+  // Exported documents keep the text of links to files that are not exported.
+  assert.equal(await readFile(join(outputRoot, "docs/architecture.md"), "utf8"), "See the failure matrix.\n");
   assert.deepEqual(documentLinkProblems("README.md", readme,
     (path) => exported.has(path) || path === "docs/security-model.md"), []);
 });
