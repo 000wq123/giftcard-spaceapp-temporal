@@ -72,6 +72,7 @@
   "apps/api/tests/t3code-worktree-workspace.test.ts": "needs the maintainers' scratch directory",
   "apps/web/tests/agent-sessions-dock.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "apps/web/tests/agents-dashboard.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
+  "apps/web/tests/app-icons.test.tsx": "two Live pane files import lucide-react directly at this commit (fixed upstream after 1.1.5)",
   "apps/web/tests/browser-address.test.ts": "the export rewrites private values in the test or the code (review F18)",
   "apps/web/tests/checkbox-switch-inventory.test.ts": "fails on the exported tree (1.1.5 candidate run 2026-10-14)",
   "apps/web/tests/dots-proof-probe.test.tsx": "reads a private deploy file or script",
