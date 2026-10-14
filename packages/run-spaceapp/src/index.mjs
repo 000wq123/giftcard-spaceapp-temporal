@@ -113,7 +113,8 @@ const CONFIG_KEYS = new Set([
   "accessMode",
   "workspaces",
   "companionsEnabled",
-  "optionalModules"
+  "optionalModules",
+  "installId"
 ]);
 
 // Optional SpaceApp modules (games, copilots, channels, ...): "all", "none" or a comma list.
@@ -349,6 +350,10 @@ export function validateConfig(config) {
   if (config.optionalModules !== undefined && !OPTIONAL_MODULES_PATTERN.test(config.optionalModules)) {
     throw new Error("optionalModules must be all, none or a comma-separated list of module names.");
   }
+  // Optional: only installations whose owner said Yes to telemetry have one.
+  if (config.installId !== undefined && (typeof config.installId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(config.installId))) {
+    throw new Error("installId must be 8-64 letters, digits, '-' or '_'.");
+  }
   if (!Array.isArray(config.workspaces)) {
     throw new Error("workspaces must be an array.");
   }
@@ -548,6 +553,7 @@ export function renderRuntimeEnv(config) {
     `SPACEAPP_BIND_HOST=${safeEnv(config.bindHost)}`,
     `SPACEAPP_PORT=${config.port}`,
     `SPACEAPP_TELEMETRY=${config.telemetry}`,
+    `SPACEAPP_INSTALL_ID=${config.installId ?? ""}`,
     `SPACEAPP_PROFILE=${safeEnv(config.profile)}`,
     `SPACEAPP_BROWSER_ENABLED=${settings.browserEnabled}`,
     `SPACEAPP_WORKFLOWS_ENABLED=${settings.temporalEnabled}`,
