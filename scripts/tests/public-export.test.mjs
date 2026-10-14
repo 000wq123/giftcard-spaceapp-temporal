@@ -132,6 +132,8 @@ test("public path policy exports application tests except the reviewed private-o
   assert.equal(isPublicExportPath("apps/api/tests/cli-runtimes.test.ts"), false);
   assert.equal(isPublicExportPath("apps/web/tests/public-deployment-config.test.ts"), false);
   assert.equal(isPublicExportPath("scripts/tests/private-ops.test.mjs"), false);
+  assert.equal(isPublicExportPath("packages/db/tests/new-feature-repository-postgres.test.ts"), false);
+  assert.equal(isPublicExportPath("apps/api/tests/postgres-free.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/constant-time-token.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/route-rate-limits.test.ts"), true);
   assert.equal(isPublicExportPath("apps/api/tests/setup.test.ts"), true);

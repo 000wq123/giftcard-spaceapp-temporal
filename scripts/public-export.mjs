@@ -463,6 +463,8 @@ export function isPublicExportPath(path) {
   // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
   if (privateOnlyTests.has(normalized)) return false;
+  // Tests named *-postgres* start a disposable PostgreSQL container (--pull=never) that public CI does not have.
+  if (/\/(?:tests|__tests__)\/[^/]*-postgres[^/]*$/.test(normalized)) return false;
   if (normalized.includes("/tests/")) {
     return publicScripts.has(normalized) || /^(apps|packages)\//.test(normalized);
   }
