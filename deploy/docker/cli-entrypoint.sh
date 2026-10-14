@@ -36,6 +36,14 @@ if [ -d /app/agent-skills ]; then
   done
 fi
 
+# Configuration imports read and install CLI logins through this agent, never through the pane host;
+# it runs as the same user as the CLIs.
+credential_agent_user=spaceapp
+if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
+  credential_agent_user=root:spaceapp
+fi
+gosu "$credential_agent_user" node /app/deploy/docker/credential-agent.mjs &
+
 if [ "${SPACEAPP_CLI_HOST_ROOT_ACCESS:-false}" = "true" ]; then
   exec gosu root:spaceapp node packages/cli-host/dist/main.js
 fi

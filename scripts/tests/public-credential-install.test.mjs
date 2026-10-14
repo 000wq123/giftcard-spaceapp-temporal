@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { installLogin } from '../../deploy/docker/credential-install.mjs';
+import { startCredentialAgent } from '../../deploy/docker/credential-agent.mjs';
 
 const login = JSON.stringify({ tokens: { refresh_token: 'synthetic-refresh-token' } });
 const payload = (files, conflict) => JSON.stringify({ files: Object.fromEntries(Object.entries(files).map(([name, text]) => [name, Buffer.from(text).toString('base64')])), conflict });
@@ -57,4 +59,43 @@ test('the command reads stdin and answers with one line', async () => {
 test('the public wrapper routes credential-install to the installer with its own home', () => {
   const wrapper = readFileSync(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
   assert.match(wrapper, /credential-install\)\n[\s\S]*?exec node \/app\/deploy\/docker\/credential-install\.mjs "\$runtime_name" "\$state_root"/);
+});
+
+const ask = (socketPath, body) => new Promise((resolve, reject) => {
+  let answer = '';
+  const socket = connect(socketPath, () => socket.end(typeof body === 'string' ? body : JSON.stringify(body)));
+  socket.setEncoding('utf8').on('data', (chunk) => { answer += chunk; }).on('error', reject).on('close', () => resolve(JSON.parse(answer)));
+});
+
+test('the credential agent runs only a wrapper\'s fixed credential actions, input on stdin', async () => {
+  // Short path: Unix socket paths are limited to about 100 bytes.
+  const root = await mkdtemp('/tmp/spaceapp-agent-');
+  await writeFile(join(root, 'codex-vscode-parity'), '#!/bin/sh\nprintf "%s %s\\n" "$1" "$(wc -c)"\n');
+  await chmod(join(root, 'codex-vscode-parity'), 0o755);
+  const socketPath = join(root, 'credentials.sock');
+  const server = await startCredentialAgent({ socketPath, commandPath: root });
+  try {
+    assert.equal((await stat(socketPath)).mode & 0o777, 0o660);
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-status' }), { exitCode: 0, stdout: 'credential-status 0\n' });
+    assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-install', input: '{"files":{}}' }), { exitCode: 0, stdout: 'credential-install 12\n' });
+    for (const body of [
+      { command: '../codex-vscode-parity', action: 'credential-status' },
+      { command: 'codex', action: 'credential-status' },
+      { command: 'codex-vscode-parity', action: 'login' },
+      { command: 'codex-vscode-parity', action: 'credential-status', input: 'unexpected' },
+      'not json'
+    ]) {
+      assert.deepEqual(await ask(socketPath, body), { exitCode: 64, stdout: 'FAILED bad-request\n' });
+    }
+  } finally {
+    server.close();
+  }
+  await writeFile(socketPath, 'not a socket');
+  await assert.rejects(() => startCredentialAgent({ socketPath, commandPath: root }), /Refusing to replace non-socket path/);
+});
+
+test('the CLI container starts the credential agent as the CLI user next to the pane host', () => {
+  const entrypoint = readFileSync(new URL('../../deploy/docker/cli-entrypoint.sh', import.meta.url), 'utf8');
+  assert.match(entrypoint, /credential_agent_user=spaceapp\nif \[ "\$\{SPACEAPP_CLI_HOST_ROOT_ACCESS:-false\}" = "true" \]; then\n  credential_agent_user=root:spaceapp\nfi\ngosu "\$credential_agent_user" node \/app\/deploy\/docker\/credential-agent\.mjs &\n/);
+  assert.equal(entrypoint.match(/credential-agent\.mjs/g).length, 1);
 });
