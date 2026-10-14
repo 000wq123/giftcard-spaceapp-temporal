@@ -119,16 +119,22 @@ export async function configureFirstRun(env=process.env) {
   try {
     const previous=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
     const config=previous===null?{}:JSON.parse(previous);
-    const model=config.model?null:await selectWorkingFreeModel({env});
+    // A failed free-model check still writes the bootstrap instructions and memory permissions: the wrapper
+    // starts OpenCode anyway, and without them the first task stops at "Access external directory".
+    // No model is saved, so the next launch checks again.
+    let model=null,failure=null;
+    if(!config.model)try{model=await selectWorkingFreeModel({env});}catch(error){failure=error;}
     const next=withBootstrap(model?{...config,model:model.id}:config,{tmpdir:env.TMPDIR});
-    if(JSON.stringify(next)===JSON.stringify(config))return;
-    const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
-    if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');
-    await writeFile(path,JSON.stringify(next,null,2),{mode:0o600,flag:previous===null?'wx':'w'});
-    if(model) {
-      const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
-      await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+    if(JSON.stringify(next)!==JSON.stringify(config)) {
+      const current=await readFile(path,'utf8').catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
+      if(current!==previous)throw new Error('OpenCode configuration changed during discovery. Retry to preserve your settings.');
+      await writeFile(path,JSON.stringify(next,null,2),{mode:0o600,flag:previous===null?'wx':'w'});
+      if(model) {
+        const memory='/var/lib/spaceapp/memory';await mkdir(memory,{recursive:true});
+        await writeFile(join(memory,'installation-model.json'),JSON.stringify(model,null,2),{mode:0o600});
+      }
     }
+    if(failure)throw failure;
   } finally { await rm(lock,{recursive:true,force:true}); }
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) configureFirstRun().catch(e=>{process.stderr.write(e.message+'\n');process.exitCode=1;});

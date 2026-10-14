@@ -106,6 +106,20 @@ test('configureFirstRun writes the scratch rule for the wrapper TMPDIR',async()=
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
+test('a failed free-model check still writes the bootstrap and memory permissions',async()=>{
+ // 2026-10-14 Windows 1.1.5 lab: the check failed on first launch, the wrapper started OpenCode anyway with no
+ // config, and the first task stopped at "Access external directory /var/lib/spaceapp/memory".
+ const root=await mkdtemp(join(tmpdir(),'spaceapp-first-run-'));
+ try{
+  const config=join(root,'config');
+  await assert.rejects(configureFirstRun({XDG_CONFIG_HOME:config,TMPDIR:PROVIDER_TMP,PATH:''}),/catalog could not be refreshed/);
+  const written=JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8'));
+  assert.equal(written.model,undefined);
+  assert.ok(written.instructions.includes('/etc/spaceapp-installation-guide.md'));
+  assert.equal(decide(written.permission.external_directory,'/var/lib/spaceapp/memory/*'),'allow');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test('Big Pickle is tried first, then the newest free models',async()=>{
  assert.deepEqual(preferDefault([{id:'opencode/new-free'},{id:'opencode/big-pickle'}]).map(x=>x.id),['opencode/big-pickle','opencode/new-free']);
  const tried=[];
