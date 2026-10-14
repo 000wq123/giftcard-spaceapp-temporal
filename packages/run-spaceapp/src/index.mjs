@@ -112,8 +112,13 @@ const CONFIG_KEYS = new Set([
   "profile",
   "accessMode",
   "workspaces",
-  "companionsEnabled"
+  "companionsEnabled",
+  "optionalModules"
 ]);
+
+// Optional SpaceApp modules (games, copilots, channels, ...): "all", "none" or a comma list.
+// A config written before 1.1.5 has no field and keeps every module; new installs start with none.
+const OPTIONAL_MODULES_PATTERN = /^(?:all|none|[a-z][a-z-]*(?:,[a-z][a-z-]*)*)$/;
 
 export const SPACEAPP_UPGRADE_POLICY = Object.freeze({
   schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -299,6 +304,7 @@ export function createDefaultConfig({
     profile,
     accessMode: resolvedAccessMode,
     companionsEnabled,
+    optionalModules: "none",
     workspaces: []
   };
 }
@@ -339,6 +345,9 @@ export function validateConfig(config) {
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
+  }
+  if (config.optionalModules !== undefined && !OPTIONAL_MODULES_PATTERN.test(config.optionalModules)) {
+    throw new Error("optionalModules must be all, none or a comma-separated list of module names.");
   }
   if (!Array.isArray(config.workspaces)) {
     throw new Error("workspaces must be an array.");
@@ -553,6 +562,7 @@ export function renderRuntimeEnv(config) {
     `SPACEAPP_TEMPORAL_MEMORY_LIMIT=${settings.temporalMemoryLimit}`,
     `SPACEAPP_TEMPORAL_CPU_LIMIT=${settings.temporalCpuLimit}`,
     `SPACEAPP_COMPANIONS_ENABLED=${config.companionsEnabled ? "true" : "false"}`,
+    `SPACEAPP_OPTIONAL_MODULES=${config.optionalModules ?? "all"}`,
     ""
   ].join("\n");
 }

@@ -128,6 +128,10 @@ test("runtime env applies bounded light and standard resource settings without s
   assert.match(standard, /^SPACEAPP_IMAGE_TAG=0\.1\.0$/m);
   assert.match(standard, /^SPACEAPP_BIND_HOST=127\.0\.0\.1$/m);
   assert.match(standard, /^SPACEAPP_TELEMETRY=false$/m);
+  // A config written before 1.1.5 keeps every optional module; new installs start with none.
+  assert.match(standard, /^SPACEAPP_OPTIONAL_MODULES=all$/m);
+  assert.match(renderRuntimeEnv({ ...config, optionalModules: "job-copilot,games" }), /^SPACEAPP_OPTIONAL_MODULES=job-copilot,games$/m);
+  assert.throws(() => renderRuntimeEnv({ ...config, optionalModules: "games; rm -rf /" }), /optionalModules/);
   assert.match(standard, /^SPACEAPP_BROWSER_ENABLED=true$/m);
   assert.match(standard, /^SPACEAPP_CORE_MEMORY_LIMIT=4g$/m);
   assert.match(light, /^SPACEAPP_BROWSER_ENABLED=false$/m);

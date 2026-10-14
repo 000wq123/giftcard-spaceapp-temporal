@@ -72,6 +72,7 @@
   "apps/web/tests/agent-sessions-dock.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "apps/web/tests/agents-dashboard.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "apps/web/tests/browser-address.test.ts": "the export rewrites private values in the test or the code (review F18)",
+  "apps/web/tests/checkbox-switch-inventory.test.ts": "fails on the exported tree (1.1.5 candidate run 2026-10-14)",
   "apps/web/tests/dots-proof-probe.test.tsx": "reads a private deploy file or script",
   "apps/web/tests/google-account-settings-card.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "apps/web/tests/maintenance-hub.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
@@ -82,6 +83,8 @@
   "apps/web/tests/sensitive-data-mask.test.tsx": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "apps/web/tests/source-control-publishing-card.test.tsx": "the export rewrites private values in the test or the code (review F18)",
   "apps/web/tests/terminal-hidden-echo.test.ts": "the export rewrites private values in the test or the code (review F18)",
+  "apps/web/tests/terminal-pane-upload.test.tsx": "fails on the exported tree (1.1.5 candidate run 2026-10-14)",
+  "apps/web/tests/ui-parity-manifest.test.ts": "refers to tests that stay private",
   "apps/worker/tests/memory-maintenance.test.ts": "reads a private deploy file or script",
   "apps/worker/tests/memory-mutation-activity.test.ts": "reads a private deploy file or script",
   "apps/worker/tests/worker-hard-kill.integration.test.ts": "needs a Temporal server",
@@ -92,6 +95,7 @@
   "packages/contracts/tests/marketing-copilot.test.ts": "reads a private deploy file or script",
   "packages/contracts/tests/space-inventory-helper.test.ts": "reads a private deploy file or script",
   "packages/db/tests/chat-submissions-postgres.test.ts": "needs a PostgreSQL test database",
+  "packages/db/tests/configuration-import-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/dot-goals-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/dot-home-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/dot-tool-gateway-postgres.test.ts": "needs a PostgreSQL test database",
@@ -108,5 +112,6 @@
   "packages/db/tests/room-deletion-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/db/tests/user-settings-postgres.test.ts": "needs a PostgreSQL test database",
   "packages/gateway/tests/warmup.test.ts": "the export rewrites private values in the test or the code (review F18)",
-  "packages/memory-graph/tests/retrieval.test.ts": "fails on the exported tree (review F15 measurement 2026-10-14)"
+  "packages/memory-graph/tests/retrieval.test.ts": "fails on the exported tree (review F15 measurement 2026-10-14)",
+  "packages/runtime/tests/configuration-bundle-store.test.ts": "the export rewrites private values in the test or the code (review F18)"
 }

@@ -188,3 +188,20 @@ changes the bind address or adds a reverse proxy, they are responsible for TLS,
 access policy, trusted proxy configuration, firewall rules, updates, backup
 retention, and log retention. Do not bind an instance directly to an untrusted
 network.
+
+## Optional modules
+
+Modules beyond the coding workspace run only when enabled: `games`,
+`job-copilot`, `mail-copilot`, `marketing-copilot`, `channels` (Slack and
+Teams), `telegram`, `waitlist` and `desktop-updates`. Installations created with
+1.1.5 or later start with none of them (`"optionalModules": "none"` in the
+launcher's `config.json`); an installation upgraded from an earlier version has
+no such field and keeps all of them. To change the set, edit the field (`all`,
+`none` or a comma-separated list such as `job-copilot,games`) and run:
+
+```bash
+npx --yes run-spaceapp@latest repair
+```
+
+A module that is off registers no routes, starts no background work and is
+hidden in the web app.

@@ -42,6 +42,7 @@ test("default config is versioned, loopback-only, and contains no secret fields"
     profile: "light",
     accessMode: "isolated",
     companionsEnabled: false,
+    optionalModules: "none",
     workspaces: []
   });
   assert.doesNotMatch(JSON.stringify(config), /password|secret|token|api.?key/i);
