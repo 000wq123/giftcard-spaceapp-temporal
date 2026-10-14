@@ -29,6 +29,20 @@ test('writes a login 0600 in a 0700 home and keeps a 0600 backup of the one it r
   assert.equal(await readFile(file, 'utf8'), '{"new":true}');
 });
 
+test('a Claude login also marks Claude Code onboarded, keeping its other settings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
+  assert.equal(await installLogin('claude', root, payload({ '.credentials.json': login })), 'IMPORTED');
+  assert.deepEqual(JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')), { hasCompletedOnboarding: true });
+  assert.equal((await stat(join(root, '.claude.json'))).mode & 0o777, 0o600);
+  await writeFile(join(root, '.claude.json'), JSON.stringify({ userID: 'kept', hasCompletedOnboarding: false }), { mode: 0o600 });
+  await installLogin('claude', root, payload({ '.credentials.json': login }));
+  assert.deepEqual(JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')), { userID: 'kept', hasCompletedOnboarding: true });
+  // Other CLIs keep their settings untouched.
+  const codex = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
+  await installLogin('codex', codex, payload({ 'auth.json': login }));
+  assert.deepEqual(await readdir(codex), ['auth.json']);
+});
+
 test('rejects unknown runtimes, file names outside the allowlist and damaged logins without writing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'spaceapp-login-'));
   assert.equal(await installLogin('hermes', root, payload({ 'auth.json': login })), 'FAILED not-supported-on-target');

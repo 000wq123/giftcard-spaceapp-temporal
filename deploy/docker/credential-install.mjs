@@ -65,7 +65,20 @@ export async function installLogin(runtime, stateRoot, payloadText) {
       throw error;
     });
   }
+  // Interactive Claude Code reruns its first-run onboarding, login screen included, until its settings say it ran.
+  if (runtime === 'claude') await markOnboarded(join(home, '.claude.json'));
   return backup ? `IMPORTED backup=${backup}` : 'IMPORTED';
+}
+
+async function markOnboarded(path) {
+  const current = await readFile(path, 'utf8').then((text) => JSON.parse(text), (error) => {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  });
+  if (current.hasCompletedOnboarding === true) return;
+  const temporary = `${path}.tmp-${randomBytes(6).toString('hex')}`;
+  await writeFile(temporary, JSON.stringify({ ...current, hasCompletedOnboarding: true }, null, 2), { mode: 0o600, flag: 'wx' });
+  await rename(temporary, path);
 }
 
 async function main() {
