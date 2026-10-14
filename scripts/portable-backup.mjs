@@ -100,6 +100,10 @@ export async function runCommand(command, args, {
   });
 }
 
+// Integration secrets kept in the data root stay on their host: backups leave them out and a
+// restore keeps the current ones, so a backup never carries the Google OAuth client or bot tokens.
+export const hostSecretEntries = ["google-oauth.json", "telegram"];
+
 export async function createPortableBackup({
   env = process.env,
   stdout = process.stdout,
@@ -137,6 +141,7 @@ export async function createPortableBackup({
       "--exclude=./memory",
       "--exclude=./artifacts/browser-profiles",
       "--exclude=./browser-profiles",
+      ...hostSecretEntries.map((name) => `--exclude=./${name}`),
       "."
     ]);
     await runCommand("tar", [

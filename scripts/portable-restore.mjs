@@ -4,6 +4,7 @@ import { basename, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createFileRecord,
+  hostSecretEntries,
   parseDatabaseEnvironment,
   readDatabaseUrl,
   runCommand,
@@ -96,7 +97,7 @@ export async function restorePortableBackup({
   await validateTarArchive(join(backupDirectory, "data.tar.gz"));
   await validateTarArchive(join(backupDirectory, "memory.tar.gz"));
 
-  await clearDirectory(dataRoot, new Set(["memory"]));
+  await clearDirectory(dataRoot, new Set(["memory", ...hostSecretEntries]));
   await clearDirectory(memoryRoot);
   await runCommand("tar", [
     "--extract",

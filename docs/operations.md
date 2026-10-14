@@ -39,8 +39,9 @@ contains:
 - `manifest.json`: format metadata, sizes, and SHA-256 checksums.
 
 Backups do **not** contain provider API-key files, OAuth/device login state,
-the provider-state Docker volume, registered host workspace contents, or
-browser profiles. Store credentials in a password manager and keep independent
+the provider-state Docker volume, registered host workspace contents, browser
+profiles, the Google OAuth client (`google-oauth.json`) or the Telegram bot
+secrets. A restore keeps the ones already on the host. Store credentials in a password manager and keep independent
 backups of the source repositories themselves.
 
 Backup directories and files are owner-restricted. They can still contain
@@ -66,7 +67,11 @@ The launcher:
 Restore is destructive to current application data. Make an offline copy of
 the installation's `backups` directory before a disaster-recovery exercise.
 Provider login state is not restored; reconnect providers when moving to a new
-Docker host.
+Docker host. On a new host, also enter the Google OAuth client and the Telegram
+bot token again. Stored secrets are encrypted with the installation's session
+secret, which a new host does not share: database connection passwords report
+`CREDENTIAL_UNREADABLE` until you enter them again, and connected accounts ask
+you to reconnect.
 
 ## Update
 
