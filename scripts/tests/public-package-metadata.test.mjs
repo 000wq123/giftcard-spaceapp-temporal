@@ -17,6 +17,7 @@ const publicTestModules = [
   "portable-backup-restore.test.mjs",
   "published-container-verification.test.mjs",
   "public-compose-config.test.mjs",
+  "public-credential-install.test.mjs",
   "public-docker-distribution.test.mjs",
   "public-export.test.mjs",
   "public-package-metadata.test.mjs",
@@ -26,7 +27,8 @@ const publicTestModules = [
   "release-version.test.mjs",
   "reset-owner-password.test.mjs",
   "rotate-owner-setup-token.test.mjs",
-  "trivy-report-summary.test.mjs"
+  "trivy-report-summary.test.mjs",
+  "verify-export-provenance.test.mjs"
 ];
 
 async function packageFiles(directory) {
