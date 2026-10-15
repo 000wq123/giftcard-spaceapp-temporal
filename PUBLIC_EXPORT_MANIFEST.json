@@ -1,7 +1,7 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "a41d4b238abfdefdbe871b5553f767fc176a6909",
+  "sourceCommit": "03f5bf9d50c01869f141c6348dcac9376bb5752e",
   "fileCount": 4255,
   "transformations": 327,
   "files": [
@@ -12715,9 +12715,9 @@
     },
     {
       "path": "apps/api/tests/task-title-opencode.test.ts",
-      "sourceObjectId": "6de06cccc72b966428058a4495f0585349025c44",
-      "sha256": "3472eb83bd7926e27f8f1ec937bf6ac11cd476cc44f1e996547c80ee37f1e494",
-      "size": 9090
+      "sourceObjectId": "41aebc3ce6bf092cbc8d95fc883e83a11a00397c",
+      "sha256": "5e3f80eeb521b2a0d44dba6ee1aad5c093658e0c76e3df3867dfd056ecc802f3",
+      "size": 9110
     },
     {
       "path": "apps/api/tests/task-title-providers.test.ts",
@@ -17815,9 +17815,9 @@
     },
     {
       "path": "apps/web/tests/cli-account-picker.test.tsx",
-      "sourceObjectId": "47acf7b0e3b45f33a17bac8a13f69bef37389320",
-      "sha256": "95203c3116bb921ee4e88645c4a5eca3bde99faaa4fca72105d86a7c78db2a90",
-      "size": 30788
+      "sourceObjectId": "cbe18a7a09537128d30312404378287fa4d952a8",
+      "sha256": "fb48ebe30785ebecd6208b72f5d930d8e81b60688ab3c35875e0744100f2cd59",
+      "size": 30870
     },
     {
       "path": "apps/web/tests/cli-build-mode.test.ts",
@@ -18277,9 +18277,9 @@
     },
     {
       "path": "apps/web/tests/instance-badge.test.tsx",
-      "sourceObjectId": "0d6617355bb30988f53f584858e70430d44b12f8",
-      "sha256": "1cc8a6025660361fed2363689cd7251532207ec6aa604a869d1cee9f9cf93868",
-      "size": 1913
+      "sourceObjectId": "2a762b0daa2e56bd71fe25711096f645e220e759",
+      "sha256": "b14ee3b15d684b2252d471b5d6ac9ec06bf6bdf50afa69af459918dd04de5061",
+      "size": 1934
     },
     {
       "path": "apps/web/tests/job-copilot-layout.test.tsx",
@@ -19471,9 +19471,9 @@
     },
     {
       "path": "apps/web/vite.config.ts",
-      "sourceObjectId": "fa5434af021f8f6da02361b6bcd64435a22ee791",
-      "sha256": "ba987ed0bb296593640263a57ded3d584236d41ac03bd675a5b5af4cf7b90687",
-      "size": 2536
+      "sourceObjectId": "440a79e31a3f86df0c66bb67ed1d44a4dbcba128",
+      "sha256": "6903aa14b349193f17c903d4c14f984dbb547868a650ef3acc7a7f12b9d8849c",
+      "size": 2700
     },
     {
       "path": "apps/web/vite.demo-boundary.ts",

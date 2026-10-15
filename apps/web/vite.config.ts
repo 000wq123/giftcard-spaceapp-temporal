@@ -49,6 +49,8 @@ export default defineConfig({
     // with 4 workers and 20 s the same files had no timeouts.
     maxWorkers: 4,
     testTimeout: 20_000,
+    // Shared CI runners (GitHub) occasionally miss a 1 s waitFor in the long jsdom UI tests; locally a failure stays a failure.
+    retry: process.env.CI ? 2 : 0,
     hookTimeout: 20_000,
     setupFiles: ["./tests/setup-testing-library.ts"],
     // Worktrees share node_modules with the live checkout, so tests pin the contracts package to

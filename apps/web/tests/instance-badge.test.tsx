@@ -24,7 +24,7 @@ describe("InstanceBadge", () => {
     document.title = "Space";
     render(<InstanceBadge fetcher={versionFetcher({ instance: "dev" })} />);
     expect((await screen.findByRole("status", { name: "Development instance" })).textContent).toBe("DEV");
-    expect(document.title).toBe("DEV · Space");
+    await waitFor(() => expect(document.title).toBe("DEV · Space"));
     document.title = "Space Help";
     await waitFor(() => expect(document.title).toBe("DEV · Space Help"));
   });

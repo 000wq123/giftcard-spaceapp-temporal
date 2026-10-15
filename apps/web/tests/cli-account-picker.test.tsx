@@ -39,7 +39,9 @@ import { watchedQuota } from "../src/features/desktop-widgets/quota-overview.js"
 import { claudeAccountEntries } from "../src/features/toolbar-metrics/account-entries.js";
 
 const sampledAt = new Date().toISOString();
-const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+// One fixed now for reset times and the clock: a millisecond between them rounded "Back in 40m" up to 41m on CI.
+const NOW = Date.now();
+const at = (minutes: number) => new Date(NOW + minutes * 60_000).toISOString();
 const page = <T,>(data: T[], source: string) => ({
   data,
   pagination: { page: 1, pageSize: 100, totalItems: data.length, totalPages: 1 },
@@ -82,7 +84,7 @@ describe("CLI account availability colours", () => {
     expect(hues[0]).toBeGreaterThan(10);
     expect(hues.at(-1)).toBeGreaterThan(130);
 
-    const clock = Date.now();
+    const clock = NOW;
     const quota = quotaSample([claudeAccount("ready", 82, 64), claudeAccount("limited", 0, 70), claudeAccount("signedout", null, null, "NOT_CONNECTED")]);
     const ready = cliAccountAvailability({ runtimeId: "cli:claude", profileId: "ready", quota, identity: null, clock });
     expect(ready).toMatchObject({ tone: "ready", percent: 64, label: "64%" });
@@ -135,7 +137,7 @@ describe("Antigravity model groups and plans", () => {
     expect(antigravityModelGroup("claude-sonnet-4.6")).toBe("claude");
     expect(antigravityModelGroup("gpt-oss-120b")).toBe("claude");
     expect(antigravityModelGroup(null)).toBeNull();
-    const clock = Date.now();
+    const clock = NOW;
     const onGemini = cliAccountAvailability({ runtimeId: "cli:gemini", profileId: "spc", quota, identity: null, clock, modelGroup: "gemini" });
     expect(onGemini).toMatchObject({ tone: "blocked", color: CLI_ACCOUNT_BLOCKED_COLOR });
     expect(onGemini.description).toContain("For Gemini models");
@@ -148,7 +150,7 @@ describe("Antigravity model groups and plans", () => {
   });
 
   it("keeps the paid API key account out of use and shows the Space Gateway account as ready", () => {
-    const clock = Date.now();
+    const clock = NOW;
     expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "api", quota, identity: null, clock }))
       .toMatchObject({ tone: "off", color: CLI_ACCOUNT_OFF_COLOR, label: "Paid · not used", detail: "Per token · only when picked by hand" });
     expect(cliAccountAvailability({ runtimeId: "cli:claude", profileId: "space-gateway", quota, identity: null, clock }))
@@ -156,7 +158,7 @@ describe("Antigravity model groups and plans", () => {
   });
 
   it("judges the Space Gateway account by its pool and names the pooled accounts", () => {
-    const clock = Date.now();
+    const clock = NOW;
     const member = (label: string, fiveHour: number | null, minutes = 40, signInRequired = false) => ({
       label, signInRequired, fiveHourRemainingPercent: fiveHour, fiveHourResetAt: at(minutes), weeklyRemainingPercent: 70, weeklyResetAt: at(3 * 24 * 60),
     });
@@ -203,7 +205,7 @@ const codexQuota = (accounts: ReturnType<typeof codexAccount>[] | null): SharedQ
 
 describe("Codex accounts behind Space Gateway", () => {
   it("judges the gateway by the best ChatGPT account in its pool", () => {
-    const clock = Date.now();
+    const clock = NOW;
     const gateway = (accounts: ReturnType<typeof codexAccount>[] | null) =>
       cliAccountAvailability({ runtimeId: "cli:codex", profileId: "space-gateway", quota: codexQuota(accounts), identity: null, clock });
     expect(gateway([codexAccount("kate", 90, 72), codexAccount("leo", 1, 80)]))
@@ -219,7 +221,7 @@ describe("Codex accounts behind Space Gateway", () => {
   });
 
   it("lists each pooled account with its plan and both quota windows", () => {
-    const clock = Date.now();
+    const clock = NOW;
     const pool = cliAccountPool("cli:codex", codexQuota([codexAccount("kate", 90, 72), codexAccount("leo", 0, 80, null)]), clock)!;
     expect(pool.map((member) => [member.name, member.plan, member.availability.detail])).toEqual([
       ["kate", "Pro", "5h 90% · Week 72%"],
@@ -546,7 +548,7 @@ describe("balanced CLI accounts", () => {
   });
 
   it("judges Copilot, Cursor and Kimi accounts by the quota their CLI reports and the limits Space saw", () => {
-    const clock = Date.now();
+    const clock = NOW;
     const sample = balance([["main", usage(40), null], ["work", usage(70), at(90)], ["spare", usage(null, "UNKNOWN"), null], ["gone", usage(null, "NOT_CONNECTED"), null],
       ["empty", usage(0), null]], "main");
     const judge = (profileId: string) => cliAccountAvailability({ runtimeId: "cli:copilot", profileId, quota: null, identity: signedIn(profileId), clock, balance: sample });

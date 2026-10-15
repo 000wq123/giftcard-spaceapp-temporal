@@ -30,7 +30,7 @@ describe("native title usage boundary", () => {
     const command = join(root, "fake-native"), extra = join(root, "extra-turn");
     try {
       const events = tool ? '{"type":"step_start"}\n{"type":"tool_use"}\n' : output() + "\n";
-      await writeFile(command, `#!/usr/bin/node\nconst fs=require('node:fs');\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>{fs.writeFileSync(${JSON.stringify(extra)},'unexpected second turn');process.exit(0)},500);\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nconst fs=require('node:fs');\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>{fs.writeFileSync(${JSON.stringify(extra)},'unexpected second turn');process.exit(0)},500);\n`, { mode: 0o700 });
       const result = generateNativeOpenCodeTitle({ command, modelId: "test-free", system: "Return JSON.", prompt: "Summarize title repair.", signal: AbortSignal.timeout(3000) });
       if (tool) await expect(result).rejects.toThrow("text");
       else await expect(result).resolves.toBe('{"title":"Task title"}');
@@ -91,7 +91,7 @@ describe("native title usage boundary", () => {
     try {
       await writeFile(image, "png-bytes");
       const events = output() + "\n";
-      await writeFile(command, `#!/usr/bin/node\nconst fs=require('node:fs');\nconst files=process.argv.slice(2).flatMap((a,i,all)=>all[i-1]==='--file'?[a]:[]);\nconst stdin=fs.readFileSync(0,'utf8');\nfs.writeFileSync(${JSON.stringify(record)},JSON.stringify({stdin,args:process.argv.slice(2),config:JSON.parse(process.env.OPENCODE_CONFIG_CONTENT),home:process.env.HOME,cwd:process.cwd(),copies:files.map(f=>fs.readFileSync(f,'utf8'))}));\nprocess.stdout.write(${JSON.stringify(events)});\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nconst fs=require('node:fs');\nconst files=process.argv.slice(2).flatMap((a,i,all)=>all[i-1]==='--file'?[a]:[]);\nconst stdin=fs.readFileSync(0,'utf8');\nfs.writeFileSync(${JSON.stringify(record)},JSON.stringify({stdin,args:process.argv.slice(2),config:JSON.parse(process.env.OPENCODE_CONFIG_CONTENT),home:process.env.HOME,cwd:process.cwd(),copies:files.map(f=>fs.readFileSync(f,'utf8'))}));\nprocess.stdout.write(${JSON.stringify(events)});\n`, { mode: 0o700 });
       await generateNativeOpenCodeTitle({ command, modelId: "vision-free", system: "Return JSON.", prompt: "Name it.", signal: AbortSignal.timeout(3000), images: [image] });
       const seen = JSON.parse(await readFile(record, "utf8"));
       expect(seen.config.permission).toEqual({ "*": "ask" });
@@ -116,7 +116,7 @@ describe("native title usage boundary", () => {
     const command = join(root, "opencode");
     try {
       const help = `opencode run [message..]\n      --auto         auto-approve permissions that are not explicitly denied (dangerous!)\n                                                                          ${auto}\n`;
-      await writeFile(command, `#!/usr/bin/node\nconst a=process.argv.slice(2).join(' ');\nif(a==='--version')process.stdout.write(${JSON.stringify(version + "\n")});\nelse if(a==='run --help')process.stderr.write(${JSON.stringify(help)});\nelse process.exit(2);\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nconst a=process.argv.slice(2).join(' ');\nif(a==='--version')process.stdout.write(${JSON.stringify(version + "\n")});\nelse if(a==='run --help')process.stderr.write(${JSON.stringify(help)});\nelse process.exit(2);\n`, { mode: 0o700 });
       expect(await resolveNativeOpenCodeRuntime(command)).toBe(trusted ? command : null);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -125,7 +125,7 @@ describe("native title usage boundary", () => {
     const command = join(root, "fake-native");
     try {
       const events = '{"type":"error","error":{"name":"APIError","data":{"message":"Model exo-free has been deprecated."}}}\n';
-      await writeFile(command, `#!/usr/bin/node\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>process.exit(1),200);\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdout.write(${JSON.stringify(events)});\nsetTimeout(()=>process.exit(1),200);\n`, { mode: 0o700 });
       await expect(generateNativeOpenCodeTitle({ command, modelId: "exo-free", system: "Return JSON.", prompt: "Name it.", signal: AbortSignal.timeout(3000) }))
         .rejects.toBeInstanceOf(OpenCodeTitleModelRetired);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -134,7 +134,7 @@ describe("native title usage boundary", () => {
     const root = await mkdtemp(join(tmpdir(), "title-catalog-"));
     const command = join(root, "opencode"), calls = join(root, "calls");
     try {
-      await writeFile(command, `#!/usr/bin/node\nconst fs=require('node:fs');\nfs.appendFileSync(${JSON.stringify(calls)},'x');\nprocess.stdout.write('opencode/small-free\\n{"cost":{"input":0,"output":0}}\\n');\n`, { mode: 0o700 });
+      await writeFile(command, `#!/usr/bin/env node\nconst fs=require('node:fs');\nfs.appendFileSync(${JSON.stringify(calls)},'x');\nprocess.stdout.write('opencode/small-free\\n{"cost":{"input":0,"output":0}}\\n');\n`, { mode: 0o700 });
       const first = await nativeOpenCodeModelCatalog(command);
       const second = await nativeOpenCodeModelCatalog(command);
       expect(second).toBe(first);
