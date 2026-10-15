@@ -49,6 +49,9 @@ independent reviews of 1.1.4; open items are listed in
   installation instructions and its permission for the memory folder, so the
   first task no longer stops at an "Access external directory" prompt. The
   check runs again on the next launch.
+- OpenCode may read `/etc` (read-only in the CLI container, where its startup
+  instructions live) without asking; models that read the installation guide
+  from there themselves no longer stop the first task at a permission prompt.
 - A Claude Code login imported with a configuration bundle also marks Claude
   Code as onboarded, so its pane no longer repeats the first-run login screens.
 - A configuration backup exported from a newer SpaceApp now imports what this

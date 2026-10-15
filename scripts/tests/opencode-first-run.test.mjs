@@ -63,12 +63,16 @@ test('an explicit owner permission policy is preserved, including global denial'
  assert.throws(()=>withBootstrap({instructions:'invalid'}),/existing settings were preserved/);
 });
 
-test('first run pre-authorizes only the provider scratch directory, never /tmp',()=>{
+test('first run pre-authorizes the provider scratch directory and the read-only /etc, never /tmp',()=>{
  const rules=withBootstrap({}, {tmpdir:PROVIDER_TMP}).permission.external_directory;
  assert.deepEqual(rules,{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow',
-  [PROVIDER_TMP]:'allow',[`${PROVIDER_TMP}/*`]:'allow'});
+  '/etc/*':'allow',[PROVIDER_TMP]:'allow',[`${PROVIDER_TMP}/*`]:'allow'});
  assert.equal(decide(rules,`${PROVIDER_TMP}/*`),'allow');
  assert.equal(decide(rules,'/var/lib/spaceapp/memory/*'),'allow');
+ // 1.1.5 lab: Big Pickle read /etc/spaceapp-installation-guide.md itself and the first task stopped at the prompt.
+ // OpenCode's * spans subdirectories, so this is all of /etc, read-only for the CLI user.
+ assert.equal(decide(rules,'/etc/*'),'allow');
+ assert.equal(decide(rules,'/etc/ssl/*'),'allow');
  for(const path of ['/tmp/*','/tmp','/var/lib/spaceapp-cli/providers/opencode/*','/var/lib/spaceapp-cli/*','/workspaces/*','/root/*'])
   assert.equal(decide(rules,path),'ask',path);
 });
@@ -77,14 +81,20 @@ test('only the wrapper-owned provider TMPDIR becomes a scratch rule',()=>{
  for(const value of [undefined,'','/','/tmp','/tmp/','/var/tmp','relative/tmp','/var/lib/spaceapp-cli/providers/*/tmp',
    '/var/lib/spaceapp-cli/providers/opencode','/var/lib/spaceapp-cli/providers/opencode/tmp/../../../../tmp'])
   assert.equal(scratchDirectory(value),null,String(value));
- assert.deepEqual(externalDirectoryDefault('/tmp'),{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'});
+ assert.deepEqual(externalDirectoryDefault('/tmp'),{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow','/etc/*':'allow'});
 });
 test('the unchanged 1.1.x default is upgraded once; the result is stable',()=>{
  const legacy={model:'opencode/big-pickle',permission:{edit:'allow',external_directory:{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow'}}};
  const upgraded=withBootstrap(legacy,{tmpdir:PROVIDER_TMP});
  assert.equal(upgraded.permission.edit,'allow');
  assert.equal(upgraded.permission.external_directory[`${PROVIDER_TMP}/*`],'allow');
+ assert.equal(upgraded.permission.external_directory['/etc/*'],'allow');
  assert.deepEqual(withBootstrap(upgraded,{tmpdir:PROVIDER_TMP}),upgraded);
+ // The 1.1.4/1.1.5 default (memory and scratch, no /etc) is upgraded too; an owner-edited policy is not.
+ const earlier={external_directory:{'*':'ask','/var/lib/spaceapp/memory':'allow','/var/lib/spaceapp/memory/*':'allow',[PROVIDER_TMP]:'allow',[`${PROVIDER_TMP}/*`]:'allow'}};
+ assert.equal(withBootstrap({permission:earlier},{tmpdir:PROVIDER_TMP}).permission.external_directory['/etc/*'],'allow');
+ const owned={external_directory:{...earlier.external_directory,'/srv/*':'allow'}};
+ assert.deepEqual(withBootstrap({permission:owned},{tmpdir:PROVIDER_TMP}).permission,owned);
 });
 test('bootstrap instructions send temporary files to TMPDIR instead of /tmp',()=>{
  for(const file of ['starter-memory/AGENTS.md','starter-memory/installation-guide.md']){

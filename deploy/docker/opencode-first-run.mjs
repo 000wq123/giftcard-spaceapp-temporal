@@ -48,9 +48,13 @@ export function scratchDirectory(tmpdir) {
   const path=normalize(tmpdir).replace(/\/+$/,'');
   return PROVIDER_TMPDIR.test(path)?path:null;
 }
+const scratchRules=tmpdir=>{const scratch=scratchDirectory(tmpdir);return scratch?{[scratch]:'allow',[`${scratch}/*`]:'allow'}:{};};
+// /etc holds the bootstrap instructions; models sometimes read /etc/spaceapp-installation-guide.md themselves,
+// and the first task stopped at "Access external directory /etc" (1.1.5 lab, 2026-10-15). OpenCode's * also
+// spans subdirectories: /etc is read-only for the CLI user, and root-only files there stay unreadable.
+const BOOTSTRAP_DIRECTORY={'/etc/*':'allow'};
 export function externalDirectoryDefault(tmpdir) {
-  const scratch=scratchDirectory(tmpdir);
-  return {...LEGACY_EXTERNAL_DIRECTORY,...(scratch?{[scratch]:'allow',[`${scratch}/*`]:'allow'}:{})};
+  return {...LEGACY_EXTERNAL_DIRECTORY,...BOOTSTRAP_DIRECTORY,...scratchRules(tmpdir)};
 }
 const sameRules=(left,right)=>left!==null&&typeof left==='object'&&!Array.isArray(left)&&
   Object.keys(left).length===Object.keys(right).length&&Object.entries(right).every(([key,value])=>left[key]===value);
@@ -60,13 +64,15 @@ export function withBootstrap(config,{tmpdir}={}) {
     '/etc/AGENTS.md','/etc/spaceapp-installation-guide.md',`${MEMORY_DIRECTORY}/*.md`])];
   const next={...config,instructions};
   // Respect an owner's explicit permission policy. Fresh installs authorize
-  // only their shared private memory directory and the provider's private
-  // scratch directory; other external paths still ask.
+  // only their shared private memory directory, the provider's private
+  // scratch directory and the read-only /etc; other external paths still ask.
   const permission=config.permission;
   const unset=permission===undefined || (typeof permission==='object' && permission!==null &&
     !('*' in permission) && !('external_directory' in permission));
+  // The earlier defaults (1.1.x, then 1.1.4/1.1.5 with the scratch rules) are upgraded; any other value is the owner's.
+  const earlier=[LEGACY_EXTERNAL_DIRECTORY,{...LEGACY_EXTERNAL_DIRECTORY,...scratchRules(tmpdir)}];
   if(unset || (typeof permission==='object' && permission!==null &&
-      sameRules(permission.external_directory,LEGACY_EXTERNAL_DIRECTORY))) {
+      earlier.some(rules=>sameRules(permission.external_directory,rules)))) {
     next.permission={...(permission??{}),external_directory:externalDirectoryDefault(tmpdir)};
   }
   return next;
