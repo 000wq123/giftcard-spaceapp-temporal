@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "7a697f53d64d7a0921023145001baa773bc53093f424af88e591d3eb4f795fdc",
-  "sourceCommit": "ae2b99a40f29d7e1f7520d4ef6e88f3ddae9a027",
-  "launcherVersion": "1.1.4",
-  "runtimeVersion": "1.1.4",
-  "createdAt": "2026-10-13T17:26:53.841Z",
+  "candidateDigest": "851315a13c392091a64fd256ea06975ceb050cf06c8d2d2d15f41d9cb4fd27f3",
+  "sourceCommit": "686788e5ef9540356afb4e9d7b203af1ac84d4fa",
+  "launcherVersion": "1.1.5",
+  "runtimeVersion": "1.1.5",
+  "createdAt": "2026-10-15T09:51:17.249Z",
   "checks": [
     {
       "platform": "linux",
@@ -14,7 +14,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-fresh-install.json",
-      "artifactSha256": "4fb54411ba33530bd544ccfd89fb9503991acd5a1253c8f1e25f0f908c7125af",
+      "artifactSha256": "7734082fcf650074f11dc61b61714fb168f440145db22e9990ed62a8188dfb9b",
       "ownerUi": true
     },
     {
@@ -25,7 +25,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-upgrade.json",
-      "artifactSha256": "d1fc141698f28657e7aaf3c30dd7967eeddf942305e80081621660ff072d52b6",
+      "artifactSha256": "410a238b7812bb26c0c790bbe7283f185241017b86d3d3223bcbbd13a9b5eb72",
       "dataPreserved": true
     },
     {
@@ -36,7 +36,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-repair.json",
-      "artifactSha256": "194fb5aafad782939bd96fe05b5878c031c716dee4fd49e060bfe27999da6757",
+      "artifactSha256": "eb3b45792bd1ac90f4e75d21feba50b2dbdb9a366b9b60be0452c46d86068eb8",
       "dataPreserved": true
     },
     {
@@ -47,7 +47,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "linux-docker-stopped.json",
-      "artifactSha256": "938b49025e84616106d866bc9943410c4f76f392fdd4ad43134330adf488fc8f",
+      "artifactSha256": "4c143a4ab63c9f82c94bad2d869b5a08f3fd4a139a6078b5a16d3e9b7c665c25",
       "dataPreserved": true,
       "dockerInitiallyStopped": true
     },
@@ -59,13 +59,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ecc1185a2ffei2a702xuUIkx2u",
+      "nativeTaskId": "ses_ec1b38c65ffe8FIxtV1jTPTtpZ",
       "responseObserved": true,
       "freeModel": true,
       "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "linux-first-agent.json",
-      "artifactSha256": "227ec0806c6c0b25ca34a1ec6e608dbaced19c576f9052258a9b30a4726f53b3"
+      "artifactSha256": "e38277876e3cb38e7d71df7c9cfdd55d6719d47506c9ead73b4cfaa677efbc66"
     },
     {
       "platform": "linux",
@@ -81,7 +81,7 @@
       ],
       "dataPreserved": true,
       "artifact": "linux-profiles.json",
-      "artifactSha256": "7906b84896fb3725e691db4ff61f157931af25393cc43210f6191e430e120987"
+      "artifactSha256": "d583eff2ab9b9538df9a377fd3cd34549db2a048346490ec10100f857798c74f"
     },
     {
       "platform": "windows",
@@ -91,7 +91,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-fresh-install.json",
-      "artifactSha256": "3a038e6152736ef3c7d959ca59bf7b5449e0d61380bee2889abea4658e3b27c4",
+      "artifactSha256": "54b18c8fb53a1180e04c6caa707e61e77ef17ac1ab7c276184d19c8c80e595d0",
       "ownerUi": true,
       "interactiveDesktop": true
     },
@@ -103,7 +103,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-upgrade.json",
-      "artifactSha256": "fba50f3a3cc190ff0acd82735f3a965df087aab599f2694ee2ccf452d2eaf60a",
+      "artifactSha256": "6aca2f8570d1581fa23bcfc08da191815e2060a655c38356bd4c02f6a9a668d8",
       "dataPreserved": true,
       "interactiveDesktop": true
     },
@@ -115,7 +115,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-repair.json",
-      "artifactSha256": "3c0ff8322093f8aa6fdf4c02a429a0c00e603169a9c5ea6ebeab96e096735a39",
+      "artifactSha256": "08498efc6de7e4ca11a2eabfc4b0b75602002fda7c74231cd4aeef0a83658063",
       "dataPreserved": true,
       "interactiveDesktop": true
     },
@@ -127,7 +127,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "windows-docker-stopped.json",
-      "artifactSha256": "ee3695d6bf6d0c40238285d96451cc21c1b73be0016d0fe325c6f6b49be6abd0",
+      "artifactSha256": "a5a680c2130cdea638a556ef8823820ea2469d553ff89723d5f06cb5f259686c",
       "dataPreserved": true,
       "dockerInitiallyStopped": true,
       "interactiveDesktop": true
@@ -140,13 +140,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_eca89bb20ffe28UFy6Bfmex9Gn",
+      "nativeTaskId": "ses_ec168b334ffefHMR6oFhBw4H2w",
       "responseObserved": true,
       "freeModel": true,
       "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "windows-first-agent.json",
-      "artifactSha256": "dcc43c0a01dfd21ceb469664a4cbd944cd7b7a8fed2ab3a3b3096708e75fa4db",
+      "artifactSha256": "181126d67ef4cfd26e43ddf1ecb33cce4eb8256bb5b05e3b9ac01d9dfced6a4d",
       "interactiveDesktop": true
     },
     {
@@ -164,7 +164,7 @@
       "dataPreserved": true,
       "interactiveDesktop": true,
       "artifact": "windows-profiles.json",
-      "artifactSha256": "6aaa850995eb59bb80c956f187ae7af2a90367c8e7d26454e4d0f92c5078e6ed"
+      "artifactSha256": "33413e47e67dd1a78eaa7b504254f9eeff1308aaeef8793fbbb911d3cffb3566"
     },
     {
       "platform": "macos",
@@ -174,7 +174,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-fresh-install.json",
-      "artifactSha256": "a9e6fe7c33c6b422c3ad4e1d0509444e9f97af624f4bb63f75a4209392db5672",
+      "artifactSha256": "40181b6231b7224f2dc8233fc109f79de72e5b1d76c403f71b553155dc4beacf",
       "ownerUi": true
     },
     {
@@ -185,7 +185,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-upgrade.json",
-      "artifactSha256": "1354614f9fc05a065d2480ad70b3ca90ccf6f3f1f91f826c67fb2619d1eaac9f",
+      "artifactSha256": "7d3760a8a22a35d75d303e3dec84bb1f47397f8c54f1edda0f854cafb1d6560c",
       "dataPreserved": true
     },
     {
@@ -196,7 +196,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-repair.json",
-      "artifactSha256": "d984aa44824d76ad2b1f97fbe30535a2135f908460ce2569cd30c0a7b381df64",
+      "artifactSha256": "dd1a64b95c1e516105f4d1ead6b306a6857777f896f5d0fba9b58a345b26e69c",
       "dataPreserved": true
     },
     {
@@ -207,7 +207,7 @@
       "exitCode": 0,
       "ready": true,
       "artifact": "macos-docker-stopped.json",
-      "artifactSha256": "05789d52d4752c173f6ff7c36ba4f12843541015be1a379c22cc62e75ba2ac28",
+      "artifactSha256": "4d1e92e10cbded0b21c69e1ac91863416199ae2128a73e55d7d842bef2ad2b84",
       "dataPreserved": true,
       "dockerInitiallyStopped": true
     },
@@ -219,13 +219,13 @@
       "exitCode": 0,
       "ready": true,
       "uiOpened": true,
-      "nativeTaskId": "ses_ec9bf4c8dffeptezwcbl35unRC",
+      "nativeTaskId": "ses_ec138a0b3ffeeOaOcfHpBWCrbr",
       "responseObserved": true,
       "freeModel": true,
       "modelId": "opencode/big-pickle",
       "cleanupVerified": true,
       "artifact": "macos-first-agent.json",
-      "artifactSha256": "12bf29e876f87f681b5e6a579ecb2f656d8139ff8568c1b4f35072483ed2cd0e"
+      "artifactSha256": "63e7312d6768beb78a2d3170ccd894aba756719b293b8e0960f8941247f1e48d"
     },
     {
       "platform": "macos",
@@ -241,7 +241,7 @@
       ],
       "dataPreserved": true,
       "artifact": "macos-profiles.json",
-      "artifactSha256": "424eee432fab1bb0b12cad2bdcf35adcbf5d9998058b20e8c57d5c5ad32f6917"
+      "artifactSha256": "28ab5e5a060cc0ae94d17b7904762b10017eeda53bee1b6a75a4743a38fe34a2"
     }
   ],
   "supplementary": [
@@ -250,203 +250,207 @@
       "scenario": "automatic-browser-opening",
       "pass": true,
       "artifact": "linux-automatic-browser.json",
-      "artifactSha256": "d7fedb7db4b14e532c8e80742191ae4fcdcedaf8062c4f13971b3361a3b63f2f"
+      "artifactSha256": "8d3e7a2a8a00de3b0d81c886f5e6e3ed6dd6937c935eb1adcdeeed8139214e30"
     },
     {
       "platform": "linux",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "linux-doctor-fix.json",
-      "artifactSha256": "bb303be142d10b3a5dd246885260a3ab13daae30c6a0164b56d6808e28f33ae1"
+      "artifactSha256": "995956f3dd0fb59356cc99162dab09754e72787d41aae78e28d169345df973b9"
     },
     {
       "platform": "linux",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "linux-two-native-panes.json",
-      "artifactSha256": "cf2255eb38de088e83cb47200e216529b7e273b59eeea953acd00be6eb785366"
+      "artifactSha256": "6611cdd8d5ebc519e5f5d0c1ba2984d1b56c1c04d106314720fb1f0f05dc8713"
     },
     {
       "platform": "linux",
-      "scenario": "upgrade-from-1.1.2",
+      "scenario": "upgrade-from-1.1.3",
       "pass": true,
-      "artifact": "linux-upgrade-from-1.1.2.json",
-      "artifactSha256": "3af312587431e011544185a8088cecf4650ec317a50671c4c921c0454337f892"
+      "artifact": "linux-upgrade-from-1.1.3.json",
+      "artifactSha256": "8c74f8005ed3682e0eaae2b6b2c49b0111b74a855895497a776403691c8fcb0c"
     },
     {
       "platform": "linux",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
       "artifact": "linux-first-agent-no-permission-prompt.json",
-      "artifactSha256": "965af1d9ea4cb0d0e1567bf365f29ba099a698e26152f06fb232950d95589ce4"
+      "artifactSha256": "5d9f9079d8f893318b282c8d913b4f26ac7e15fa37d14a5c40240009260b3681"
     },
     {
       "platform": "linux",
       "scenario": "starter-workspace-first-prompt",
       "pass": true,
       "artifact": "linux-starter-workspace.json",
-      "artifactSha256": "d8254b41e4cc4fdaef0fbf26ac325c096c752eab3a86e3c3163aaf0ea570903e"
+      "artifactSha256": "59678db277fc69fc8296d8e5bb55517587b407d7f300c519501840e68a3c6514"
     },
     {
       "platform": "linux",
       "scenario": "first-answer-telemetry-no",
       "pass": true,
       "artifact": "linux-telemetry-no.json",
-      "artifactSha256": "2d87eabe300e3c72c7db5fdc67cf91c4845a222ed2367a95dda789673e9f9ced"
+      "artifactSha256": "621c59e09082a38fa0d0a3c121fcb9e5629656a35b77c626b12cb2c1932c1360"
     },
     {
       "platform": "linux",
       "scenario": "update-badge",
       "pass": true,
       "artifact": "linux-update-badge.json",
-      "artifactSha256": "d50bdcc4b2da9cfa9879520255f3359cae18f4f5d91dac473d3bde5806ac6d15"
+      "artifactSha256": "62807f59d9dfaedadd079f9976cc49cbbd0e237eecb7a7c329b4abefd69adaa5"
     },
     {
       "platform": "linux",
       "scenario": "first-answer-telemetry-yes",
       "pass": true,
       "artifact": "linux-telemetry-yes.json",
-      "artifactSha256": "008c4d3565494ad93154918e9b9cf0fdcc7ed333816081554e15bf4bca949969"
+      "artifactSha256": "a883cfd4739ee9bd820c39992de7e8bd41ba704566dc4242c92f2fca1b5916aa"
     },
     {
       "platform": "linux",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "linux-original-restored.json",
-      "artifactSha256": "3394091d6b32aba894807d40fbce34f1f111a700b5a02813dd41bec5af3bb612"
+      "artifactSha256": "08ecfbf8008ebf7211dcc388405c0bcbafaf1173e105b67e0cab1055c5396919"
     },
     {
       "platform": "windows",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "windows-doctor-fix.json",
-      "artifactSha256": "48fd9decf6084c9f3e96a9261a59dbcfd02dac8372cd7b3fe94fbe8cb691c214"
+      "artifactSha256": "6ecd7963006636a49472826757262ec257c254e5ac8c36d1d36dbc826205fc4f"
     },
     {
       "platform": "windows",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "windows-two-native-panes.json",
-      "artifactSha256": "396109580c93586fa9c3f092ed638511025be466ae2dee529aa0fd5f00e976d9"
+      "artifactSha256": "85e05c432732940f4502912e40f9c8563d4b694a26b87b9f9cfd4c9f07eb2ce8"
     },
     {
       "platform": "windows",
-      "scenario": "upgrade-from-1.1.2",
+      "scenario": "upgrade-from-1.1.3",
       "pass": true,
-      "artifact": "windows-upgrade-from-1.1.2.json",
-      "artifactSha256": "033a506c29536834042f99608d0413ac9fceb6a3ae875fd911d84706081b3c88"
+      "artifact": "windows-upgrade-from-1.1.3.json",
+      "artifactSha256": "b917b3ec3f8c4f810ff4cc5768175529e3e7efc858e4c292186fcff22f5a976c"
     },
     {
       "platform": "windows",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
       "artifact": "windows-first-agent-no-permission-prompt.json",
-      "artifactSha256": "517f84e20094cf241c8eee09a190b6cc393fa1634c05755c7e92c5c42dc233a4"
+      "artifactSha256": "664e9fc11e03377acf58d4a0f032291dfd25a138d4bba7ae39bdb20cb3c49fbf"
     },
     {
       "platform": "windows",
       "scenario": "starter-workspace-first-prompt",
       "pass": true,
       "artifact": "windows-starter-workspace.json",
-      "artifactSha256": "32f3abfdb00928d3c1cfc46c4bc90429ed8d925e10ce87b484362a7112750d9b"
+      "artifactSha256": "e982688177da5b969c7090a573fc3c4641f9786d255a35fdbb278815497d5ef9"
     },
     {
       "platform": "windows",
       "scenario": "first-answer-telemetry-no",
       "pass": true,
       "artifact": "windows-telemetry-no.json",
-      "artifactSha256": "2420f0884c7e0366ace4fba9c904f599fd5ada582a05c89293457b14fde8fa51"
+      "artifactSha256": "e6adfe0200e784553fd163d28d98a649c9fbab8ac0377365121b6ce1afe6cc74"
     },
     {
       "platform": "windows",
       "scenario": "update-badge",
       "pass": true,
       "artifact": "windows-update-badge.json",
-      "artifactSha256": "02bc9a0daf5970a430489d90924506e277c51660b8707e2c866b232ea4d850c1"
+      "artifactSha256": "b40e02942925f33804ab783291a183121921aaaa7e6391475758b979b487f8ce"
     },
     {
       "platform": "windows",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "windows-original-restored.json",
-      "artifactSha256": "3394091d6b32aba894807d40fbce34f1f111a700b5a02813dd41bec5af3bb612"
+      "artifactSha256": "08ecfbf8008ebf7211dcc388405c0bcbafaf1173e105b67e0cab1055c5396919"
     },
     {
       "platform": "macos",
       "scenario": "automatic-browser-opening",
       "pass": true,
       "artifact": "macos-automatic-browser.json",
-      "artifactSha256": "a7500f42ab4c7ce91378d3a711a79af02d5cca960255dda9ab72694725c9dc7c"
+      "artifactSha256": "3b40e9d54a344c2f05005ae0bb33084498b5f48e01b0b89968aafacfa9ff02fc"
     },
     {
       "platform": "macos",
       "scenario": "doctor-fix",
       "pass": true,
       "artifact": "macos-doctor-fix.json",
-      "artifactSha256": "f72a3f2ffbb1af70027d633ad29732ad313d099cafa9cd0932b82cf816042cac"
+      "artifactSha256": "47a1831bd9201c4771dd6247781d69f39e568fd26684070c0b0e8217bf10d7e9"
     },
     {
       "platform": "macos",
       "scenario": "two-native-panes",
       "pass": true,
       "artifact": "macos-two-native-panes.json",
-      "artifactSha256": "fab46036808782405ab70fdeb8cffd99dad0763800f364bd59852d952de0b5b8"
+      "artifactSha256": "a95f928e8965b274c6854096182dad4da39c674d84ad5d55edf3340af80f08d5"
     },
     {
       "platform": "macos",
-      "scenario": "upgrade-from-1.1.2",
+      "scenario": "upgrade-from-1.1.3",
       "pass": true,
-      "artifact": "macos-upgrade-from-1.1.2.json",
-      "artifactSha256": "1c7f31745e7ef51affd3942ad16a086c40bc8e1178ed51bfa1f697ea4300988a"
+      "artifact": "macos-upgrade-from-1.1.3.json",
+      "artifactSha256": "f5b6b64010eb797d00b3a8e798f4cbe572b5637fb9de697d5cce4aa34173cc6a"
     },
     {
       "platform": "macos",
       "scenario": "first-agent-no-permission-prompt",
       "pass": true,
       "artifact": "macos-first-agent-no-permission-prompt.json",
-      "artifactSha256": "582e3c43d9b3669866ef4b0fdd63c83f2cfe3f92b047e5322b2c02a461bba81f"
+      "artifactSha256": "d868a05b57e62629e4b7eedf2e685287bdbf6ca3317ef8fc20bf3f3ee95067ba"
     },
     {
       "platform": "macos",
       "scenario": "starter-workspace-first-prompt",
       "pass": true,
       "artifact": "macos-starter-workspace.json",
-      "artifactSha256": "b9f099712c20699eb913deb7e9091526c5eae682a45186cc497b06c4db642ba2"
+      "artifactSha256": "021c07d731b13fa54669fb19a1bb59c768f3985338a883b00cec96577ab0cce0"
     },
     {
       "platform": "macos",
       "scenario": "first-answer-telemetry-no",
       "pass": true,
       "artifact": "macos-telemetry-no.json",
-      "artifactSha256": "4d5b614d92326d2c1d36301c18544da448bf2d1b5d51fcef2f630e6549a05180"
+      "artifactSha256": "ae9591bfb55a279b63a99e75144da7dd99bfc647a605cf6c59f189d889b76c9a"
     },
     {
       "platform": "macos",
       "scenario": "update-badge",
       "pass": true,
       "artifact": "macos-update-badge.json",
-      "artifactSha256": "89eb6ae63d14603189ed36721827e9d3fcfb03853e4e6d0cb926f1c438b931ed"
+      "artifactSha256": "55ed1aa3f67f11641aaffd106ca5f6f7d2aaf6ab43d4f3e8765fcb181876dbc4"
     },
     {
       "platform": "macos",
       "scenario": "original-runtime-restored",
       "pass": true,
       "artifact": "macos-original-restored.json",
-      "artifactSha256": "3394091d6b32aba894807d40fbce34f1f111a700b5a02813dd41bec5af3bb612"
+      "artifactSha256": "08ecfbf8008ebf7211dcc388405c0bcbafaf1173e105b67e0cab1055c5396919"
     }
   ],
   "limitations": [
-    "Candidate source is a sanitized export of SpaceApp source aa53bc0a8d (stable main) on top of the published 1.1.3 (d38e5ed), plus four public-repository changes: the reviewed tree-sitter grammars with their notices, the launcher README telemetry section for first_answer, the export of the web test setup file, and the launcher storing an explicit SPACEAPP_TELEMETRY at install (operator-approved 2026-10-13).",
+    "Candidate source is a sanitized export of SpaceApp source a41d4b238a: stable main 12bf1ef4f4 plus three reviewed commits on the release branch (route auth inventory categories 236a96f895, a seeded asteroids test ca96bb0dd1, and the release-train change 3707cca9af, configuration import from a newer backup, cherry-picked). The public repository adds the launcher and image changes listed in CHANGELOG.md 1.1.5.",
     "VM hosts are x86_64. ARM64 container validation remains a release workflow gate.",
     "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
-    "The 1.1.3 -> 1.1.4 update ran on each retained original installation, whose 1.1.3 images are the locally built 1.1.3 candidate (7fd6217), source-identical to the published 1.1.3 images except release tooling.",
+    "The 1.1.4 -> 1.1.5 update ran on each retained original installation. Superseded candidates had already updated it, so each session first returned it with spaceapp rollback to 1.1.4 (which pulled the published 1.1.4 images from GHCR), waited for /readyz, then ran the matrix update.",
     "Windows desktop commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
-    "Lab interruptions, all lab-side: the coordinating session restarted twice during the run, which ended or duplicated the lab driver. vm218 was resumed per step after a VM reboot cleared /tmp on the runner; on vm219 two drivers briefly ran in parallel and interfered with each other's first-agent runs, so after stopping both, removing the leftover proof rooms on the throwaway fixture and restarting its stack, first-agent, telemetry No, update badge and two panes were rerun on the same fixture. Matrix, fresh install and Getting Started results were not repeated.",
-    "macOS runner disk (operator-approved 2026-10-13): to make room for the fresh install (6.5 GiB free needed, 4.6 GiB found), the unused SpaceApp core/cli 1.1.1 images, the unused core 1.0.22-1.0.35 and cli 1.0.34/1.0.35 image tags and the old lab folder /Users/spaceadmin/spaceapp-lab29 were removed; 1.1.0, 1.1.2, 1.1.3 and 1.1.4 images were kept. The macOS fresh install was then rerun from its start; the macOS matrix ran before the cleanup. On that boot Docker Desktop's own VM got no network address (DHCP timeouts in its log), and Docker Desktop was restarted once (docker desktop restart) before the run continued.",
-    "Automatic browser opening was evidenced on Linux (lab Chrome CDP page list right after the install) and macOS (console capture); Windows ran the install with open=yes in the signed-in desktop but no desktop capture was taken in this run.",
+    "Superseded candidates: f4f6f16 (its Windows first-agent run found that a failed first-launch free-model check left OpenCode without its bootstrap and memory permission; fixed in 1402ec6), b8c6f4c (before the imported Claude login fix) and dee226a (before the joined configuration-import change). Their lab evidence was archived and every scenario below ran again on this candidate.",
+    "OpenCode Zen free tier: on 2026-10-14 the Linux telemetry-Yes step failed twice because the free tier answered the first prompt with \"OpenCode's free tier can only be used from within OpenCode\" (upstream, transient; Big Pickle answered normally from the same IP the next morning with OpenCode 1.18.4 and 1.19.0).",
+    "Windows runner disk: Docker Desktop's data disk filled its 116 GB drive because the operator-approved removal of old image tags had never run on Windows (the lab prune piped into grep, which cmd lacks). The data disk was made sparse and trimmed from WSL, the 28 present approved tags (core/cli/browser 1.0.29-1.1.2) were removed, and the Windows session then ran from its start. Other old tags and unused volumes were kept.",
+    "macOS: the first matrix update on this candidate stopped safely with RECOVERY_REQUIRED (database and volumes kept, checkpoint written) because the lab runs with --local-images, which never pulls, and the runner lacked the newly digest-pinned Temporal image. The runner then pulled the pinned PostgreSQL and Temporal digests, the original installation was rolled back to 1.1.4, and the matrix ran again from the start. A normal update pulls these images; offline --local-images users must preload the pinned digests.",
+    "Windows: the first rollback of the original installation failed while a superseded fixture held port 4911 and left a 1.1.4 core container without its network (EAI_AGAIN postgres); spaceapp down and up recreated the containers (data kept) before the session ran.",
+    "Automatic browser opening was evidenced on Linux (lab Chrome CDP page list right after the install) and macOS (console capture); Windows ran the install with open=yes in the signed-in desktop, but no desktop capture was taken.",
     "Profiles ran one VM boot per sequence under the 20 GiB host memory floor; every runner was reverted to 8 GiB/4 CPU and its Docker settings restored. Each sequence used a fresh small fixture that was purged afterwards.",
-    "Update badge: a 1.1.4 candidate is never older than the GitHub latest release, so on the owned fixture only spaceapp-core was recreated reporting SPACE_APP_VERSION=1.1.2 (same image and data) against the real GitHub latest; it was then restored and the real 1.1.4 showed no badge.",
-    "first_answer telemetry Yes ran on Linux only, on a separate owned fixture (2026-10-13 11:32-11:38Z) that was purged afterwards; it sent one real install ping (11:33:11Z, from the runner) and one real first_answer event (11:37:27Z, from spaceapp-core, version 1.1.4) to spaceapp.dev. The first prompt completed while no client watched the dashboard (the lab browser had closed early after a lab-side probe error caused by the VM reboot clearing /tmp), so the event was sent when the app first observed a finished answer, the following proof-room task. The count is from a SYN-only capture on the runner and from the spaceapp.dev collector log, which holds exactly these two 1.1.4 lines (install 11:33:11Z, first_answer 11:37:27Z, different uids). Observation: first_answer reports os \"unknown\" by design.",
+    "Update badge: a 1.1.5 candidate is never older than the GitHub latest release, so on the owned fixture only spaceapp-core was recreated reporting SPACE_APP_VERSION=1.1.3 (same image and data) against the real GitHub latest; it was then restored and the real 1.1.5 showed no badge.",
+    "first_answer telemetry Yes ran on Linux only, on a separate owned fixture that was purged afterwards. The runner's SYN-only capture saw one launcher install connection and one spaceapp-core connection at the moment core recorded the event, and the spaceapp.dev collector log holds exactly those two 1.1.5 lines in the window (read by the Space session that owns the collector): install 2026-10-15T06:43:55Z HTTP 204, first_answer 2026-10-15T06:45:12Z HTTP 204. Observation: first_answer reports os \"unknown\" by design.",
+    "Supplementary, outside this file's checks: an imported Claude Code login was proven on VM218 against candidate dee226a, whose CLI image matches this candidate in the credential-install code (badge READY without restart, no login or onboarding screen; evidence reports/20261015-cli-login-proof-dee226a).",
     "npm next publication, environment approval and latest promotion have not yet completed."
   ]
 }
