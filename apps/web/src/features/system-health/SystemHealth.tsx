@@ -2038,8 +2038,11 @@ export function SystemHealth({
       }
     };
 
+    // Cleared on unmount: a pending check after teardown threw "window is not defined" in CI.
+    let blurTimer: ReturnType<typeof setTimeout> | undefined;
     const handleBlur = () => {
-      setTimeout(checkState, 150);
+      clearTimeout(blurTimer);
+      blurTimer = setTimeout(checkState, 150);
     };
 
     viewport?.addEventListener("resize", checkState);
@@ -2049,6 +2052,7 @@ export function SystemHealth({
     window.addEventListener("focusout", handleBlur);
 
     return () => {
+      clearTimeout(blurTimer);
       viewport?.removeEventListener("resize", checkState);
       viewport?.removeEventListener("scroll", checkState);
       window.removeEventListener("resize", checkState);

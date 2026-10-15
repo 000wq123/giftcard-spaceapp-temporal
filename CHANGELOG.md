@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ## [1.1.5] - 2026-10-15
 
-Source: sanitized Space app @ 03f5bf9d50 (4255 files). Addresses the
+Source: sanitized Space app @ 2a53fd9793 (4255 files). Addresses the
 independent reviews of 1.1.4; open items are listed in
 `docs/quality/KNOWN_LIMITATIONS.md`.
 

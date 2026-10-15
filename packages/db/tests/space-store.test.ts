@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PostgresSpaceStore, type PgClientLike, type PgPoolLike } from "../src/index.js";
 import {
   SpaceConflictError,
@@ -3473,6 +3473,10 @@ describe("PostgresSpaceStore", () => {
     ).toEqual([session.sessionId, 2]);
 
     const sameTime = "2026-10-06T11:00:00.000Z";
+    // The store stamps created_at itself; freeze the clock so both rows really tie (a 1 ms gap on a slow runner
+    // ordered them by time instead of by role).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(sameTime));
     await store.createSpaceAgentMessage({
       messageId: "agent_msg:tied-assistant",
       sessionId: session.sessionId,
@@ -3493,6 +3497,7 @@ describe("PostgresSpaceStore", () => {
       createdAt: sameTime,
       updatedAt: sameTime
     });
+    vi.useRealTimers();
     const tiedMessages = await store.listSpaceAgentMessages(session.sessionId);
     const userIndex = tiedMessages.findIndex((m) => m.messageId === "agent_msg:tied-user");
     const assistantIndex = tiedMessages.findIndex((m) => m.messageId === "agent_msg:tied-assistant");
