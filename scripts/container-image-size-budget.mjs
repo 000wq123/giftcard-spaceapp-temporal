@@ -8,8 +8,10 @@ const mebibyte = 1024 * 1024;
 // application adds production dependencies pdfjs-dist with @napi-rs/canvas
 // (81 MiB, API PDF handling), typescript (23 MiB, peer of @t3-oss/env-core) and
 // js-tiktoken (22 MiB, Space Gateway token counting).
+// 1.1.5 raised core again: linux/arm64 measured 1066.9 MiB and linux/amd64 1045.0 MiB (sqlite3 in the image,
+// the 1.1.5 application); the first public release run failed the arm64 build at 1050 MiB.
 export const containerImageSizeBudgets = Object.freeze({
-  core: 1050 * mebibyte,
+  core: 1100 * mebibyte,
   browser: 1750 * mebibyte,
   cli: 2800 * mebibyte
 });
