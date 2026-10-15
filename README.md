@@ -27,7 +27,7 @@
 
 With SpaceApp, you can:
 - **Run Multiple AI Coding Agents in Parallel**: Pair program with Codex, Claude Code, Gemini, and OpenCode side-by-side on the same project repository or across separate workspaces.
-- **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the state and trust boundaries.
+- **Control Your Deployment**: Self-host the application and choose its providers and integrations. Remote model requests send the context needed for execution to the configured provider or gateway. Host filesystem access and credentials depend on deployment settings and explicit operator permissions; see the [state and trust boundaries](docs/quality/state-ownership.md).
 - **Start with OpenCode**: Setup presents OpenCode first. Available models, free tiers and authentication requirements depend on the installed CLI and its current provider catalog. Select and verify a model during setup.
 - **Shared Vector Memory (optional)**: When the memory graph is enabled for a deployment, SpaceApp stores memory records and their embeddings in PostgreSQL with `pgvector` and shows them as a 3D graph that agent sessions can query. Embeddings are computed by the configured embedding provider, so that provider receives the indexed text.
 - **One-Command Setup**: A single universal launcher command installs Docker prerequisites (if missing), configures containers, sets up database secrets, and launches the web application across Linux, macOS, and Windows 11.
@@ -106,7 +106,7 @@ npx --yes run-spaceapp@latest install
 
 ### What Happens Next (Step-by-Step Onboarding):
 1. **System & Docker Verification**: The launcher verifies CPU, RAM, and disk space, and installs/starts Docker if needed.
-2. **Container Initialization**: Pulls the pinned, verified images and starts the container stack.
+2. **Container Initialization**: Pulls SpaceApp's images by exact version tag (published with SBOM and provenance attestations that the release workflow verifies) and the third-party images pinned by digest, then starts the container stack.
 3. **One-Time Setup Token**: The terminal prints a secure 15-minute setup token and automatically opens `http://127.0.0.1:4911`.
 4. **Create Your Operator Account**: Paste the token into the setup screen, enter your email and password, and click Create Owner.
 5. **Start Coding with OpenCode**: Open the Getting Started room, verify the available provider/model and complete its authentication if required. Submit a small task and check its actual result.
@@ -147,7 +147,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 
 ### 📁 Host Workspace Management
 
-By default, the SpaceApp containers get no bind mount of your host filesystem: agents see only the directories you register. Container separation is not a sandbox against a hostile workload, and host-root access (below) removes this boundary; see the architecture and trust boundaries. Register the directories your AI agents may inspect and modify:
+By default, the SpaceApp containers get no bind mount of your host filesystem: agents see only the directories you register. Container separation is not a sandbox against a hostile workload, and host-root access (below) removes this boundary; see the [architecture and trust boundaries](docs/architecture.md#trust-boundaries). Register the directories your AI agents may inspect and modify:
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
@@ -192,7 +192,7 @@ By default, the SpaceApp containers get no bind mount of your host filesystem: a
 
 ## 🧩 Supported AI Coding Agents
 
-The runtime registry declares 16 CLI adapters, listed below. Installed versions and available credentials determine what can run. See the compatibility evidence and limitations; a declared adapter is not an authenticated runtime proof.
+The runtime registry declares 16 CLI adapters, listed below. Installed versions and available credentials determine what can run. See the [compatibility evidence and limitations](docs/quality/runtime-compatibility.md); a declared adapter is not an authenticated runtime proof.
 
 | Assistant | Integration Type | Authentication | Description |
 | :--- | :--- | :--- | :--- |
@@ -273,7 +273,7 @@ npx --yes run-spaceapp@latest owner rotate-setup-token
 <details>
 <summary><b>Need host-root filesystem access on Linux?</b></summary>
 <br>
-On Linux, the launcher can mount the whole host filesystem into the CLI service. CLI sessions can then read and modify the entire host, so read the trust boundaries first:
+On Linux, the launcher can mount the whole host filesystem into the CLI service. CLI sessions can then read and modify the entire host, so read the [trust boundaries](docs/architecture.md#trust-boundaries) first:
 
 ```bash
 npx --yes run-spaceapp@latest install --access host-root
@@ -319,9 +319,10 @@ npx.cmd --yes run-spaceapp@latest install
 - [Getting Started & Installation Guide](https://github.com/oll4com/spaceapp/blob/main/docs/getting-started.md)
 - [CLI Providers, Models & Credential Setup](https://github.com/oll4com/spaceapp/blob/main/docs/cli-providers.md)
 - [Operations, Backup, Restore & Rollback](https://github.com/oll4com/spaceapp/blob/main/docs/operations.md)
-- Architecture, Trust Boundaries & Feature Status
+- [Architecture, Trust Boundaries & Feature Status](docs/architecture.md)
 - [Security Model: Authentication, Rate Limits & Browser Capture](docs/security-model.md)
-- Claims Audit: Performance, Isolation & Continuity Evidence
+- [Claims Audit: Performance, Isolation & Continuity Evidence](docs/quality/claims-audit.md)
+- [Known Limitations (generated from the findings register)](docs/quality/KNOWN_LIMITATIONS.md)
 - [Clean-Room Verification Runbook](https://github.com/oll4com/spaceapp/blob/main/docs/clean-room-testing.md)
 - [Release Process & Pipeline](https://github.com/oll4com/spaceapp/blob/main/docs/public-release.md)
 - [Public Distribution Decision (ADR-010)](https://github.com/oll4com/spaceapp/blob/main/docs/decisions/ADR-010-public-distribution.md)
@@ -335,10 +336,10 @@ npx.cmd --yes run-spaceapp@latest install
 
 SpaceApp is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE).
 
-SpaceApp is source-available, not open source, until its Change Date. The licensor is example.invalid. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
+SpaceApp is source-available, not open source, until its Change Date. The licensor is oll4.com. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
 
 - **Permitted use**: The license lets you copy, modify, create derivative works, redistribute and make non-production use of SpaceApp. Its Additional Use Grant also permits production use, including self-hosting and internal business operations.
-- **Use limitation**: You may not make SpaceApp's functionality available to third parties as a hosted or managed service, application service provider (ASP) or software-as-a-service (SaaS) offering that competes with example.invalid products or services.
+- **Use limitation**: You may not make SpaceApp's functionality available to third parties as a hosted or managed service, application service provider (ASP) or software-as-a-service (SaaS) offering that competes with oll4.com products or services.
 - **Change Date**: On **2030-10-01** (October 1, 2030), the licensed version becomes available under the **Apache License, Version 2.0**.
 
 *Integrated AI provider CLIs (Claude, Codex, Gemini, etc.) remain subject to their respective third-party licenses and terms. See [Third-Party Notices](https://github.com/oll4com/spaceapp/blob/main/THIRD_PARTY_NOTICES.md).*

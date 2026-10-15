@@ -29,7 +29,7 @@ import { registerClaudeProxyRoutes } from "./providers/claude/claude-proxy.js";
 import { apiKeyRefresher, registerEmbeddingsRoute } from "./providers/openai-api/embeddings-proxy.js";
 import { createClaudeRefresher } from "./providers/claude/credentials.js";
 import { startClaudeUsagePoller } from "./providers/claude/usage-refresh.js";
-import { CompressionCache } from "./compression/engine.js";
+import { CompressionCache, RawBlockRegistry } from "./compression/engine.js";
 import { CompressionPool } from "./compression/pool.js";
 import { RequestLogWriter } from "./request-log-writer.js";
 import { startWarmupRunner } from "./warmup/warmup-runner.js";
@@ -79,6 +79,7 @@ async function main() {
   });
   const compressionPool = new CompressionPool(new URL("./compression-worker.mjs", import.meta.url), config.compressionWorkers);
   const compressionCache = new CompressionCache();
+  const rawBlocks = new RawBlockRegistry();
   const codexPool = new AccountPool({ provider: "CODEX", repository, cipher: () => cipher, refresher: createCodexRefresher() });
   const claudePool = new AccountPool({ provider: "CLAUDE", repository, cipher: () => cipher, refresher: createClaudeRefresher() });
   const antigravityPool = new AccountPool({ provider: "ANTIGRAVITY", repository, cipher: () => cipher, refresher: createAntigravityRefresher() });
@@ -95,7 +96,7 @@ async function main() {
     antigravitySessions: new StickyStore({ repository, provider: "ANTIGRAVITY", kind: "PROMPT_CACHE", onError: onStickyError, ttlMs: promptCacheTtl })
   };
   const settleKeyUsage = (keyId: string, usage: Parameters<typeof repository.settleApiKeyUsage>[1]) => repository.settleApiKeyUsage(keyId, usage);
-  const compression = { run: compressionPool.run, cache: compressionCache, record: (rows: Parameters<typeof repository.recordCompression>[0]) => repository.recordCompression(rows),
+  const compression = { run: compressionPool.run, cache: compressionCache, rawBlocks, record: (rows: Parameters<typeof repository.recordCompression>[0]) => repository.recordCompression(rows),
     recordSignals: (rows: Parameters<typeof repository.recordCompressionSignals>[0]) => repository.recordCompressionSignals(rows) };
   let clientVersion = () => "0.150.1";
   const modelPlans = new CodexModelPlans({ pool: codexPool, clientVersion: () => clientVersion() });
@@ -127,10 +128,10 @@ async function main() {
           OPENROUTER: apiKeyAccountActions({ entry: keyPoolProviders.openrouter, pool: openRouterPool }),
           DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }) } });
       registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, logs, settings, settleKeyUsage });
-      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool },
+      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool },
         cipher: () => cipher, internalToken: config.internalToken });
       registerKeyPoolRoutes(app, helpers, { pools: { openai: openAiApiPool, openrouter: openRouterPool, deepseek: deepSeekPool }, logs, settings, settleKeyUsage });
-      registerAntigravityProxyRoutes(app, { pool: antigravityPool, repository, logs, settings, sticky: sticky.antigravitySessions });
+      registerAntigravityProxyRoutes(app, { pool: antigravityPool, repository, logs, settings, sticky: sticky.antigravitySessions, compression });
       registerAntigravitySignInRoutes(app, { repository, pool: antigravityPool, cipher: () => cipher, internalToken: config.internalToken });
       registerClaudeSignInRoutes(app, { repository, pool: claudePool, cipher: () => cipher, internalToken: config.internalToken });
       registerAccountAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken,

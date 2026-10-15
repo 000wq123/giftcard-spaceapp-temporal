@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { GatewaySettings } from "@space/contracts";
-import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
+import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRepository, GatewayRequestLogInsert } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { requestOrigin } from "../../client-detect.js";
-import { hashKey, readBounded } from "../../proxy-util.js";
+import { compressGeminiBodyAsync, type AsyncBlockRunner, type CompressionCache, type RawBlockRegistry } from "../../compression/engine.js";
+import { outputPolicyText, requestOutputPolicy, withGeminiOutputPolicy } from "../../compression/output-policy.js";
+import { effectiveCompression, requestCompressionMode, type EffectiveCompression } from "../../compression/provider-settings.js";
+import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
+import type { TokenizerKind } from "../../compression/tokenizer.js";
+import { hashKey, header, readBounded } from "../../proxy-util.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount } from "../../router/balancer.js";
 import { CODE_ASSIST_BASE_URL, quotaGroupForModel, type AntigravityQuotaGroup } from "./code-assist.js";
@@ -20,6 +25,7 @@ import { CodeAssistStreamInspector, parseResetsIn, type GeminiUsage } from "./st
  * quota) goes upstream unchanged with the client's own sign-in, because it belongs to that account.
  * Only clients signed in to Antigravity as one of the pool's Google accounts are balanced; any other signed-in client
  * passes straight through with its own sign-in, so routing Antigravity here never breaks a profile outside the pool.
+ * Balanced model calls get context compression of their tool results (`compressGeminiBodyAsync`) while it is ON.
  */
 const MODEL_METHODS = new Set(["generateContent", "streamGenerateContent"]);
 const IDENTITY_CACHE_MS = 10 * 60_000;
@@ -40,6 +46,15 @@ export interface AntigravityProxyOptions {
   sticky?: StickyStore;
   /** Google token -> identity; defaults to Google's tokeninfo endpoint. */
   verifyIdentity?: (accessToken: string) => Promise<{ subject: string | null; email: string | null; clientId: string | null } | null>;
+  /** Context compression (the Headroom rewrite); absent means requests are never compressed. */
+  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; rawBlocks?: RawBlockRegistry; record: (rows: GatewayCompressionRow[]) => Promise<void>;
+    recordSignals?: (rows: GatewayCompressionSignalRow[]) => Promise<void> };
+}
+
+/** Token estimates by model family: Claude models through Antigravity count as Claude, GPT models with o200k. */
+function tokenizerForModel(model: string | null): TokenizerKind {
+  const name = (model ?? "").toLowerCase();
+  return name.includes("claude") ? "claude" : name.startsWith("gpt") ? "o200k" : "gemini";
 }
 
 async function googleTokenInfo(accessToken: string, fetchImpl: typeof fetch) {
@@ -134,6 +149,52 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     return result.account ? accounts.find((account) => account.id === result.account!.accountId) : undefined;
   }
 
+  /**
+   * Context compression of a model call's body under Antigravity's settings (the global ones overlaid by the
+   * provider's), then the output policy on agent turns. Never throws; on any failure the original body is used.
+   */
+  async function compressRequest(body: Json, model: string | null, sessionKey: string | null, request: FastifyRequest, settings: GatewaySettings,
+    startedAt: number) {
+    const result: { outgoing: Json; saved: number | null; measured: { before: number; after: number } | null;
+      detail: GatewayRequestLogInsert["compressionDetail"] } = { outgoing: body, saved: null, measured: null, detail: null };
+    const effective = effectiveCompression(settings, "ANTIGRAVITY");
+    // Antigravity calls carry the client's own Google sign-in, not a gateway key: there is no key override.
+    const compressionMode = requestCompressionMode(effective, null, header(request, "x-space-gateway-compression"));
+    const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key: null, clientName: requestOrigin(request).clientName,
+      headerValue: header(request, "x-space-gateway-output-policy") });
+    if (compressionMode !== "OFF" && options.compression) await compressInto(result, body, model, sessionKey, compressionMode, effective, startedAt);
+    const policyText = outputPolicyText(outputPolicy);
+    const withPolicy = policyText ? withGeminiOutputPolicy(result.outgoing, policyText) : null;
+    if (withPolicy) {
+      result.outgoing = withPolicy;
+      result.detail = { ...(result.detail ?? { strategies: [], waste: {} }), outputPolicy };
+    }
+    return result;
+  }
+
+  async function compressInto(result: { outgoing: Json; saved: number | null; measured: { before: number; after: number } | null;
+    detail: GatewayRequestLogInsert["compressionDetail"] }, body: Json, model: string | null, sessionKey: string | null,
+    compressionMode: "ON", effective: EffectiveCompression, startedAt: number) {
+    if (!options.compression) return;
+    try {
+      const outcome = await compressGeminiBodyAsync(body, { run: options.compression.run, cache: options.compression.cache, tokenizer: tokenizerForModel(model),
+        timeBudgetMs: effective.timeBudgetMs, codeText: effective.codeText, profile: effective.profile,
+        sessionKey: sessionKey ?? undefined, rawBlocks: options.compression.rawBlocks });
+      if (outcome.tokensBefore > 0) result.measured = { before: outcome.tokensBefore, after: outcome.tokensAfter };
+      if (compressionMode === "ON" && outcome.modified) {
+        result.outgoing = outcome.body;
+        result.saved = outcome.tokensBefore - outcome.tokensAfter;
+      }
+      void options.compression.record(compressionRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "ANTIGRAVITY" }))
+        .catch(() => undefined);
+      void options.compression.recordSignals?.(compressionSignalRows(outcome, { at: new Date(startedAt).toISOString(), mode: compressionMode, provider: "ANTIGRAVITY" }))
+        .catch(() => undefined);
+      result.detail = compressionDetail(outcome);
+    } catch {
+      // Compression never blocks a request: the original body goes upstream.
+    }
+  }
+
   async function handle(request: FastifyRequest, reply: FastifyReply) {
     const token = bearer(request);
     if (!token) return reply.code(401).send({ error: { code: 401, message: "Antigravity is not signed in.", status: "UNAUTHENTICATED" } });
@@ -152,6 +213,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
     const sessionId = typeof inner.sessionId === "string" ? inner.sessionId : null;
     const stickyHash = sessionId ? hashKey(`antigravity:${sessionId}`) : null;
     const settings = await options.settings();
+    const compressed = await compressRequest(body, model, stickyHash, request, settings, startedAt);
     const tried = new Set<string>();
     const origin = requestOrigin(request);
     const log = (account: GatewayAccountRecord | null, status: "success" | "error", errorCode: string | null, usage: GeminiUsage | null, extra: { firstTokenMs?: number | null; model?: string | null; errorMessage?: string | null } = {}) =>
@@ -160,14 +222,19 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         model: extra.model ?? model ?? "unknown", reasoningEffort: null, serviceTier: null, transport: "http", upstreamTransport: "http", status, errorCode,
         errorMessage: extra.errorMessage ?? null, latencyMs: now() - startedAt, firstTokenMs: extra.firstTokenMs ?? null,
         inputTokens: usage?.promptTokens ?? null, cachedInputTokens: usage?.cachedTokens ?? null, outputTokens: usage?.outputTokens ?? null,
-        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: null, compressionTokensSaved: null, planType: account?.planType ?? null,
+        reasoningTokens: usage?.thoughtsTokens ?? null, costUsd: null, compressionTokensSaved: account ? compressed.saved : null, planType: account?.planType ?? null,
         stickyKeySource: sessionId ? "request.sessionId" : null, stickyKind: stickyHash ? "PROMPT_CACHE" : null, stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null,
-        ...origin
+        ...origin, compressionTokensBefore: compressed.measured?.before ?? null, compressionTokensAfter: compressed.measured?.after ?? null,
+        compressionDetail: compressed.detail
       });
 
     let lastError: { status: number; body: string; headers: Headers | null } | null = null;
+    /** An account whose rejected access token was just refreshed: the request tries it once more. */
+    let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const account = await pick(group, tried, stickyHash, settings);
+      const account = retryWith ?? await pick(group, tried, stickyHash, settings);
+      if (retryWith) attempt -= 1;
+      retryWith = null;
       if (!account) break;
       tried.add(account.id);
       options.pool.markSelected(account.id, reply.raw);
@@ -178,7 +245,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         lastError = { status: 401, body: JSON.stringify({ error: { code: 401, message: error instanceof Error ? error.message : "Account sign-in is unavailable.", status: "UNAUTHENTICATED" } }), headers: null };
         continue;
       }
-      const outgoing = JSON.stringify({ ...body, project: credentials.upstreamAccountId ?? body.project });
+      const outgoing = JSON.stringify({ ...compressed.outgoing, project: credentials.upstreamAccountId ?? body.project });
       let upstream: Response;
       try {
         upstream = await fetchImpl(`${baseUrl}${upstreamPath}`, { method: "POST", body: outgoing, headers: forwardHeaders(request.headers, credentials.accessToken),
@@ -265,7 +332,7 @@ export function registerAntigravityProxyRoutes(app: FastifyInstance, options: An
         return true;
       }
       if (status === 401) {
-        await options.pool.markPermanentFailure(account, "token_invalidated");
+        retryWith = await options.pool.refreshRejectedToken(account, "token_invalidated");
         return true;
       }
       if (status === 403 || status >= 500) {

@@ -17,6 +17,31 @@
   white-space: nowrap;
 }
 
+/* The storage numbers are for troubleshooting, so they wait behind "Technical details". */
+.app-diagnostics-details {
+  border-top: 1px solid var(--room-border, #343638);
+  padding: 0.5rem 0 0.2rem;
+}
+
+.app-diagnostics-details > summary {
+  width: fit-content;
+  color: var(--room-muted, #a7a59e);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.app-diagnostics-details[open] > summary {
+  margin-bottom: 0.4rem;
+}
+
+.app-diagnostics-details .app-diagnostics-metrics.settings-flat-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.app-diagnostics-details .app-diagnostics-metrics.settings-flat-metrics > div {
+  border-width: 0 0 1px;
+}
+
 .app-diagnostics-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

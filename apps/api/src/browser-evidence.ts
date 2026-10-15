@@ -10,6 +10,7 @@ import type {
   CreateBrowserEvidenceInput
 } from "@space/contracts";
 import { SpaceFeatureDisabledError, makeSpaceId, nowIso, redactArtifactMetadata, redactMemoryText } from "@space/runtime";
+import { childProcessEnv } from "./child-process-env.js";
 
 export interface BrowserEvidenceCaptureInput extends CreateBrowserEvidenceInput {
   targetUrl: string;
@@ -378,7 +379,7 @@ export function createBrowserEvidenceCapture(config: BrowserEvidenceCaptureConfi
       ],
       {
         env: {
-          ...process.env,
+          ...childProcessEnv(),
           HOME: browserHome,
           XDG_CACHE_HOME: xdgCacheHome,
           XDG_CONFIG_HOME: xdgConfigHome,

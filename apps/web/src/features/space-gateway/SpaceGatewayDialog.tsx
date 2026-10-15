@@ -135,14 +135,19 @@ function ReportsTab({ client }: { client: SpaceGatewayClient }) {
   );
 }
 
-export function SpaceGatewayDialog({ client = defaultGatewayClient, embedded = false, initialTab = "dashboard", onClose }: {
+export function SpaceGatewayDialog({ client = defaultGatewayClient, embedded = false, fullscreen = false, initialTab = "dashboard", onClose }: {
   client?: SpaceGatewayClient;
+  /** Inside a Workspace menu page: no backdrop, no close button. */
   embedded?: boolean;
+  /** A full-screen page over the workspace, like the memory workspace; Escape and the close button leave it. */
+  fullscreen?: boolean;
   initialTab?: SpaceGatewayTab;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<SpaceGatewayTab>(initialTab === "overview" ? "dashboard" : initialTab);
   const [focusAccountId, setFocusAccountId] = useState<string | null>(null);
+  /** Routing's "Add Claude API key" shortcut: Accounts opens with that form. */
+  const [addClaudeApiKey, setAddClaudeApiKey] = useState(false);
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -167,7 +172,10 @@ export function SpaceGatewayDialog({ client = defaultGatewayClient, embedded = f
 
   const settings = status?.settings ?? null;
   const content = useMemo(() => {
-    if (tab === "accounts") return <GatewayAccountsTab key={focusAccountId ?? "accounts"} client={client} settings={settings} initialAccountId={focusAccountId} onChanged={() => void refresh()} />;
+    if (tab === "accounts") {
+      return <GatewayAccountsTab key={focusAccountId ?? (addClaudeApiKey ? "add-claude-api-key" : "accounts")} client={client} settings={settings} initialAccountId={focusAccountId}
+        initialAdd={addClaudeApiKey ? "claude-api-key" : null} onChanged={() => void refresh()} />;
+    }
     if (tab === "keys") return <GatewayKeysTab client={client} settings={settings} onChanged={() => void refresh()} />;
     if (tab === "logs") return <GatewayLogsTab client={client} settings={settings} />;
     if (tab === "reports") return <ReportsTab client={client} />;
@@ -176,16 +184,20 @@ export function SpaceGatewayDialog({ client = defaultGatewayClient, embedded = f
         onOpenAccount={(accountId) => { setFocusAccountId(accountId); setTab("accounts"); }} />;
     }
     if (!status) return error ? null : <p className="space-gateway-empty">Loading Space Gateway…</p>;
-    if (tab === "routing") return <GatewayRoutingTab key={status.settings.updatedAt} settings={status.settings} client={client} onSaved={onSettingsSaved} />;
+    if (tab === "routing") {
+      return <GatewayRoutingTab key={status.settings.updatedAt} settings={status.settings} client={client} onSaved={onSettingsSaved}
+        onAddClaudeApiKey={() => { setFocusAccountId(null); setAddClaudeApiKey(true); setTab("accounts"); }} />;
+    }
     if (tab === "compression") return <GatewayCompressionTab key={status.settings.updatedAt} settings={status.settings} client={client} onSaved={onSettingsSaved} />;
     return <GatewaySettingsTab key={status.settings.updatedAt} settings={status.settings} status={status} client={client} onSaved={onSettingsSaved} />;
-  }, [tab, status, settings, error, client, refresh, onSettingsSaved, focusAccountId]);
+  }, [tab, status, settings, error, client, refresh, onSettingsSaved, focusAccountId, addClaudeApiKey]);
 
+  const page = embedded || fullscreen;
   return (
-    <div className={`space-gateway-backdrop${embedded ? " manage-embedded" : ""}`} onMouseDown={(event) => {
-      if (!embedded && event.target === event.currentTarget) onClose();
+    <div className={`space-gateway-backdrop${embedded ? " manage-embedded" : ""}${fullscreen ? " fullscreen" : ""}`} onMouseDown={(event) => {
+      if (!page && event.target === event.currentTarget) onClose();
     }}>
-      <section ref={dialogRef} className="space-gateway-dialog" role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true}
+      <section ref={dialogRef} className="space-gateway-dialog" role={page ? "region" : "dialog"} aria-modal={page ? undefined : true}
         aria-label="Space Gateway" onKeyDown={handleKeyDown}>
         <header className="space-gateway-header">
           <span className="space-gateway-icon"><Network aria-hidden="true" /></span>
@@ -198,7 +210,7 @@ export function SpaceGatewayDialog({ client = defaultGatewayClient, embedded = f
         <div className="filter-tabs space-gateway-tabs" role="tablist" aria-label="Space Gateway sections">
           {tabs.map((item) => (
             <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} className={`filter-tab${tab === item.id ? " active" : ""}`}
-              onClick={() => { setFocusAccountId(null); setTab(item.id); }}>{item.label}</button>
+              onClick={() => { setFocusAccountId(null); setAddClaudeApiKey(false); setTab(item.id); }}>{item.label}</button>
           ))}
         </div>
         {error ? <p className="space-gateway-alert" role="alert">{error}</p> : null}

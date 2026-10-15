@@ -90,7 +90,7 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 
 ### 11. Companion skills
 - `space-cli-render-diagnostics` covers terminal render evidence (`TERMINAL_RENDER`, render proofs); `space-app-diagnostics` covers `APP_DEBUG` captures.
-- Workflow skills (Superpowers, UI/UX Pro Max, Taste Skill, gstack and the others) are listed with descriptions by `space_inspect` section `SKILLS` and by the dispatcher's `list_skills`; this manual does not repeat them.
+- Workflow skills (Superpowers, UI/UX Pro Max, Taste Skill, gstack and the others) are listed with descriptions by `space_inspect` section `SKILLS` and by the dispatcher's `space_list_skills`; this manual does not repeat them.
 
 ---
 

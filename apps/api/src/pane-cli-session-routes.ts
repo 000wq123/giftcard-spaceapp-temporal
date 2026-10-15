@@ -1,7 +1,9 @@
+import type { CliPaneReopener } from "./cli-pane-reopen.js";
 import type {} from "./request-context.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fastify";
@@ -16,10 +18,10 @@ import {
   abortOpenCodeSession, fetchOpenCodeSessionIsTurnActive, type OpenCodeServerControl
 } from "@space/opencode-control";
 import {
-  makeSpaceId, nowIso, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
+  makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
 import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
@@ -201,11 +203,23 @@ async function writeCliWorkspaceBootstrap(
     }),
     { encoding: "utf8", mode: 0o640 }
   );
-  // Job Copilot panes also get their persona as CLAUDE.md (Claude Code reads it natively; others through AGENTS.md).
+  // Copilot panes also get their persona as CLAUDE.md (Claude Code reads it natively; others through AGENTS.md).
   if (input.paneMode === "JOB_APPLY") {
     await writeFile(
       join(sessionCwd, "CLAUDE.md"),
       buildJobCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "MAIL_COPILOT") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildMailCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "MARKETING_COPILOT") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildMarketingCopilotPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
   }
@@ -249,11 +263,13 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
   assertPaneCliRuntimeEnabled: (pane: Pane) => Promise<void>;
   routeOptions: Pick<RouteShorthandOptions, "config">;
   cliAccountBalancer?: Pick<CliAccountBalancer, "pick" | "isAuto" | "setAuto">;
+  /** A pending resume (reopened pane, new Job Copilot pane) finishes before a fresh session can start. */
+  cliPaneReopener?: Pick<CliPaneReopener, "settled">;
 }) {
   const { config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,
     spaceAgentAdapter, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
     cliRuntimeVisibility, resolveOpenCodeServerControl, resumePaneCliTask, spaceControl, assertRootAdmin,
-    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer } = options;
+    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener } = options;
   const paneCliSessionStartTails = new Map<string, Promise<void>>();
   function serializePaneCliSessionStart<T>(
     operation: (request: FastifyRequest) => Promise<T>
@@ -297,6 +313,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     if (pane.terminalRuntimeId && input.runtimeId !== pane.terminalRuntimeId) {
       throw new SpaceConflictError(`Terminal pane requires runtime ${pane.terminalRuntimeId}.`);
     }
+    await cliPaneReopener?.settled(pane.id);
     const active = await store.getActivePaneCliSession(pane.id);
     if (input.accountMode === "AUTO") {
       if (!cliAccountBalancer || !isCliBalancedRuntimeId(input.runtimeId)) {
@@ -471,7 +488,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     const preserveActiveCodex = Boolean(reusableSession && directCodexParity);
     const rollingClientGenericReasoningEcho = input.modelId === undefined && input.reasoningEffort === "medium";
     const codexBuildDefaults = directCodexParity && !preserveActiveCodex
-      ? (await codexCliModeDefaultsService.current()).build
+      ? await codexCliModeDefaultsService.build()
       : null;
     const resolvedCodexSettings = directCodexParity && !preserveActiveCodex
       ? resolveCodexCliLaunchSettings({
@@ -587,7 +604,7 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
       );
     }
     const nextSessionId = reusableSession?.sessionId ?? makeSpaceId("cli_session");
-    const sessionCwd = directOperatorParity
+    let sessionCwd = directOperatorParity
       ? resolveDirectOperatorParityCwd(requestedCwd, config.cliWorkspaceRoot)
       : requestedManagedWorkspace
         ? buildCliWorkspacePath({
@@ -604,6 +621,20 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
           await execFileAsync("git", ["init", "-b", "main", sessionCwd]);
         }
       } catch {}
+      // A folder that could not be created here (a worktree or project of another host) would fail chdir at spawn.
+      if (await pathIsMissing(sessionCwd)) {
+        const missingCwd = sessionCwd;
+        const room = await Promise.resolve(store.getRoom(pane.roomId)).catch(() => null);
+        let fallbackCwd = homedir();
+        for (const candidate of [room?.projectPath, config.cliWorkspaceRoot]) {
+          if (candidate && candidate !== missingCwd && !await pathIsMissing(candidate)) {
+            fallbackCwd = candidate;
+            break;
+          }
+        }
+        sessionCwd = fallbackCwd;
+        request.log.warn({ paneId: pane.id, missingCwd, sessionCwd }, "CLI pane folder does not exist on this host; starting in a fallback folder");
+      }
       if (requestedManagedWorkspace) {
         await writeCliWorkspaceBootstrap(sessionCwd, {
           roomId: pane.roomId,

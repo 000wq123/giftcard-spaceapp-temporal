@@ -187,9 +187,14 @@ export interface SpaceApiConfig {
   demoProjectsPublicOrigin: string | null;
   agentToolsWriterCommand: string | null;
   roomPaneCommandsEnabled: boolean;
-  roomMiniRouterEnabled: boolean;
+  /** Server-side Room Agent monitor of every room's panes (on unless SPACE_ROOM_AGENT_MONITOR_ENABLED=false). */
+  roomAgentMonitorEnabled: boolean;
+  /** The Room Agent answers its panes' prompts by itself (on unless SPACE_ROOM_AGENT_AUTOPILOT_ENABLED=false). */
+  roomAgentAutopilotEnabled: boolean;
   harnessEnabled: boolean;
   harnessOrigin: string;
+  trustedProxies: string[];
+  optionalModules: ReadonlySet<OptionalModuleId>;
   harnessHealthTimeoutMs: number;
   harnessProxyTimeoutMs: number;
   /** Managed plan executions: native turns one stage may start before the execution fails (PLAN_STAGE_ATTEMPT_LIMIT). */
@@ -243,6 +248,20 @@ function parseGatewayUrl(raw: string | undefined): string {
     throw new Error("SPACE_GATEWAY_URL must be an http(s) origin.");
   }
   return url.origin;
+}
+
+export const optionalModuleIds = [
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "channels", "telegram", "waitlist", "desktop-updates"
+] as const;
+export type OptionalModuleId = (typeof optionalModuleIds)[number];
+
+// Modules beyond the coding workspace. Public installs start with none of them (review F14,
+// operator decision 2026-10-14); SPACE_OPTIONAL_MODULES=all, none or a comma list overrides.
+export function parseOptionalModules(raw: string | undefined, publicDistribution: boolean): ReadonlySet<OptionalModuleId> {
+  const value = raw?.trim().toLowerCase() || (publicDistribution ? "none" : "all");
+  if (value === "all") return new Set(optionalModuleIds);
+  if (value === "none") return new Set();
+  return new Set(optionalModuleIds.filter((id) => value.split(",").map((part) => part.trim()).includes(id)));
 }
 
 export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
@@ -414,10 +433,14 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
       env.SPACE_AGENT_TOOLS_WRITER === "none"
         ? null
         : (env.SPACE_AGENT_TOOLS_WRITER || (existsSync("/opt/spaceapp/bin/space-agent-tools-writer") ? "/opt/spaceapp/bin/space-agent-tools-writer" : null)),
-    roomMiniRouterEnabled: env.SPACE_ROOM_MINI_ROUTER_ENABLED === "true",
+    roomAgentMonitorEnabled: env.SPACE_ROOM_AGENT_MONITOR_ENABLED !== "false",
+    roomAgentAutopilotEnabled: env.SPACE_ROOM_AGENT_AUTOPILOT_ENABLED !== "false",
     roomPaneCommandsEnabled: env.SPACE_ROOM_PANE_COMMANDS_ENABLED === "true",
-    harnessEnabled: env.SPACE_HARNESS_ENABLED === "true",
-    harnessOrigin: env.SPACE_HARNESS_ORIGIN || "http://10.254.240.21:3080",
+    // No default upstream address (review F11): without SPACE_HARNESS_ORIGIN the harness stays off.
+    harnessEnabled: env.SPACE_HARNESS_ENABLED === "true" && Boolean(env.SPACE_HARNESS_ORIGIN),
+    harnessOrigin: env.SPACE_HARNESS_ORIGIN || "",
+    trustedProxies: (env.SPACE_TRUSTED_PROXIES ?? "").split(",").map((address) => address.trim()).filter(Boolean),
+    optionalModules: parseOptionalModules(env.SPACE_OPTIONAL_MODULES, env.SPACE_PUBLIC_DISTRIBUTION === "true"),
     harnessHealthTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_HEALTH_TIMEOUT_MS, 3000), 15000),
     harnessProxyTimeoutMs: Math.min(parsePositiveInt(env.SPACE_HARNESS_PROXY_TIMEOUT_MS, 30000), 120000),
     planStageMaxAttempts: valid.SPACE_PLAN_STAGE_MAX_ATTEMPTS ?? 20

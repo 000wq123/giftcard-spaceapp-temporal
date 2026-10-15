@@ -1,18 +1,48 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { GatewayProvider } from "@space/contracts";
 import type { GatewayRepository } from "@space/db";
 import type { AccountPool, StoredCredentials } from "../accounts/account-pool.js";
 import type { CredentialCipher } from "../credential-cipher.js";
+import { CLAUDE_API_KEY_PATTERN, CLAUDE_API_KEY_PLAN, checkClaudeApiKey } from "../providers/claude/api-key.js";
 import { checkPoolKey, keyPoolProviders, keyPoolSlugFor, type KeyPoolProvider } from "../providers/key-pools/key-pools.js";
 import { createAdminGuard, publicAccountSummary, type ProviderAccountActions } from "./codex-sign-in.js";
 
+/** A provider whose API keys become gateway accounts: the key's shape, its free check, and the plan it is filed under. */
+interface ApiKeyProviderEntry {
+  provider: Extract<GatewayProvider, "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE">;
+  label: string;
+  keyPattern: RegExp;
+  planType: string;
+  check: (apiKey: string, fetchImpl: typeof fetch) => Promise<{ ok: boolean; status: number }>;
+}
+
+const poolEntry = (entry: KeyPoolProvider): ApiKeyProviderEntry => ({
+  provider: entry.provider, label: entry.label, keyPattern: entry.keyPattern, planType: "api", check: (apiKey, fetchImpl) => checkPoolKey(entry, apiKey, fetchImpl)
+});
+
 /**
- * Provider API keys as gateway accounts: OpenAI (embeddings and its key pool), OpenRouter and DeepSeek (key pools).
- * The key is checked with the provider's free check request, stored encrypted, and identified only by a hash
- * prefix and its last four characters.
+ * The Claude key is not a pool: with the `claudeApiKeyFallback` setting on, the Claude proxy uses it only while every
+ * pooled subscription account is out of quota.
+ */
+const claudeEntry: ApiKeyProviderEntry = {
+  provider: "CLAUDE", label: "Claude", keyPattern: CLAUDE_API_KEY_PATTERN, planType: CLAUDE_API_KEY_PLAN,
+  check: (apiKey, fetchImpl) => checkClaudeApiKey(apiKey, fetchImpl)
+};
+
+function entryFor(provider: unknown): ApiKeyProviderEntry | null {
+  if (provider === "CLAUDE") return claudeEntry;
+  const slug = typeof provider === "string" ? keyPoolSlugFor(provider as GatewayProvider) : null;
+  return slug ? poolEntry(keyPoolProviders[slug]) : null;
+}
+
+/**
+ * Provider API keys as gateway accounts: OpenAI (embeddings and its key pool), OpenRouter and DeepSeek (key pools),
+ * and Claude (the per-token fallback behind the subscription accounts). The key is checked with the provider's
+ * free check request, stored encrypted, and identified only by a hash prefix and its last four characters.
  */
 export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
-  repository: GatewayRepository; pools: Partial<Record<KeyPoolProvider["provider"], AccountPool>>; cipher: () => CredentialCipher | null;
+  repository: GatewayRepository; pools: Partial<Record<ApiKeyProviderEntry["provider"], AccountPool>>; cipher: () => CredentialCipher | null;
   internalToken: string | null; fetchImpl?: typeof fetch; now?: () => number;
 }) {
   const guard = createAdminGuard(options.internalToken);
@@ -20,15 +50,14 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
   app.post("/__space-gateway/admin/api-key/add", async (request, reply) => {
     if (!(await guard(request, reply))) return reply;
     const body = (request.body ?? {}) as { provider?: unknown; apiKey?: unknown; label?: unknown; sourceRef?: unknown };
-    const slug = typeof body.provider === "string" ? keyPoolSlugFor(body.provider as KeyPoolProvider["provider"]) : null;
-    const entry = slug ? keyPoolProviders[slug] : null;
+    const entry = entryFor(body.provider);
     const pool = entry ? options.pools[entry.provider] : undefined;
-    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter and DeepSeek." } });
+    if (!entry || !pool) return reply.code(422).send({ error: { code: "unsupported_provider", message: "API keys can be added for OpenAI, OpenRouter, DeepSeek and Claude." } });
     const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
     if (!entry.keyPattern.test(apiKey)) return reply.code(422).send({ error: { code: "invalid_api_key", message: `This does not look like a ${entry.label} API key.` } });
     const cipher = options.cipher();
     if (!cipher) return reply.code(503).send({ error: { code: "credential_key_missing", message: "The Space Gateway encryption key is missing. Redeploy Space to create it." } });
-    const check = await checkPoolKey(entry, apiKey, options.fetchImpl ?? fetch);
+    const check = await entry.check(apiKey, options.fetchImpl ?? fetch);
     if (!check.ok) {
       return reply.code(check.status === 0 || check.status >= 500 ? 502 : 422)
         .send({ error: { code: "api_key_rejected", message: check.status === 0 ? `${entry.label} could not be reached.` : `${entry.label} rejected the key (HTTP ${check.status}).` } });
@@ -39,10 +68,10 @@ export function registerApiKeyAccountRoutes(app: FastifyInstance, options: {
     const existing = (await options.repository.listAccounts()).find((account) => account.provider === entry.provider && account.externalAccountId === externalAccountId);
     const boundId = existing?.id ?? `gw_account:${randomBytes(16).toString("hex")}`;
     const credentials: StoredCredentials = { accessToken: apiKey, refreshToken: null, idToken: null, upstreamAccountId: null, accessExpiresAtMs: null };
-    const saved = await options.repository.upsertAccount({ accountId: boundId, provider: entry.provider, label, email: null, externalAccountId, planType: "api",
+    const saved = await options.repository.upsertAccount({ accountId: boundId, provider: entry.provider, label, email: null, externalAccountId, planType: entry.planType,
       credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), boundId), credentialsExpiresAt: null, source: "API_KEY", sourceRef,
       lastRefreshAt: new Date(now()).toISOString() });
-    pool.invalidate();
+    pool.signedIn(saved.id);
     return { status: "CONNECTED", account: publicAccountSummary(saved) };
   });
 }

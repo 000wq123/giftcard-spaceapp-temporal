@@ -98,6 +98,7 @@ export interface CodexConfigRequirements {
 
 export type CodexAppServerAllowedRpcMethod =
   | "initialize"
+  | "config/read"
   | "configRequirements/read"
   | "collaborationMode/list"
   | "model/list"
@@ -113,6 +114,7 @@ export type CodexAppServerAllowedRpcMethod =
 
 const allowedCodexAppServerRpcMethods = new Set<CodexAppServerAllowedRpcMethod>([
   "initialize",
+  "config/read",
   "configRequirements/read",
   "collaborationMode/list",
   "model/list",
@@ -331,8 +333,15 @@ export interface CodexAppServerSetGoalInput {
   tokenBudget?: number | null;
 }
 
+/** The model and reasoning effort Codex's own configuration starts a session with; null when unset. */
+export interface CodexConfiguredModel {
+  model: string | null;
+  reasoningEffort: CodexReasoningEffort | null;
+}
+
 export interface CodexAppServerControlService {
   readConfigRequirements(): Promise<CodexConfigRequirements | null>;
+  readConfiguredModel(): Promise<CodexConfiguredModel>;
   listModels(): Promise<CodexAppServerSocketModelOption[]>;
   listCollaborationModes(): Promise<CodexCollaborationModePreset[]>;
   setGoal(input: CodexAppServerSetGoalInput): Promise<CodexAppServerGoalSessionResult>;
@@ -1100,6 +1109,15 @@ async function readFreshRequirements(
   await validator?.(requirements);
   validatePermissionModeRequirements(permissionMode, requirements);
   return requirements;
+}
+
+function parseConfiguredModel(result: unknown): CodexConfiguredModel {
+  const config = asRecord(asRecord(result)?.config);
+  if (!config) throw new Error("Codex config/read response was invalid.");
+  const model = typeof config.model === "string" && codexModelIdentifierPattern.test(config.model.trim())
+    ? config.model.trim()
+    : null;
+  return { model, reasoningEffort: providerReasoningEffort(config.model_reasoning_effort) };
 }
 
 function parseCollaborationModes(result: unknown): CodexCollaborationModePreset[] {
@@ -2419,6 +2437,10 @@ export function createCodexAppServerControlService(
     readConfigRequirements: () => runCodexAppServerStdioProtocol(
       options,
       async (client) => parseConfigRequirementsResult(await client.request("configRequirements/read"))
+    ),
+    readConfiguredModel: () => runCodexAppServerStdioProtocol(
+      options,
+      async (client) => parseConfiguredModel(await client.request("config/read", { includeLayers: false }))
     ),
     listModels: () => runCodexAppServerStdioProtocol(options, async (client) => {
       const models = new Map<string, CodexAppServerSocketModelOption>();

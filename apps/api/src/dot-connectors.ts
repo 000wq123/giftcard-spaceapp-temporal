@@ -13,6 +13,7 @@ import {
 } from "@space/contracts";
 import { redactMemoryText } from "@space/runtime";
 import type { ConnectorAccountRecord, ConnectorAccountsRepository } from "@space/db";
+import { htmlToText } from "./mail-html-text.js";
 
 /**
  * Space Dots Stage 5: email and calendar connectors.
@@ -96,16 +97,30 @@ export function rfc822(from: string, message: MailMessage): string {
     "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: 8bit", "", message.body];
   return Buffer.from(lines.join("\r\n"), "utf8").toString("base64url");
 }
-function plainText(payload: Record<string, unknown> | undefined, max: number): string {
-  const parts: string[] = [];
+/**
+ * The message text: its text/plain parts, or, for HTML-only mail (assessment invitations often are), its
+ * text/html parts converted to plain text. `fromHtml` tells the caller which one it got.
+ */
+export function messageText(payload: Record<string, unknown> | undefined, max: number): { text: string; fromHtml: boolean } {
+  const plain: string[] = [];
+  const html: string[] = [];
   const walk = (part: Record<string, unknown> | undefined) => {
     if (!part) return;
     const data = (part.body as { data?: string } | undefined)?.data;
-    if (part.mimeType === "text/plain" && data) parts.push(Buffer.from(data, "base64url").toString("utf8"));
+    if (part.mimeType === "text/plain" && data) plain.push(Buffer.from(data, "base64url").toString("utf8"));
+    if (part.mimeType === "text/html" && data) html.push(Buffer.from(data, "base64url").toString("utf8"));
     for (const child of (part.parts as Record<string, unknown>[] | undefined) ?? []) walk(child);
   };
   walk(payload);
-  return parts.join("\n").slice(0, max);
+  if (plain.some((part) => part.trim()) || !html.length) return { text: plain.join("\n").slice(0, max), fromHtml: false };
+  return { text: htmlToText(html.join("\n")).slice(0, max), fromHtml: true };
+}
+
+/** Outlook returns an HTML body by default; HTML becomes plain text as for Gmail. */
+function outlookBody(body: unknown): { text: string | null; textSource?: "html" } {
+  const { content, contentType } = (body ?? {}) as { content?: string; contentType?: string };
+  if (!content || String(contentType).toLowerCase() !== "html") return { text: bounded(content, 20_000) };
+  return { text: bounded(htmlToText(content), 20_000), textSource: "html" };
 }
 
 export function createGoogleConnector(input: { clientId: string; clientSecret?: string; fetchImpl?: typeof fetch }): ConnectorProviderClient {
@@ -175,8 +190,10 @@ export function createGoogleConnector(input: { clientId: string; clientSecret?: 
       const message = await json(await fetchImpl(`${gmail}/messages/${encodeURIComponent(messageId)}?format=full`, authed(token)), "Gmail read");
       const payload = message.payload as Record<string, unknown> | undefined;
       const headers = payload?.headers;
+      const body = messageText(payload, 20_000);
       return { messageId, threadId: message.threadId ?? null, from: bounded(header(headers, "From"), 300), to: bounded(header(headers, "To"), 1000),
-        subject: bounded(header(headers, "Subject"), 300), date: header(headers, "Date"), text: bounded(plainText(payload, 20_000), 20_000) };
+        subject: bounded(header(headers, "Subject"), 300), date: header(headers, "Date"), text: bounded(body.text, 20_000),
+        ...(body.fromHtml ? { textSource: "html" } : {}) };
     },
     async draftMail(token, from, message) {
       const draft = await json(await fetchImpl(`${gmail}/drafts`, authed(token, { method: "POST", headers: { "content-type": "application/json" },
@@ -263,7 +280,7 @@ export function createMicrosoftConnector(input: { clientId: string; clientSecret
         authed(token, { headers: { Prefer: 'outlook.body-content-type="text"' } })), "Outlook read");
       return { messageId, threadId: message.conversationId ?? null, from: bounded((message.from as { emailAddress?: { address?: string } } | undefined)?.emailAddress?.address, 300),
         to: bounded(((message.toRecipients as Array<{ emailAddress?: { address?: string } }> | undefined) ?? []).map((item) => item.emailAddress?.address).join(", "), 1000),
-        subject: bounded(message.subject as string, 300), date: message.receivedDateTime ?? null, text: bounded((message.body as { content?: string } | undefined)?.content, 20_000) };
+        subject: bounded(message.subject as string, 300), date: message.receivedDateTime ?? null, ...outlookBody(message.body) };
     },
     async draftMail(token, _from, message) {
       const draft = await json(await fetchImpl(`${graph}/messages`, authed(token, { method: "POST", headers: { "content-type": "application/json" },
@@ -319,7 +336,7 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       { provider: "MICROSOFT", configured: Boolean(deps.microsoft), reason: deps.microsoft ? null : deps.microsoftReason ?? "Microsoft needs an app registration on this server." }
     ], accounts: (await deps.accounts.list(owner)).map(summary) };
   }
-  async function complete(owner: string, provider: ConnectorProvider, input: { code: string; codeVerifier: string; redirectUri: string }, request: FastifyRequest | null) {
+  async function complete(owner: string, provider: ConnectorProvider, input: { code: string; codeVerifier: string; redirectUri: string; email?: string }, request: FastifyRequest | null) {
     const api = client(provider);
     if (!api) throw new ConnectorError(503, "CONNECTOR_UNAVAILABLE", "This provider is not configured.");
     const tokens = await api.exchange(input).catch((error: unknown) => {
@@ -328,6 +345,9 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
         ? new ConnectorError(400, "CONNECTOR_SIGN_IN_EXPIRED", "The sign-in expired before it finished. Connect again.") : error;
     });
     if (!tokens.email) throw new ConnectorError(400, "CONNECTOR_NO_EMAIL", "The account has no verified email address.");
+    if (input.email && tokens.email.toLowerCase() !== input.email.toLowerCase()) {
+      throw new ConnectorError(400, "CONNECTOR_WRONG_ACCOUNT", `This link is for ${input.email}, but Google signed in ${tokens.email}. Choose ${input.email} and try again.`);
+    }
     if (!tokens.refreshToken) throw new ConnectorError(400, "CONNECTOR_NO_OFFLINE_ACCESS", "The provider did not grant offline access. Remove Space's access in your account settings and connect again.");
     const account = await deps.accounts.upsert({ ownerUserId: owner, provider, email: tokens.email, scopes: tokens.scopes,
       refreshTokenEncrypted: deps.crypto.seal(tokens.refreshToken), accessTokenEncrypted: deps.crypto.seal(tokens.accessToken), accessExpiresAt: tokens.expiresAt });
@@ -421,12 +441,34 @@ export function createConnectorService(deps: ConnectorServiceDeps) {
       throw error;
     }
   }
+  /** The owner's connected Google account with this email, for a caller that works with one named account (Job Copilot). */
+  async function googleAccount(owner: string, email: string): Promise<ConnectorAccountRecord | null> {
+    const wanted = email.trim().toLowerCase();
+    return (await deps.accounts.list(owner)).find((account) => account.provider === "GOOGLE" && account.email === wanted) ?? null;
+  }
+  /** Every Google account the owner connected, with what each allowed. */
+  async function googleAccounts(owner: string): Promise<Array<{ email: string; capabilities: ConnectorCapability[] }>> {
+    return (await deps.accounts.list(owner)).filter((account) => account.provider === "GOOGLE")
+      .map((account) => ({ email: account.email, capabilities: connectorCapabilities("GOOGLE", account.scopes) }));
+  }
+  async function googleCapabilities(owner: string, email: string): Promise<ConnectorCapability[]> {
+    const account = await googleAccount(owner, email);
+    return account ? connectorCapabilities("GOOGLE", account.scopes) : [];
+  }
+  /** A valid access token of that Google account for `capability`; refreshed like the gateway tools' tokens. */
+  async function googleAccessToken(owner: string, email: string, capability: ConnectorCapability): Promise<string> {
+    const account = await googleAccount(owner, email);
+    if (!account || !connectorCapabilities("GOOGLE", account.scopes).includes(capability)) {
+      throw new ConnectorError(409, "CONNECTOR_NEEDS_CONNECTION", `${email} has not allowed this access.`);
+    }
+    return accessToken(account);
+  }
   /** Accounts and providers for the Dot tool catalog. */
   async function catalog(owner: string) {
     return { connectorAccounts: (await deps.accounts.list(owner)).map((account) => ({ provider: account.provider, email: account.email,
       capabilities: connectorCapabilities(account.provider, account.scopes) })), connectorProviders: { google: Boolean(deps.google), microsoft: Boolean(deps.microsoft) } };
   }
-  return { status, complete, disconnect, tool, catalog, client };
+  return { status, complete, disconnect, tool, catalog, client, googleConfigured: Boolean(deps.google), googleAccounts, googleCapabilities, googleAccessToken };
 }
 export type ConnectorService = ReturnType<typeof createConnectorService>;
 
@@ -472,28 +514,51 @@ export function registerConnectorRoutes(app: FastifyInstance, service: Connector
     if (!interactive(request, reply)) return reply;
     try {
       const { provider } = z.object({ provider: z.enum(["google", "microsoft"]) }).strict().parse(request.params);
-      const { capabilities } = z.object({ capabilities: z.string().max(100).optional() }).strict().parse(request.query);
+      // Job Copilot asks for its chosen Google account by email and gets its own message on return.
+      // `link=1` returns a one-use URL the operator can open in another browser where that Google account is signed in.
+      const { capabilities, loginHint, source, link } = z.object({ capabilities: z.string().max(100).optional(), loginHint: z.string().trim().email().max(320).optional(),
+        source: connectorSourceSchema.optional(), link: z.literal("1").optional() }).strict().parse(request.query);
       const chosen = [...new Set((capabilities ?? "MAIL_READ,MAIL_COMPOSE,CALENDAR").split(",").map((item) => connectorCapabilitySchema.parse(item.trim())))];
       const kind: ConnectorProvider = provider === "google" ? "GOOGLE" : "MICROSOFT";
       const api = service!.client(kind);
       if (!api) throw new ConnectorError(503, "CONNECTOR_UNAVAILABLE", "This provider is not configured on this server.");
+      const owner = link ? await options.authenticatedOwner(request) : null;
+      // Only an account this user already connected, so a shared link cannot attach someone else's mailbox.
+      if (owner && (!loginHint || !(await service!.googleAccounts(owner)).some((account) => account.email === loginHint.toLowerCase()))) {
+        throw new ConnectorError(400, "CONNECTOR_LINK_ACCOUNT", "A copied link only upgrades a Google account already connected to Space.");
+      }
       const verifier = randomBytes(32).toString("base64url");
-      const state = options.state.sign(Buffer.from(JSON.stringify({ nonce: randomBytes(16).toString("hex"), expiresAt: Date.now() + 600_000,
-        purpose: "connector", provider: kind, capabilities: chosen, userId: request.user!.id, sessionHash: options.state.sessionHash(request),
+      const expiresAt = Date.now() + 600_000;
+      const state = options.state.sign(Buffer.from(JSON.stringify({ nonce: randomBytes(16).toString("hex"), expiresAt,
+        purpose: "connector", provider: kind, capabilities: chosen, userId: request.user!.id, sessionHash: options.state.sessionHash(request), ...(source ? { source } : {}),
         codeChallenge: createHash("sha256").update(verifier).digest("base64url") })).toString("base64url"));
+      const url = api.authorizeUrl({ redirectUri: options.state.redirectUri(request, kind), state,
+        codeChallenge: createHash("sha256").update(verifier).digest("base64url"), capabilities: chosen, ...(loginHint ? { loginHint } : {}) });
+      if (owner && loginHint) {
+        for (const [key, entry] of connectorLinks) if (entry.expiresAt <= Date.now()) connectorLinks.delete(key);
+        connectorLinks.set(state, { owner, verifier, email: loginHint, expiresAt });
+        return { url, expiresAt: new Date(expiresAt).toISOString() };
+      }
       const cookie = { httpOnly: true, secure: options.state.secureCookies, sameSite: "lax" as const, path: "/", maxAge: 600 };
       reply.setCookie("space_oauth_state", state, cookie);
       reply.setCookie("space_oauth_pkce", options.state.sign(verifier), cookie);
-      return reply.redirect(api.authorizeUrl({ redirectUri: options.state.redirectUri(request, kind), state,
-        codeChallenge: createHash("sha256").update(verifier).digest("base64url"), capabilities: chosen }));
+      return reply.redirect(url);
     } catch (error) { return failure(reply, error); }
   });
   /** Microsoft returns here; Google returns to the shared sign-in callback, which hands connector states to `completeConnectorCallback`. */
   app.get("/api/connectors/microsoft/callback", options.routeOptions, async (request, reply) => completeConnectorCallback(request, reply, service, options));
 }
 
+/**
+ * Copied consent links by signed state: they finish in a browser without the Space session, so the PKCE verifier
+ * and owner stay here. shortcut: in memory, an API restart drops pending links (copy again); move to the database if links must survive restarts.
+ */
+const connectorLinks = new Map<string, { owner: string; verifier: string; email: string; expiresAt: number }>();
+
+/** Where a connector flow started, when not a Dot: the return notice names that place. */
+const connectorSourceSchema = z.enum(["job-copilot", "mail-copilot"]);
 export const connectorStateSchema = z.object({ purpose: z.literal("connector"), provider: z.enum(["GOOGLE", "MICROSOFT"]), userId: z.string().min(1),
-  sessionHash: z.string().min(1), codeChallenge: z.string().min(43), expiresAt: z.number() });
+  sessionHash: z.string().min(1), codeChallenge: z.string().min(43), expiresAt: z.number(), source: connectorSourceSchema.optional() });
 /** Finishes a connector OAuth flow: the same interactive user and browser session that started it. */
 export async function completeConnectorCallback(request: FastifyRequest, reply: FastifyReply, service: ConnectorService | null, options: {
   authenticatedOwner: (request: FastifyRequest) => Promise<string>;
@@ -503,10 +568,26 @@ export async function completeConnectorCallback(request: FastifyRequest, reply: 
   const savedState = request.cookies["space_oauth_state"];
   const pkce = request.cookies["space_oauth_pkce"];
   for (const name of ["space_oauth_state", "space_oauth_pkce"]) reply.clearCookie(name, { path: "/" });
-  const done = (result: string) => reply.redirect(`/?connector=${encodeURIComponent(result)}`);
   const verified = options.state.verify(query.state);
   let transaction: z.infer<typeof connectorStateSchema> | null = null;
   try { transaction = connectorStateSchema.parse(JSON.parse(Buffer.from(verified ?? "", "base64url").toString("utf8"))); } catch { /* rejected below */ }
+  const source = transaction?.source ? `&connectorFor=${encodeURIComponent(transaction.source)}` : "";
+  const done = (result: string) => reply.redirect(`/?connector=${encodeURIComponent(result)}${source}`);
+  const link = query.state ? connectorLinks.get(query.state) : undefined;
+  if (link && query.state) {
+    connectorLinks.delete(query.state);
+    // The other browser usually has no Space session, so it gets a plain answer instead of the app.
+    const answer = (text: string) => reply.type("text/plain; charset=utf-8").send(text);
+    if (!service || !transaction || transaction.expiresAt <= Date.now() || link.expiresAt <= Date.now()) return answer("This link expired. Copy a new link in Space.");
+    if (query.error || !query.code) return answer("Google access was not allowed. Copy a new link in Space to try again.");
+    try {
+      await service.complete(link.owner, transaction.provider, { code: query.code, codeVerifier: link.verifier,
+        redirectUri: options.state.redirectUri(request, transaction.provider), email: link.email }, null);
+      return answer(`Access for ${link.email} is allowed. You can close this tab and return to Space.`);
+    } catch (error) {
+      return answer(error instanceof ConnectorError ? error.message : "Space could not finish the connection. Copy a new link and try again.");
+    }
+  }
   if (!service || !query.state || query.state !== savedState || !transaction || transaction.expiresAt <= Date.now()) return done("expired");
   if (query.error) return done("cancelled");
   const verifier = options.state.verify(pkce);

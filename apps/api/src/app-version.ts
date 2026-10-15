@@ -5,7 +5,7 @@ import { apiPackageVersion } from "./package-version.js";
 const execFileAsync = promisify(execFile);
 
 const SEMVER_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/;
-const GITHUB_DEFAULT_REPO = "oll4com/spaceapp";
+export const GITHUB_DEFAULT_REPO = "oll4com/spaceapp";
 const GITHUB_LATEST_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export interface AppVersionStatus {

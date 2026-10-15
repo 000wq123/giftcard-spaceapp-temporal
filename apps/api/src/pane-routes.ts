@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyRequest, RouteShorthandOptions } from "fas
 import { z } from "zod";
 import {
   type AuthUser, cliToggleRuntimeIdSchema, createPaneInputSchema, createRoomPanesRequestSchema, eventSchema,
-  type HarnessMaintenanceStatus, listPanesQuerySchema, movePaneInputSchema, type Pane,
+  type HarnessMaintenanceStatus, listPanesQuerySchema, movePaneInputSchema, type Pane, type PaneCliSession,
   type PaneBrowserSessionResponse, type PaneCapabilityGroup, type PaneCapabilityItem, type PaneCapabilityMatrix,
   paneCapabilityMatrixSchema, type Room, roomCommandSchema, roomPanesResultSchema, taskTitleSettingsSchema,
   updatePaneInputSchema
@@ -16,6 +16,7 @@ import {
 } from "@space/runtime";
 import { operatorBrowserActor } from "./browser-actors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
+import { isCliAccountProfileRuntimeId } from "./cli-account-profile-runtimes.js";
 import type { CliPaneReopener } from "./cli-pane-reopen.js";
 import type { CliRuntimeVisibilityPolicy } from "./cli-runtime-visibility.js";
 import type { CliTerminalManager } from "./cli-terminal.js";
@@ -148,12 +149,21 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
   youtubeAccountOperations: Map<string, Promise<unknown>>;
   initializeNewPaneGoogleAccount: (userId: string, pane: Pane) => Promise<void>;
   cliPaneReopener: CliPaneReopener;
+  /** A new Job Copilot pane continues the previous one's terminal session (registered as the pane's pending resume). */
+  resumePreviousJobCopilotSession?: (pane: Pane, traceId: string) => Promise<boolean>;
+  /** Records the native conversation of a running CLI session, for CLIs that name it only while they run (Claude). */
+  rememberCliNativeRef?: (session: PaneCliSession) => Promise<void>;
 }) {
   const { config, store, eventBus, browserSessionManager, cliTerminalManager, cliRuntimeVisibility,
     taskTitleRepository, taskTitleProviders, taskTitles, roomPaneCommands, spaceControl, roomAgentService,
     assertRootAdmin, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, youtubePlaybackStore,
     readDeepSeekHarnessMaintenanceStatus, youtubeSessionStarts, youtubeAccountOperations,
-    initializeNewPaneGoogleAccount, cliPaneReopener } = options;
+    initializeNewPaneGoogleAccount, cliPaneReopener, resumePreviousJobCopilotSession, rememberCliNativeRef } = options;
+  /** One pane per request continues the previous Job Copilot session; more would share one conversation. */
+  function continuePreviousJobCopilot(panes: Pane[], traceId: string): void {
+    const copilot = panes.find((pane) => pane.mode === "JOB_APPLY");
+    if (copilot && resumePreviousJobCopilotSession) cliPaneReopener.reopen(copilot.id, () => copilot, traceId, resumePreviousJobCopilotSession);
+  }
   app.get("/api/panes", defaultRouteRateLimitOptions, async (request) => {
     const query = parseQuery(listPanesQuerySchema, request.query);
     const enabledRuntimeIds = new Set(await cliRuntimeVisibility.enabledRuntimeIds());
@@ -232,8 +242,18 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       }
     }
     const paneInputs = await roomPaneCommands.resolve(params.id, input.panes);
+    // A copilot pane's account (launch dialog or the user's default) must exist; the pane's CLI session
+    // keeps it, not the pane row (the Browser Host parses pane rows with the contracts it started with).
+    for (const [index, item] of input.panes.entries()) {
+      const runtimeId = paneInputs[index]?.terminalRuntimeId;
+      if ((item.mode !== "JOB_APPLY" && item.mode !== "MAIL_COPILOT" && item.mode !== "MARKETING_COPILOT") || !item.accountProfileId || !runtimeId || !isCliAccountProfileRuntimeId(runtimeId)) continue;
+      if (!await store.getCliAccountProfile(runtimeId, item.accountProfileId)) {
+        throw new SpaceConflictError(`CLI account profile ${runtimeId}/${item.accountProfileId} was not found.`);
+      }
+    }
     const panes = await store.createPanes(paneInputs, request.requestIdForSpace);
     for (const pane of panes) await initializeNewPaneGoogleAccount(request.user!.id, pane);
+    continuePreviousJobCopilot(panes, request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "room.panes.create",
       targetType: "room",
@@ -289,6 +309,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
     }
     const pane = await store.createPane(input, request.requestIdForSpace);
     await initializeNewPaneGoogleAccount(request.user!.id, pane);
+    continuePreviousJobCopilot([pane], request.requestIdForSpace);
     await recordAudit(store, request, {
       action: "pane.create",
       targetType: "pane",
@@ -326,7 +347,7 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
       typeof editable.title === "string" ? {...editable,titleSource:"manual"} : editable,
       request.requestIdForSpace);
     let pane: Pane;
-    if (input.isClosed === false && existingPane.isClosed && targetMode === "TERMINAL") {
+    if (input.isClosed === false && existingPane.isClosed && (targetMode === "TERMINAL" || targetMode === "JOB_APPLY")) {
       const reopened = cliPaneReopener.reopen(params.id, update, request.requestIdForSpace);
       pane = await reopened.pane;
       if (await reopened.resumed) pane = await store.getPane(pane.id);
@@ -419,6 +440,8 @@ export function registerPaneRoutes(app: FastifyInstance, options: {
         (session) => session.status === "RUNNING"
       );
       for (const session of runningSessions) {
+        // The next Job Copilot pane continues this conversation; Claude names it only while it still runs.
+        if (current.mode === "JOB_APPLY") await rememberCliNativeRef?.(session).catch(() => undefined);
         try {
           await cliTerminalManager.interrupt(session.sessionId);
         } catch (error) {

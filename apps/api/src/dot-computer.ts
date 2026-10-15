@@ -27,7 +27,11 @@ import type { DotActiveRun, DotGoalsRepository, DotsRepository } from "@space/db
 export class DotComputerError extends Error {
   constructor(readonly status: 400 | 404 | 409 | 503, readonly code: string, message: string) { super(message); }
 }
-export interface DotBrowserState { active: boolean; currentUrl: string | null; title: string | null }
+export interface DotBrowserState {
+  active: boolean; currentUrl: string | null; title: string | null;
+  /** The open session and whether its browser runs (the card's picture never starts one). */
+  sessionId?: string | null; ready?: boolean;
+}
 export interface DotComputerDeps {
   dots: DotsRepository;
   goals: Pick<DotGoalsRepository, "list"> | null;
@@ -101,7 +105,8 @@ export function createDotComputerService(deps: DotComputerDeps) {
       goals: goals.filter((goal) => goal.status === "ACTIVE" || goal.status === "PAUSED" || goal.status === "BLOCKED").slice(0, 20)
         .map((goal) => ({ goalId: goal.goalId, objective: goal.objective, status: goal.status, steps: goal.usage.steps, maxSteps: goal.budget.maxSteps })),
       browsers: browserStates.map((browser) => ({ roomId: browser.roomId, roomName: browser.roomName?.slice(0, 200) ?? null, paneId: browser.paneId,
-        active: browser.active, currentUrl: browser.currentUrl?.slice(0, 2000) ?? null, title: browser.title?.slice(0, 500) ?? null })),
+        active: browser.active, currentUrl: browser.currentUrl?.slice(0, 2000) ?? null, title: browser.title?.slice(0, 500) ?? null,
+        sessionId: browser.active ? browser.sessionId ?? null : null, ready: Boolean(browser.active && browser.sessionId && browser.ready) })),
       limits: { maxConcurrentTasks: dot.workLimits.maxConcurrentTasks, activeTasks: runs.length }
     });
   }

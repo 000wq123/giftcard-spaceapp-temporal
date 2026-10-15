@@ -5,7 +5,7 @@ import {
   nativeOpenCodeModelCatalog,
   resolveNativeOpenCodeRuntime,
 } from "./task-title-opencode.js";
-import { readActiveFreeOpenCodeModel } from "./room-mini-router.js";
+import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
 
 /**
  * Asteroids AI director — optional LLM event layer over the local director.

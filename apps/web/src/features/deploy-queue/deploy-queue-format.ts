@@ -1,5 +1,9 @@
-import type { DeployQueueSubmitter, DeployQueueTicketStatus } from "@space/contracts";
+import type { DeployQueueReport, DeployQueueSubmitter, DeployQueueTicketStatus } from "@space/contracts";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
+
+export interface DeployQueueClient {
+  deployQueue(): Promise<DeployQueueReport>;
+}
 
 export const statusTone: Record<DeployQueueTicketStatus, string> = {
   AWAITING_APPROVAL: "warn",
@@ -62,11 +66,4 @@ export function submitterView(submitter: DeployQueueSubmitter | null | undefined
     pane: submitter?.paneTitle ?? null,
     room: submitter?.roomName ?? null
   };
-}
-
-/** One line naming who submitted a change, for compact rows and the settings card. */
-export function submitterText(submitter: DeployQueueSubmitter | null | undefined): string {
-  const view = submitterView(submitter);
-  if (!view.cli && !view.pane) return "Submitted outside a Space CLI";
-  return [view.cli, view.pane && view.pane !== view.cli ? `“${view.pane}”` : null, view.room ? `in ${view.room}` : null].filter(Boolean).join(" ");
 }

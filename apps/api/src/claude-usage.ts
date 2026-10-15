@@ -14,6 +14,8 @@ export const CLAUDE_GATEWAY_KEY_FILE = "/var/lib/spaceapp-user/.config/space-gat
 const apiKeyProfileId = "api";
 const gatewayProfileId = "space-gateway";
 export const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+/** The free model list: a working API key answers 200, a revoked one 401 (used-up credits still 200). */
+export const CLAUDE_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1";
 export const claudeUsageProfileIdPattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const tokenExpirySkewMs = 60_000;
@@ -32,6 +34,8 @@ export interface ClaudeProfileUsage {
   weeklyUsedPercent: number | null;
   weeklyResetAt: string | null;
   weeklyScope: string | null;
+  /** API_KEY only: whether the key answered the model list; null when Anthropic could not be reached. */
+  apiKeyVerified?: boolean | null;
 }
 
 export interface ClaudeUsageWindows {
@@ -140,9 +144,28 @@ async function privateKeyFile(path: string): Promise<boolean> {
   }
 }
 
-async function apiKeyPresent(profileId: string, profileDir: string, installationKeyFile: string): Promise<boolean> {
-  if (await regularFile(join(profileDir, "credentials", "api-key"))) return true;
-  return (profileId === "main" || profileId === apiKeyProfileId) && await regularFile(installationKeyFile);
+async function readApiKey(profileId: string, profileDir: string, installationKeyFile: string): Promise<string | null> {
+  const files = [join(profileDir, "credentials", "api-key"), ...(profileId === "main" || profileId === apiKeyProfileId ? [installationKeyFile] : [])];
+  for (const path of files) {
+    if (!(await regularFile(path))) continue;
+    const key = (await readFile(path, "utf8").catch(() => "")).trim();
+    if (key) return key;
+  }
+  return null;
+}
+
+// A key only ever leaves this process as the credential of Anthropic's free model list.
+async function verifyApiKey(apiKey: string, fetchImpl: typeof fetch): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(CLAUDE_MODELS_URL, {
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }, signal: AbortSignal.timeout(usageRequestTimeoutMs)
+    });
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 401 || response.status === 403) return false;
+    return response.ok ? true : null;
+  } catch {
+    return null;
+  }
 }
 
 interface ClaudeSignIn {
@@ -183,20 +206,23 @@ export async function readClaudeProfileUsage(
     fiveHourResetAt: null,
     weeklyUsedPercent: null,
     weeklyResetAt: null,
-    weeklyScope: null
+    weeklyScope: null,
+    apiKeyVerified: null
   };
 
   if (profileId === gatewayProfileId) {
     return { ...empty, status: (await privateKeyFile(options.gatewayKeyFile ?? CLAUDE_GATEWAY_KEY_FILE)) ? "GATEWAY" : "NOT_CONNECTED" };
   }
   const installationKeyFile = options.installationKeyFile ?? CLAUDE_INSTALLATION_KEY_FILE;
+  const apiKey = await readApiKey(profileId, profileDir, installationKeyFile);
   // The API account bills its key even when a subscription login is also stored.
-  if (profileId === apiKeyProfileId && await apiKeyPresent(profileId, profileDir, installationKeyFile)) {
-    return { ...empty, status: "API_KEY" };
+  if (profileId === apiKeyProfileId && apiKey) {
+    return { ...empty, status: "API_KEY", apiKeyVerified: await verifyApiKey(apiKey, fetchImpl) };
   }
   const signIn = await readSignIn(profileDir);
   if (!signIn?.accessToken) {
-    return { ...empty, status: (await apiKeyPresent(profileId, profileDir, installationKeyFile)) ? "API_KEY" : "NOT_CONNECTED" };
+    if (!apiKey) return { ...empty, status: "NOT_CONNECTED" };
+    return { ...empty, status: "API_KEY", apiKeyVerified: await verifyApiKey(apiKey, fetchImpl) };
   }
   const plan = signIn.plan;
   if (signIn.expiresAt !== null && signIn.expiresAt <= now().getTime() + tokenExpirySkewMs) {

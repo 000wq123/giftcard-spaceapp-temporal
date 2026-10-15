@@ -136,6 +136,8 @@ export interface AntigravityUsageProviderOptions {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   profileLabels?: () => Promise<Map<string, string>>;
+  /** Emails Space Gateway keeps out of rotation (paused, deactivated, signed out): their profiles are left out. */
+  hiddenEmails?: () => Promise<Set<string>>;
 }
 
 export function createAntigravityUsageAccountProvider(
@@ -396,7 +398,7 @@ export function createAntigravityUsageAccountProvider(
     return request;
   }
 
-  return async () => {
+  async function current(): Promise<AntigravityUsageAccountList> {
     const nowMs = now().getTime();
     if (cached && nowMs - cached.collectedAtMs <= usageCacheTtlMs) return cached.value;
     if (cached && nowMs - cached.collectedAtMs <= usageStaleFallbackMs) {
@@ -404,5 +406,17 @@ export function createAntigravityUsageAccountProvider(
       return cached.value;
     }
     return refresh();
+  }
+
+  // Applied on every read, not cached: pausing an account in Space Gateway hides it at once.
+  return async () => {
+    const list = await current();
+    const hidden = options.hiddenEmails ? await options.hiddenEmails().catch(() => new Set<string>()) : new Set<string>();
+    if (hidden.size === 0) return list;
+    const data = list.data.filter((account) => !account.email || !hidden.has(account.email.trim().toLowerCase()));
+    if (data.length === list.data.length) return list;
+    return antigravityUsageAccountListSchema.parse({
+      ...list, data, pagination: { ...list.pagination, totalItems: data.length, totalPages: data.length ? 1 : 0 }
+    });
   };
 }

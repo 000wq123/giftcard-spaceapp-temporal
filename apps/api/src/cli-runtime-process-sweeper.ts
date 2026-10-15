@@ -41,12 +41,25 @@ export class CliRuntimeProcessSweepError extends Error {
   }
 }
 
+const scriptInterpreters = new Set(["node", "nodejs", "bun", "deno", "python", "python3"]);
+
 export function matchRuntimeProcessArgs(runtimeId: string | null | undefined, args: string): boolean {
   const descriptor = runtimeId ? findCliRuntimeDescriptor(runtimeId) : null;
   if (!descriptor) return false;
   if (cliProcessSweepExclusionPatterns.some((pattern) => pattern.test(args))) return false;
   if (args.includes(descriptor.commandName)) return true;
-  return new RegExp(`\\b${descriptor.key}\\b`).test(args);
+  // Only the runtime's own executable (or the script an interpreter runs) and the broker's exec target count. A word
+  // or path elsewhere in a command line (a commit message, `space-mail-copilot-mcp.mjs`, `cat .../droid-log.json`, an
+  // agent's `bash -c` loop) belongs to another process: the 2026-10-14 switch-offs killed agent shells that way.
+  const key = descriptor.key;
+  const ownSegment = (segment: string) =>
+    segment === key || segment === `space-${key}` || segment.startsWith(`${key}-`) || segment.startsWith(`${key}.`);
+  const tokens = args.split(/\s+/).filter(Boolean);
+  const program = tokens[0] ?? "";
+  const named = [program];
+  if (scriptInterpreters.has(program.split("/").at(-1) ?? "") && tokens[1] && !tokens[1].startsWith("-")) named.push(tokens[1]);
+  if (tokens.includes(`cli:${key}`) && args.includes("space-cli-vpn-broker")) return true;
+  return named.some((token) => token.split("/").some(ownSegment));
 }
 
 export async function readDefaultProcessTable(): Promise<RuntimeProcessTableRow[]> {

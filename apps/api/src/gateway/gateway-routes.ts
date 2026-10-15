@@ -7,7 +7,9 @@ import {
 } from "@space/contracts";
 import type { AuditRecorder } from "../request-audit.js";
 import { sendApiError } from "../http-errors.js";
-import { GatewayAccountNotFoundError, GatewayKeyPolicyError, GatewaySettingsError, type GatewayAdminService } from "./gateway-service.js";
+import {
+  GatewayAccountFreePlanError, GatewayAccountNotFoundError, GatewayKeyPolicyError, GatewaySettingsError, type GatewayAdminService
+} from "./gateway-service.js";
 
 const accountIdSchema = z.string().regex(/^gw_account:[a-f0-9]{32}$/);
 const keyIdSchema = z.string().regex(/^gw_key:[a-f0-9]{32}$/);
@@ -75,6 +77,11 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
     return service.listAccounts();
   });
 
+  app.get("/api/admin/gateway/claude-api-key", routeOptions, async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    return service.claudeApiKeyUse();
+  });
+
   app.get("/api/admin/gateway/dashboard", routeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const { range } = z.object({ range: gatewayDashboardRangeSchema.default("24h") }).strict().parse(request.query);
@@ -97,7 +104,13 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
     if (!requireAdmin(request, reply)) return reply;
     const { accountId } = accountParamsSchema.parse(request.params);
     const patch = gatewayAccountUpdateRequestSchema.parse(request.body);
-    const account = await service.updateAccount(accountId, patch);
+    let account;
+    try {
+      account = await service.updateAccount(accountId, patch);
+    } catch (error) {
+      if (error instanceof GatewayAccountFreePlanError) return sendApiError(reply, 409, "GATEWAY_ACCOUNT_FREE_PLAN", error.message);
+      throw error;
+    }
     if (!account) return sendApiError(reply, 404, "GATEWAY_ACCOUNT_NOT_FOUND", "Account not found.");
     if (patch.paused !== undefined) {
       await recordAudit(request, { action: patch.paused ? "admin.gateway.account.pause" : "admin.gateway.account.resume", targetType: "gateway_account", targetId: accountId });
@@ -188,12 +201,13 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/api-key/add", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const input = z.object({
-      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK"]),
+      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE"]),
       apiKey: z.string().trim().min(20).max(400).optional(),
       useSpaceKey: z.boolean().optional(),
       label: z.string().trim().min(1).max(80).optional()
     }).strict().refine((value) => Boolean(value.apiKey) !== Boolean(value.useSpaceKey), "Give an API key or choose the Space key.")
-      .refine((value) => !value.useSpaceKey || value.provider === "OPENAI_API", "Only the OpenAI key exists on this server.").parse(request.body);
+      .refine((value) => !value.useSpaceKey || value.provider === "OPENAI_API" || value.provider === "CLAUDE", "Only the OpenAI and Claude keys exist on this server.")
+      .parse(request.body);
     const result = await service.addOpenAiApiKey(input);
     const account = connected(result.body);
     if (account) await recordAudit(request, { action: "admin.gateway.account.add", targetType: "gateway_account", targetId: account.id ?? null,

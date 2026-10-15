@@ -451,6 +451,16 @@ export function createNativeCliModelCatalog(options: { run?: NativeCliModelCatal
   };
 }
 
+/** Room Agent and voice callers name models loosely ("opus", "Opus 5.5", "claude-opus-5-5"); an exact id wins. */
+export function findNativeCliModel(models: readonly Model[], requested: string, runtimeId = ""): Model | undefined {
+  const wanted = requested.trim().toLowerCase();
+  const named = models.find((entry) => entry.id === requested) ??
+    models.find((entry) => entry.id.toLowerCase() === wanted || entry.displayName.toLowerCase() === wanted);
+  if (named || runtimeId !== "cli:claude") return named;
+  const family = wanted.match(/\b(opus|sonnet|haiku|fable)\b/)?.[1];
+  return family ? models.find((entry) => entry.id === `${CLAUDE_PANE_MODEL_PREFIX}${family}`) : undefined;
+}
+
 /** A command echo or highlighted menu entry is never confirmation. */
 export function nativeCliConfirmedModel(screen: string, models: readonly Model[], runtimeId = ""): string | null {
   screen = nativeControlScreen(screen, runtimeId);

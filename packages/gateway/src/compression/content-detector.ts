@@ -24,10 +24,15 @@ const codePatterns: { name: string; patterns: RegExp[] }[] = [
   { name: "java", patterns: [/^\s*(public|private|protected)\s+(class|interface|enum)/, /^\s*@\w+/, /^\s*package\s+[\w.]+;/] }
 ];
 
-/** Indices 0-1 (error and warning families) also count as error matches. */
+/**
+ * Indices 0-2 (error, warning and test-failure families) also count as error matches. Space Gateway adds the
+ * test-runner lines (TAP, node's spec reporter, jest/vitest, mocha, go test, cargo test); Headroom's detector has
+ * only pytest's, so a `node --test` run was prose to it.
+ */
 const logPatterns = [
   /\b(ERROR|FAIL|FAILED|FATAL|CRITICAL)\b/i,
   /\b(WARN|WARNING)\b/i,
+  /^\s*not ok \d+\b|^[#ℹ] fail [1-9]|^\s*[✖✗×] |^test result: FAILED|^\s*\d+ failing\b/u,
   /\b(INFO|DEBUG|TRACE)\b/i,
   /^\s*\d{4}-\d{2}-\d{2}/,
   /^\s*\[\d{2}:\d{2}:\d{2}\]/,
@@ -35,7 +40,11 @@ const logPatterns = [
   /^\s*PASSED|^\s*FAILED|^\s*SKIPPED/,
   /^npm ERR!|^yarn error|^cargo error/,
   /Traceback \(most recent call last\)/,
-  /^\s*at\s+[\w.$]+\(/
+  /^\s*at\s+[\w.$]+\(/,
+  /^\s*ok \d+\b|^[#ℹ] (tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d|^\s*# Subtest:|^\s*\d+\.\.\d+$/u,
+  /^\s*[✓✔] |^\s*(Tests|Test Suites|Test Files|Snapshots):?\s+\d/u,
+  /^(--- PASS|=== RUN)|^(ok|FAIL)\s+\S+\s+[\d.]+s$/,
+  /^test \S+ \.\.\. (ok|FAILED|ignored)$|^test result: |^\s*\d+ (passing|pending)\b/
 ];
 
 const htmlDoctype = /^\s*<!doctype\s+html/i;
@@ -138,7 +147,7 @@ function detectLog(content: string): DetectionResult | null {
     const index = logPatterns.findIndex((pattern) => pattern.test(line));
     if (index < 0) continue;
     matches += 1;
-    if (index < 2) errors += 1;
+    if (index < 3) errors += 1;
   }
   if (matches === 0) return null;
   const total = nonEmpty(lines);

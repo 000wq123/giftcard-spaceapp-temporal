@@ -5,20 +5,21 @@ import {
   antigravityModelGroup,
   cliAccountAvailability,
   cliAccountPlan,
+  cliAccountPool,
   type CliAccountAvailability,
-  type CliAccountRuntimeId,
+  type CliAccountMenuRuntimeId,
 } from "./cli-account-availability.js";
 import { accountColorStyle, CliAccountAvatar, CliAccountColorLegend, CliAccountMeter } from "./CliAccountVisuals.js";
 import { useCliAccountBalance } from "./cli-account-balance.js";
 import { useCliAccountSignals } from "./use-cli-account-signals.js";
 
 interface CliAccountPickerProps {
-  runtimeId: CliAccountRuntimeId;
-  // "Google", "Claude", "GitHub" or "Cursor": names the trigger and the menu.
+  runtimeId: CliAccountMenuRuntimeId;
+  // "Google", "Claude", "GitHub", "Cursor" or "ChatGPT": names the trigger and the menu.
   providerLabel: string;
   icon: ReactNode;
   paneTitle: string;
-  profiles: CliAccountProfile[];
+  profiles: Array<Pick<CliAccountProfile, "profileId" | "displayName">>;
   selectedProfileId: string;
   disabled?: boolean;
   onSelect: (profileId: string) => void;
@@ -29,7 +30,15 @@ interface CliAccountPickerProps {
   auto?: { active: boolean; onSelect: () => void };
 }
 
+// An email-like name breaks before its domain rather than in the middle of a word.
+function breakableName(name: string): ReactNode {
+  const at = name.indexOf("@");
+  return at > 0 ? <>{name.slice(0, at)}<wbr />{name.slice(at)}</> : name;
+}
+
 const minimumMenuHeightPx = 150;
+// Space between the menu and the pane's left edge when the pane is narrower than the menu.
+const menuEdgeGapPx = 8;
 
 // One click on the trigger lists every account of this CLI with its availability; one
 // more click switches the pane. The active account is marked in the list and named in the tooltip.
@@ -47,6 +56,7 @@ export function CliAccountPicker({
 }: CliAccountPickerProps) {
   const [open, setOpen] = useState(false);
   const [menuMaxHeight, setMenuMaxHeight] = useState<number | null>(null);
+  const [menuMaxWidth, setMenuMaxWidth] = useState<number | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -72,6 +82,8 @@ export function CliAccountPicker({
       availability: cliAccountAvailability({ runtimeId, profileId: profile.profileId, quota, identity, clock, modelGroup, balance }),
     };
   }), [balance, clock, identities, modelGroup, profiles, quota, runtimeId]);
+  // Codex: the ChatGPT accounts Space Gateway picks from, listed for their quota; they cannot be chosen one by one.
+  const pool = useMemo(() => cliAccountPool(runtimeId, quota, clock), [clock, quota, runtimeId]);
   const activeRow = Math.max(0, rows.findIndex((row) => row.profile.profileId === selectedProfileId));
   const active = rows[activeRow];
   // The Auto entry, when offered, comes first in the menu; item refs and keyboard moves count it.
@@ -118,15 +130,21 @@ export function CliAccountPicker({
   }, [disabled]);
 
   function openMenu() {
-    const missingIdentity = profiles.some((profile) => !identities?.some((candidate) =>
+    // Codex signs in through Space Gateway only, so it has no profile identities to fetch.
+    const missingIdentity = runtimeId !== "cli:codex" && profiles.some((profile) => !identities?.some((candidate) =>
       candidate.runtimeId === runtimeId && candidate.profileId === profile.profileId));
     load({ forceIdentities: missingIdentity });
-    // The list may use the pane's height below the trigger, never less than a few rows.
+    // The list may use the pane's height below the trigger, never less than a few rows, and the menu
+    // narrows to the pane's width so a small pane or screen still shows it whole.
     const container = pickerRef.current?.offsetParent;
     const trigger = triggerRef.current;
     if (container instanceof HTMLElement && trigger) {
-      const available = container.getBoundingClientRect().bottom - trigger.getBoundingClientRect().bottom - 14;
+      const containerRect = container.getBoundingClientRect();
+      const triggerRect = trigger.getBoundingClientRect();
+      const available = containerRect.bottom - triggerRect.bottom - 14;
       setMenuMaxHeight(Number.isFinite(available) && available > 0 ? Math.max(minimumMenuHeightPx, Math.round(available)) : null);
+      const width = triggerRect.right - Math.max(containerRect.left, 0) - menuEdgeGapPx;
+      setMenuMaxWidth(Number.isFinite(width) && width > 0 ? Math.round(width) : null);
     }
     setOpen(true);
   }
@@ -198,6 +216,7 @@ export function CliAccountPicker({
           className="terminal-gemini-account-popover cli-account-menu"
           role="menu"
           aria-label={label}
+          style={menuMaxWidth ? { maxWidth: `${menuMaxWidth}px` } : undefined}
           onKeyDown={handleMenuKeyDown}
         >
           <div className="cli-account-menu-head">
@@ -205,7 +224,7 @@ export function CliAccountPicker({
             <span className="cli-account-menu-title">
               <strong>{providerLabel} account</strong>
               <small>
-                {readyCount} of {rows.length} available now
+                {pool ? "Space Gateway picks the account" : `${readyCount} of ${rows.length} available now`}
                 {modelGroup ? ` · ${modelGroup === "gemini" ? "Gemini" : "Claude · GPT"} quota` : ""}
               </small>
             </span>
@@ -264,13 +283,13 @@ export function CliAccountPicker({
                   <CliAccountAvatar name={row.profile.displayName} availability={row.availability} active={isActive} />
                   <span className="cli-account-menu-item-main">
                     <span className="cli-account-menu-item-name">
-                      <strong>{row.profile.displayName}</strong>
+                      <strong>{breakableName(row.profile.displayName)}</strong>
                       {row.plan ? <span className="cli-account-plan-badge" title={`Plan: ${row.plan}`}>{row.plan}</span> : null}
                       {isActive ? <span className="cli-account-active-pill">Active</span> : null}
                       {inUse ? <span className="cli-account-active-pill">In use</span> : null}
                     </span>
                     <small className="cli-account-menu-item-detail" data-sensitive-masked={row.email || row.login ? "manual" : undefined}>
-                      {row.email ?? (row.login ? `@${row.login}` : row.availability.description)}
+                      {row.email ?? (row.login ? `@${row.login}` : row.availability.detail ?? row.availability.description)}
                     </small>
                     <CliAccountMeter availability={row.availability} />
                   </span>
@@ -278,6 +297,33 @@ export function CliAccountPicker({
                 </button>
               );
             })}
+            {pool?.length ? (
+              <div className="cli-account-pool" role="group" aria-label="Accounts Space Gateway picks from">
+                <span className="cli-account-pool-title" aria-hidden="true">Pooled accounts</span>
+                {pool.map((member) => (
+                  <div
+                    key={member.id}
+                    role="menuitem"
+                    aria-disabled="true"
+                    className="cli-account-menu-item is-pooled"
+                    data-tone={member.availability.tone}
+                    style={accountColorStyle(member.availability)}
+                    title={`${member.name} · ${member.availability.description}`}
+                  >
+                    <CliAccountAvatar name={member.name} availability={member.availability} />
+                    <span className="cli-account-menu-item-main">
+                      <span className="cli-account-menu-item-name">
+                        <strong data-sensitive-masked={member.name.includes("@") ? "manual" : undefined}>{breakableName(member.name)}</strong>
+                        {member.plan ? <span className="cli-account-plan-badge" title={`Plan: ${member.plan}`}>{member.plan}</span> : null}
+                      </span>
+                      {member.availability.detail ? <small className="cli-account-menu-item-detail">{member.availability.detail}</small> : null}
+                      <CliAccountMeter availability={member.availability} />
+                    </span>
+                    <span className="cli-account-menu-item-status">{member.availability.label}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div className="cli-account-menu-foot">
             <CliAccountColorLegend />

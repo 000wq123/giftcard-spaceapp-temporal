@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type { SystemAnalyticsModel } from "@space/contracts";
 import { opencodeBenchResponseSchema } from "@space/contracts";
 import type { SystemAnalyticsRepository } from "@space/db";
+import { childProcessEnv } from "./child-process-env.js";
 
 const execFileAsync = promisify(execFile);
 const opencodeBin = "/usr/local/bin/opencode";
@@ -88,7 +89,7 @@ async function runOpencodeVerbose(provider: string): Promise<OpencodeVerboseMode
     const { stdout } = await execFileAsync(opencodeBin, ["models", provider, "--verbose"], {
       timeout: probeTimeoutMs,
       maxBuffer,
-      env: { ...process.env, HOME: "/var/lib/spaceapp-user" }
+      env: { ...childProcessEnv(), HOME: "/var/lib/spaceapp-user" }
     });
     const text = String(stdout);
     const models = extractVerboseModels(text);

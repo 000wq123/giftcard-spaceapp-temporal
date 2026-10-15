@@ -12,7 +12,9 @@ export interface ChannelThreadRecord {
   replyInThread: boolean; lastDeliveredRunId: string | null; createdAt: string; updatedAt: string;
 }
 export interface ChannelOutboxRecord {
-  outboxId: string; threadId: string; sourceKey: string; kind: "RESULT" | "QUESTION" | "APPROVAL" | "NOTICE"; target: "THREAD" | "DIRECT"; body: string; attempts: number;
+  /** Null for a direct message to a linked account that has no thread (`identityId`), for example a Dot's own message. */
+  outboxId: string; threadId: string | null; identityId: string | null; sourceKey: string; kind: "RESULT" | "QUESTION" | "APPROVAL" | "NOTICE";
+  target: "THREAD" | "DIRECT"; body: string; attempts: number;
 }
 export interface ChannelsRepository {
   /** Stores a one-time link code (only its hash) valid until `expiresAt`. */
@@ -48,8 +50,8 @@ export interface ChannelsRepository {
   /** Open requests of a thread, oldest first. */
   openInbox(threadId: string): Promise<Array<{ eventId: string; text: string; requestKey: string; status: "PENDING" | "SENT" }>>;
   markInbox(threadId: string, eventId: string, status: "SENT" | "DELIVERED" | "DROPPED"): Promise<void>;
-  /** Adds an outbox row once per source key. */
-  enqueue(input: Omit<ChannelOutboxRecord, "outboxId" | "attempts">): Promise<boolean>;
+  /** Adds an outbox row once per source key. A row without a thread is a direct message to `identityId`. */
+  enqueue(input: Omit<ChannelOutboxRecord, "outboxId" | "attempts" | "identityId"> & { identityId?: string | null }): Promise<boolean>;
   /** Claims due rows for two minutes, so overlapping deliveries never send a row twice. */
   due(limit: number): Promise<ChannelOutboxRecord[]>;
   delivered(outboxId: string): Promise<void>;
@@ -179,15 +181,16 @@ export class PostgresChannelsRepository implements ChannelsRepository {
     await this.pool.query(`UPDATE channel_inbox SET status=$3, updated_at=now() WHERE thread_id=$1 AND event_id=$2`, [threadId, eventId, status]);
   }
   async enqueue(input: Parameters<ChannelsRepository["enqueue"]>[0]) {
-    return (await this.pool.query(`INSERT INTO channel_outbox(outbox_id, thread_id, source_key, kind, target, body) VALUES ($1,$2,$3,$4,$5,$6)
-      ON CONFLICT (source_key) DO NOTHING RETURNING outbox_id`, [id("channel_out"), input.threadId, input.sourceKey.slice(0, 300), input.kind, input.target,
-      input.body.slice(0, 12000)])).rows.length === 1;
+    return (await this.pool.query(`INSERT INTO channel_outbox(outbox_id, thread_id, identity_id, source_key, kind, target, body) VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (source_key) DO NOTHING RETURNING outbox_id`, [id("channel_out"), input.threadId, input.identityId ?? null, input.sourceKey.slice(0, 300),
+      input.kind, input.target, input.body.slice(0, 12000)])).rows.length === 1;
   }
   async due(limit: number) {
     return (await this.pool.query<ChannelOutboxRecord>(`UPDATE channel_outbox SET next_attempt_at=now() + interval '2 minutes'
       WHERE outbox_id IN (SELECT outbox_id FROM channel_outbox WHERE status='PENDING' AND next_attempt_at <= now() ORDER BY created_at
         LIMIT $1 FOR UPDATE SKIP LOCKED)
-      RETURNING outbox_id AS "outboxId", thread_id AS "threadId", source_key AS "sourceKey", kind, target, body, attempts`, [Math.min(100, Math.max(1, limit))])).rows;
+      RETURNING outbox_id AS "outboxId", thread_id AS "threadId", identity_id AS "identityId", source_key AS "sourceKey", kind, target, body, attempts`,
+      [Math.min(100, Math.max(1, limit))])).rows;
   }
   async delivered(outboxId: string) {
     await this.pool.query(`UPDATE channel_outbox SET status='SENT', sent_at=now(), last_error=NULL WHERE outbox_id=$1`, [outboxId]);

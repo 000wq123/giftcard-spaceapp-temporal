@@ -107,7 +107,9 @@ export function registerKeyPoolRoutes(app: FastifyInstance, helpers: GatewayRout
     let error: { code?: unknown; type?: unknown; message?: unknown } = {};
     try { error = (JSON.parse(text) as { error?: typeof error }).error ?? {}; } catch { /* not JSON */ }
     const message = typeof error.message === "string" ? error.message.slice(0, 300) : `HTTP ${status}`;
-    if (status === 401 || status === 403) { await pool.markPermanentFailure(account, "token_invalidated"); return true; }
+    // A rejected key leaves rotation until it is added again; a 403 can be about one model, so the key stays usable.
+    if (status === 401) { await pool.refreshRejectedToken(account, "token_invalidated"); return true; }
+    if (status === 403) { await pool.markPermanentFailure(account, "token_invalidated", false); return true; }
     if (status === 402 || ["insufficient_quota", "credit_balance_exhausted"].includes(String(error.code)) || error.type === "insufficient_quota") {
       // Out of credit: the key stays out of rotation for a day, or until the operator tops it up and tests it.
       await pool.markQuotaExceeded(account, { message, resetsInSeconds: 24 * 3600 });

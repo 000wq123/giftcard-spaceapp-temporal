@@ -4,6 +4,8 @@ import {
   Bot,
   Boxes,
   ClipboardList,
+  Mail,
+  Rocket,
   Database,
   Eye,
   FolderPlus,
@@ -15,6 +17,14 @@ import {
 } from "../ui-theme/app-icons.js";
 import type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
+import { SERVER_MODULES_EVENT, serverModuleOn } from "./server-modules.js";
+
+// Panes that belong to an optional server module: hidden while the server has the module off.
+const PANE_SERVER_MODULE: Partial<Record<NonCliPaneType, string>> = {
+  jobs: "job-copilot",
+  mail: "mail-copilot",
+  marketing: "marketing-copilot"
+};
 
 export const PANES_HIDDEN_STORAGE_KEY = "space:panes-hidden:v1";
 export const PANES_VISIBILITY_EVENT = "space:panes-visibility-changed";
@@ -97,6 +107,20 @@ export const NON_CLI_PANE_DEFINITIONS: PaneItemConfig[] = [
     label: "Job Copilot",
     description: "A Claude Code agent and a live browser that find, fill and submit job applications from your CV.",
     icon: ClipboardList
+  },
+  {
+    id: "mail",
+    actionId: "add-mail",
+    label: "Mail Copilot",
+    description: "All your Gmail accounts in one inbox, with an agent that learns how you handle mail and gradually answers for you.",
+    icon: Mail
+  },
+  {
+    id: "marketing",
+    actionId: "add-marketing",
+    label: "Marketing Copilot",
+    description: "An agent and a live browser that plan, write and publish posts promoting SpaceApp on your own accounts, after your approval.",
+    icon: Rocket
   }
 ];
 
@@ -115,7 +139,9 @@ export const ACTION_TO_PANE_TYPE: Record<string, NonCliPaneType> = {
   "add-live": "live",
   "add-harness": "harness",
   "add-t3code": "t3code",
-  "add-jobs": "jobs"
+  "add-jobs": "jobs",
+  "add-mail": "mail",
+  "add-marketing": "marketing"
 };
 
 export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
@@ -129,7 +155,9 @@ export const PANE_TYPE_TO_ACTION: Record<NonCliPaneType, string> = {
   live: "add-live",
   harness: "add-harness",
   t3code: "add-t3code",
-  jobs: "add-jobs"
+  jobs: "add-jobs",
+  mail: "add-mail",
+  marketing: "add-marketing"
 };
 
 export type { NonCliPaneType, PaneItemConfig } from "./pane-visibility-types.js";
@@ -193,6 +221,14 @@ export function writeHiddenPaneIds(hiddenIds: string[], customStorage?: Storage)
 
 export function usePanesVisibility(customStorage?: Storage) {
   const [hiddenPaneIds, setHiddenPaneIds] = useState<string[]>(() => readHiddenPaneIds(customStorage));
+  const [serverModulesVersion, setServerModulesVersion] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleModules = () => setServerModulesVersion((version) => version + 1);
+    window.addEventListener(SERVER_MODULES_EVENT, handleModules);
+    return () => window.removeEventListener(SERVER_MODULES_EVENT, handleModules);
+  }, []);
 
   useEffect(() => {
     const handleUpdate = () => {
@@ -214,9 +250,12 @@ export function usePanesVisibility(customStorage?: Storage) {
     (idOrAction: string) => {
       const resolved = resolvePaneId(idOrAction);
       if (!resolved) return false;
-      return hiddenSet.has(resolved);
+      const serverModule = PANE_SERVER_MODULE[resolved];
+      return hiddenSet.has(resolved) || (serverModule !== undefined && !serverModuleOn(serverModule));
     },
-    [hiddenSet]
+    // serverModulesVersion re-creates the callback when the server's module list arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hiddenSet, serverModulesVersion]
   );
 
   const isPaneVisible = useCallback(

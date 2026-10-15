@@ -20,6 +20,7 @@ import { useLiveCoordinator, useLiveSessionState } from "./LiveSessionProvider.j
 import { recordLifecycleDebugEvent } from "../../lifecycle-debug.js";
 import { api, type LivePersonalMemoryItem } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
+import { LiveCaption, LiveOrb, useLiveCaption } from "./useLiveRail.js";
 import "./live-pane.css";
 import { updateLiveSessionStats } from "./live-stats.js";
 import { captureLiveVisual } from "./live-visual-capture.js";
@@ -312,6 +313,7 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
       return [];
     }
   });
+  const liveCaption = useLiveCaption(transcripts);
 
   const handleClearConversationAndLogs = useCallback(async () => {
     const now = Date.now();
@@ -1933,19 +1935,13 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         } ${status === "listening" ? "is-listening is-user-speaking" : ""} ${
                           status === "speaking" ? "is-speaking is-agent-speaking" : ""
                         } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
+                        data-live-status={status}
                         onClick={() => void handleToggleSession()}
                         aria-label={isLive ? "End session" : "Start session"}
                         disabled={status === "connecting"}
                         title={isLive ? "Click to end Live session" : "Click to start Live session"}
                       >
-                        <span className="room-live-rail-glow" aria-hidden="true" />
-                        <span className="room-live-rail-sphere" aria-hidden="true">
-                          <span className="room-live-rail-line line-one" />
-                          <span className="room-live-rail-line line-two" />
-                          <span className="room-live-rail-line line-three" />
-                          <span className="room-live-rail-line line-four" />
-                          <span className="room-live-rail-core" />
-                        </span>
+                        <LiveOrb status={status} />
                       </button>
                     )}
                     <div className="live-session-title-group">
@@ -2049,20 +2045,15 @@ export function LivePane({ pane, workspaceTextSize = 14, mobile = false, onActio
                         } ${status === "listening" ? "is-listening is-user-speaking" : ""} ${
                           status === "speaking" ? "is-speaking is-agent-speaking" : ""
                         } ${status === "thinking" || status === "connecting" ? "is-thinking" : ""}`}
+                        data-live-status={status}
                         onClick={() => void handleToggleSession()}
                         aria-label={isLive ? "End session" : "Start session"}
                         disabled={status === "connecting"}
                         title={isLive ? "Click to end Live session" : "Click to start Live session"}
                       >
-                        <span className="room-live-rail-glow" aria-hidden="true" />
-                        <span className="room-live-rail-sphere" aria-hidden="true">
-                          <span className="room-live-rail-line line-one" />
-                          <span className="room-live-rail-line line-two" />
-                          <span className="room-live-rail-line line-three" />
-                          <span className="room-live-rail-line line-four" />
-                          <span className="room-live-rail-core" />
-                        </span>
+                        <LiveOrb status={status} />
                       </button>
+                      {voiceOnly && isLive && liveCaption.item ? <LiveCaption item={liveCaption.item} visible={liveCaption.visible} className="live-pane-caption" /> : null}
                     </div>
                   )}
 

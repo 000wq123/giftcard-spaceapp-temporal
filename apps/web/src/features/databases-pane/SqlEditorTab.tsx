@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { sql } from "@codemirror/lang-sql";
-import { Play, Square, Clock, Database, AlertCircle, Copy, Check } from "../ui-theme/app-icons.js";
+import { Play, Square, Clock, Database, CircleAlert, Copy, Check } from "../ui-theme/app-icons.js";
 import type { DatabaseCatalog, DatabaseExecuteSqlResponse } from "@space/contracts";
 import { formatCellDisplay } from "./DataTab.js";
 
@@ -180,7 +180,7 @@ export function SqlEditorTab({
             gap: 6
           }}
         >
-          <AlertCircle size={14} style={{ flexShrink: 0 }} />
+          <CircleAlert size={14} style={{ flexShrink: 0 }} />
           <span>{errorMessage}</span>
         </div>
       )}

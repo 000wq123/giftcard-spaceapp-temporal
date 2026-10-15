@@ -293,6 +293,8 @@ export function FilesPane({ pane, mobile = false, projectPath }: FilesPaneProps)
       await api.filesUpload(formData);
       void loadDirectory(currentPath);
     } catch (err) {
+      // Some files may already be saved (UPLOAD_PARTIALLY_SAVED), so the listing is refreshed too.
+      void loadDirectory(currentPath);
       alert(err instanceof Error ? err.message : "Upload failed");
     }
   }

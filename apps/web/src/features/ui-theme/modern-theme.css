@@ -271,156 +271,20 @@
   color: var(--modern-text);
 }
 
-.space-shell[data-ui-theme="modern"] .side-surface-room-panel,
 .space-shell[data-ui-theme="modern"] .dock-panel {
   padding: 0.75rem;
   gap: 0.75rem;
 }
 
-.space-shell[data-ui-theme="modern"] :where(
-  .room-item,
-  .agent-settings-card,
-  .runtime-item,
-  .model-registry,
-  .model-row,
-  .mcp-panel,
-  .launch-summary,
-  .storage-readiness,
-  .launch-blockers,
-  .launch-foundations,
-  .event-source,
-  .event-feed,
-  .event-entry,
-  .observability-status,
-  .observability-runtime,
-  .observability-worker,
-  .observability-endpoints,
-  .observability-row,
-  .memory-form,
-  .memory-entry,
-  .artifact-form,
-  .review-form,
-  .artifact-entry,
-  .review-entry,
-  .validation-result
-) {
+.space-shell[data-ui-theme="modern"] :where(.agent-settings-card, .runtime-item, .model-registry, .model-row, .mcp-panel, .launch-summary, .storage-readiness, .launch-blockers, .launch-foundations, .event-source, .event-feed, .event-entry, .observability-status, .observability-runtime, .observability-worker, .observability-endpoints, .observability-row, .memory-form, .memory-entry, .artifact-form, .review-form, .artifact-entry, .review-entry, .validation-result) {
   border-color: var(--modern-border);
   border-radius: 10px;
   background: var(--modern-surface-raised);
   color: var(--modern-text);
 }
 
-.space-shell[data-ui-theme="modern"] :where(
-  .room-list small,
-  .room-select small,
-  .settings-card-note,
-  .agent-settings-section-title small,
-  .model-row small,
-  .event-entry small,
-  .event-entry time,
-  .observability-row small,
-  .memory-entry p,
-  .memory-entry small,
-  .artifact-entry small,
-  .review-entry p,
-  .review-entry small,
-  .validation-result small,
-  .empty-mini
-) {
+.space-shell[data-ui-theme="modern"] :where(.settings-card-note, .agent-settings-section-title small, .model-row small, .event-entry small, .event-entry time, .observability-row small, .memory-entry p, .memory-entry small, .artifact-entry small, .review-entry p, .review-entry small, .validation-result small, .empty-mini) {
   color: var(--modern-muted);
-}
-
-.space-shell[data-ui-theme="modern"] .room-item:not(.selected) {
-  border-color: var(--modern-border);
-  box-shadow: none;
-}
-
-.space-shell[data-ui-theme="modern"] .room-item.selected {
-  border-color: var(--modern-accent);
-  background: var(--modern-accent-soft);
-  box-shadow: none;
-  animation: room-card-press-pop 320ms cubic-bezier(0.2, 0.8, 0.25, 1);
-}
-
-.space-shell[data-ui-theme="modern"] :is(.room-item.selected, .room-item.is-clicked) {
-  animation: room-card-press-pop 320ms cubic-bezier(0.2, 0.8, 0.25, 1);
-}
-
-.space-shell[data-ui-theme="modern"] :is(.room-item.selected, .room-item.is-clicked)::before {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--modern-accent, #3b82f6) 18%, transparent) 18%,
-    color-mix(in srgb, var(--modern-accent, #3b82f6) 65%, transparent) 50%,
-    color-mix(in srgb, var(--modern-accent, #3b82f6) 22%, transparent) 78%,
-    transparent 100%
-  );
-}
-
-.space-shell[data-ui-theme="modern"] :is(.room-item.selected, .room-item.is-clicked)::after {
-  border-color: var(--modern-accent, #3b82f6);
-  animation-name: modern-room-select-shockwave;
-}
-
-@keyframes modern-room-select-shockwave {
-  0% {
-    transform: scale(0.96);
-    opacity: 0.95;
-    box-shadow: 0 0 18px color-mix(in srgb, var(--modern-accent, #3b82f6) 75%, transparent), inset 0 0 12px color-mix(in srgb, var(--modern-accent, #3b82f6) 35%, transparent);
-  }
-  50% {
-    opacity: 0.45;
-    box-shadow: 0 0 10px color-mix(in srgb, var(--modern-accent, #3b82f6) 35%, transparent), inset 0 0 6px color-mix(in srgb, var(--modern-accent, #3b82f6) 15%, transparent);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 0;
-    box-shadow: none;
-  }
-}
-
-.space-shell[data-ui-theme="modern"] .room-active-badge {
-  color: var(--modern-accent, #60a5fa);
-  background: var(--modern-accent-soft, rgba(59, 130, 246, 0.15));
-  border-color: color-mix(in srgb, var(--modern-accent, #3b82f6) 45%, transparent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--modern-accent, #3b82f6) 25%, transparent);
-}
-
-.space-shell[data-ui-theme="modern"] .room-active-dot {
-  background: var(--modern-accent, #38bdf8);
-  box-shadow: 0 0 6px var(--modern-accent, #38bdf8);
-}
-
-.space-shell[data-ui-theme="modern"] .room-active-pulse::after {
-  background: var(--modern-accent, #38bdf8);
-}
-
-.space-shell[data-ui-theme="modern"] .room-active-icon {
-  color: var(--modern-accent, #38bdf8);
-}
-
-.space-shell[data-ui-theme="modern"] .room-dock-expand-btn.is-expanded {
-  border-color: var(--modern-danger, #ef4444);
-  color: var(--modern-danger, #ef4444);
-  background: var(--modern-danger-soft, rgba(239, 68, 68, 0.12));
-}
-
-.space-shell[data-ui-theme="modern"] .room-dock-expand-btn.is-expanded:hover {
-  border-color: #f87171;
-  background: rgba(239, 68, 68, 0.22);
-  color: #fca5a5;
-}
-
-.space-shell[data-ui-theme="modern"] .room-select {
-  color: var(--modern-text);
-}
-
-.space-shell[data-ui-theme="modern"] .rail-actions button {
-  min-height: 2.6rem;
-  border-color: transparent;
-  background: var(--modern-accent);
-  color: var(--modern-on-accent);
-  font-weight: 750;
 }
 
 .space-shell[data-ui-theme="modern"] .board {
@@ -1097,116 +961,24 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
 
 /* Keep every Modern workspace surface self-contained instead of inheriting
    Classic's dark-only foregrounds into the Light appearance. */
-.space-shell[data-ui-theme="modern"] :is(
-  .side-surface-room-panel,
-  .room-pane-composer,
-  .agent-settings-dock,
-  .cli-dock,
-  .memory-dock,
-  .memory-workspace:not(.memory-atlas),
-  .room-agent-dock,
-  .clipboard-dock,
-  .task-dock,
-  .media-dock,
-  .agent-files-dock,
-  .agent-sessions-dock,
-  .links-panel,
-  .runtime-dock,
-  .health-dock,
-  .browser-dock,
-  .browser-pane,
-  .codex-chat-shell
-) {
+.space-shell[data-ui-theme="modern"] :is(.agent-settings-dock, .cli-dock, .memory-dock, .memory-workspace:not(.memory-atlas), .room-agent-dock, .clipboard-dock, .task-dock, .media-dock, .agent-files-dock, .agent-sessions-dock, .links-panel, .runtime-dock, .health-dock, .browser-dock, .browser-pane, .codex-chat-shell) {
   color-scheme: inherit;
   border-color: var(--modern-border);
   background: var(--modern-surface);
   color: var(--modern-text);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .side-surface-room-panel,
-  .room-pane-composer,
-  .agent-settings-dock,
-  .cli-dock,
-  .memory-dock,
-  .memory-workspace:not(.memory-atlas),
-  .room-agent-dock,
-  .clipboard-dock,
-  .task-dock,
-  .media-dock,
-  .agent-files-dock,
-  .agent-sessions-dock,
-  .links-panel,
-  .runtime-dock,
-  .health-dock,
-  .browser-dock,
-  .browser-pane,
-  .codex-chat-shell
-) :where(h1, h2, h3, h4, p, span, small, strong, label, legend, output, dt, dd, li, time, em, pre, code):where(:not([class*="dock-kit-"])) {
+.space-shell[data-ui-theme="modern"] :is(.agent-settings-dock, .cli-dock, .memory-dock, .memory-workspace:not(.memory-atlas), .room-agent-dock, .clipboard-dock, .task-dock, .media-dock, .agent-files-dock, .agent-sessions-dock, .links-panel, .runtime-dock, .health-dock, .browser-dock, .browser-pane, .codex-chat-shell) :where(h1, h2, h3, h4, p, span, small, strong, label, legend, output, dt, dd, li, time, em, pre, code):where(:not([class*="dock-kit-"])) {
   color: inherit;
 }
 
-.space-shell[data-ui-theme="modern"] .room-cli-badge {
-  border-color: color-mix(in srgb, var(--modern-accent) 48%, var(--modern-border));
-  background: var(--modern-accent-soft);
-  color: var(--modern-accent-strong);
-}
-
-.space-shell[data-ui-theme="modern"] :is(
-  .room-pane-composer,
-  .agent-settings-dock,
-  .cli-dock,
-  .memory-dock,
-  .memory-workspace:not(.memory-atlas),
-  .room-agent-dock,
-  .clipboard-dock,
-  .task-dock,
-  .media-dock,
-  .agent-files-dock,
-  .agent-sessions-dock,
-  .links-panel,
-  .runtime-dock,
-  .health-dock,
-  .browser-dock,
-  .browser-pane,
-  .codex-chat-shell
-) :where(button, input, select, textarea):where(:not([class*="dock-kit-"])) {
+.space-shell[data-ui-theme="modern"] :is(.agent-settings-dock, .cli-dock, .memory-dock, .memory-workspace:not(.memory-atlas), .room-agent-dock, .clipboard-dock, .task-dock, .media-dock, .agent-files-dock, .agent-sessions-dock, .links-panel, .runtime-dock, .health-dock, .browser-dock, .browser-pane, .codex-chat-shell) :where(button, input, select, textarea):where(:not([class*="dock-kit-"])) {
   border-color: var(--modern-border);
   background-color: var(--modern-surface-raised);
   color: var(--modern-text);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .room-pane-mix-row,
-  .agent-settings-card,
-  .memory-search-plane,
-  .memory-controls,
-  .memory-form,
-  .memory-entry,
-  .memory-job-list article,
-  .memory-graph-panel,
-  .memory-graph-loading,
-  .memory-node-list,
-  .memory-node-detail,
-  .memory-issue-list,
-  .memory-change-list,
-  .memory-change-detail,
-  .memory-change-diff section,
-  .room-agent-message,
-  .settings-disclosure,
-  .settings-setup-shortcut,
-  .agent-files-summary,
-  .agent-file-card,
-  .quick-links-list button,
-  .runtime-strip,
-  .health-tile,
-  .shared-chat-message,
-  .streaming-session-card,
-  .streaming-provider-card,
-  .streaming-section,
-  .conversation-message,
-  .turn-summary
-) {
+.space-shell[data-ui-theme="modern"] :is(.agent-settings-card, .memory-search-plane, .memory-controls, .memory-form, .memory-entry, .memory-job-list article, .memory-graph-panel, .memory-graph-loading, .memory-node-list, .memory-node-detail, .memory-issue-list, .memory-change-list, .memory-change-detail, .memory-change-diff section, .room-agent-message, .settings-disclosure, .settings-setup-shortcut, .agent-files-summary, .agent-file-card, .quick-links-list button, .runtime-strip, .health-tile, .streaming-session-card, .streaming-provider-card, .streaming-section, .conversation-message, .turn-summary) {
   border-color: var(--modern-border);
   background: var(--modern-surface-raised);
   color: var(--modern-text);
@@ -1224,55 +996,11 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   color: var(--modern-muted);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .room-pane-composer-heading small,
-  .room-pane-runtime-label small,
-  .room-pane-runtime-state,
-  .room-pane-assignment,
-  .agent-settings-section-title small,
-  .settings-card-note,
-  .memory-dock .memory-entry p,
-  .memory-dock .memory-entry small,
-  .memory-workspace-header p,
-  .memory-job-controls strong,
-  .memory-job-list small,
-  .memory-graph-taxonomy-summary,
-  .memory-graph-legend,
-  .memory-graph-status,
-  .memory-node-list small,
-  .memory-node-detail p,
-  .memory-change-list small,
-  .memory-change-detail small,
-  .memory-change-path,
-  .room-agent-head p,
-  .agent-files-summary small,
-  .agent-file-card-body small,
-  .health-tile-meta,
-  .runtime-item span,
-  .browser-tools-menu-label,
-  .browser-debug-body,
-  .browser-debug-entry time,
-  .turn-summary
-) {
+.space-shell[data-ui-theme="modern"] :is(.agent-settings-section-title small, .settings-card-note, .memory-dock .memory-entry p, .memory-dock .memory-entry small, .memory-workspace-header p, .memory-job-controls strong, .memory-job-list small, .memory-graph-taxonomy-summary, .memory-graph-legend, .memory-graph-status, .memory-node-list small, .memory-node-detail p, .memory-change-list small, .memory-change-detail small, .memory-change-path, .room-agent-head p, .agent-files-summary small, .agent-file-card-body small, .health-tile-meta, .runtime-item span, .browser-tools-menu-label, .browser-debug-body, .browser-debug-entry time, .turn-summary) {
   color: var(--modern-muted);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .room-pane-mix-row.is-unavailable,
-  .memory-workspace-search label,
-  .memory-advanced-filters label,
-  .memory-workspace-viewbar,
-  .memory-graph-toolbar,
-  .memory-graph-legend,
-  .memory-graph-status,
-  .memory-node-proposal,
-  .memory-change-toolbar,
-  .room-agent-composer,
-  .agent-files-dock-head,
-  .links-search,
-  .browser-pane-toolbar,
-  .codex-chat-composer
-) {
+.space-shell[data-ui-theme="modern"] :is(.memory-workspace-search label, .memory-advanced-filters label, .memory-workspace-viewbar, .memory-graph-toolbar, .memory-graph-legend, .memory-graph-status, .memory-node-proposal, .memory-change-toolbar, .room-agent-composer, .agent-files-dock-head, .links-search, .browser-pane-toolbar, .codex-chat-composer) {
   border-color: var(--modern-border);
   background: var(--modern-surface-soft);
 }
@@ -1292,60 +1020,25 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   color: var(--modern-accent);
 }
 
-.space-shell[data-ui-theme="modern"] .room-pane-apply {
-  border-color: transparent;
-  background: var(--modern-accent);
-  color: var(--modern-on-accent);
-}
-
-.space-shell[data-ui-theme="modern"] :is(
-  .room-pane-runtime-error,
-  .room-pane-capacity-warning,
-  .room-pane-apply-message.is-error,
-  .memory-workspace-error,
-  .memory-graph-error-state,
-  .memory-graph-boundary-message,
-  .memory-node-action-message.is-error,
-  .memory-change-warning,
-  .room-agent-error,
-  .form-error,
-  :where([role="alert"]:not([class*="dock-kit-"]))
-) {
+.space-shell[data-ui-theme="modern"] :is(.memory-workspace-error, .memory-graph-error-state, .memory-graph-boundary-message, .memory-node-action-message.is-error, .memory-change-warning, .room-agent-error, .form-error, :where([role="alert"]:not([class*="dock-kit-"]))) {
   border-color: var(--modern-danger);
   background: var(--modern-danger-soft);
   color: var(--modern-danger);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .memory-change-notice,
-  .memory-node-action-message.is-success,
-  .room-pane-apply-message:not(.is-error),
-  .clipboard-copied
-) {
+.space-shell[data-ui-theme="modern"] :is(.memory-change-notice, .memory-node-action-message.is-success, .clipboard-copied) {
   border-color: var(--modern-success);
   background: var(--modern-success-soft);
   color: var(--modern-success);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .room-kind-badge,
-  .memory-snapshot-warning,
-  .memory-job-list article[data-status="RUNNING"],
-  .memory-job-list article[data-status="QUEUED"]
-) {
+.space-shell[data-ui-theme="modern"] :is(.memory-snapshot-warning, .memory-job-list article[data-status="RUNNING"], .memory-job-list article[data-status="QUEUED"]) {
   border-color: var(--modern-warning);
   background: var(--modern-warning-soft);
   color: var(--modern-warning);
 }
 
-.space-shell[data-ui-theme="modern"] :is(
-  .empty-state,
-  .empty-mini,
-  .room-pane-runtime-empty,
-  .memory-workspace-loading,
-  .memory-graph-loading,
-  .embedded-dashboard-loading
-) {
+.space-shell[data-ui-theme="modern"] :is(.empty-state, .empty-mini, .memory-workspace-loading, .memory-graph-loading, .embedded-dashboard-loading) {
   border-color: var(--modern-border);
   background: var(--modern-surface-soft);
   color: var(--modern-muted);
@@ -1433,7 +1126,6 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .cli-vpn-profile-heading strong,
   .cli-vpn-profile-details strong,
   .source-control-provider-heading strong,
-  .codex-cli-defaults-mode legend,
   .telegram-status-panel strong,
   .telegram-pairing-panel strong,
   .memory-workspace-header h2
@@ -1446,7 +1138,6 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   .cli-vpn-profile-note,
   .source-control-provider-heading small,
   .source-control-account,
-  .codex-cli-defaults-status,
   .telegram-status-panel small,
   .telegram-pairing-panel small,
   .telegram-admin-note,
@@ -1461,12 +1152,6 @@ body[data-ui-theme="modern"] .terminal-upload-modal-body {
   border-color: var(--modern-border-strong);
   background: var(--modern-surface-soft);
   color: var(--modern-muted);
-}
-
-.space-shell[data-ui-theme="modern"] .codex-cli-defaults-unavailable {
-  border-color: var(--modern-warning);
-  background: var(--modern-warning-soft);
-  color: var(--modern-warning);
 }
 
 .space-shell[data-ui-theme="modern"] .cli-runtime-settings-row.is-disabled {

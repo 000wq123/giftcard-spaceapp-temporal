@@ -48,6 +48,16 @@ export class VoiceProxyTickets {
   clear() { this.tickets.clear(); }
 }
 
+/**
+ * A provider close sorted into a fixed reason the browser can explain (credits used up, key rejected). Only the
+ * class leaves this function; the provider's text may echo URLs, keys or prompt fragments and is never copied.
+ */
+export function classifyVoiceUpstreamClose(providerReason: string): "provider_quota_exhausted" | "provider_auth_failed" | "upstream_closed" {
+  if (/prepayment credits|credits are depleted|billing|quota|RESOURCE_EXHAUSTED|exceeded your current/i.test(providerReason)) return "provider_quota_exhausted";
+  if (/API key not valid|API_KEY_INVALID|PERMISSION_DENIED|invalid api key|unauthori[sz]ed/i.test(providerReason)) return "provider_auth_failed";
+  return "upstream_closed";
+}
+
 /** Relay bytes unchanged. Diagnostics contain counts/reasons, never payloads. */
 export function relayVoiceSockets(client: WebSocket, upstream: WebSocket, options: {
   limits?: typeof voiceProxyLimits;
@@ -123,9 +133,10 @@ export function relayVoiceSockets(client: WebSocket, upstream: WebSocket, option
   // A provider/upstream close is not a normal client shutdown.  Forwarding
   // code 1000 made the browser report a misleading clean disconnect and
   // prevented the Live pane from distinguishing relay failure from End.
-  upstream.on("close", (code: number) => {
-    // Keep the numeric close code only; provider reasons may echo private content.
-    stop("upstream_closed", 1011, { upstreamCloseCode: Number.isInteger(code) ? code : null });
+  upstream.on("close", (code: number, providerReason?: Buffer) => {
+    // Keep the numeric close code and a fixed class only; provider reasons may echo private content.
+    stop(classifyVoiceUpstreamClose(providerReason ? providerReason.toString("utf8") : ""), 1011,
+      { upstreamCloseCode: Number.isInteger(code) ? code : null });
   });
   client.on("error", () => stop("client_error"));
   upstream.on("error", () => stop("upstream_error"));

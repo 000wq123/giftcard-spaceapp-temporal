@@ -7,18 +7,18 @@ import {
   type Room
 } from "@space/contracts";
 import {
-  ChevronRight,
+  ArrowLeft,
+  ChevronUp,
   Grid3X3,
   Loader2,
   MessageSquare,
   Minus,
   Plus,
   RefreshCw,
-  RotateCcw,
   X,
   type LucideIcon
 } from "../ui-theme/app-icons.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api } from "../../api.js";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
@@ -63,7 +63,6 @@ function loadDefaultRuntimes(): Promise<AgentRuntimeRegistry> {
 
 export interface RoomPaneComposerProps {
   activePaneCount: number;
-  mobile?: boolean;
   loadRuntimes?: () => Promise<AgentRuntimeRegistry>;
   onApply: (roomId: string, input: CreateRoomPanesRequest) => Promise<void>;
   onOpenSettings?: () => void;
@@ -74,7 +73,6 @@ export interface RoomPaneComposerProps {
 
 export function RoomPaneComposer({
   activePaneCount,
-  mobile = false,
   loadRuntimes = loadDefaultRuntimes,
   onApply,
   onOpenSettings,
@@ -236,12 +234,6 @@ export function RoomPaneComposer({
     });
   }
 
-  function clearRuntimeCount(id: ComposerRuntimeId) {
-    setApplyError(null);
-    setNotice(null);
-    setCounts((current) => ({ ...current, [id]: 0 }));
-  }
-
   function clearAllCounts() {
     setApplyError(null);
     setNotice(null);
@@ -281,16 +273,18 @@ export function RoomPaneComposer({
     }
   }
 
-  let applyLabel = "Select a room and panes";
+  let applyLabel = "Select a room first";
   if (room && assigned === 0) {
-    applyLabel = `Select panes to add to ${room.name}`;
+    applyLabel = "Choose panes to add";
   } else if (assigned > 0) {
-    applyLabel = `Add ${assigned} ${assigned === 1 ? "pane" : "panes"}${room ? ` to ${room.name}` : ""}`;
+    applyLabel = `Add ${assigned} ${assigned === 1 ? "pane" : "panes"}`;
   }
 
   const toggleCollapsed = () => {
     const next = !collapsed;
     setCollapsed(next);
+    // Like the CLI launcher on open: a list kept since mount can miss runtimes enabled meanwhile.
+    if (!next) void refreshRuntimes();
     if (defaultCollapsed === undefined) {
       try {
         getSpaceRuntime().platform.localStorage.setItem(ROOM_PANE_COMPOSER_COLLAPSED_KEY, String(next));
@@ -300,6 +294,50 @@ export function RoomPaneComposer({
     }
   };
 
+  const renderRow = (id: ComposerRuntimeId, label: string, icon: ReactNode, available = true, reason?: string) => {
+    const reasonId = `room-pane-runtime-reason-${id.replace(/[^a-z0-9]+/gi, "-")}`;
+    return (
+      <div className={`room-pane-mix-row${available ? "" : " is-unavailable"}${counts[id] > 0 ? " is-selected" : ""}`} key={id}>
+        <div className="room-pane-runtime-label">
+          {icon}
+          <span>{label}</span>
+          {!available ? <small id={reasonId} title={reason}>{reason}</small> : null}
+        </div>
+        <div className="room-pane-controls" aria-describedby={!available ? reasonId : undefined}>
+          <button
+            type="button"
+            className="room-pane-quick-action"
+            aria-label={`Fill all with ${label}`}
+            title={`Fill the room with ${label} panes`}
+            onClick={() => fillRoomWithType(id)}
+            disabled={applying || !available || availableSlots === 0}
+          >
+            <Grid3X3 aria-hidden="true" />
+          </button>
+          <div className="room-pane-counter">
+            <button
+              type="button"
+              aria-label={`Decrease ${label} panes`}
+              onClick={() => adjustCount(id, -1)}
+              disabled={applying || counts[id] === 0}
+            >
+              <Minus aria-hidden="true" />
+            </button>
+            <output aria-label={`${label} pane count`}>{counts[id]}</output>
+            <button
+              type="button"
+              aria-label={`Increase ${label} panes`}
+              onClick={() => adjustCount(id, 1)}
+              disabled={applying || !available || assigned >= availableSlots}
+            >
+              <Plus aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <form
       className="room-pane-composer"
@@ -307,269 +345,112 @@ export function RoomPaneComposer({
       onSubmit={submit}
       aria-labelledby="room-pane-composer-title"
     >
-      <div className="room-pane-composer-heading">
-        <div
-          className="room-pane-composer-heading-copy"
-          role="button"
-          tabIndex={0}
-          aria-expanded={!collapsed}
-          style={{ cursor: "pointer" }}
-          onClick={toggleCollapsed}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              toggleCollapsed();
-            }
-          }}
-        >
-          <strong id="room-pane-composer-title">Add panes</strong>
-          <small>{room ? `Pane target: ${room.name}` : "Select a room target"}</small>
-          {collapsed ? <small className="room-pane-composer-summary" aria-live="polite">{assigned} selected · Click to expand</small> : null}
-        </div>
-        <div className="room-pane-composer-heading-actions">
-          {!collapsed ? (
-            <button
-              type="button"
-              className="room-pane-clear-all"
-              aria-label="Clear all"
-              title="Clear all pane selections"
-              onClick={clearAllCounts}
-              disabled={applying || assigned === 0}
-            >
-              <RotateCcw aria-hidden="true" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="room-pane-composer-toggle"
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-            title={collapsed ? "Expand Add panes" : "Collapse Add panes"}
-            onClick={toggleCollapsed}
-          >
-            <ChevronRight aria-hidden="true" />
-          </button>
-        </div>
-      </div>
+      <button
+        type="button"
+        className="room-pane-composer-toggle"
+        aria-expanded={!collapsed}
+        title={collapsed ? "Choose CLI and other panes to add to this room" : "Back to rooms"}
+        onClick={toggleCollapsed}
+      >
+        {collapsed ? <Plus aria-hidden="true" /> : <ArrowLeft aria-hidden="true" />}
+        <strong id="room-pane-composer-title">{room ? `Add panes to ${room.name}` : "Add panes"}</strong>
+        {room ? <small className="room-pane-composer-free" aria-live="polite">{slotsAfterAdd} free</small> : null}
+        {collapsed ? <ChevronUp className="room-pane-composer-chevron" aria-hidden="true" /> : null}
+      </button>
 
       <AnimatePresence initial={false}>
         {!collapsed ? (
           <motion.div
             className="room-pane-composer-body"
-            initial={{ opacity: 0, height: 0, overflow: "hidden" }}
-            animate={{ opacity: 1, height: "auto", overflow: "hidden" }}
-            exit={{ opacity: 0, height: 0, overflow: "hidden" }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16, ease: [0.4, 0, 0.2, 1] }}
           >
             <div className="room-pane-mix" aria-label="Pane mix">
-        {visibleRuntimeDefinitions.map(({ brand, iconSrc, id, shortLabel: label }) => {
-          const runtime = runtimeById.get(id);
-          const available = !loading && !loadError && Boolean(runtime && isAgentRuntimeReady(runtime));
-          const reasonId = `room-pane-runtime-reason-${id.replace(/[^a-z0-9]+/gi, "-")}`;
-          const reason = loading
-            ? "Checking availability…"
-            : loadError
-              ? "Availability could not be checked."
-              : runtime?.statusReason || `${label} is not available on this host.`;
-          return (
-            <div className={`room-pane-mix-row${available ? "" : " is-unavailable"}`} key={id}>
-              <div className="room-pane-runtime-label">
-                <img src={iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={brand} draggable={false} />
-                <span>{label}</span>
-                {!available ? <small id={reasonId}>{reason}</small> : null}
-              </div>
-              <div className="room-pane-controls" aria-describedby={!available ? reasonId : undefined}>
-                <div className="room-pane-quick-actions">
-                  <button
-                    type="button"
-                    className="room-pane-quick-action"
-                    aria-label={`Fill all with ${label}`}
-                    title={`Fill the room with ${label} panes`}
-                    onClick={() => fillRoomWithType(id)}
-                    disabled={applying || !available || availableSlots === 0}
-                  >
-                    <Grid3X3 aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="room-pane-quick-action"
-                    aria-label={`Clear ${label} count`}
-                    title={`Reset ${label} pane count`}
-                    onClick={() => clearRuntimeCount(id)}
-                    disabled={applying || counts[id] === 0}
-                  >
-                    <RotateCcw aria-hidden="true" />
-                  </button>
+              {visibleRuntimeDefinitions.map(({ brand, iconSrc, id, shortLabel: label }) => {
+                const runtime = runtimeById.get(id);
+                const available = !loading && !loadError && Boolean(runtime && isAgentRuntimeReady(runtime));
+                const reason = loading
+                  ? "Checking availability…"
+                  : loadError
+                    ? "Availability could not be checked."
+                    : runtime?.statusReason || `${label} is not available on this host.`;
+                return renderRow(id, label, <img src={iconSrc} alt="" aria-hidden="true" data-terminal-runtime-brand={brand} draggable={false} />, available, reason);
+              })}
+              {!loading && !loadError && visibleRuntimeDefinitions.length === 0 ? (
+                <div className="room-pane-runtime-empty" role="status">
+                  <span>All CLI runtimes are disabled. Other pane types are listed below.</span>
+                  {onOpenSettings ? <button type="button" onClick={onOpenSettings}>Open Settings</button> : null}
                 </div>
-                <div className="room-pane-counter">
-                  <button
-                    type="button"
-                    aria-label={`Decrease ${label} panes`}
-                    onClick={() => adjustCount(id, -1)}
-                    disabled={applying || counts[id] === 0}
-                  >
-                    <Minus aria-hidden="true" />
-                  </button>
-                  <output aria-label={`${label} pane count`}>{counts[id]}</output>
-                  <button
-                    type="button"
-                    aria-label={`Increase ${label} panes`}
-                    onClick={() => adjustCount(id, 1)}
-                    disabled={applying || !available || assigned >= availableSlots}
-                  >
-                    <Plus aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-        {!loading && !loadError && visibleRuntimeDefinitions.length === 0 ? (
-          <div className="room-pane-runtime-empty" role="status">
-            <span>All CLI runtimes are disabled. Other pane types are listed below.</span>
-            {onOpenSettings ? <button type="button" onClick={onOpenSettings}>Open Settings</button> : null}
-          </div>
-        ) : null}
-        {!isHarnessEnabled ? null : (
-          <div className="room-pane-mix-row">
-            <div className="room-pane-runtime-label">
-            <img
-              src={HARNESS_MAINTENANCE_PRESENTATION.iconSrc}
-              alt=""
-              aria-hidden="true"
-              data-terminal-runtime-brand={HARNESS_MAINTENANCE_PRESENTATION.brand}
-              draggable={false}
-            />
-            <span>{HARNESS_MAINTENANCE_PRESENTATION.shortLabel}</span>
-            </div>
-            <div className="room-pane-controls">
-              <div className="room-pane-quick-actions">
-              <button
-                type="button"
-                className="room-pane-quick-action"
-                aria-label="Fill all with Harness"
-                title="Fill the room with Harness panes"
-                onClick={() => fillRoomWithType(harnessId)}
-                disabled={applying || availableSlots === 0}
-              >
-                <Grid3X3 aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="room-pane-quick-action"
-                aria-label="Clear Harness count"
-                title="Reset Harness pane count"
-                onClick={() => clearRuntimeCount(harnessId)}
-                disabled={applying || counts.harness === 0}
-              >
-                <RotateCcw aria-hidden="true" />
-              </button>
-            </div>
-            <div className="room-pane-counter">
-              <button
-                type="button"
-                aria-label="Decrease Harness panes"
-                onClick={() => adjustCount(harnessId, -1)}
-                disabled={applying || counts.harness === 0}
-              >
-                <Minus aria-hidden="true" />
-              </button>
-              <output aria-label="Harness pane count">{counts.harness}</output>
-              <button
-                type="button"
-                aria-label="Increase Harness panes"
-                onClick={() => adjustCount(harnessId, 1)}
-                disabled={applying || assigned >= availableSlots}
-              >
-                <Plus aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-          </div>
-        )}
-        {utilityDefinitions.map(type => {
-          const Icon = utilityIcons[type.typeId];
-          return (
-            <div className="room-pane-mix-row" key={type.typeId}>
-              <div className="room-pane-runtime-label">
-                {Icon ? <Icon className="room-pane-utility-icon" aria-hidden="true" data-pane-utility-icon={type.typeId} /> : null}
-                <span>{type.label}</span>
-              </div>
-              <div className="room-pane-controls">
-                <div className="room-pane-quick-actions">
-                  <button type="button" className="room-pane-quick-action" aria-label={`Fill all with ${type.label}`}
-                    title={`Fill the room with ${type.label} panes`} onClick={() => fillRoomWithType(type.typeId)} disabled={applying || availableSlots === 0}>
-                    <Grid3X3 aria-hidden="true" />
-                  </button>
-                  <button type="button" className="room-pane-quick-action" aria-label={`Clear ${type.label} count`}
-                    title={`Reset ${type.label} pane count`} onClick={() => clearRuntimeCount(type.typeId)} disabled={applying || counts[type.typeId] === 0}>
-                    <RotateCcw aria-hidden="true" />
-                  </button>
-                </div>
-                <div className="room-pane-counter">
-                  <button type="button" aria-label={`Decrease ${type.label} panes`} onClick={() => adjustCount(type.typeId, -1)} disabled={applying || counts[type.typeId] === 0}>
-                    <Minus aria-hidden="true" />
-                  </button>
-                  <output aria-label={`${type.label} pane count`}>{counts[type.typeId]}</output>
-                  <button type="button" aria-label={`Increase ${type.label} panes`} onClick={() => adjustCount(type.typeId, 1)} disabled={applying || assigned >= availableSlots}>
-                    <Plus aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+              ) : null}
+              {isHarnessEnabled ? renderRow(
+                harnessId,
+                HARNESS_MAINTENANCE_PRESENTATION.shortLabel,
+                <img
+                  src={HARNESS_MAINTENANCE_PRESENTATION.iconSrc}
+                  alt=""
+                  aria-hidden="true"
+                  data-terminal-runtime-brand={HARNESS_MAINTENANCE_PRESENTATION.brand}
+                  draggable={false}
+                />
+              ) : null}
+              {utilityDefinitions.map(type => {
+                const Icon = utilityIcons[type.typeId];
+                return renderRow(type.typeId, type.label, Icon ? <Icon className="room-pane-utility-icon" aria-hidden="true" data-pane-utility-icon={type.typeId} /> : null);
+              })}
             </div>
             <div className="room-pane-composer-footer">
-          {loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
-          {loadError ? (
-            <div className="room-pane-runtime-error" role="alert">
-              <span>{loadError}</span>
-              <button type="button" onClick={() => void refreshRuntimes()} disabled={loading} aria-label="Retry CLI runtimes">
-                <RefreshCw aria-hidden="true" /> Retry
-              </button>
-              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setLoadError(null)}>
-                <X aria-hidden="true" />
-              </button>
-            </div>
-          ) : null}
-
-          <p className="room-pane-assignment" aria-live="polite">
-            {mobile ? (
-              <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected</>
-            ) : assigned === 0 ? (
-              <><strong>0</strong> panes selected · <strong>{availableSlots}</strong> {availableSlots === 1 ? "room slot" : "room slots"} available</>
-            ) : (
-              <><strong>{assigned}</strong> {assigned === 1 ? "pane" : "panes"} selected · <strong>{slotsAfterAdd}</strong> {slotsAfterAdd === 1 ? "slot" : "slots"} left after add</>
-            )}
-          </p>
-          {room && (availableSlots === 0 || assigned > availableSlots) ? (
-            <p className="room-pane-capacity-warning">
-              {availableSlots === 0
-                ? "This room has no available pane slots."
-                : `This room has only ${availableSlots} available pane ${availableSlots === 1 ? "slot" : "slots"}.`}
-            </p>
-          ) : null}
-          {applyError ? (
-            <div className="room-pane-apply-message is-error">
-              <span role="alert">{applyError}</span>
-              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setApplyError(null)}>
-                <X aria-hidden="true" />
-              </button>
-            </div>
-          ) : null}
-          {notice ? (
-            <div className="room-pane-apply-message">
-              <span role="status">{notice}</span>
-              <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
-                <X aria-hidden="true" />
-              </button>
-            </div>
-          ) : null}
-          <button type="submit" className="room-pane-apply" disabled={!canApply}>
-            {applying ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
-            {applyLabel}
-          </button>
+              {loading ? <p className="room-pane-runtime-state" role="status"><Loader2 className="spin" aria-hidden="true" />Loading CLI runtimes…</p> : null}
+              {loadError ? (
+                <div className="room-pane-runtime-error" role="alert">
+                  <span>{loadError}</span>
+                  <button type="button" onClick={() => void refreshRuntimes()} disabled={loading} aria-label="Retry CLI runtimes">
+                    <RefreshCw aria-hidden="true" /> Retry
+                  </button>
+                  <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setLoadError(null)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </div>
+              ) : null}
+              {room && (availableSlots === 0 || assigned > availableSlots) ? (
+                <p className="room-pane-capacity-warning">
+                  {availableSlots === 0
+                    ? "This room has no available pane slots."
+                    : `This room has only ${availableSlots} available pane ${availableSlots === 1 ? "slot" : "slots"}.`}
+                </p>
+              ) : null}
+              {applyError ? (
+                <div className="room-pane-apply-message is-error">
+                  <span role="alert">{applyError}</span>
+                  <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setApplyError(null)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </div>
+              ) : null}
+              {notice ? (
+                <div className="room-pane-apply-message">
+                  <span role="status">{notice}</span>
+                  <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setNotice(null)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </div>
+              ) : null}
+              <div className="room-pane-composer-actions">
+                <button
+                  type="button"
+                  className="room-pane-clear-all"
+                  title="Clear all pane selections"
+                  onClick={clearAllCounts}
+                  disabled={applying || assigned === 0}
+                >
+                  Clear all
+                </button>
+                <button type="submit" className="room-pane-apply" disabled={!canApply}>
+                  {applying ? <Loader2 className="spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}
+                  {applyLabel}
+                </button>
+              </div>
             </div>
           </motion.div>
         ) : null}

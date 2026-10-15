@@ -102,6 +102,8 @@ export function usePaneWorkingTime({
 
   // Hydrate from server API on mount or paneId change, and periodically sync
   useEffect(() => {
+    // An optimistic pane has no server record yet; its real id arrives with the created pane.
+    if (paneId.startsWith("pane:optimistic-")) return;
     let cancelled = false;
     const syncWithServer = async () => {
       try {

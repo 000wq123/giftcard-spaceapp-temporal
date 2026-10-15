@@ -1,5 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, type JobApplyPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
@@ -115,6 +115,8 @@ import {
   spaceAgentSessionRecordSchema,
   sourceControlConnectionSchema,
   spaceConfigBundleSchema,
+  sanitizeConfigBundleData,
+  configBundleVersion,
   sourceControlProviderSchema,
   updateProviderInputSchema,
   updateProviderSettingsInputSchema,
@@ -355,10 +357,13 @@ import type {
 import { hashMcpSchema } from "./mcp-policy.js";
 import {
   collectExportableApiKeys,
-  collectExportableCredentials,
+  openConfigBundleSecrets,
+  sealConfigBundle,
   writeImportedApiKeys,
-  writeImportedCredentials
+  type CliAuthCapture,
+  type ConfigImportHooks
 } from "./configuration-secrets.js";
+import { prepareConfigImport, remapRoomKeyedSettings } from "./configuration-import.js";
 
 export const ACTIVE_PANE_CAP = 16;
 export const PANE_CLI_TRANSCRIPT_CHUNK_CAP = 200;
@@ -1011,6 +1016,8 @@ export interface SpaceStore {
   getPane(paneId: string): MaybePromise<Pane>;
   compareAndSetT3CodeMetadata(paneId: string, expectedRevision: number, metadata: T3CodePaneMetadata): MaybePromise<Pane | null>;
   updateJobApplyMetadata(paneId: string, metadata: JobApplyPaneMetadata): MaybePromise<Pane>;
+  updateMailCopilotMetadata(paneId: string, metadata: MailCopilotPaneMetadata): MaybePromise<Pane>;
+  updateMarketingCopilotMetadata(paneId: string, metadata: MarketingCopilotPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -1022,6 +1029,8 @@ export interface SpaceStore {
   getRoomAgentTranscriptClearedAt(roomId: string): MaybePromise<string | null>;
   clearRoomAgentTranscript(roomId: string, clearedAt: string, traceId?: string): MaybePromise<string>;
   getRoomAgentRequest(roomId: string, clientRequestId: string): MaybePromise<RoomAgentRequestRecord | null>;
+  /** Marks Room Agent chat answers left RUNNING by a stopped API process as INTERRUPTED, adding the note. */
+  interruptRoomAgentChatTurns(note: string): MaybePromise<number>;
   createRoomAgentRequest(input: CreateRoomAgentRequestInput, traceId?: string): MaybePromise<RoomAgentRequestRecord>;
   enqueueRoomAgentMission(input: EnqueueRoomAgentMissionInput, traceId?: string): MaybePromise<RoomAgentEnqueueRecord>;
   getRoomAgentTurn(missionId: string, runId?: string): MaybePromise<RoomAgentTurnRecord | null>;
@@ -1327,8 +1336,10 @@ export interface SpaceStore {
   postSwarmMessage(input: PostSwarmMessageInput, traceId?: string): MaybePromise<SwarmMessageRecord>;
   createSwarmReconcile(input: CreateSwarmReconcileInput, traceId?: string): MaybePromise<SwarmReconcileRecord>;
   getSwarmState(roomId?: string): MaybePromise<SwarmState>;
-  exportConfigurationBundle(options: ExportConfigOptions): MaybePromise<SpaceConfigBundle>;
-  importConfigurationBundle(bundle: SpaceConfigBundle, options: ImportConfigOptions): MaybePromise<ImportConfigResult>;
+  /** Secrets (API keys, the given CLI logins) leave only inside the bundle's passphrase-encrypted blob. */
+  exportConfigurationBundle(options: ExportConfigOptions, secrets?: { cliAuth?: Record<string, CliAuthCapture> }): MaybePromise<SpaceConfigBundle>;
+  /** Decrypts before any write, so a wrong passphrase changes nothing; CLI logins go to the host's applyCliAuth. */
+  importConfigurationBundle(bundle: SpaceConfigBundle, options: ImportConfigOptions, hooks?: ConfigImportHooks): MaybePromise<ImportConfigResult>;
 }
 
 export class SpaceConflictError extends Error {
@@ -1818,10 +1829,10 @@ const defaultSourceControlRepository = {
 } as const;
 const defaultTitleGenerationReasoningEffort: ProviderSettings["titleGenerationReasoningEffort"] = "low";
 const spaceDefaultMcpMetadata: Array<Pick<McpServer, "id" | "displayName" | "transport">> = [
-  { id: "capturelab", displayName: "CaptureLab", transport: "stdio" },
+  { id: "space_capturelab", displayName: "CaptureLab", transport: "stdio" },
   { id: "devtools", displayName: "DevTools", transport: "stdio" },
   { id: "olla", displayName: "Olla", transport: "stdio" },
-  { id: "summary_tools", displayName: "Summary Tools", transport: "stdio" }
+  { id: "space_summary_tools", displayName: "Summary Tools", transport: "stdio" }
 ];
 
 function maxIso(values: Array<string | null>): string | null {
@@ -4384,6 +4395,19 @@ export class InMemorySpaceStore implements SpaceStore {
     );
   }
 
+  interruptRoomAgentChatTurns(note: string): number {
+    let count = 0;
+    for (const request of this.roomAgentRequests.values()) {
+      if (request.directAction?.type !== "CHAT") continue;
+      const message = this.spaceAgentMessages.get(request.responseMessageId);
+      if (message?.status !== "RUNNING") continue;
+      this.spaceAgentMessages.set(message.messageId, { ...message, status: "INTERRUPTED",
+        content: `${message.content}${note}`.slice(0, 50_000), updatedAt: nowIso() });
+      count += 1;
+    }
+    return count;
+  }
+
   createRoomAgentRequest(input: CreateRoomAgentRequestInput, _traceId = makeSpaceId("trace")): RoomAgentRequestRecord {
     const parsed = createRoomAgentRequestInputSchema.parse(input);
     if (this.getRoomAgentRequest(parsed.roomId, parsed.clientRequestId)) {
@@ -4731,6 +4755,24 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateMailCopilotMetadata(paneId: string, metadata: MailCopilotPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "MAIL_COPILOT" || current.isClosed) throw new SpaceConflictError("An open Mail Copilot pane is required.");
+    const parsed = mailCopilotPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, mailCopilotMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
+  updateMarketingCopilotMetadata(paneId: string, metadata: MarketingCopilotPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "MARKETING_COPILOT" || current.isClosed) throw new SpaceConflictError("An open Marketing Copilot pane is required.");
+    const parsed = marketingCopilotPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, marketingCopilotMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -4772,7 +4814,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        ["TERMINAL", "JOB_APPLY"].includes(input.mode ?? current.mode)
+        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -6079,8 +6121,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL or JOB_APPLY panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT or MARKETING_COPILOT panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -6365,12 +6407,20 @@ export class InMemorySpaceStore implements SpaceStore {
     const batchSize = Math.max(1, Math.min(input.batchSize ?? 500, 5000));
     const cutoff = Date.now() - olderThanHours * 3_600_000;
     const roomAgentPaneIds = new Set(this.roomAgentPaneIds.values());
+    // The newest closed Job and Marketing Copilot pane of each room stays: a new one continues its browser tabs and account.
+    const lastCopilot = new Map<string, Pane>();
+    for (const pane of this.panes.values()) {
+      if ((pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") || !pane.isClosed) continue;
+      const kept = lastCopilot.get(`${pane.roomId}:${pane.mode}`);
+      if (!kept || pane.updatedAt > kept.updatedAt || (pane.updatedAt === kept.updatedAt && pane.id > kept.id)) lastCopilot.set(`${pane.roomId}:${pane.mode}`, pane);
+    }
     const candidatePanes = [...this.panes.values()]
       .filter((pane) =>
         pane.isClosed &&
         Date.parse(pane.updatedAt) < cutoff &&
         (!input.roomId || pane.roomId === input.roomId) &&
-        !roomAgentPaneIds.has(pane.id)
+        !roomAgentPaneIds.has(pane.id) &&
+        lastCopilot.get(`${pane.roomId}:${pane.mode}`)?.id !== pane.id
       )
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
       .slice(0, batchSize);
@@ -6623,8 +6673,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE or JOB_APPLY panes.`);
+    if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE, JOB_APPLY or MARKETING_COPILOT panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -8712,7 +8762,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return lock;
   }
 
-  async exportConfigurationBundle(options: ExportConfigOptions): Promise<SpaceConfigBundle> {
+  async exportConfigurationBundle(options: ExportConfigOptions, secrets: { cliAuth?: Record<string, CliAuthCapture> } = {}): Promise<SpaceConfigBundle> {
     const userId = options.userId;
     const rooms = this.listRooms(userId ?? null);
     const configRooms: SpaceConfigRoom[] = [];
@@ -8781,22 +8831,24 @@ export class InMemorySpaceStore implements SpaceStore {
       providerSettings = this.getProviderSettings();
     } catch {}
 
-    let apiKeys: Record<string, string> | undefined;
-    if (options.includeApiKeys) {
-      apiKeys = collectExportableApiKeys();
-    }
-
-    let credentials: Record<string, string> | undefined;
-    if (options.includeCredentials) {
-      credentials = collectExportableCredentials();
-    }
-
-    return {
+    const instance = process.env.SPACE_INSTANCE_NAME || "local";
+    const data = sanitizeConfigBundleData({
+      userSettings,
+      rooms: configRooms,
+      userLinks,
+      clipboardItems,
+      taskItems,
+      cliRuntimeSettings,
+      codexCliModeDefaults,
+      providerSettings,
+      providers
+    }, instance);
+    return sealConfigBundle({
       format: "spaceapp-configuration-bundle",
-      version: "1.0.0",
+      version: configBundleVersion,
       exportedAt: nowIso(),
       source: {
-        instance: process.env.SPACE_INSTANCE_NAME || "local",
+        instance,
         exportedBy: userId ?? "operator",
         appVersion: process.env.SPACE_APP_VERSION || "v1.0.35"
       },
@@ -8807,34 +8859,28 @@ export class InMemorySpaceStore implements SpaceStore {
         clipboardItemsCount: clipboardItems.length,
         taskItemsCount: taskItems.length,
         cliRuntimesCount: cliRuntimeSettings.length,
-        providersCount: providers.length,
-        apiKeysCount: apiKeys ? Object.keys(apiKeys).length : undefined,
-        credentialsCount: credentials ? Object.keys(credentials).length : undefined
+        providersCount: data.providers.length
       },
-      data: {
-        userSettings,
-        rooms: configRooms,
-        userLinks,
-        clipboardItems,
-        taskItems,
-        cliRuntimeSettings,
-        codexCliModeDefaults,
-        providerSettings,
-        providers,
-        apiKeys,
-        credentials
-      }
-    };
+      data
+    }, { apiKeys: options.includeApiKeys ? collectExportableApiKeys() : undefined, cliAuth: secrets.cliAuth }, options.passphrase);
   }
 
   async importConfigurationBundle(
     bundle: SpaceConfigBundle,
-    options: ImportConfigOptions
+    options: ImportConfigOptions,
+    hooks: ConfigImportHooks = {}
   ): Promise<ImportConfigResult> {
     const parsedBundle = spaceConfigBundleSchema.parse(bundle);
     const targetUserId = options.targetUserId || parsedBundle.source.exportedBy || "user:operator";
     const mode = options.mode || "replace";
-    const warnings: string[] = [];
+    const { secrets, warnings } = await openConfigBundleSecrets(parsedBundle, options.passphrase);
+    const prepared = await prepareConfigImport(parsedBundle, { pathRewrite: options.pathRewrite }, {
+      profileExists: async (runtimeId, profileId) => {
+        try { return Boolean(this.getCliAccountProfile(runtimeId as CliToggleRuntimeId, profileId)); } catch { return false; }
+      }
+    });
+    warnings.push(...prepared.warnings);
+    const data = prepared.data;
 
     if (mode === "replace") {
       for (const [roomId, room] of this.rooms.entries()) {
@@ -8878,8 +8924,8 @@ export class InMemorySpaceStore implements SpaceStore {
       baseOrder = maxOrder + 1;
     }
 
-    for (let rIdx = 0; rIdx < parsedBundle.data.rooms.length; rIdx++) {
-      const room = parsedBundle.data.rooms[rIdx]!;
+    for (let rIdx = 0; rIdx < data.rooms.length; rIdx++) {
+      const room = data.rooms[rIdx]!;
       const newRoomId = mode === "merge" ? `room:${nanoid(12)}` : room.id;
       roomIdMap.set(room.id, newRoomId);
       const assignedOrder = mode === "merge" ? baseOrder + rIdx : room.order;
@@ -8887,6 +8933,7 @@ export class InMemorySpaceStore implements SpaceStore {
       this.rooms.set(newRoomId, {
         ...room,
         id: newRoomId,
+        traceId: `trace:${nanoid(12)}`,
         ownerUserId: targetUserId,
         order: assignedOrder,
         updatedAt: nowIso()
@@ -8896,16 +8943,10 @@ export class InMemorySpaceStore implements SpaceStore {
       for (const pane of room.panes ?? []) {
         const newPaneId = mode === "merge" ? `pane:${nanoid(12)}` : pane.id;
         paneIdMap.set(pane.id, newPaneId);
-        let cwd = pane.cwd;
-        if (options.pathRewrite && cwd) {
-          cwd = cwd.replace(options.pathRewrite.from, options.pathRewrite.to);
-        }
         this.panes.set(newPaneId, {
           ...pane,
           id: newPaneId,
           roomId: newRoomId,
-          cwd,
-          status: pane.status === "CLOSED" ? "CLOSED" : "IDLE",
           updatedAt: nowIso()
         });
         panesImported++;
@@ -8913,16 +8954,16 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     let settingsUpdated = false;
-    if (parsedBundle.data.userSettings) {
+    if (data.userSettings) {
       this.userSettings.set(targetUserId, {
-        ...parsedBundle.data.userSettings,
+        ...remapRoomKeyedSettings(data.userSettings, roomIdMap),
         updatedAt: nowIso()
       });
       settingsUpdated = true;
     }
 
     let linksImported = 0;
-    for (const link of parsedBundle.data.userLinks ?? []) {
+    for (const link of data.userLinks ?? []) {
       const linkId = mode === "merge" ? `link:${nanoid(12)}` : link.id;
       this.userLinks.set(linkId, {
         ownerUserId: targetUserId,
@@ -8935,7 +8976,7 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     let clipboardImported = 0;
-    for (const item of parsedBundle.data.clipboardItems ?? []) {
+    for (const item of data.clipboardItems ?? []) {
       const clipId = mode === "merge" ? `clipboard:${nanoid(12)}` : item.id;
       const remappedRoomId = item.roomId ? roomIdMap.get(item.roomId) ?? null : null;
       const remappedPaneId = item.paneId ? paneIdMap.get(item.paneId) ?? null : null;
@@ -8956,7 +8997,7 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     let tasksImported = 0;
-    for (const task of parsedBundle.data.taskItems ?? []) {
+    for (const task of data.taskItems ?? []) {
       const taskId = mode === "merge" ? `task:${nanoid(12)}` : task.id;
       const remappedRoomId = task.roomId ? roomIdMap.get(task.roomId) ?? null : null;
       const remappedPaneId = task.paneId ? paneIdMap.get(task.paneId) ?? null : null;
@@ -8977,7 +9018,7 @@ export class InMemorySpaceStore implements SpaceStore {
     }
 
     let cliRuntimesImported = 0;
-    for (const setting of parsedBundle.data.cliRuntimeSettings ?? []) {
+    for (const setting of data.cliRuntimeSettings ?? []) {
       this.cliRuntimeSettings.set(setting.runtimeId, {
         ...setting,
         updatedAt: nowIso(),
@@ -8986,41 +9027,47 @@ export class InMemorySpaceStore implements SpaceStore {
       cliRuntimesImported++;
     }
 
-    if (parsedBundle.data.codexCliModeDefaults) {
+    if (data.codexCliModeDefaults) {
       this.codexCliModeDefaults = {
-        ...parsedBundle.data.codexCliModeDefaults,
+        ...data.codexCliModeDefaults,
         updatedAt: nowIso()
       };
     }
 
     let providersImported = 0;
-    for (const prov of parsedBundle.data.providers ?? []) {
-      if (!prov.isBuiltIn) {
-        this.providers = this.providers.filter((p) => p.id !== prov.id).concat(prov);
+    // A custom provider must never take a built-in's id on this host.
+    const builtInIds = new Set(this.providers.filter((provider) => provider.isBuiltIn).map((provider) => provider.id));
+    for (const prov of data.providers ?? []) {
+      if (!prov.isBuiltIn && !builtInIds.has(prov.id)) {
+        // Same endpoint as the provider already here: keep its validation result.
+        const existing = this.providers.find((p) => p.id === prov.id);
+        const next = existing && existing.baseUrl === prov.baseUrl
+          ? { ...prov, status: existing.status, statusReason: existing.statusReason, healthCheckedAt: existing.healthCheckedAt, maskedKeyPrefix: existing.maskedKeyPrefix }
+          : prov;
+        this.providers = this.providers.filter((p) => p.id !== prov.id).concat(next);
         providersImported++;
       }
     }
 
-    if (parsedBundle.data.providerSettings) {
+    if (data.providerSettings) {
       this.providerSettings = {
-        ...parsedBundle.data.providerSettings,
+        ...data.providerSettings,
+        ...(prepared.keepTargetDefaultProvider ? { defaultProviderId: this.providerSettings.defaultProviderId } : {}),
         updatedAt: nowIso()
       };
     }
 
     let apiKeysImported = 0;
-    if (options.importApiKeys !== false && parsedBundle.data.apiKeys && Object.keys(parsedBundle.data.apiKeys).length > 0) {
-      const res = writeImportedApiKeys(parsedBundle.data.apiKeys, { secretsDir: options.secretsDir });
+    if (options.importApiKeys !== false && secrets.apiKeys && Object.keys(secrets.apiKeys).length > 0) {
+      const res = writeImportedApiKeys(secrets.apiKeys, { secretsDir: options.secretsDir });
       apiKeysImported = res.imported;
       warnings.push(`Imported ${apiKeysImported} provider API key(s) to ${res.targetDir}`);
     }
 
-    let credentialsImported = 0;
-    if (options.importCredentials !== false && parsedBundle.data.credentials && Object.keys(parsedBundle.data.credentials).length > 0) {
-      const res = writeImportedCredentials(parsedBundle.data.credentials, { credentialsDir: options.credentialsDir });
-      credentialsImported = res.imported;
-      warnings.push(`Imported ${credentialsImported} login credential(s) to ${res.targetDir}`);
-    }
+    const cliAuth = options.importCredentials !== false && secrets.cliAuth && hooks.applyCliAuth
+      ? await hooks.applyCliAuth(secrets.cliAuth)
+      : undefined;
+    const credentialsImported = cliAuth?.filter((entry) => entry.result === "imported").length ?? 0;
 
     return {
       success: true,
@@ -9038,7 +9085,8 @@ export class InMemorySpaceStore implements SpaceStore {
         apiKeysImported,
         credentialsImported
       },
-      warnings
+      warnings,
+      cliAuth
     };
   }
 }

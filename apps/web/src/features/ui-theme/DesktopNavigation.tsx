@@ -5,12 +5,13 @@ import type { IconToolbarAction } from "../../icon-toolbar.js";
 import { Check, ChevronLeft, ChevronRight, Cpu, EyeOff, Grid2X2, GripVertical, Minus, MoreHorizontal, Pin, Plus, Search, ShieldCheck, SlidersHorizontal, Sparkles, UserCheck, Wrench, X } from "./app-icons.js";
 import { WorkspaceSurface } from "./WorkspaceSurface.js";
 import { desktopActionDescriptions, desktopActionGroup, desktopActionVisible, desktopGroups, type DesktopGroup } from "./desktop-navigation.js";
-import { WORKSPACE_MENU_CATEGORY_KEY, WORKSPACE_QUICK_ACTION_LIMIT, WORKSPACE_QUICK_ACTIONS_KEY, workspaceActionCategory, workspaceActionColor, workspaceActionLabel, workspaceActionToggle, workspaceCategories, workspaceDockOrder, workspaceFooterActionIds, workspacePageTabActionIds, workspaceQuickActionIds, type WorkspaceCategory } from "./workspace-actions.js";
+import { WORKSPACE_MENU_CATEGORY_KEY, WORKSPACE_QUICK_ACTION_LIMIT, WORKSPACE_QUICK_ACTIONS_KEY, workspaceActionCategory, workspaceActionColor, workspaceActionLabel, workspaceActionToggle, workspaceCategories, workspaceFooterActionIds, workspacePageTabActionIds, workspaceQuickActionIds, type WorkspaceCategory } from "./workspace-actions.js";
 import { ACTION_TO_LOWER_RAIL_ID, LOWER_RAIL_HIDDEN_KEY, LOWER_RAIL_NON_HIDEABLE, LOWER_RAIL_VISIBILITY_IDS, readHiddenRailIds } from "./use-rail-visibility.js";
 import { LOWER_RAIL_IDS } from "./use-rail-order.js";
 import { shouldPreserveForSnipTool } from "../snip-tool/snip-guard.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-manager.js";
 import { useWidgetsVisibility, type DesktopWidgetId } from "../desktop-widgets/index.js";
+import { dockOrderRank, useDocksVisibility } from "../docks/use-docks-visibility.js";
 import "./desktop-navigation.css";
 
 const navigationOpenEvent = "space:navigation-open";
@@ -108,6 +109,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
   const search = useRef<HTMLInputElement>(null);
   const createTrigger = useRef<HTMLButtonElement | null>(null);
   useMenuWheel(menu, ".desktop-menu-action:not(:disabled), .cli-launcher-embedded button:not(:disabled)", Boolean(open) && !detailId, createTrigger, true);
+  const { dockOrder } = useDocksVisibility();
   const CREATE_MENU_ORDER_KEY = "space:create-menu-top-order";
   const [createOrder, setCreateOrder] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
@@ -235,6 +237,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     "widget-streaming-metrics",
     "toggle-admin-mode",
     "memory-workspace",
+    "space-gateway",
     "demo-mode",
     "system-resources",
     "resources",
@@ -246,6 +249,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
     "setup-connections",
     "help",
     "debug-mode",
+    "gateway-compression",
     "resource-indicators",
     "cli-floats",
     "sensitive-data",
@@ -378,8 +382,8 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
       });
     }
     if (docksOnly || (workspace && category === "docks" && !isSearching)) {
-      const rank = (id: string) => { const index = workspaceDockOrder.indexOf(id); return index === -1 ? workspaceDockOrder.length : index; };
-      return [...matched].sort((a, b) => rank(a.id) - rank(b.id));
+      const rank = dockOrderRank(dockOrder);
+      return [...matched].sort((a, b) => rank(a.id.replace(/^surface-/, "")) - rank(b.id.replace(/^surface-/, "")));
     }
     if (workspace && category === "tools") {
       return [...matched].sort((a, b) => {
@@ -403,7 +407,7 @@ export function DesktopNavigation({ actions, adminMode, canAdmin, onModeChange, 
       return sorted;
     }
     return matched;
-  }, [matched, toolsOnly, workspace, category, isSearching, open, createOnly, createOrder, toolOrder, workspaceToolsOrder, activeHiddenRailIds]);
+  }, [matched, toolsOnly, workspace, category, isSearching, open, createOnly, createOrder, toolOrder, workspaceToolsOrder, activeHiddenRailIds, dockOrder]);
   const showCreateTools = Boolean(renderCreateTools && !docksOnly && !toolsOnly && (open === "create" || workspace && category === "create" && !isSearching || isSearching && !workspaceOnly));
   const searchGroups = workspace && isSearching ? workspaceCategories.flatMap(item => {
     const items = sortedMatched.filter(action => actionCategory(action.id) === item.id);

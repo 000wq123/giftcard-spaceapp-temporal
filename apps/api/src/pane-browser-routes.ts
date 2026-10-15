@@ -24,7 +24,7 @@ import {
   importManagedBrowserBookmarks, listManagedBrowserBookmarks, parseChromeBookmarksImport
 } from "./browser-bookmarks.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
-import { assertSafeBrowserTargetUrl } from "./browser-sessions.js";
+import { assertSafeBrowserTargetUrl, browserSessionRestoreUrls } from "./browser-sessions.js";
 import type { SpaceApiConfig } from "./config.js";
 import { sendApiError } from "./http-errors.js";
 import { readStagedUpload, withStagedUploads } from "./multipart-upload.js";
@@ -59,6 +59,8 @@ const browserCaptureTimelineManifestSchema = z.object({
   events: browserDiagnosticsResponseSchema.shape.events.default([])
 });
 
+/** Panes whose browser has the Google account menu; YouTube panes have their own routes. */
+const googleAccountPaneModes = new Set<Pane["mode"]>(["BROWSER", "JOB_APPLY", "MARKETING_COPILOT"]);
 const browserBookmarkImportMaxBytes = 2 * 1024 * 1024;
 
 const browserBookmarkImportMimeTypes = new Set(["application/json", "text/plain", "application/octet-stream", ""]);
@@ -122,7 +124,8 @@ function correlateBrowserTimelineEvents(
 /** Choosing and opening a Browser pane's saved Google sign-in; the pane routes and the CLI browser bridge share it. */
 export interface PaneBrowserAccountControl {
   list(userId: string, pane: Pane): Promise<{ selectedProfileId: string | null; effectiveProfileId: string | null; profiles: Array<{ profileId: string; displayName: string }> }>;
-  select(userId: string, pane: Pane, profileId: string | null, signIn: boolean | undefined, traceId: string, actor: BrowserHostActorContext): Promise<{ selectedProfileId: string | null; targetUrl: string }>;
+  /** `email` is the chosen account's address when known (null for the private pane profile). */
+  select(userId: string, pane: Pane, profileId: string | null, signIn: boolean | undefined, traceId: string, actor: BrowserHostActorContext): Promise<{ selectedProfileId: string | null; targetUrl: string; email: string | null }>;
   start(userId: string, pane: Pane, input: z.infer<typeof createPaneBrowserSessionRequestSchema>, traceId: string, actor: BrowserHostActorContext): Promise<PaneBrowserSessionResponse>;
 }
 
@@ -145,6 +148,10 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
   adoptPaneSignIn: (userId: string, pane: Pane, resolved: PaneBrowserAccount, actor: BrowserHostActorContext) => Promise<PaneBrowserAccount>;
   effectivePaneProfileId: (userId: string, pane: Pane) => Promise<string | null>;
   browserAccountChoices: (userId: string, pane: Pane) => Promise<{ profileId: string; displayName: string; }[]>;
+  /** The operator chose a Google account in a Job Copilot pane; the copilot reads mail and calendar through it. */
+  onJobCopilotAccountSelected?: (userId: string, email: string) => Promise<void>;
+  /** The Job Copilot pane a new one continues (its tabs and view); null when there is none. */
+  previousCopilotPane?: (pane: Pane) => Promise<Pane | null>;
   /** Drops CLI automation sockets of a pane when an operator takes control. */
   cliBrowserCdpProxy?: { closeForPane(paneId: string, refusal: "BROWSER_CONTROL_HELD", reason: string): number };
 }) {
@@ -170,13 +177,18 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
         await browserSessionManager.stopPane(pane.id, traceId, actor);
         await browserAccountStore.save(await youtubeAccountOwner(userId, pane), pane.id, profileId);
         const openSignIn = profileId !== null && (signIn === true || (!account && !privateProfile));
-        return { selectedProfileId: profileId, targetUrl: openSignIn ? googleAccountSignInUrl(details?.email ?? null) : config.browserSessionsDefaultUrl };
+        return { selectedProfileId: profileId, targetUrl: openSignIn ? googleAccountSignInUrl(details?.email ?? null) : config.browserSessionsDefaultUrl, email: details?.email ?? null };
       });
     },
     /** Starts the pane's browser in the Google account chosen for it. */
     start(userId, pane, input, traceId, actor) {
       const startSession = async () => {
         const priorYouTube = pane.mode === "YOUTUBE" ? await store.getLatestPaneBrowserSession(pane.id) : null;
+        // A new Job or Marketing Copilot pane opens where the previous one left off: its view and its tabs (only before its own first session).
+        const previous = await options.previousCopilotPane?.(pane) ?? null;
+        const previousPane = previous && !await store.getLatestPaneBrowserSession(pane.id) ? previous : null;
+        const inherited = previousPane ? await store.getLatestPaneBrowserSession(previousPane.id) : null;
+        const restore = inherited ? browserSessionRestoreUrls(inherited) : null;
         const resolved = await adoptPaneSignIn(userId, pane, await resolvePaneBrowserAccount(userId, pane), actor);
         const { selectedProfileId, account } = resolved;
         const sharedProfileKey = account ? undefined : resolved.sharedProfileKey;
@@ -204,8 +216,8 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
             : profileKey ? priorYouTube?.profilePath.endsWith(`/accounts/${profileKey}`) : !priorYouTube?.profilePath.includes("/accounts/");
         const starting = youtubeSessionStarts.get(pane.id) ?? browserSessionManager.startOrRestore({
           pane,
-          viewport: input.viewport,
-          targetUrl: priorYouTube && matchesPriorProfile && !priorYouTube.isActive && (!input.targetUrl || input.targetUrl === "https://www.youtube.com/") ? (priorYouTube.currentUrl ?? priorYouTube.targetUrl) : input.targetUrl,
+          viewport: inherited?.viewport ?? input.viewport,
+          targetUrl: restore?.activeUrl ?? (priorYouTube && matchesPriorProfile && !priorYouTube.isActive && (!input.targetUrl || input.targetUrl === "https://www.youtube.com/") ? (priorYouTube.currentUrl ?? priorYouTube.targetUrl) : input.targetUrl),
           profileKey: profileKey ?? null,
           ...(sharedProfileKey ? { sharedProfileKey } : {}),
           ...(account ? { googleAccount: { ownerUserId: userId, accountId: account.id } } : {}),
@@ -215,7 +227,17 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
           traceId
         }, actor);
         youtubeSessionStarts.set(pane.id, starting);
-        try { return await starting; }
+        try {
+          const session = await starting;
+          // shortcut: at most 20 inherited tabs (each opening refreshes the tab list); raise it if operators keep more open.
+          const background = restore?.backgroundUrls.slice(0, restore.activeUrl ? 19 : 20) ?? [];
+          // Opened one by one after the start answers, so the pane shows at once; a tab that fails to open is skipped.
+          if (background.length > 0 && browserSessionManager.createPage) {
+            void background.reduce<Promise<void>>((chain, url) => chain.then(() =>
+              browserSessionManager.createPage!(pane, url, false, traceId, actor).then(() => undefined, () => undefined)), Promise.resolve());
+          }
+          return session;
+        }
         finally { if (youtubeSessionStarts.get(pane.id) === starting) youtubeSessionStarts.delete(pane.id); }
       };
       return withYouTubeAccountLock(pane.id, startSession);
@@ -225,7 +247,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
     const { id } = parseQuery(idParamSchema, request.params);
     const pane = await getPaneById(store, id);
-    if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
+    if (!googleAccountPaneModes.has(pane.mode)) throw new SpaceConflictError("Google account selection requires a Browser or Job Copilot pane.");
     return accountControl.list(request.user.id, pane);
   });
   app.put("/api/panes/:id/browser/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
@@ -233,8 +255,11 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     const { id } = parseQuery(idParamSchema, request.params);
     const { profileId, signIn } = parseBody(selectYouTubeAccountSchema, request.body);
     const pane = await getPaneById(store, id);
-    if (pane.mode !== "BROWSER") throw new SpaceConflictError("Google account selection requires a Browser pane.");
-    return accountControl.select(request.user.id, pane, profileId, signIn, request.requestIdForSpace, operatorBrowserActor(request));
+    if (!googleAccountPaneModes.has(pane.mode)) throw new SpaceConflictError("Google account selection requires a Browser or Job Copilot pane.");
+    const { email, ...selected } = await accountControl.select(request.user.id, pane, profileId, signIn, request.requestIdForSpace, operatorBrowserActor(request));
+    // A Job Copilot pane's account is also the copilot's Google account for mail and calendar.
+    if (pane.mode === "JOB_APPLY" && email) await options.onJobCopilotAccountSelected?.(request.user.id, email);
+    return selected;
   });
   app.get("/api/panes/:id/youtube/accounts", defaultRouteRateLimitOptions, async (request, reply) => {
     if (request.user?.role !== "ADMIN") return sendApiError(reply, 403, "ADMIN_REQUIRED", "Google account selection requires the ADMIN role.");
@@ -342,7 +367,7 @@ export function registerPaneBrowserRoutes(app: FastifyInstance, options: {
     assertBrowserPaneCompatible(pane);
     // A stopped browser (including closing its last tab) stays empty across
     // reloads and viewers. Starting Chrome requires an explicit +/navigation.
-    if (pane.mode === "BROWSER" || pane.mode === "JOB_APPLY") {
+    if (pane.mode === "BROWSER" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT") {
       const prior = await store.getLatestPaneBrowserSession(pane.id);
       if (prior?.status === "CLOSED" && !prior.isActive) {
         return { session: { ...prior, pages: [], activePageId: null }, frame: null, websocket: null };

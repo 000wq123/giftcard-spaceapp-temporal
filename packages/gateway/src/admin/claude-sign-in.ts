@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { GatewayRepository } from "@space/db";
 import type { AccountPool } from "../accounts/account-pool.js";
 import type { CredentialCipher } from "../credential-cipher.js";
+import { checkClaudeApiKey, isClaudeApiKeyAccount } from "../providers/claude/api-key.js";
 import { claudeCredentialsFromTokens } from "../providers/claude/credentials.js";
 import {
   buildClaudeAuthorizationUrl, ClaudeOAuthError, exchangeClaudeCode, generateClaudePkce, parseClaudeAuthorizationCode, type ClaudeTokens
@@ -52,10 +53,11 @@ export function registerClaudeSignInRoutes(app: FastifyInstance, options: Claude
       credentialsExpiresAt: credentials.accessExpiresAtMs ? new Date(credentials.accessExpiresAtMs).toISOString() : null,
       source: "OAUTH", sourceRef: null, lastRefreshAt: new Date(now()).toISOString()
     });
-    options.pool.invalidate();
+    options.pool.signedIn(saved.id);
     await fetchClaudeUsage(credentials.accessToken, options.fetchImpl).then((usage) => storeClaudeUsage(options.repository, saved, usage)).catch(() => undefined);
     options.pool.invalidate();
-    return (await options.repository.listAccounts()).find((account) => account.id === saved.id) ?? saved;
+    // Read back through the pool, which pauses a free-plan account before anyone sees it active.
+    return (await options.pool.accounts()).find((account) => account.id === saved.id) ?? saved;
   }
 
   const fail = (reply: FastifyReply, error: unknown) => {
@@ -95,12 +97,20 @@ export function registerClaudeSignInRoutes(app: FastifyInstance, options: Claude
 }
 
 /** Account test (a token check that spends no usage) and usage refresh for Claude accounts. */
-export function claudeAccountActions(options: { repository: GatewayRepository; pool: AccountPool; fetchImpl?: typeof fetch; now?: () => number }): ProviderAccountActions {
+export function claudeAccountActions(options: { repository: GatewayRepository; pool: AccountPool; fetchImpl?: typeof fetch; now?: () => number;
+  upstreamBaseUrl?: string }): ProviderAccountActions {
   const now = options.now ?? Date.now;
   return {
     async test(account) {
       const startedAt = now();
       const credentials = await options.pool.credentials(account);
+      if (isClaudeApiKeyAccount(account)) {
+        // The free model list: a working key answers 200, a revoked one 401, exhausted credits still 200.
+        const check = await checkClaudeApiKey(credentials.accessToken, options.fetchImpl, options.upstreamBaseUrl);
+        if (check.ok) await options.pool.markSuccess(account.id);
+        return { ok: check.ok, model: null, status: check.status || 502, latencyMs: now() - startedAt,
+          error: check.ok ? null : check.status === 0 ? "Anthropic could not be reached." : `Anthropic answered HTTP ${check.status}`, planType: account.planType };
+      }
       try {
         const profile = await fetchClaudeProfile(credentials.accessToken, options.fetchImpl);
         await options.pool.markSuccess(account.id);
@@ -112,6 +122,7 @@ export function claudeAccountActions(options: { repository: GatewayRepository; p
       }
     },
     async refreshUsage(account) {
+      if (isClaudeApiKeyAccount(account)) return; // An API key has no plan usage windows.
       await refreshClaudeAccountUsage({ repository: options.repository, pool: options.pool, account, fetchImpl: options.fetchImpl });
     }
   };

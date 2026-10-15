@@ -8,7 +8,7 @@ import {
   type ReactNode
 } from "react";
 import {
-  AlertCircle,
+  Info,
   CheckCircle2,
   CircleAlert,
   Layers,
@@ -16,7 +16,7 @@ import {
   Maximize2,
   Minimize2,
   Search,
-  TriangleAlert,
+  AlertTriangle,
   X,
   type LucideIcon
 } from "../ui-theme/app-icons.js";
@@ -198,7 +198,7 @@ export function DockState({ kind, icon, title, detail, action, className }: {
   action?: DockStateAction;
   className?: string;
 }) {
-  const Icon = kind === "loading" ? Loader2 : icon ?? (kind === "error" ? TriangleAlert : Layers);
+  const Icon = kind === "loading" ? Loader2 : icon ?? (kind === "error" ? CircleAlert : Layers);
   return (
     <div className={cx("dock-kit-state", `is-${kind}`, className)} role={kind === "error" ? "alert" : "status"}>
       <span className="dock-kit-state-icon" aria-hidden="true">
@@ -221,7 +221,7 @@ export function DockNotice({ tone = "error", children, onDismiss, className }: {
   onDismiss?: () => void;
   className?: string;
 }) {
-  const Icon = tone === "error" ? CircleAlert : tone === "warning" ? TriangleAlert : tone === "success" ? CheckCircle2 : AlertCircle;
+  const Icon = tone === "error" ? CircleAlert : tone === "warning" ? AlertTriangle : tone === "success" ? CheckCircle2 : Info;
   return (
     <div className={cx("dock-kit-notice", `is-${tone}`, className)} role={tone === "error" ? "alert" : "status"}>
       <Icon aria-hidden="true" />

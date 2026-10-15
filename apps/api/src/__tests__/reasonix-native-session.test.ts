@@ -36,6 +36,9 @@ describe("reasonixNativeSessionRefPattern", () => {
     expect(reasonixNativeSessionRefPattern.test("a".repeat(32))).toBe(false);
     expect(reasonixNativeSessionRefPattern.test("/var/lib/spaceapp-user/.reasonix/projects/-etc/sessions/x.txt")).toBe(false);
     expect(reasonixNativeSessionRefPattern.test("")).toBe(false);
+    expect(reasonixNativeSessionRefPattern.test("/var/lib/spaceapp-cli/.reasonix/projects/-workspaces-demo/sessions/a.jsonl")).toBe(true);
+    expect(reasonixNativeSessionRefPattern.test("/home/../etc/.reasonix/projects/p/sessions/a.jsonl")).toBe(false);
+    expect(reasonixNativeSessionRefPattern.test("relative/.reasonix/projects/p/sessions/a.jsonl")).toBe(false);
   });
 });
 

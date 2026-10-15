@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { setSnipRailOpen } from "../desktop-widgets/widget-storage.js";
 
 // Snip Tool visibility and its PrintScreen shortcut (keyboard and the desktop bridge).
 
@@ -17,6 +18,8 @@ export function useSnipTool(): SnipTool {
     } else {
       document.body.removeAttribute("data-snip-tool-active");
     }
+    // A Snip Tool docked on the right rail holds its slot only while it is open.
+    setSnipRailOpen(isSnipToolOpen);
   }, [isSnipToolOpen]);
 
   const snipToolInitialModeRef = useRef<"float" | "capturing">("float");

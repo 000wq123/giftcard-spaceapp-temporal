@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { GatewayAccount } from "@space/contracts";
 import { writeClipboardText } from "../clipboard-dock/clipboard-events.js";
 import { Check, Copy } from "../ui-theme/app-icons.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
@@ -22,8 +23,10 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 type SignInMethod = "device" | "browser" | "import";
+/** A finished sign-in: the account's label and, when the gateway named it, its id. */
+type OnConnected = (label: string, accountId?: string) => void;
 
-function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; onConnected: (label: string) => void }) {
+function AddCodexAccount({ client, onConnected, title = "Add a ChatGPT (Codex) account" }: { client: SpaceGatewayClient; onConnected: OnConnected; title?: string }) {
   const [method, setMethod] = useState<SignInMethod>("device");
   const [device, setDevice] = useState<{ flowId: string; verificationUrl: string; userCode: string; intervalSeconds: number } | null>(null);
   const [browser, setBrowser] = useState<{ flowId: string; authorizationUrl: string } | null>(null);
@@ -41,7 +44,7 @@ function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; 
         if (result.status === "CONNECTED") {
           setDevice(null);
           setMessage({ tone: "ok", text: `Connected ${result.account?.label ?? "the account"}.` });
-          onConnected(result.account?.label ?? "");
+          onConnected(result.account?.label ?? "", result.account?.id);
         } else if (result.status === "EXPIRED") {
           setDevice(null);
           setMessage({ tone: "error", text: "The code expired. Start again." });
@@ -58,8 +61,8 @@ function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; 
   }
 
   return (
-    <section className="space-gateway-add" aria-label="Add a Codex account">
-      <h3>Add a ChatGPT (Codex) account</h3>
+    <section className="space-gateway-add" aria-label={title}>
+      <h3>{title}</h3>
       <div className="filter-tabs" role="tablist" aria-label="Sign-in method">
         {([["device", "Sign in with a code"], ["browser", "Sign in with the browser"], ["import", "Import auth.json"]] as const).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={method === id} className={`filter-tab${method === id ? " active" : ""}`}
@@ -88,7 +91,7 @@ function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; 
             const result = await client.completeBrowserSignIn(browser.flowId, callbackUrl.trim());
             setBrowser(null); setCallbackUrl("");
             setMessage({ tone: "ok", text: `Connected ${result.account.label}.` });
-            onConnected(result.account.label);
+            onConnected(result.account.label, result.account.id);
           }, "Could not finish sign-in.");
         }}>
           <span>1. <a href={browser.authorizationUrl} target="_blank" rel="noreferrer">Open the ChatGPT sign-in page</a>
@@ -110,7 +113,7 @@ function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; 
             const result = await client.importAuthJson(authJson);
             setAuthJson("");
             setMessage({ tone: "ok", text: `Imported ${result.account.label}.` });
-            onConnected(result.account.label);
+            onConnected(result.account.label, result.account.id);
           }, "Could not import the file.");
         }}>
           <label className="space-gateway-field">Contents of a Codex auth.json
@@ -125,7 +128,10 @@ function AddCodexAccount({ client, onConnected }: { client: SpaceGatewayClient; 
   );
 }
 
-function AddClaudeAccount({ client, onConnected }: { client: SpaceGatewayClient; onConnected: (label: string) => void }) {
+function AddClaudeAccount({ client, onConnected, initialMethod = "sign-in", title = "Add a Claude account" }: {
+  client: SpaceGatewayClient; onConnected: OnConnected; initialMethod?: "sign-in" | "api-key"; title?: string;
+}) {
+  const [method, setMethod] = useState<"sign-in" | "api-key">(initialMethod);
   const [flow, setFlow] = useState<{ flowId: string; authorizationUrl: string } | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -137,9 +143,26 @@ function AddClaudeAccount({ client, onConnected }: { client: SpaceGatewayClient;
     try { await action(); } catch (reason) { setMessage({ tone: "error", text: errorText(reason, failure) }); } finally { setBusy(false); }
   }
 
+  const methodTabs = (
+    <div className="filter-tabs" role="tablist" aria-label="How to add the Claude account">
+      {([["sign-in", "Sign in"], ["api-key", "API key"]] as const).map(([id, label]) => (
+        <button key={id} type="button" role="tab" aria-selected={method === id} className={`filter-tab${method === id ? " active" : ""}`}
+          onClick={() => setMethod(id)}>{label}</button>
+      ))}
+    </div>
+  );
+  if (method === "api-key") {
+    return (
+      <>
+        {methodTabs}
+        <AddOpenAiApiKey client={client} onConnected={onConnected} provider="CLAUDE" />
+      </>
+    );
+  }
   return (
-    <section className="space-gateway-add" aria-label="Add a Claude account">
-      <h3>Add a Claude account</h3>
+    <section className="space-gateway-add" aria-label={title}>
+      {methodTabs}
+      <h3>{title}</h3>
       {flow ? (
         <form className="space-gateway-signin" onSubmit={(event) => {
           event.preventDefault();
@@ -147,7 +170,7 @@ function AddClaudeAccount({ client, onConnected }: { client: SpaceGatewayClient;
             const result = await client.completeClaudeSignIn(flow.flowId, code.trim());
             setFlow(null); setCode("");
             setMessage({ tone: "ok", text: `Connected ${result.account.label}.` });
-            onConnected(result.account.label);
+            onConnected(result.account.label, result.account.id);
           }, "Could not finish sign-in.");
         }}>
           <span>1. <a href={flow.authorizationUrl} target="_blank" rel="noreferrer">Open the Claude sign-in page</a>
@@ -171,7 +194,11 @@ function AddClaudeAccount({ client, onConnected }: { client: SpaceGatewayClient;
   );
 }
 
-function AddAntigravityAccount({ client, onConnected }: { client: SpaceGatewayClient; onConnected: (label: string) => void }) {
+function AddAntigravityAccount({ client, onConnected, title = "Add an Antigravity account", reconnect = false }: {
+  client: SpaceGatewayClient; onConnected: OnConnected; title?: string;
+  /** Profiles already in Space Gateway can pass their current sign-in again. */
+  reconnect?: boolean;
+}) {
   const [profiles, setProfiles] = useState<Array<{ profileId: string; email: string | null; inGateway: boolean }> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -187,7 +214,7 @@ function AddAntigravityAccount({ client, onConnected }: { client: SpaceGatewayCl
     try {
       const result = await client.importAntigravityProfile(profileId);
       setMessage({ tone: "ok", text: `Connected ${result.account.label}.` });
-      onConnected(result.account.label);
+      onConnected(result.account.label, result.account.id);
       await load();
     } catch (reason) {
       setMessage({ tone: "error", text: errorText(reason, "Could not add the account.") });
@@ -197,8 +224,8 @@ function AddAntigravityAccount({ client, onConnected }: { client: SpaceGatewayCl
   }
 
   return (
-    <section className="space-gateway-add" aria-label="Add an Antigravity account">
-      <h3>Add an Antigravity account</h3>
+    <section className="space-gateway-add" aria-label={title}>
+      <h3>{title}</h3>
       <p className="space-gateway-note">Antigravity accounts come from the Antigravity profiles signed in on this server. The profile keeps working: Google sign-ins can be shared.</p>
       {profiles === null ? <p className="space-gateway-empty">Loading profiles…</p>
         : profiles.length === 0 ? <p className="space-gateway-empty">No Antigravity profile is signed in. Sign one in from CLI accounts first.</p>
@@ -207,10 +234,10 @@ function AddAntigravityAccount({ client, onConnected }: { client: SpaceGatewayCl
               <li key={profile.profileId}>
                 <span>{profile.email ?? profile.profileId}</span>
                 <span className="space-gateway-chip">{profile.profileId}</span>
-                {profile.inGateway
+                {profile.inGateway && !reconnect
                   ? <span className="space-gateway-chip tone-ok">In Space Gateway</span>
                   : <button type="button" className="space-gateway-button" disabled={busy !== null}
-                    onClick={() => void add(profile.profileId)}>{busy === profile.profileId ? "Adding…" : "Add to Space Gateway"}</button>}
+                    onClick={() => void add(profile.profileId)}>{busy === profile.profileId ? "Adding…" : reconnect ? "Use this profile's sign-in" : "Add to Space Gateway"}</button>}
               </li>
             ))}
           </ul>}
@@ -225,12 +252,18 @@ const apiKeyProviders = {
   OPENROUTER: { title: "Add an OpenRouter API key", placeholder: "sk-or-…",
     note: "OpenRouter keys form a key pool at /pools/openrouter/v1: each request uses one key and moves to another when a key is out of credit, rate limited or rejected. The key is checked with a free request and stored encrypted." },
   DEEPSEEK: { title: "Add a DeepSeek API key", placeholder: "sk-…",
-    note: "DeepSeek keys form a key pool at /pools/deepseek/v1, rotated per request with failover. The key is checked with a free balance request and stored encrypted." }
+    note: "DeepSeek keys form a key pool at /pools/deepseek/v1, rotated per request with failover. The key is checked with a free balance request and stored encrypted." },
+  CLAUDE: { title: "Add a Claude API key", placeholder: "sk-ant-…",
+    note: "Paid per token. Space Gateway uses the key only while Claude API key fallback (Settings › Routing) is on and every pooled Claude account is out of quota; the accounts take over again at their next reset. The key is checked with a free request and stored encrypted; it is never shown again." }
 } as const;
 
-function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API" }: { client: SpaceGatewayClient; onConnected: (label: string) => void;
-  provider?: keyof typeof apiKeyProviders }) {
-  const text = apiKeyProviders[provider];
+const spaceKeyButtons: Partial<Record<keyof typeof apiKeyProviders, string>> = {
+  OPENAI_API: "Use this server's OpenAI key", CLAUDE: "Use this server's Claude key"
+};
+
+function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API", title, note }: { client: SpaceGatewayClient; onConnected: OnConnected;
+  provider?: keyof typeof apiKeyProviders; title?: string; note?: string }) {
+  const text = { ...apiKeyProviders[provider], ...(title ? { title } : {}), ...(note ? { note } : {}) };
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -242,7 +275,7 @@ function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API" }: { cli
       const result = await client.addOpenAiApiKey({ provider, ...input });
       setApiKey("");
       setMessage({ tone: "ok", text: `Connected ${result.account.label}.` });
-      onConnected(result.account.label);
+      onConnected(result.account.label, result.account.id);
     } catch (reason) {
       setMessage({ tone: "error", text: errorText(reason, "Could not add the key.") });
     } finally {
@@ -260,8 +293,8 @@ function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API" }: { cli
         </label>
         <div className="space-gateway-toolbar">
           <button type="submit" className="space-gateway-button primary" disabled={busy || apiKey.trim().length < 20}>Add key</button>
-          {provider === "OPENAI_API"
-            ? <button type="button" className="space-gateway-button" disabled={busy} onClick={() => void add({ useSpaceKey: true })}>Use this server's OpenAI key</button>
+          {spaceKeyButtons[provider]
+            ? <button type="button" className="space-gateway-button" disabled={busy} onClick={() => void add({ useSpaceKey: true })}>{spaceKeyButtons[provider]}</button>
             : null}
         </div>
       </form>
@@ -270,8 +303,12 @@ function AddOpenAiApiKey({ client, onConnected, provider = "OPENAI_API" }: { cli
   );
 }
 
-export function AddAccount({ client, onConnected }: { client: SpaceGatewayClient; onConnected: (label: string) => void }) {
-  const [provider, setProvider] = useState<"CODEX" | "CLAUDE" | "ANTIGRAVITY" | "OPENAI_API" | "OPENROUTER" | "DEEPSEEK">("CODEX");
+type AddProvider = "CODEX" | "CLAUDE" | "ANTIGRAVITY" | "OPENAI_API" | "OPENROUTER" | "DEEPSEEK";
+
+export function AddAccount({ client, onConnected, initialProvider = "CODEX", initialClaudeMethod }: {
+  client: SpaceGatewayClient; onConnected: OnConnected; initialProvider?: AddProvider; initialClaudeMethod?: "sign-in" | "api-key";
+}) {
+  const [provider, setProvider] = useState<AddProvider>(initialProvider);
   return (
     <>
       <div className="filter-tabs" role="tablist" aria-label="Provider to add">
@@ -282,9 +319,29 @@ export function AddAccount({ client, onConnected }: { client: SpaceGatewayClient
         ))}
       </div>
       {provider === "CODEX" ? <AddCodexAccount client={client} onConnected={onConnected} />
-        : provider === "CLAUDE" ? <AddClaudeAccount client={client} onConnected={onConnected} />
+        : provider === "CLAUDE" ? <AddClaudeAccount client={client} onConnected={onConnected} initialMethod={initialClaudeMethod} />
           : provider === "ANTIGRAVITY" ? <AddAntigravityAccount client={client} onConnected={onConnected} />
             : <AddOpenAiApiKey key={provider} client={client} onConnected={onConnected} provider={provider} />}
     </>
   );
+}
+
+/**
+ * A new sign-in for an account Space Gateway stopped using (rejected or expired sign-in, deactivated): the provider's
+ * own sign-in, which replaces the account's credentials when the same account signs in. An API key is replaced by a
+ * new key, added as its own account.
+ */
+export function SignInAgain({ client, account, onConnected }: {
+  client: SpaceGatewayClient; account: Pick<GatewayAccount, "provider" | "planType" | "label" | "alias">; onConnected: OnConnected;
+}) {
+  const name = account.alias ?? account.label;
+  if (account.provider === "CODEX") return <AddCodexAccount client={client} onConnected={onConnected} title={`Sign ${name} in again`} />;
+  if (account.provider === "ANTIGRAVITY") return <AddAntigravityAccount client={client} onConnected={onConnected} title={`Sign ${name} in again`} reconnect />;
+  if (account.provider === "CLAUDE" && account.planType !== "api") {
+    return <AddClaudeAccount client={client} onConnected={onConnected} title={`Sign ${name} in again`} />;
+  }
+  const provider = account.provider === "CLAUDE" ? "CLAUDE" : account.provider as keyof typeof apiKeyProviders;
+  if (!(provider in apiKeyProviders)) return <p className="space-gateway-note">Remove this account and add it again from Add account.</p>;
+  return <AddOpenAiApiKey client={client} onConnected={onConnected} provider={provider} title={`Replace ${name}`}
+    note="The provider rejected this key. A new key is checked and added as its own account; remove this one afterwards." />;
 }

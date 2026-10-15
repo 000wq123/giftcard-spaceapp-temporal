@@ -535,9 +535,8 @@ export function registerPaneCliModelRoutes(app: FastifyInstance, options: {
         },
         request.requestIdForSpace
       );
-      // Pane model changes (including Save to memory) must not publish global
-      // defaults: every live Codex multiplexer watches that projection.
-      // Only the explicit /api/cli/codex-defaults route changes shared defaults.
+      // Pane model changes (including Save to memory) stay with this pane: a fresh
+      // Codex session starts on Codex's own configured default.
       const registry = await cliRuntimeRegistryCache.read();
       const runtime = findRuntime(registry, updatedSession.runtimeId);
       if (!runtime) throw new SpaceNotFoundError(`CLI runtime ${updatedSession.runtimeId} was not found.`);

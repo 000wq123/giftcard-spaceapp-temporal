@@ -90,7 +90,7 @@ export function registerEmbeddingsRoute(app: FastifyInstance, helpers: GatewayRo
       if (!upstream.ok) {
         const text = await readBounded(upstream);
         last = { status: upstream.status, text };
-        if (upstream.status === 401) { await options.pool.markPermanentFailure(account, "token_invalidated"); continue; }
+        if (upstream.status === 401) { await options.pool.refreshRejectedToken(account, "token_invalidated"); continue; }
         if (upstream.status === 429) {
           // A key without credit stays out of rotation (quota exceeded); a plain rate limit backs off briefly.
           let error: { code?: unknown; type?: unknown; message?: unknown } = {};

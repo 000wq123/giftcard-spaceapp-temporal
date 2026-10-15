@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import {
@@ -310,6 +310,8 @@ describe("public single-owner setup API", () => {
     });
     expect(legacyLogin.statusCode).toBe(401);
 
+    // Review F16: once claimed, the route refuses before hashing the password or calling the claim.
+    const claimSpy = vi.spyOn(store, "claimOwnerSetup");
     const secondClaim = await app.inject({
       method: "POST",
       url: "/api/setup/claim",
@@ -320,6 +322,7 @@ describe("public single-owner setup API", () => {
       }
     });
     expect(secondClaim.statusCode).toBe(409);
+    expect(claimSpy).not.toHaveBeenCalled();
 
     await app.close();
   }, APP_LIFECYCLE_TIMEOUT_MS);

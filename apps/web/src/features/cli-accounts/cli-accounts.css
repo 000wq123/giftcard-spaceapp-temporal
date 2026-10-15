@@ -136,10 +136,11 @@
   background: linear-gradient(90deg, hsl(16 78% 52%), hsl(45 74% 52%), hsl(80 70% 52%), hsl(142 64% 52%));
 }
 
-/* Pane menu: one list, opened by one click on the trigger. */
+/* Pane menu: one list, opened by one click on the trigger. The picker narrows it further to the pane's width. */
 .terminal-gemini-account-popover.cli-account-menu {
-  width: 17rem;
-  max-width: calc(100vw - 2rem);
+  container: cli-account-menu / inline-size;
+  width: 18.5rem;
+  max-width: calc(100vw - 1rem);
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--cli-account-border);
@@ -201,6 +202,7 @@
   max-height: min(23rem, 62vh);
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
   padding: 0.3rem;
 }
 
@@ -245,19 +247,28 @@
   min-width: 0;
 }
 
+/* Badges move under a long name instead of cutting it. */
 .cli-account-menu-item-name {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.2rem 0.4rem;
   min-width: 0;
 }
 
+/* A name longer than the row wraps once before it is cut. */
 .cli-account-menu-item-name strong {
+  display: -webkit-box;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   font-size: 0.76rem;
   font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .cli-account-active-pill {
@@ -276,7 +287,7 @@
 .cli-account-plan-badge {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 7.5rem;
+  max-width: 100%;
   overflow: hidden;
   padding: 0.06rem 0.32rem;
   border: 1px solid color-mix(in srgb, var(--cli-account-accent) 45%, transparent);
@@ -289,17 +300,24 @@
   white-space: nowrap;
 }
 
+/* Wraps to a second line before it is cut. */
 .cli-account-menu-item-detail {
+  display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   color: var(--cli-account-muted);
   font-size: 0.63rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
+/* "Back in 2h 10m" splits into two even lines, leaving the name its width. */
 .cli-account-menu-item-status {
   justify-self: end;
-  max-width: 5.6rem;
+  max-width: 4.2rem;
+  text-wrap: balance;
   color: var(--cli-account-color);
   font-size: 0.7rem;
   font-weight: 700;
@@ -312,6 +330,77 @@
 .cli-account-menu-item[data-tone="neutral"] .cli-account-menu-item-status,
 .cli-account-menu-item[data-tone="off"] .cli-account-menu-item-status {
   font-weight: 600;
+}
+
+/* Codex: the ChatGPT accounts Space Gateway picks from, shown for their quota only. */
+.cli-account-pool {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: 0.2rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--cli-account-track);
+}
+
+.cli-account-pool-title {
+  padding: 0.1rem 0.5rem 0.15rem;
+  color: var(--cli-account-muted);
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.cli-account-menu-item.is-pooled {
+  min-height: 2.6rem;
+  cursor: default;
+}
+
+.cli-account-menu-item.is-pooled:hover {
+  background: transparent;
+}
+
+/* Narrow panes and small screens: tighter rows keep the name, plan and quota readable. */
+@container cli-account-menu (max-width: 16rem) {
+  .cli-account-menu-head {
+    padding: 0.5rem 0.55rem 0.45rem;
+  }
+
+  .cli-account-menu-list {
+    padding: 0.25rem;
+  }
+
+  .cli-account-menu-item {
+    gap: 0.45rem;
+    padding: 0.38rem 0.4rem;
+  }
+
+  .cli-account-avatar {
+    width: 1.7rem;
+    height: 1.7rem;
+  }
+
+  .cli-account-menu-foot {
+    padding: 0.4rem 0.55rem 0.5rem;
+  }
+}
+
+/* The narrowest panes: the status goes under the quota bar so the name keeps the row's width. */
+@container cli-account-menu (max-width: 14.5rem) {
+  .cli-account-menu-item {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 0.15rem;
+  }
+
+  .cli-account-menu-item > .cli-account-avatar {
+    grid-row: span 2;
+  }
+
+  .cli-account-menu-item-status {
+    grid-column: 2;
+    justify-self: start;
+    max-width: none;
+    text-align: left;
+  }
 }
 
 .cli-account-menu-foot {

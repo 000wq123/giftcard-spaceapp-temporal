@@ -9,6 +9,8 @@ import {
   jobApplicationUpdateSchema,
   jobApplyDiscoverRequestSchema,
   jobApplyEventInputSchema,
+  jobApplyMailboxConnected,
+  jobApplyMailOrganizeSchema,
   jobApplyMemoryCreateSchema,
   jobApplyMemoryQuerySchema,
   jobApplyMemoryUpdateSchema,
@@ -47,7 +49,7 @@ const recordAnswerSchema = z.object({
   source: jobApplyQaSourceSchema.optional()
 }).strict();
 const applicationParamsSchema = z.object({ id: z.string().regex(/^jobapp:[A-Za-z0-9_-]{6,80}$/) }).strict();
-const pacingQuerySchema = z.object({ site: jobApplySiteSchema }).strict();
+const pacingQuerySchema = z.object({ site: jobApplySiteSchema, company: z.string().trim().min(1).max(200).optional() }).strict();
 const mailFilterSchema = {
   fromContains: z.string().trim().min(1).max(200).nullable().optional(),
   subjectContains: z.string().trim().min(1).max(200).nullable().optional(),
@@ -61,6 +63,21 @@ const recentQuerySchema = z.object({
   subjectContains: z.string().trim().min(1).max(200).optional(),
   since: z.string().datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(20).default(10)
+}).strict();
+// `account` names one of the Google accounts allowed for Space; without it a search spans them all and the
+// other tools use the copilot's chosen account.
+const googleAccountField = { account: z.string().trim().toLowerCase().email().max(320).optional() };
+const mailSearchSchema = z.object({ query: z.string().trim().max(300).default(""), limit: z.number().int().min(1).max(25).default(10), ...googleAccountField }).strict();
+const mailReadSchema = z.object({ messageId: z.string().trim().min(1).max(300), ...googleAccountField }).strict();
+const mailDraftSchema = z.object({
+  to: z.array(z.string().trim().email().max(320)).min(1).max(20), subject: z.string().max(300), body: z.string().max(20_000), ...googleAccountField
+}).strict();
+const isoTimeSchema = z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), "Use an ISO 8601 time.");
+const calendarListSchema = z.object({ from: isoTimeSchema.optional(), to: isoTimeSchema.optional(), limit: z.number().int().min(1).max(50).default(20), ...googleAccountField }).strict();
+// Events go to the operator's own calendar only: no attendees, so Google sends no invitation.
+const calendarCreateSchema = z.object({
+  title: z.string().trim().min(1).max(300), start: isoTimeSchema, end: isoTimeSchema, timeZone: z.string().max(80).optional(),
+  location: z.string().max(300).optional(), description: z.string().max(5000).optional(), ...googleAccountField
 }).strict();
 const paneQuerySchema = z.object({ paneId: z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/).optional() }).strict();
 const memoryParamsSchema = z.object({ id: z.string().regex(/^jobmem:[A-Za-z0-9_-]{6,80}$/) }).strict();
@@ -100,7 +117,9 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
       qaBank: profile.qaBank,
       cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
       coverLetter: { artifactId: profile.coverLetterArtifactId, path: coverLetterPath },
-      mailboxConnected: profile.mailbox !== null,
+      mailboxConnected: jobApplyMailboxConnected(profile),
+      google: profile.google,
+      googleAccounts: profile.googleAccounts,
       settings: settings?.settings ?? null
     };
   });
@@ -138,6 +157,14 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
   });
 
   // The operator's earlier campaign tracker, imported with the same parser and status mapping as the pane's Import CSV.
+  app.post(route("applications/check-mail"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const result = await service.checkWithMail(await owner(bridge.claims), { paneId: bridge.claims.paneId });
+    await deps.audit(request, "job_apply.agent.check_mail", bridge.claims.paneId, result);
+    return result;
+  });
+
   app.post(route("applications/import-csv"), routeOptions, async (request, reply) => {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return undefined;
@@ -229,7 +256,7 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     return service.discover(await owner(bridge.claims), input);
   });
 
-  // The run loop: job_next long-polls for the next allowed posting; job_report closes it.
+  // The run loop: space_job_next long-polls for the next allowed posting; space_job_report closes it.
   app.post(route("job/next"), routeOptions, async (request, reply) => {
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return undefined;
@@ -337,7 +364,7 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     if (!bridge) return undefined;
     const query = parseQuery(pacingQuerySchema, request.query ?? {});
     const settings = await paneSettings(bridge.claims.paneId);
-    return service.pacing(await owner(bridge.claims), query.site, settings);
+    return service.pacing(await owner(bridge.claims), query.site, settings, query.company);
   });
 
   app.post(route("mail/wait-code"), routeOptions, async (request, reply) => {
@@ -363,6 +390,68 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     if (!bridge) return undefined;
     const query = parseQuery(recentQuerySchema, request.query ?? {});
     return { messages: await service.recentMail(await owner(bridge.claims), query) };
+  });
+
+  // Gmail and Calendar of the copilot's Google account (Setup → Google account). Content is third-party data;
+  // mail is only drafted (the operator sends it from Gmail) and events invite nobody.
+  app.post(route("mail/search"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(mailSearchSchema, request.body ?? {});
+    return service.googleTool(await owner(bridge.claims), "mail.search", input);
+  });
+
+  app.post(route("mail/read"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(mailReadSchema, request.body ?? {});
+    return service.googleTool(await owner(bridge.claims), "mail.read", input);
+  });
+
+  app.post(route("mail/draft"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(mailDraftSchema, request.body ?? {});
+    const result = await service.googleTool(await owner(bridge.claims), "mail.draft", input);
+    await deps.audit(request, "job_apply.agent.mail_draft", bridge.claims.paneId, { recipients: input.to.length });
+    return result;
+  });
+
+  // Mail triage: file application emails under the Job Applications labels (never deletes). A pass also runs
+  // on the server every 15 minutes; the copilot can trigger one and file what the rules missed.
+  app.post(route("mail/organize"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(jobApplyMailOrganizeSchema, request.body ?? {});
+    const result = await service.organizeMail(await owner(bridge.claims), input, { paneId: bridge.claims.paneId });
+    await deps.audit(request, "job_apply.agent.mail_organize", bridge.claims.paneId, { category: result.category, count: result.organized, archived: result.archived });
+    return result;
+  });
+
+  app.post(route("mail/triage"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    parseBody(z.object({}).strict(), request.body ?? {});
+    const result = await service.triageMail(await owner(bridge.claims), { paneId: bridge.claims.paneId });
+    await deps.audit(request, "job_apply.agent.mail_triage", bridge.claims.paneId, { ...result, accounts: result.accounts.length });
+    return result;
+  });
+
+  app.post(route("calendar/list"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(calendarListSchema, request.body ?? {});
+    return service.googleTool(await owner(bridge.claims), "calendar.list", input);
+  });
+
+  app.post(route("calendar/create"), routeOptions, async (request, reply) => {
+    const bridge = await deps.requireBridge(request, reply);
+    if (!bridge) return undefined;
+    const input = parseBody(calendarCreateSchema, request.body ?? {});
+    if (Date.parse(input.end) <= Date.parse(input.start)) throw new SpaceConflictError("The event must end after it starts.");
+    const result = await service.googleTool(await owner(bridge.claims), "calendar.create", input);
+    await deps.audit(request, "job_apply.agent.calendar_create", bridge.claims.paneId, {});
+    return result;
   });
 
   // Handoff state of the pane browser: the agent waits here while an operator solves a CAPTCHA or signs in.

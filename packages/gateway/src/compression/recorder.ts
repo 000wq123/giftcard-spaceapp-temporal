@@ -3,10 +3,10 @@ import type { GatewayCompressionRow, GatewayCompressionSignalRow } from "@space/
 import type { CompressionOutcome } from "./engine.js";
 
 /**
- * One evaluated request as hourly rollup rows: a request row (strategy '') plus one row per strategy used. Blocks
- * measured in Shadow inside an ON request (code and prose compression under review) count as Shadow rows.
+ * One evaluated request as hourly rollup rows: a request row (strategy '') plus one row per strategy used. Rows are
+ * mode ON; the SHADOW rows in the tables are history from before Shadow was removed (2026-10-13).
  */
-export function compressionRows(outcome: CompressionOutcome, input: { at: string; mode: "SHADOW" | "ON"; provider: string }): GatewayCompressionRow[] {
+export function compressionRows(outcome: CompressionOutcome, input: { at: string; mode: "ON"; provider: string }): GatewayCompressionRow[] {
   const base = { hour: input.at, mode: input.mode, provider: input.provider, requests: 0, modifiedRequests: 0, blocks: 0, rejectedBlocks: 0,
     errorBlocks: 0, timedOut: 0, originalTokens: 0, compressedTokens: 0, overheadMs: 0, maxOverheadMs: 0 };
   const rows = new Map<string, GatewayCompressionRow>();
@@ -15,15 +15,16 @@ export function compressionRows(outcome: CompressionOutcome, input: { at: string
     overheadMs: outcome.durationMs, maxOverheadMs: outcome.durationMs });
   for (const block of outcome.blocks) {
     const action = block.action;
-    if (action.kind !== "compressed" && action.kind !== "rejected_not_smaller" && action.kind !== "error") continue;
-    const mode = action.shadow ? "SHADOW" : input.mode;
+    if (action.kind !== "compressed" && action.kind !== "rejected_not_smaller" && action.kind !== "rejected_protected_lines"
+      && action.kind !== "rejected_invalid_json" && action.kind !== "error") continue;
+    const mode = input.mode;
     const key = `${mode}:${action.strategy}`;
     const row = rows.get(key) ?? { ...base, mode, strategy: action.strategy };
     if (action.kind === "compressed") {
       row.blocks += 1;
       row.originalTokens += action.originalTokens;
       row.compressedTokens += action.compressedTokens;
-    } else if (action.kind === "rejected_not_smaller") row.rejectedBlocks += 1;
+    } else if (action.kind === "rejected_not_smaller" || action.kind === "rejected_protected_lines" || action.kind === "rejected_invalid_json") row.rejectedBlocks += 1;
     else row.errorBlocks += 1;
     rows.set(key, row);
   }
@@ -31,7 +32,7 @@ export function compressionRows(outcome: CompressionOutcome, input: { at: string
 }
 
 /** Waste signal tokens and pipeline stage timings of one evaluated request, as hourly rollup rows. */
-export function compressionSignalRows(outcome: CompressionOutcome, input: { at: string; mode: "SHADOW" | "ON"; provider: string }): GatewayCompressionSignalRow[] {
+export function compressionSignalRows(outcome: CompressionOutcome, input: { at: string; mode: "ON"; provider: string }): GatewayCompressionSignalRow[] {
   const base = { hour: input.at, mode: input.mode, provider: input.provider };
   const rows: GatewayCompressionSignalRow[] = [];
   for (const [name, tokens] of Object.entries(outcome.waste)) if (tokens > 0) rows.push({ ...base, kind: "waste", name, count: 1, value: tokens, maxValue: tokens });
@@ -43,7 +44,7 @@ export function compressionSignalRows(outcome: CompressionOutcome, input: { at: 
 
 /** What a request log keeps of a compression run: the strategies that changed it and the waste found. */
 export function compressionDetail(outcome: CompressionOutcome): GatewayRequestLog["compressionDetail"] {
-  const strategies = [...new Set(outcome.blocks.flatMap((block) => (block.action.kind === "compressed" && !block.action.shadow ? [block.action.strategy] : [])))];
+  const strategies = [...new Set(outcome.blocks.flatMap((block) => (block.action.kind === "compressed" ? [block.action.strategy] : [])))];
   const waste = Object.fromEntries(Object.entries(outcome.waste).filter(([, tokens]) => tokens > 0).map(([name, tokens]) => [name, Math.round(tokens)]));
   return strategies.length === 0 && Object.keys(waste).length === 0 ? null : { strategies, waste };
 }

@@ -43,9 +43,41 @@ export function claudeStatusLabel(account: ClaudeUsageAccount): string {
     case "CONNECTED": return "Connected";
     case "NOT_CONNECTED": return "Not signed in";
     case "EXPIRED": return "Sign-in expired";
-    case "API_KEY": return "API key";
+    case "API_KEY": return account.apiKeyVerified === false ? "API key rejected" : account.apiKeyVerified ? "Connected · API key" : "API key";
     case "GATEWAY": return "Space Gateway";
     default: return "Unavailable";
+  }
+}
+
+/** What Space Gateway sent through the key: nothing while a subscription account could serve. */
+export function claudeApiKeyUsageText(account: ClaudeUsageAccount, clock: number): string | null {
+  const usage = account.apiKeyUsage;
+  if (!usage) return null;
+  if (usage.requests === 0 && !usage.lastUsedAt) return "Never used by Space Gateway.";
+  const last = usage.lastUsedAt ? formatAgoShort(usage.lastUsedAt, clock) : null;
+  const cost = usage.costUsd >= 0.005 ? ` ($${usage.costUsd.toFixed(2)})` : "";
+  return `Used ${usage.requests} ${usage.requests === 1 ? "time" : "times"} through Space Gateway${cost}${last ? `, last ${last}` : ""}.`;
+}
+
+function formatAgoShort(value: string, clock: number): string {
+  const ms = clock - Date.parse(value);
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+/** Panes never pick the key on their own; Space Gateway may fall back to it when every pooled account is out of quota. */
+export function claudeApiKeyHint(account: ClaudeUsageAccount, clock = Date.now()): string {
+  const key = account.apiKeyVerified === false ? "Anthropic rejected this API key." : "Paid per token; panes never choose it automatically.";
+  const used = claudeApiKeyUsageText(account, clock);
+  const usage = used ? ` ${used}` : "";
+  switch (account.gatewayFallback) {
+    case "ON": return `${key} Space Gateway uses it while every pooled Claude account is out of quota, and returns to the accounts at their reset.${usage}`;
+    case "OFF": return `${key} Space Gateway fallback is off (Space Gateway › Settings › Routing).${usage}`;
+    case "NOT_ADDED": return `${key} Add it to Space Gateway (Accounts › Add account › Claude › API key) to serve requests when every account is out of quota.`;
+    default: return `${key}${usage}`;
   }
 }
 
@@ -53,7 +85,7 @@ export function claudeStatusHint(account: ClaudeUsageAccount): string {
   switch (account.status) {
     case "NOT_CONNECTED": return "Sign in from a Claude pane that uses this profile.";
     case "EXPIRED": return "Open a Claude pane on this profile to renew the sign-in.";
-    case "API_KEY": return "Paid per token through an API key; never chosen automatically.";
+    case "API_KEY": return claudeApiKeyHint(account);
     case "GATEWAY": return "Space Gateway picks one of its pooled Claude accounts for each request.";
     default: return "Usage is temporarily unavailable.";
   }
@@ -132,7 +164,7 @@ export function claudeAccountEntries(accounts: ClaudeUsageAccount[], clock: numb
       details: details(account.email !== account.label ? account.email : null, account.plan),
       availability: connected ? classifyQuota(account, clock) : offline,
       offlineLabel: claudeStatusLabel(account),
-      hint: claudeStatusHint(account),
+      hint: account.status === "API_KEY" ? claudeApiKeyHint(account, clock) : claudeStatusHint(account),
       rows: connected
         ? [{ key: "claude", label: null, quota: account, threshold: ACCOUNT_AVAILABLE_THRESHOLD_PERCENT, weeklyScope: account.weeklyScope }]
         : [],

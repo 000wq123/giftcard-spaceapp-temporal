@@ -9,7 +9,7 @@ import {
   FileAudio,
   Image as ImageIcon,
   Archive,
-  Edit,
+  Pencil,
   Eye,
   Trash2,
   Download,
@@ -19,7 +19,7 @@ import {
   ArrowDown,
   Copy,
   Check,
-  Edit2
+  TextCursorInput
 } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
@@ -359,7 +359,7 @@ export function FileListView({
                             onEditEntry(entry);
                           }}
                         >
-                          <Edit size={14} />
+                          <Pencil size={14} />
                         </button>
                       )}
 
@@ -387,7 +387,7 @@ export function FileListView({
                             onRenameEntry(entry);
                           }}
                         >
-                          <Edit size={13} style={{ opacity: 0.8 }} />
+                          <TextCursorInput size={13} style={{ opacity: 0.8 }} />
                         </button>
                       )}
 
@@ -559,7 +559,7 @@ export function FileListView({
                     onEditEntry(contextMenu.entry);
                   }}
                 >
-                  <Edit size={14} />
+                  <Pencil size={14} />
                   <span>Edit</span>
                 </button>
               )}
@@ -572,7 +572,7 @@ export function FileListView({
                   onRenameEntry(contextMenu.entry);
                 }}
               >
-                <Edit2 size={14} />
+                <TextCursorInput size={14} />
                 <span>Rename</span>
               </button>
 

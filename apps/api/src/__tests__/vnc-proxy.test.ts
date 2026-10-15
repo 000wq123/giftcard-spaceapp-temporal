@@ -13,7 +13,7 @@ describe("vnc-proxy", () => {
   });
 
   it("accepts private IPv4 targets", () => {
-    expect(() => assertSafeVncTarget("192.0.2.20")).not.toThrow();
+    expect(() => assertSafeVncTarget("10.20.0.20")).not.toThrow();
     expect(() => assertSafeVncTarget("172.16.5.5")).not.toThrow();
     expect(() => assertSafeVncTarget("192.168.1.50")).not.toThrow();
     expect(() => assertSafeVncTarget("127.0.0.1")).not.toThrow();

@@ -33,6 +33,10 @@ import { recordAudit } from "./request-audit.js";
 import { headerString } from "./request-helpers.js";
 import { parseBody, parseQuery } from "./route-parsing.js";
 import { registerJobApplyAgentRoutes } from "./job-apply/agent-routes.js";
+import { registerMailCopilotAgentRoutes } from "./mail-copilot/agent-routes.js";
+import type { MailCopilotService } from "./mail-copilot/service.js";
+import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-routes.js";
+import type { MarketingCopilotService } from "./marketing-copilot/service.js";
 import type { JobApplyService } from "./job-apply/service.js";
 import { isT3AgentSessionId, t3AgentPrincipal, T3_AGENT_RUNTIME_ID } from "./t3code/agent-tokens.js";
 
@@ -50,6 +54,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   routeOptions: Pick<RouteShorthandOptions, "config">;
   /** Job Applications tools share the pane bridge token; see job-apply/agent-routes.ts. */
   jobApplyService?: JobApplyService;
+  mailCopilotService?: MailCopilotService;
+  marketingCopilotService?: MarketingCopilotService;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
 }) {
@@ -102,6 +108,26 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       parseBody,
       parseQuery,
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "job_apply", targetId, metadata })
+    });
+  }
+  if (deps.mailCopilotService) {
+    registerMailCopilotAgentRoutes(app, deps.mailCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "mail_copilot", targetId, metadata })
+    });
+  }
+  if (deps.marketingCopilotService) {
+    registerMarketingCopilotAgentRoutes(app, deps.marketingCopilotService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "marketing_copilot", targetId, metadata })
     });
   }
   async function requireCliAgentFilesContext(request: FastifyRequest, reply: FastifyReply) {
@@ -548,7 +574,9 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
           requestedByType: "AGENT",
           requestedById: actorId,
           reason: `${input.command.kind}: ${input.command.reason}`.slice(0, 500),
-          ttlSeconds: 300
+          // A login or MFA needs the operator to come to the pane and a phone; five minutes ran out before
+          // they arrived and "Take control" then had nothing to accept. The agent waits up to 15 minutes.
+          ttlSeconds: 1800
         });
         const handoffEvent = (await store.listEvents(pane.roomId)).find((event) => event.traceId === handoff.handoffRequestId);
         if (handoffEvent) eventBus.publish(handoffEvent);

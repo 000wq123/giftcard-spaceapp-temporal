@@ -2,14 +2,16 @@ import type {} from "./request-context.js";
 import type { FastifyInstance, RouteShorthandOptions } from "fastify";
 import { z } from "zod";
 import {
-  type AuthUser, roomAgentControlInputSchema, roomAgentMessageInputSchema, roomAgentStartMissionInputSchema,
+  type AuthUser, type RoomAgentEvent, type RoomAgentSession, roomAgentControlInputSchema, roomAgentMessageInputSchema, roomAgentStartMissionInputSchema,
   roomAgentStopInputSchema
 } from "@space/contracts";
-import type { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
-import { SpaceConflictError, type SpaceStore } from "@space/runtime";
+import type { InMemoryControlRepository, PostgresControlRepository, RoomAgentMonitorRepository } from "@space/db";
+import { SpaceConflictError, SpaceNotFoundError, type SpaceStore } from "@space/runtime";
 import { operatorBrowserActor } from "./browser-actors.js";
 import { recordAudit } from "./request-audit.js";
 import type { RoomAgentService } from "./room-agent.js";
+import type { RoomAgentChat } from "./room-agent-chat.js";
+import { formatSseHeartbeat } from "./sse.js";
 import { idParamSchema, parseBody, parseQuery } from "./route-parsing.js";
 
 /**
@@ -21,12 +23,52 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
   controlRepository: PostgresControlRepository | InMemoryControlRepository;
   controlUser: (id: string, verifiedEmail?: string) => Promise<AuthUser>;
   roomAgentService: RoomAgentService;
+  /** Frames of the answer being written, for the dock's stream. */
+  chat?: Pick<RoomAgentChat, "subscribe">;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  /** Room monitor switch and feed acknowledgements. */
+  monitor?: {
+    repository: Pick<RoomAgentMonitorRepository, "setMonitorEnabled" | "setAutopilotEnabled" | "monitorEnabled" | "getEvent" | "updateEvent" | "pendingCounts" | "latestPending">;
+    forget(roomId: string): void;
+    changed(event: RoomAgentEvent): Promise<void>;
+    /** Sends the operator's answer (or Escape to decline) to the question an event is about. */
+    answer(event: RoomAgentEvent, input: { answer?: string; submit: boolean; decline: boolean }): Promise<void>;
+  };
 }) {
   const { store, controlRepository, controlUser, roomAgentService, routeOptions: defaultRouteRateLimitOptions } = options;
+  // Pause, resume and stop are operator controls; other viewers never see buttons the API would refuse.
+  const forViewer = (session: RoomAgentSession, user: AuthUser | null | undefined): RoomAgentSession =>
+    user?.role === "ADMIN" && !user.automationScope ? session
+      : { ...session, capabilities: { ...session.capabilities, canPause: false, canResume: false, canStop: false } };
   app.get("/api/rooms/:id/room-agent", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
-    return roomAgentService.load(params.id);
+    return forViewer(await roomAgentService.load(params.id), request.user);
+  });
+  // The dock's own stream (open only while the dock is visible); room ownership is checked by the shared preHandler.
+  app.get("/api/rooms/:id/room-agent/stream", { config: { rateLimit: defaultRouteRateLimitOptions.config?.rateLimit }, compress: false }, async (request, reply) => {
+    const params = parseQuery(idParamSchema, request.params);
+    await store.getRoom(params.id);
+    if (!options.chat) throw new SpaceConflictError("The Room Agent stream is unavailable.");
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+    reply.raw.write(": connected\n\n");
+    let closed = false;
+    const unsubscribe = options.chat.subscribe(params.id, (frame) => {
+      if (!closed) reply.raw.write(`data: ${JSON.stringify(frame)}\n\n`);
+    });
+    const heartbeat = setInterval(() => { if (!closed) reply.raw.write(formatSseHeartbeat()); }, 15_000);
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    reply.raw.once("close", close);
+    request.raw.once("aborted", close);
   });
   app.get("/api/rooms/:id/room-agent/missions", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
@@ -75,12 +117,12 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
       targetId: params.id,
       metadata: { sessionId: session.sessionId, queuedMissionCount: session.queuedMissionCount }
     });
-    return reply.code(202).send(session);
+    return reply.code(202).send(forViewer(session, request.user));
   });
   app.post("/api/rooms/:id/room-agent/commands/:clientRequestId/ack", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(z.object({ id: z.string().min(1), clientRequestId: z.string().min(1).max(200) }), request.params);
     const input = parseBody(z.object({ ok: z.boolean() }).strict(), request.body);
-    return roomAgentService.acknowledgeCommand(params.id, params.clientRequestId, input.ok, operatorBrowserActor(request));
+    return forViewer(await roomAgentService.acknowledgeCommand(params.id, params.clientRequestId, input.ok, operatorBrowserActor(request)), request.user);
   });
   app.post("/api/rooms/:id/room-agent/stop", defaultRouteRateLimitOptions, async (request) => {
     if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may stop a mission.");
@@ -111,6 +153,57 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
     });
     return session;
   });
+  app.patch("/api/rooms/:id/room-agent/monitor", defaultRouteRateLimitOptions, async (request) => {
+    if (!options.monitor) throw new SpaceConflictError("The room monitor is unavailable.");
+    if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may switch the room monitor.");
+    const params = parseQuery(idParamSchema, request.params);
+    const input = parseBody(z.object({ enabled: z.boolean().optional(), autopilot: z.boolean().optional() }).strict()
+      .refine((value) => value.enabled !== undefined || value.autopilot !== undefined, "Provide enabled or autopilot."), request.body);
+    await store.getRoom(params.id);
+    if (input.enabled !== undefined) {
+      await options.monitor.repository.setMonitorEnabled(params.id, input.enabled);
+      options.monitor.forget(params.id);
+    }
+    if (input.autopilot !== undefined) await options.monitor.repository.setAutopilotEnabled(params.id, input.autopilot);
+    await recordAudit(store, request, { action: "room.agent.monitor", targetType: "room", targetId: params.id, metadata: input });
+    return forViewer(await roomAgentService.load(params.id), request.user);
+  });
+  app.post("/api/rooms/:id/room-agent/events/:eventId/ack", defaultRouteRateLimitOptions, async (request) => {
+    if (!options.monitor) throw new SpaceConflictError("The room monitor is unavailable.");
+    const params = parseQuery(z.object({ id: z.string().min(1), eventId: z.string().min(1).max(200) }), request.params);
+    const event = await options.monitor.repository.getEvent(params.eventId);
+    if (!event || event.roomId !== params.id) throw new SpaceNotFoundError("Room Agent event was not found.");
+    const updated = await options.monitor.repository.updateEvent(event.eventId, { status: "ACKED" }, ["OPEN", "ESCALATED", "HANDLED", "RESOLVED"]);
+    if (updated) await options.monitor.changed(updated);
+    return forViewer(await roomAgentService.load(params.id), request.user);
+  });
+  app.post("/api/rooms/:id/room-agent/events/:eventId/answer", defaultRouteRateLimitOptions, async (request) => {
+    if (!options.monitor) throw new SpaceConflictError("The room monitor is unavailable.");
+    if (!request.user || request.user.role !== "ADMIN" || request.user.automationScope) throw new SpaceConflictError("Only an authenticated operator may answer a pane.");
+    const params = parseQuery(z.object({ id: z.string().min(1), eventId: z.string().min(1).max(200) }), request.params);
+    const input = parseBody(z.object({
+      answer: z.string().max(2000).regex(/^[^\x00-\x08\x0b-\x1f\x7f]*$/).optional(),
+      submit: z.boolean().default(true),
+      decline: z.boolean().default(false)
+    }).strict().refine((value) => value.decline || (value.answer !== undefined && value.answer.trim() !== ""), "Provide an answer or decline."), request.body);
+    const event = await options.monitor.repository.getEvent(params.eventId);
+    if (!event || event.roomId !== params.id) throw new SpaceNotFoundError("Room Agent event was not found.");
+    if (!event.paneId) throw new SpaceConflictError("This event has no pane to answer.");
+    if (event.status !== "OPEN" && event.status !== "ESCALATED") throw new SpaceConflictError("This question was already handled.");
+    await options.monitor.answer(event, input);
+    const decision = input.decline ? "You declined in the Room Agent." : `You answered "${input.answer!.trim().slice(0, 80)}" in the Room Agent.`;
+    const updated = await options.monitor.repository.updateEvent(event.eventId, { status: "HANDLED", decision }, ["OPEN", "ESCALATED"]);
+    if (updated) await options.monitor.changed(updated);
+    await recordAudit(store, request, { action: "room.agent.event.answer", targetType: "room", targetId: params.id,
+      metadata: { eventId: event.eventId, paneId: event.paneId, decline: input.decline } });
+    return forViewer(await roomAgentService.load(params.id), request.user);
+  });
+  app.get("/api/room-agent/pending", defaultRouteRateLimitOptions, async (request) => {
+    if (!options.monitor) return { rooms: {}, latest: [] };
+    const rooms = (await store.listRooms(request.user?.role === "USER" ? request.user.id : undefined)).map((room) => room.id);
+    const [counts, latest] = await Promise.all([options.monitor.repository.pendingCounts(rooms), options.monitor.repository.latestPending(rooms, 10)]);
+    return { rooms: counts, latest };
+  });
   app.delete("/api/rooms/:id/room-agent/transcript", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     const session = await roomAgentService.clearTranscript(params.id, request.requestIdForSpace);
@@ -120,6 +213,6 @@ export function registerRoomAgentRoutes(app: FastifyInstance, options: {
       targetId: params.id,
       metadata: { sessionId: session.sessionId }
     });
-    return session;
+    return forViewer(session, request.user);
   });
 }

@@ -84,7 +84,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
       maxAge: operatorSessionTtlSeconds
     });
     reply.clearCookie("space_logged_out", { path: "/" });
-    return { user: persistedUser, isAuthenticated: true, isSetupRequired: false };
+    return { user: persistedUser, isAuthenticated: true, isSetupRequired: false, optionalModules: [...config.optionalModules] };
   });
   app.post("/api/auth/logout", defaultRouteRateLimitOptions, async (request, reply) => {
     const currentToken = request.cookies[cookieName];
@@ -177,19 +177,23 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     }
     auth.googleClientId = clientId;
     auth.googleClientSecret = clientSecret;
-    try {
-      const candidates = ["/opt/spaceapp/secrets", "/var/lib/spaceapp"];
-      for (const dir of candidates) {
-        try {
-          await mkdir(dir, { recursive: true, mode: 0o700 });
-          await writeFile(
-            `${dir}/google-oauth.json`,
-            JSON.stringify({ clientId, clientSecret, updatedAt: new Date().toISOString() }, null, 2),
-            { mode: 0o600 }
-          );
-        } catch {}
+    let saved = false;
+    for (const dir of ["/opt/spaceapp/secrets", "/var/lib/spaceapp"]) {
+      try {
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        await writeFile(
+          `${dir}/google-oauth.json`,
+          JSON.stringify({ clientId, clientSecret, updatedAt: new Date().toISOString() }, null, 2),
+          { mode: 0o600 }
+        );
+        saved = true;
+      } catch (error) {
+        request.log.warn({ err: error, dir }, "google oauth config not written");
       }
-    } catch {}
+    }
+    if (!saved) {
+      return sendApiError(reply, 500, "GOOGLE_OAUTH_NOT_SAVED", "Google OAuth works until the API restarts, but saving it failed.");
+    }
     await recordAudit(store, request, {
       actorUserId: request.user.id,
       action: "auth.google.configure",
@@ -595,7 +599,7 @@ setTimeout(function() { window.location.href = "${callbackUrl}"; }, 500);
         path: "/",
         maxAge: operatorSessionTtlSeconds
       });
-      return { user, isAuthenticated: true, isSetupRequired: false };
+      return { user, isAuthenticated: true, isSetupRequired: false, optionalModules: [...config.optionalModules] };
     } catch (err) {
       request.log.error({ err }, "Google credential verification failed");
       return sendApiError(reply, 401, "INVALID_CREDENTIALS", err instanceof Error ? err.message : "Google token verification failed.");

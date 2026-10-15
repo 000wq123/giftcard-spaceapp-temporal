@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import headless from "@xterm/headless";
 import { cliTurnInterruptKey, type PaneCliSession } from "@space/contracts";
 
@@ -53,7 +54,9 @@ export function roomTerminalState(screen: string): "RUNNING" | "IDLE" | "WAITING
     /esc(?:ape)?\s+(?:to\s+)?(?:interrupt|cancel)|thinking[.…]|(?:[\u2800-\u28ff•●*o-]\s*working\b|\bworking\s*(?:[(·•]\s*\d+[a-z]*|[.…]))|ctrl\+c to interrupt|running\s+(?:background\s+)?(?:command|task|subagent|process)[.…]?/i.test(cleanScreen) ||
     /(?:^|\n)\s*[•●*o-]?\s*\[(?:\d{1,2}:\d{2}:\d{2}(?:\s*[ap]m)?|task-[a-z0-9_-]+|\d+)\]\s+[^\n]+?\brunning(?:\s*\([^)]*\))?\s*$/im.test(cleanScreen)
   ) return "RUNNING";
-  if (/(?:^|\n)\s*[❯›>]\s*[^\n]*$/m.test(screen)) return "IDLE";
+  // Idle composers seen in tmux on 2026-10-14: a prompt inside a frame (Droid "│ > Try", Grok "│ ❯"),
+  // Cursor's "→ Plan, search, build anything" and Oh My Pi's "π >" input line.
+  if (/(?:^|\n)\s*(?:[│┃]\s*)?[❯›>]\s*[^\n]*$/m.test(screen) || /plan, search, build anything|(?:^|\n)\s*π >/i.test(screen)) return "IDLE";
   return "UNKNOWN";
 }
 
@@ -66,6 +69,27 @@ export function roomOpenCodeTerminalState(screen: string, isTurnActive: boolean,
   if (isTurnActive) return "RUNNING" as const;
   if (roomTerminalState(screen) === "WAITING_FOR_INPUT") return "WAITING_FOR_INPUT" as const;
   return roomTerminalMode("cli:opencode", screen, advertisedModes) ? "IDLE" as const : "UNKNOWN" as const;
+}
+
+// Claude Code lists background agents below its footer ("● main", then "◯ Plan  Inspecting…  7m 13s"),
+// as the web pane reads it in apps/web/src/features/terminal-pane/claude-agent-panel.ts.
+const CLAUDE_PANEL_MAIN_ROW = /^\s*(?:❯\s*)?[●◯◉○]\s*main(?:\s{2,}\S.*)?$/;
+const CLAUDE_PANEL_FOOTER = /shift\+tab to cycle|\? for shortcuts|← (?:for|\d+) agents?|esc to (?:interrupt|…)|(?:bypass permissions|plan mode|accept edits|auto mode) on/i;
+const CLAUDE_MODE_LABEL = /^(?:⏵⏵|⏸)\s*(accept edits|plan mode|bypass permissions|auto mode|manual mode) on\b/;
+const CLAUDE_MODES: Record<string, string> = {
+  "plan mode": "plan", "accept edits": "accept edits", "bypass permissions": "bypass permissions", "auto mode": "auto", "manual mode": "default"
+};
+
+/** Claude's normalized footer and prompt lines, without the background agent panel below them. */
+function claudeFooterLines(screen: string): string[] {
+  const lines = screen.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= Math.max(0, lines.length - 20); index--) {
+    if (!CLAUDE_PANEL_MAIN_ROW.test(lines[index]!)) continue;
+    const above = lines.slice(0, index).filter((line) => line.trim()).slice(-2);
+    if (above.some((line) => CLAUDE_PANEL_FOOTER.test(line))) lines.length = index;
+    break;
+  }
+  return lines.map((line) => line.toLowerCase().replace(/\s+/g, " ").trim()).filter(Boolean);
 }
 
 export function roomTerminalMode(runtimeId: string, screen: string, advertisedModes: string[] = []): string | null {
@@ -88,8 +112,12 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
   }
   const footer = screen.split(/\r?\n/).map((line) => line.toLowerCase().replace(/\s+/g, " ").trim()).filter(Boolean).slice(-4);
   if (runtimeId === "cli:claude") {
-    for (const line of [...footer].reverse()) {
-      const context = footer.join(" ");
+    const rail = claudeFooterLines(screen).slice(-4);
+    // The mode label opens the footer even when background shells drop its hints ("⏵⏵ bypass permissions on · 3 shells").
+    const label = rail.map((line) => CLAUDE_MODE_LABEL.exec(line)?.[1]).findLast(Boolean);
+    if (label) return CLAUDE_MODES[label] ?? null;
+    for (const line of [...rail].reverse()) {
+      const context = rail.join(" ");
       if (!context.includes("for agents")) continue;
       if (context.includes("shift+tab to cycle")) {
         for (const [label, mode] of [["plan mode on", "plan"], ["accept edits on", "accept edits"], ["bypass permissions on", "bypass permissions"], ["auto mode on", "auto"]]) {
@@ -162,4 +190,19 @@ export function roomTerminalMode(runtimeId: string, screen: string, advertisedMo
 /** Mirrors the native floating Stop control: the TUI's own interrupt key (see cliTurnInterruptKey). */
 export function roomTerminalInterruptKey(runtimeId: string): string {
   return cliTurnInterruptKey(runtimeId) === "escape" ? "\u001b" : "\u0003";
+}
+
+/**
+ * Identifies the question a CLI is showing: the last non-blank lines of the redacted screen.
+ * An answer decided on one inspection is refused when the screen now shows another question.
+ */
+export function roomPromptFingerprint(redactedScreen: string): string {
+  const lines = redactedScreen.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).slice(-20);
+  return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 16);
+}
+
+/** A permission or confirmation prompt (as opposed to a session or model picker). */
+export function roomApprovalPromptCue(screen: string): boolean {
+  const recent = screen.split("\n").slice(-30).join("\n");
+  return /allow (?:once|always)|approve|do you want to (?:proceed|make this edit|run|create|allow|apply|delete|overwrite)|would you like to (?:run|proceed|apply|make)|permission|yes, and (?:don't|do not) ask again|\((?:y\/n|yes\/no)\)|\[(?:y\/n|yes\/no)\]|press enter to confirm|confirm (?:this|the) (?:action|command|change)/i.test(recent);
 }

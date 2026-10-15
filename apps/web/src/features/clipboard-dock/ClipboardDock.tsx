@@ -1,6 +1,6 @@
 import {
   Bot,
-  Brain,
+  BrainCircuit,
   CheckCircle2,
   Clipboard,
   Copy,
@@ -388,7 +388,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                       <span className="clipboard-plan-pct">{planProgress}%</span>
                       {item.minimumModel ? (
                         <span className="clipboard-plan-min-model" title={`Minimum capable model: ${item.minimumModel}${item.minimumReasoning ? `; Recommended reasoning: ${item.minimumReasoning}` : ""}`}>
-                          <Brain aria-hidden="true" /> {item.minimumModel}{item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}
+                          <BrainCircuit aria-hidden="true" /> {item.minimumModel}{item.minimumReasoning ? ` · ${item.minimumReasoning}` : ""}
                         </span>
                       ) : null}
                       {item.activeAgent ? (
@@ -424,7 +424,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
                               ) : null}
                               {showModelTag && stepModel ? (
                                 <span className="clipboard-plan-step-model" title={`Designated model: ${stepModel}`}>
-                                  <Brain aria-hidden="true" /> {stepModel}
+                                  <BrainCircuit aria-hidden="true" /> {stepModel}
                                 </span>
                               ) : null}
                               {step.agent ? (

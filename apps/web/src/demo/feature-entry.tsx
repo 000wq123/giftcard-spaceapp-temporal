@@ -10,6 +10,7 @@ import "../styles.css";
 import "../features/ui-theme/modern-theme.css";
 import "../features/ui-theme/codex-theme.css";
 import "../features/ui-theme/motion-theme.css";
+import "../features/ui-theme/aurora-theme.css";
 
 // This entry mounts only the real feature components. It never imports App
 // or preloads the terminal renderer used by the full interactive workspace.

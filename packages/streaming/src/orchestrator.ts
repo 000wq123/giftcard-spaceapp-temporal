@@ -110,7 +110,7 @@ function toolDefinitions(): Array<Record<string, unknown>> {
     {
       type: "function",
       function: {
-        name: "send_reply",
+        name: "space_send_reply",
         description: "Post a chat reply to the viewer question. Call at most once per turn.",
         parameters: {
           type: "object",
@@ -126,7 +126,7 @@ function toolDefinitions(): Array<Record<string, unknown>> {
     {
       type: "function",
       function: {
-        name: "memory_save",
+        name: "space_bot_memory_save",
         description: "Propose a public fact learned from a viewer question for operator review before future use.",
         parameters: {
           type: "object",
@@ -142,7 +142,7 @@ function toolDefinitions(): Array<Record<string, unknown>> {
     {
       type: "function",
       function: {
-        name: "memory_search",
+        name: "space_bot_memory_search",
         description: "Search the bot's separate memory for facts from earlier questions.",
         parameters: {
           type: "object",
@@ -175,7 +175,7 @@ function parseToolCalls(message: Record<string, unknown>): ToolCall[] {
     }
     return [{ id, name, arguments: parsedArguments }];
   });
-  const allowed = new Set(["send_reply", "memory_save", "memory_search"]);
+  const allowed = new Set(["space_send_reply", "space_bot_memory_save", "space_bot_memory_search"]);
   return calls.filter((call) => allowed.has(call.name)).slice(0, 3);
 }
 
@@ -283,7 +283,7 @@ export async function runBotTurn(
         const result = await executeTool(call, input.tools, replies, memorySaves, input.messages);
         conversation.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
-      if (toolCalls.some((call) => call.name === "send_reply")) break;
+      if (toolCalls.some((call) => call.name === "space_send_reply")) break;
     }
   } catch {
     errorCode = "LLM_UNAVAILABLE";
@@ -301,7 +301,7 @@ async function executeTool(
 ): Promise<Record<string, unknown>> {
   const args = call.arguments;
   switch (call.name) {
-    case "send_reply": {
+    case "space_send_reply": {
       const platform = args.platform;
       if (platform !== "YOUTUBE" && platform !== "TWITCH") return { ok: false, error: "INVALID_PLATFORM" };
       if (!messages.some(input => input.platform === platform)) return { ok: false, error: "PLATFORM_MISMATCH" };
@@ -315,7 +315,7 @@ async function executeTool(
       if (result.ok) replies.push({ platform, message, replyToId });
       return result;
     }
-    case "memory_save": {
+    case "space_bot_memory_save": {
       const title = typeof args.title === "string" ? args.title.trim() : "";
       const body = typeof args.body === "string" ? args.body.trim() : "";
       if (!title || !body) return { ok: false, error: "MEMORY_FIELDS_REQUIRED" };
@@ -325,7 +325,7 @@ async function executeTool(
       if (result.ok) memorySaves.push({ title: title.slice(0, 160), body: body.slice(0, 500), tags });
       return result;
     }
-    case "memory_search": {
+    case "space_bot_memory_search": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
       if (!query) return { ok: false, error: "QUERY_REQUIRED" };
       return tools.memorySearch({ query: query.slice(0, 200) });

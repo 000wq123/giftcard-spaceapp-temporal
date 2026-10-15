@@ -489,7 +489,15 @@ export async function deleteEntry(options: {
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const { resolvedPath } = assertAccessAllowed(options.targetPath, options.mode, options.user, root);
 
-  if (PROTECTED_SYSTEM_PATHS.has(resolvedPath)) {
+  // Host mode stays an operator feature, but the system roots, their direct children (/etc/passwd,
+  // /var/lib, /srv) and the Space workspace with its parents are never deleted through it (review 2026-10-14).
+  const workspace = path.resolve(root);
+  if (
+    PROTECTED_SYSTEM_PATHS.has(resolvedPath) ||
+    PROTECTED_SYSTEM_PATHS.has(path.dirname(resolvedPath)) ||
+    workspace === resolvedPath ||
+    workspace.startsWith(`${resolvedPath}/`)
+  ) {
     throw new FilesystemError(`Deleting protected system directory (${resolvedPath}) is prohibited.`, 403);
   }
 

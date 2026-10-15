@@ -5,7 +5,8 @@ export interface QuotaAlarmLogEntry {
   id: string;
   timestamp: string; // ISO 8601
   localTime: string; // Human-readable local timestamp
-  triggerSource: "quota_available_transition" | "manual_test";
+  // claude_api_key_fallback: Space Gateway served a Claude request through the API key (every account was out of quota).
+  triggerSource: "quota_available_transition" | "manual_test" | "claude_api_key_fallback";
   provider: QuotaAlertProvider;
   proOnly: boolean;
   availableCount: number;

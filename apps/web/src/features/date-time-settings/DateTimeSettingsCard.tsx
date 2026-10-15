@@ -34,7 +34,7 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
         <Clock3 aria-hidden="true" />
         <span>
           <strong>Date &amp; time</strong>
-          <small>Time zone, UTC reference, 24-hour, and date display format.</small>
+          <small>Reset returns to UTC, 24-hour time and day/month/year.</small>
         </span>
         <div className="settings-flat-heading-actions">
           <button
@@ -51,8 +51,8 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
-          <strong>Time zone &amp; UTC</strong>
-          <small>Universal Coordinated Time (UTC) or regional standard time zone.</small>
+          <strong>Time zone</strong>
+          <small>Every time in Space is shown in this zone.</small>
         </span>
         <select
           aria-label="Time zone"
@@ -109,8 +109,8 @@ export function DateTimeSettingsCard({ userId }: { userId?: string }) {
 
       <div className="settings-flat-row date-time-preview-row">
         <span className="settings-flat-row-copy">
-          <strong>Live clock preview</strong>
-          <small>Current time formatted with your active configuration.</small>
+          <strong>Preview</strong>
+          <small>The current time with your choices.</small>
         </span>
         <code className="date-time-preview-value" aria-label="Clock preview">
           {preview}

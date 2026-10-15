@@ -1,4 +1,10 @@
-import type { GatewayCompressionMode, GatewayProvider, GatewayRoutingStrategy, GatewayServiceState, GatewayTrafficClass } from "@space/contracts";
+import {
+  ACCOUNT_SOON_WINDOW_MS, bestAvailability, classifyQuota, type AvailabilityState
+} from "../toolbar-metrics/account-availability.js";
+import type {
+  GatewayAccount, GatewayCompressionMode, GatewayCompressionProviderId, GatewayOutputPolicy, GatewayProvider, GatewayRoutingStrategy, GatewayServiceState,
+  GatewayTrafficClass
+} from "@space/contracts";
 
 export const routingStrategyOptions: { value: GatewayRoutingStrategy; label: string; description: string }[] = [
   { value: "CAPACITY_WEIGHTED", label: "Capacity weighted", description: "Prefer accounts with the most usable quota left. Recommended for mixed pools." },
@@ -13,9 +19,19 @@ export const routingStrategyOptions: { value: GatewayRoutingStrategy; label: str
 
 export const compressionModeOptions: { value: GatewayCompressionMode; label: string; description: string }[] = [
   { value: "OFF", label: "Off", description: "Requests are forwarded unchanged." },
-  { value: "SHADOW", label: "Shadow", description: "Measure what compression would save without changing any request." },
   { value: "ON", label: "On", description: "Compress tool output and other new context before it reaches the provider." }
 ];
+
+/** Response rules the gateway adds to an agent's system prompt (Claude Code, Codex CLI and Antigravity only). */
+export const outputPolicyOptions: { value: GatewayOutputPolicy; label: string; description: string }[] = [
+  { value: "OFF", label: "Off", description: "The system prompt goes upstream as the client wrote it." },
+  { value: "CONCISE", label: "Concise", description: "Terse replies without ceremony; code, commands, paths and errors stay exact." },
+  { value: "LEAN", label: "Lean", description: "The smallest complete change: no unrequested features, abstractions or dependencies. Measured: 15% cheaper on Claude Code, 17% on Antigravity, same quality." },
+  { value: "BOTH", label: "Concise + lean", description: "Both rule sets, concise first." }
+];
+
+/** Providers whose compression and output policy can differ from the global settings. */
+export const compressionProviderIds: GatewayCompressionProviderId[] = ["CLAUDE", "CODEX", "ANTIGRAVITY"];
 
 export const trafficClassOptions: { value: GatewayTrafficClass; label: string }[] = [
   { value: "INTERACTIVE", label: "Interactive" },
@@ -124,7 +140,7 @@ const statusLabels: Record<string, string> = {
 export function accountStatusLabel(status: string): string { return statusLabels[status] ?? status; }
 export function accountStatusTone(status: string): "ok" | "warn" | "muted" { return status === "ACTIVE" ? "ok" : status === "PAUSED" ? "muted" : "warn"; }
 
-const planLabels: Record<string, string> = { plus: "Plus", pro: "Pro", prolite: "Pro Lite", free: "Free", team: "Team", business: "Business",
+const planLabels: Record<string, string> = { plus: "Plus", pro: "Pro", prolite: "Pro Lite", free: "Free", team: "Team", business: "Business", api: "API key",
   enterprise: "Enterprise", edu: "Edu", max5x: "Max 5x", max20x: "Max 20x" };
 export function planLabel(planType: string | null): string {
   if (!planType) return "Unknown plan";
@@ -132,3 +148,27 @@ export function planLabel(planType: string | null): string {
 }
 
 export function accountName(account: { alias: string | null; label: string }): string { return account.alias ?? account.label; }
+
+/**
+ * An account's availability in the vocabulary of Resources › Accounts & quotas: available, back soon, exhausted
+ * (weekly window used up), unknown (no sample yet) or offline (paused, deactivated, signing in again). A gateway
+ * block (rate limited, quota used up) counts even when the last sample still shows room, until its window resets.
+ */
+export function gatewayAccountAvailability(account: GatewayAccount, clock: number): AvailabilityState {
+  if (account.status === "PAUSED" || account.status === "DEACTIVATED" || account.status === "REAUTH_REQUIRED") return { state: "offline", backAt: null };
+  const lapsed = (resetAt: string | null) => resetAt !== null && Date.parse(resetAt) <= clock;
+  const window = (item: { usedPercent: number | null; resetAt: string | null }) => lapsed(item.resetAt)
+    ? { remaining: 100, resetAt: null }
+    : { remaining: item.usedPercent === null ? null : Math.max(0, 100 - item.usedPercent), resetAt: item.resetAt };
+  const groups = account.quotaGroups && account.quotaGroups.length > 0 ? account.quotaGroups : [account];
+  const best = bestAvailability(groups.map((group) => {
+    const primary = window(group.primaryWindow);
+    const secondary = window(group.secondaryWindow);
+    return classifyQuota({ fiveHourRemainingPercent: primary.remaining, fiveHourResetAt: primary.resetAt, weeklyRemainingPercent: secondary.remaining, weeklyResetAt: secondary.resetAt }, clock);
+  }));
+  if ((account.status === "RATE_LIMITED" || account.status === "QUOTA_EXCEEDED") && (best.state === "available" || best.state === "unknown")) {
+    const backAt = [account.primaryWindow.resetAt, account.secondaryWindow.resetAt].find((resetAt) => resetAt !== null && !lapsed(resetAt)) ?? null;
+    return { state: account.status === "QUOTA_EXCEEDED" && backAt !== null && Date.parse(backAt) - clock > ACCOUNT_SOON_WINDOW_MS ? "exhausted" : "soon", backAt };
+  }
+  return best;
+}

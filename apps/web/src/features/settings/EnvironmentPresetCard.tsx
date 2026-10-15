@@ -43,8 +43,8 @@ export function EnvironmentPresetCard({
           </div>
           <small>
             {preset === "max"
-              ? "Max: Full environment with all docks, panes, widgets, and CLIs enabled."
-              : "Custom: Personalized tool and workspace visibility."}
+              ? "Max: every dock, pane, widget and AI coding tool is on."
+              : "Custom: only the docks, panes, widgets and AI coding tools you picked are on."}
           </small>
         </div>
       </div>
@@ -63,7 +63,7 @@ export function EnvironmentPresetCard({
           </span>
           <span className="environment-pill-content">
             <span className="environment-pill-name">Custom</span>
-            <span className="environment-pill-hint">environment</span>
+            <span className="environment-pill-hint">Only your picks</span>
           </span>
           {preset === "custom" && (
             <span className="environment-pill-indicator" aria-hidden="true" />
@@ -83,13 +83,15 @@ export function EnvironmentPresetCard({
           </span>
           <span className="environment-pill-content">
             <span className="environment-pill-name">Max</span>
-            <span className="environment-pill-hint">environment</span>
+            <span className="environment-pill-hint">Everything on</span>
           </span>
           {preset === "max" && (
             <span className="environment-pill-indicator" aria-hidden="true" />
           )}
         </button>
       </div>
+
+      <div className="environment-preset-note">Switch at any time: going back to Custom restores your picks.</div>
 
       {isActivating && (
         <div className="environment-progress-container" role="status" aria-live="polite">
@@ -110,7 +112,7 @@ export function EnvironmentPresetCard({
         <div className="environment-status-banner is-success" role="status">
           <CheckCircle2 aria-hidden="true" />
           <span className="environment-status-banner-text">
-            Environment setup complete! All docks, panes, and CLI tools are now active.
+            Done: every dock, pane and AI coding tool is now on.
           </span>
           <button
             type="button"
@@ -128,7 +130,7 @@ export function EnvironmentPresetCard({
         <div className="environment-status-banner is-custom-restored" role="status">
           <RotateCcw aria-hidden="true" />
           <span className="environment-status-banner-text">
-            Switched to Custom environment. Custom tool visibility restored.
+            Switched to Custom environment. Your picks are back.
           </span>
           <button
             type="button"

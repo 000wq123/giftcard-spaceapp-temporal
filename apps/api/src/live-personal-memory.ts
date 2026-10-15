@@ -3,13 +3,20 @@ import { z } from "zod";
 import type { LiveMemoryRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError } from "@space/runtime";
 
+const liveMemoryCategories = ["core", "profile", "preference", "fact", "instruction", "note"] as const;
 export const liveMemoryItemSchema = z.object({
   id: z.string().min(1).max(200), key: z.string().trim().min(1).max(200), value: z.string().trim().min(1).max(10000),
-  category: z.enum(["core", "profile", "preference", "fact", "instruction", "note"]).default("profile"),
+  category: z.enum(liveMemoryCategories).default("profile"),
   createdAt: z.string(), updatedAt: z.string()
 });
 const itemsSchema = z.array(liveMemoryItemSchema).max(1000);
-const stateSchema = z.object({ items: itemsSchema, legacySourceHash: z.string().optional() });
+// One stored item with an unknown category (a direct database write once used
+// "rule") must not make the whole memory unreadable; writes stay strict.
+const storedItemSchema = liveMemoryItemSchema.extend({
+  category: z.string().optional().transform(category => category === undefined ? "profile"
+    : category === "rule" ? "instruction" : liveMemoryCategories.find(known => known === category) ?? "note")
+});
+const stateSchema = z.object({ items: z.array(storedItemSchema).max(1000), legacySourceHash: z.string().optional() });
 export const liveMemoryWriteSchema = liveMemoryItemSchema.pick({ key: true, value: true, category: true }).extend({
   id: z.string().min(1).max(200).optional(), expectedRevision: z.number().int().min(0).optional()
 }).strict();

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   gatewayPooledRemaining, type GatewayAccount, type GatewayApiKey, type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayCompressionMode,
-  type GatewayLimitType, type GatewayLimitWindow, type GatewayReasoningEffort, type GatewaySettings, type GatewayTrafficClass
+  type GatewayLimitType, type GatewayLimitWindow, type GatewayOutputPolicy, type GatewayReasoningEffort, type GatewaySettings, type GatewayTrafficClass
 } from "@space/contracts";
 import { CopyButton } from "./gateway-add-account.js";
 import { Donut, LimitBar, RemainingBar, TrendChart } from "./gateway-charts.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
-import { accountName, formatCost, formatCostPrecise, formatDateTime, formatTokens, trafficClassOptions } from "./space-gateway-model.js";
+import { accountName, formatCost, formatCostPrecise, formatDateTime, formatTokens, outputPolicyOptions, trafficClassOptions } from "./space-gateway-model.js";
 
 const efforts: GatewayReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const limitTypes: { value: GatewayLimitType; label: string }[] = [
@@ -24,10 +24,11 @@ interface LimitDraft { type: GatewayLimitType; window: GatewayLimitWindow; max: 
 interface KeyDraft {
   name: string; trafficClass: GatewayTrafficClass; allowedModels: string; enforcedModel: string; efforts: GatewayReasoningEffort[];
   enforcedEffort: string; accountIds: string[]; limits: LimitDraft[]; expiresAt: string; compression: "" | GatewayCompressionMode;
+  outputPolicy: "" | GatewayOutputPolicy;
 }
 
 const emptyDraft: KeyDraft = { name: "", trafficClass: "INTERACTIVE", allowedModels: "", enforcedModel: "", efforts: [], enforcedEffort: "", accountIds: [],
-  limits: [], expiresAt: "", compression: "" };
+  limits: [], expiresAt: "", compression: "", outputPolicy: "" };
 
 /** A datetime-local value in the browser's time zone. */
 function toLocalInput(iso: string | null) {
@@ -42,14 +43,15 @@ function draftOf(key: GatewayApiKey): KeyDraft {
     efforts: [...key.allowedReasoningEfforts], enforcedEffort: key.enforcedReasoningEffort ?? "", accountIds: [...key.accountIds],
     limits: key.limits.map((limit) => ({ type: limit.limitType, window: limit.limitWindow, max: String(limit.limitType === "COST_USD" ? limit.maxValue / 1e6 : limit.maxValue),
       model: limit.modelFilter ?? "" })),
-    expiresAt: toLocalInput(key.expiresAt), compression: key.compressionOverride ?? ""
+    expiresAt: toLocalInput(key.expiresAt), compression: key.compressionOverride ?? "", outputPolicy: key.outputPolicyOverride ?? ""
   };
 }
 
 /** The request body for a draft, or an error message. */
 function payloadOf(draft: KeyDraft): { error: string } | { body: {
   name: string; trafficClass: GatewayTrafficClass; allowedModels: string[]; enforcedModel: string | null; allowedReasoningEfforts: GatewayReasoningEffort[];
-  enforcedReasoningEffort: GatewayReasoningEffort | null; accountIds: string[]; compressionOverride: GatewayCompressionMode | null; expiresAt: string | null;
+  enforcedReasoningEffort: GatewayReasoningEffort | null; accountIds: string[]; compressionOverride: GatewayCompressionMode | null;
+  outputPolicyOverride: GatewayOutputPolicy | null; expiresAt: string | null;
   limits: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow; maxValue: number; modelFilter: string | null }[];
 } } {
   if (!draft.name.trim()) return { error: "Give the key a name." };
@@ -69,7 +71,8 @@ function payloadOf(draft: KeyDraft): { error: string } | { body: {
   }
   const expiresAt = draft.expiresAt ? new Date(draft.expiresAt).toISOString() : null;
   return { body: { name: draft.name.trim(), trafficClass: draft.trafficClass, allowedModels, enforcedModel, allowedReasoningEfforts: draft.efforts,
-    enforcedReasoningEffort: enforcedEffort, accountIds: draft.accountIds, compressionOverride: draft.compression || null, expiresAt, limits } };
+    enforcedReasoningEffort: enforcedEffort, accountIds: draft.accountIds, compressionOverride: draft.compression || null,
+    outputPolicyOverride: draft.outputPolicy || null, expiresAt, limits } };
 }
 
 function KeyForm({ initial, accounts, submitLabel, busy, onSubmit, onCancel }: {
@@ -98,7 +101,13 @@ function KeyForm({ initial, accounts, submitLabel, busy, onSubmit, onCancel }: {
         </label>
         <label>Compression
           <select value={draft.compression} onChange={(event) => set("compression", event.target.value as KeyDraft["compression"])}>
-            <option value="">Use the global setting</option><option value="OFF">Off</option><option value="SHADOW">Shadow</option><option value="ON">On</option>
+            <option value="">Use the global setting</option><option value="OFF">Off</option><option value="ON">On</option>
+          </select>
+        </label>
+        <label>Output policy
+          <select value={draft.outputPolicy} onChange={(event) => set("outputPolicy", event.target.value as KeyDraft["outputPolicy"])}>
+            <option value="">Follow the provider</option>
+            {outputPolicyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
         <label>Expires<input type="datetime-local" value={draft.expiresAt} onChange={(event) => set("expiresAt", event.target.value)} /></label>
@@ -221,7 +230,8 @@ function KeyDetail({ apiKey, accounts, client, settings, now, onChanged }: {
         <dt>Models</dt><dd>{apiKey.allowedModels.length ? apiKey.allowedModels.join(", ") : "All models"}{apiKey.enforcedModel ? ` · always ${apiKey.enforcedModel}` : ""}</dd>
         <dt>Reasoning effort</dt><dd>{apiKey.allowedReasoningEfforts.length ? apiKey.allowedReasoningEfforts.join(", ") : "Any"}{apiKey.enforcedReasoningEffort ? ` · always ${apiKey.enforcedReasoningEffort}` : ""}</dd>
         <dt>Accounts</dt><dd>{apiKey.accountScopeEnabled ? apiKey.accountIds.map((id) => { const account = accountById.get(id); return account ? accountName(account) : "Removed account"; }).join(", ") : "Every account"}</dd>
-        <dt>Compression</dt><dd>{apiKey.compressionOverride ? { OFF: "Off", SHADOW: "Shadow", ON: "On" }[apiKey.compressionOverride] : "Global setting"}</dd>
+        <dt>Compression</dt><dd>{apiKey.compressionOverride ? { OFF: "Off", ON: "On" }[apiKey.compressionOverride] : "Global setting"}</dd>
+        <dt>Output policy</dt><dd>{apiKey.outputPolicyOverride ? outputPolicyOptions.find((option) => option.value === apiKey.outputPolicyOverride)?.label : "Follows the provider"}</dd>
         <dt>Expires</dt><dd>{apiKey.expiresAt ? formatDateTime(apiKey.expiresAt, timeFormat) : "Never"}</dd>
         <dt>Last used</dt><dd>{formatDateTime(apiKey.lastUsedAt, timeFormat)}</dd>
       </dl>

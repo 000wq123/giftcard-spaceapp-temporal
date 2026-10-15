@@ -77,7 +77,7 @@ import {
 } from "./features/ui-theme/app-icons.js";
 import { SensitiveDataMask } from "./features/sensitive-data/SensitiveDataMask.js";
 import { SpaceToggle } from "./features/ui-controls/SpaceToggle.js";
-import { cloneElement, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject } from "react";
+import { lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode, type RefObject } from "react";
 import type {
   Artifact,
   AgentRuntime,
@@ -110,6 +110,7 @@ import type {
   UserLink,
   CliRuntimeSettingsResponse,
   AgentSessionHistoryItem,
+  CopilotLaunchSettings,
   UserSettings
 } from "@space/contracts";
 import {
@@ -123,7 +124,7 @@ import {
   roomCategoryColors,
   writeStoredCategoryFilter
 } from "./features/pane-category-color/room-filter.js";
-import { api, type McpPayload, type ReadyzPayload } from "./api.js";
+import { api, SpaceApiError, type McpPayload, type ReadyzPayload } from "./api.js";
 import {
   acknowledgePaneCompletion,
   applyPaneCompletionEvents,
@@ -169,8 +170,11 @@ import {
   type BrowserPaneAction
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
-import type { JobCopilotLaunchChoice } from "./features/job-apply-pane/JobCopilotLaunchDialog.js";
-import { dispatchJobApplyLiveEvent } from "./features/job-apply-pane/live-events.js";
+import type { CopilotLaunchChoice } from "./features/copilot-kit/CopilotLaunchDialog.js";
+import { JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
+import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js";
+import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
+import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
 import { HealthDock } from "./features/health/HealthDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
@@ -183,6 +187,10 @@ import {
 } from "./app-diagnostics/app-diagnostics-bootstrap.js";
 import { GitBranch } from "./features/ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
+import { useRoomAgentAttention } from "./features/room-agent/use-room-agent-attention.js";
+import { dispatchNotificationStreamEvent, useNotificationBootstrap } from "./features/notifications/useNotifications.js";
+import { useNotificationStore, type NotificationNavigator } from "./features/notifications/notification-store.js";
+import { NotificationToastHost } from "./features/notifications/NotificationToastHost.js";
 import { useDocksVisibility } from "./features/docks/use-docks-visibility.js";
 import { useDockConfirm } from "./features/dock-kit/DockKit.js";
 import type { SideSurface } from "./features/docks/dock-types.js";
@@ -229,7 +237,7 @@ import {
   type UiTheme
 } from "./ui-theme.js";
 import { RoomsDockPanel, selectRoomEntries } from "./features/rooms-dock/RoomsDockPanel.js";
-import { useRoomsDock, useRoomsDockFit } from "./features/rooms-dock/useRoomsDock.js";
+import { useRoomsDock } from "./features/rooms-dock/useRoomsDock.js";
 import { useAdminUsers } from "./features/rooms-dock/useAdminUsers.js";
 import { ensureProjectFolder, loadBoundedRoomCatalog, sortRoomsByOrder } from "./features/rooms-dock/room-catalog.js";
 import { useAppView } from "./features/help/useAppView.js";
@@ -314,6 +322,7 @@ import { paneTitleForMode } from "./features/pane-float/pane-mode-labels.js";
 import { AgentSettingsDock, settingsCardLoadingFallback, type AgentSettingsCards } from "./features/settings/AgentSettingsDock.js";
 import { RoomToolbarActions } from "./features/room-toolbar/RoomToolbarActions.js";
 import { scheduleT3BundlePrefetch } from "./features/t3code-pane/t3code-prefetch.js";
+import { useGatewayCompressionToggle } from "./features/space-gateway/useGatewayCompressionToggle.js";
 
 const ROOM_PRESENTATION_FAILURE_TIMEOUT_MS = 8_000;
 
@@ -331,6 +340,24 @@ type RoomRuntimeSnapshot = {
   lastAccessedAt: number;
 };
 type RoomPaneLoadState = "loading" | "loaded" | "error";
+
+export function roomRuntimeLayerHasEmptyState({
+  roomId,
+  selectedRoomId,
+  selectedPanes,
+  runtimePanes,
+  category
+}: {
+  roomId: string;
+  selectedRoomId: string | null;
+  selectedPanes: Pane[];
+  runtimePanes?: Pane[];
+  category: PaneCategoryColor | null;
+}): boolean {
+  if (roomId !== selectedRoomId && runtimePanes === undefined) return false;
+  const panes = roomId === selectedRoomId ? selectedPanes : runtimePanes ?? [];
+  return panes.length === 0 || (category !== null && panes.every((pane) => pane.categoryColor !== category));
+}
 
 export function shellVisiblePaneIds(
   panes: ReadonlyArray<Pick<Pane, "id" | "isMaximized" | "isMinimized">>,
@@ -443,9 +470,9 @@ const LazyAdminOperationsDialog = lazy(() =>
   import("./features/admin-operations/AdminOperationsDialog.js")
     .then((module) => ({ default: module.AdminOperationsDialog }))
 );
-const LazyJobCopilotLaunchDialog = lazy(() =>
-  import("./features/job-apply-pane/JobCopilotLaunchDialog.js")
-    .then((module) => ({ default: module.JobCopilotLaunchDialog }))
+const LazyCopilotLaunchDialog = lazy(() =>
+  import("./features/copilot-kit/CopilotLaunchDialog.js")
+    .then((module) => ({ default: module.CopilotLaunchDialog }))
 );
 const LazyMaintenanceHub = lazy(() =>
   import("./features/admin-operations/MaintenanceHub.js")
@@ -483,6 +510,10 @@ const LazyBenchmarkPage = lazy(() =>
 );
 const LazyDemoModeOverlay = lazy(() =>
   import("./features/demo-mode/DemoModeOverlay.js").then((module) => ({ default: module.DemoModeOverlay }))
+);
+const LazyNotificationCenterDock = lazyWithPreload(() =>
+  import("./features/notifications/NotificationCenterDock.js").then((module) => ({ default: module.NotificationCenterDock })),
+  { idle: true }
 );
 const LazyRoomAgentDock = lazyWithPreload(() =>
   import("./features/room-agent/RoomAgentDock.js").then((module) => ({ default: module.RoomAgentDock })),
@@ -532,12 +563,6 @@ const LazySourceControlPublishingCard = lazyWithPreload(() =>
   { idle: true }
 );
 const LazySourceControlDock = lazyWithPreload(() => import("./features/source-control/SourceControlDock.js").then(module => ({ default: module.SourceControlDock })), { idle: true });
-// Opened only from a room's Project Directory, so it is not preloaded at idle.
-const LazyCodexCliDefaultsCard = lazyWithPreload(() =>
-  import("./features/codex-cli-defaults/CodexCliDefaultsCard.js")
-    .then((module) => ({ default: module.CodexCliDefaultsCard })),
-  { idle: true }
-);
 const LazyTelegramIntegrationCard = lazyWithPreload(() =>
   import("./features/telegram-integration/TelegramIntegrationCard.js")
     .then((module) => ({ default: module.TelegramIntegrationCard })),
@@ -602,11 +627,6 @@ const LazyAppDiagnosticsSettingsCard = lazyWithPreload(() =>
     .then((module) => ({ default: module.AppDiagnosticsSettingsCard })),
   { idle: true }
 );
-const LazyDeployQueueSettingsCard = lazyWithPreload(() =>
-  import("./features/deploy-queue/DeployQueueSettingsCard.js")
-    .then((module) => ({ default: module.DeployQueueSettingsCard })),
-  { idle: true }
-);
 const LazyReleasesSettingsCard = lazyWithPreload(() =>
   import("./features/releases/ReleasesSettingsCard.js")
     .then((module) => ({ default: module.ReleasesSettingsCard })),
@@ -634,6 +654,15 @@ const LazyDotsSettingsCard = lazyWithPreload(() =>
   import("./features/agent-pane/DotsSettingsCard.js").then((module) => ({ default: module.DotsSettingsCard })),
   { idle: true }
 );
+const LazyJobCopilotSettingsCard = lazyWithPreload(() =>
+  import("./features/job-apply-pane/JobCopilotSettingsCard.js").then((module) => ({ default: module.JobCopilotSettingsCard })),
+  { idle: true }
+);
+const LazyMailCopilotSettingsCard = lazyWithPreload(() =>
+  import("./features/mail-copilot-pane/MailCopilotSettingsCard.js").then((module) => ({ default: module.MailCopilotSettingsCard })),
+  { idle: true }
+);
+const LazyMarketingCopilotSettingsCard = lazyWithPreload(() => import("./features/marketing-copilot-pane/MarketingCopilotSettingsCard.js").then((module) => ({ default: module.MarketingCopilotSettingsCard })), { idle: true });
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
 /** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
 const agentSettingsCards: AgentSettingsCards = {
@@ -645,17 +674,18 @@ const agentSettingsCards: AgentSettingsCards = {
   Widgets: LazyWidgetsSettingsCard,
   DateTime: LazyDateTimeSettingsCard,
   AppDiagnostics: LazyAppDiagnosticsSettingsCard,
-  DeployQueue: LazyDeployQueueSettingsCard,
   Releases: LazyReleasesSettingsCard,
   SourceControlPublishing: LazySourceControlPublishingCard,
-  CodexCliDefaults: LazyCodexCliDefaultsCard,
   TelegramIntegration: LazyTelegramIntegrationCard,
   Plugins: LazyPluginsSettingsCard,
   AgentCapabilities: LazyAgentCapabilitiesCard,
   KeyboardAutocorrect: LazyKeyboardAutocorrectSettingsCard,
   PromptVariables: LazyPromptVariablesSettingsCard,
   ConfigurationMigration: LazyConfigurationMigrationCard,
-  Dots: LazyDotsSettingsCard
+  Dots: LazyDotsSettingsCard,
+  JobCopilot: LazyJobCopilotSettingsCard,
+  MailCopilot: LazyMailCopilotSettingsCard,
+  MarketingCopilot: LazyMarketingCopilotSettingsCard
 };
 
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
@@ -828,7 +858,7 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const modernColorMode = uiTheme === "codex" || uiTheme === "motion" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
+  const modernColorMode = uiTheme === "codex" || uiTheme === "motion" || uiTheme === "aurora" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
   useEffect(() => {
     document.documentElement.dataset.interfaceTheme = uiTheme;
     document.documentElement.dataset.uiBackground = uiBackground;
@@ -1021,6 +1051,7 @@ export function App() {
       setDebugModePending(false);
     }
   }, [debugModePending, isDebugModeActive]);
+  const gatewayCompression = useGatewayCompressionToggle({ enabled: auth?.user?.role === "ADMIN" });
   const toolbarPopovers = useToolbarPopovers();
   const {
     isThemeMenuOpen, setIsThemeMenuOpen, isPaneLayoutMenuOpen, setIsPaneLayoutMenuOpen, isCollapsedPaneLayoutMenuOpen,
@@ -1053,6 +1084,8 @@ export function App() {
   const [isAgentsDashboardOpen, setIsAgentsDashboardOpen] = useState(false);
   const [agentsDashboardSummary, setAgentsDashboardSummary] = useState<AgentDashboardSummary | null>(null);
   const [isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen] = useState(false);
+  // Space Gateway as a full-screen page over the workspace, like the memory workspace (ADMIN).
+  const [isSpaceGatewayOpen, setIsSpaceGatewayOpen] = useState(false);
   const [workspaceNavigationDetail, setWorkspaceNavigationDetail] = useState<string | null>(null);
   const [workspaceUserLink, setWorkspaceUserLink] = useState<UserLink | null>(null);
   const [workspaceStickyItem, setWorkspaceStickyItem] = useState<ClipboardItem | null>(null);
@@ -1084,7 +1117,7 @@ export function App() {
   const [paneMoveNotice, setPaneMoveNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const roomsDock = useRoomsDock({ rooms, setRooms, reportError: setError, addNamedProjectPreset: userPreferences.addNamedProjectPreset });
-  const { roomSearch, adminRoomFilterMode, adminSelectedUserId, dockProjectPathDrafts } = roomsDock;
+  const { adminRoomFilterMode, adminSelectedUserId, dockProjectPathDrafts } = roomsDock;
   const [paneReorderPending, setPaneReorderPending] = useState(false);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [paneDragOverId, setPaneDragOverId] = useState<string | null>(null);
@@ -1100,7 +1133,7 @@ export function App() {
   const [paneGridWidth, setPaneGridWidth] = useState(() => readViewportWidth());
   const [paneGridHeight, setPaneGridHeight] = useState(0);
   const [pendingBrowserHandoffPaneId, setPendingBrowserHandoffPaneId] = useState<string | null>(null);
-  const [jobCopilotLaunch, setJobCopilotLaunch] = useState<{ roomId: string; count: number } | null>(null);
+  const [copilotLaunch, setCopilotLaunch] = useState<{ kind: CopilotKind; roomId: string; count: number; preselect: CopilotLaunchSettings | null; notice: string | null } | null>(null);
   const [activeRoomEventStreamStatus, setActiveRoomEventStreamStatus] = useState<ActiveRoomEventStreamStatus>("idle");
   const cliMemorySaveModelId = useMemo(() => pickCliMemorySaveModelId(models), [models]);
   const previousShellModeRef = useRef<ShellMode | null>(null);
@@ -1130,6 +1163,7 @@ export function App() {
   } | null>(null);
   const roomRevealReadyPaneIdsRef = useRef(new Map<string, Set<string>>());
   const roomPresentedGeometryRef = useRef(new Map<string, string>());
+  const warmPreparedGeometryRef = useRef(new Map<string, string>());
   const roomRevealDebugLastMissingRef = useRef(new Map<string, string>());
   const roomTerminalBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
   const roomTerminalPrefillBarrierWaitersRef = useRef(new Map<string, Set<() => void>>());
@@ -1292,6 +1326,7 @@ export function App() {
 
   function removeRoomRuntime(roomId: string) {
     roomPresentedGeometryRef.current.delete(roomId);
+    warmPreparedGeometryRef.current.delete(roomId);
     roomRuntimeLastPolledAtRef.current.delete(roomId);
     warmRoomIdsRef.current = warmRoomIdsRef.current.filter((candidate) => candidate !== roomId);
     roomRevealReadyPaneIdsRef.current.delete(roomId);
@@ -1543,9 +1578,31 @@ export function App() {
     ]);
   }
 
+  function scheduleWarmRoomPreparation(roomId: string) {
+    if (!warmRoomEnabled || selectedRoomIdRef.current === roomId || warmPreparedGeometryRef.current.has(roomId)) return;
+    const attempt = (remainingFrames: number) => window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (!appMountedRef.current || selectedRoomIdRef.current === roomId) return;
+        const layer = Array.from(document.querySelectorAll<HTMLElement>(".room-runtime-layer"))
+          .find((candidate) => candidate.dataset.roomRuntimeId === roomId);
+        if (!layer || layer.dataset.presentationState !== "hidden") {
+          if (remainingFrames > 0) attempt(remainingFrames - 1);
+          return;
+        }
+        layer.dataset.warmPrepared = "true";
+        // Force the browser to resolve the prepared room's style/layout while
+        // it is still hidden, so the first reveal does not pay that cost.
+        void layer.offsetHeight;
+        warmPreparedGeometryRef.current.set(roomId, roomPresentationGeometryKey(roomId));
+      });
+    });
+    attempt(3);
+  }
+
   function canImmediatelyPresentWarmCliRoom(roomId: string): boolean {
     if (document.visibilityState === "hidden" ||
-        roomPresentedGeometryRef.current.get(roomId) !== roomPresentationGeometryKey(roomId)) return false;
+        ![roomPresentedGeometryRef.current.get(roomId), warmPreparedGeometryRef.current.get(roomId)]
+          .includes(roomPresentationGeometryKey(roomId))) return false;
     if (!warmRoomEnabled || !warmRoomIdsRef.current.includes(roomId) ||
         roomPaneLoadStatesRef.current[roomId] !== "loaded" ||
         !roomTerminalBarrierReady(roomId) || !roomTerminalPrefillBarrierReady(roomId)) return false;
@@ -1682,7 +1739,9 @@ export function App() {
     }
   }
 
-  async function loadRoomPanes(roomId: string) {
+  type RoomPanesPayload = Awaited<ReturnType<typeof api.panes>>;
+
+  async function loadRoomPanes(roomId: string, prefetchedPayload?: RoomPanesPayload) {
     const activeRequest = roomPaneLoadPromisesRef.current.get(roomId);
     if (activeRequest) return activeRequest;
 
@@ -1695,7 +1754,7 @@ export function App() {
       roomPaneRequestSequenceRef.current.set(roomId, sequence);
       let panePayload: Awaited<ReturnType<typeof api.panes>>;
       try {
-        panePayload = await api.panes(roomId);
+        panePayload = prefetchedPayload ?? await api.panes(roomId);
       } catch (error) {
         if (!appMountedRef.current) return;
         if (roomPaneRequestSequenceRef.current.get(roomId) !== sequence) return;
@@ -1880,7 +1939,7 @@ export function App() {
   async function loadRoomRuntime(
     roomId: string,
     onPanesLoaded?: () => void,
-    options: { loadMetadata?: boolean } = {}
+    options: { loadMetadata?: boolean; panePayload?: RoomPanesPayload } = {}
   ) {
     const startedAt = performance.now();
     const durationMs = () => Math.min(120_000, Math.max(0, performance.now() - startedAt));
@@ -1894,7 +1953,7 @@ export function App() {
     roomRuntimeHydrationIdsRef.current.add(roomId);
     try {
       roomRuntimeLastPolledAtRef.current.set(roomId, Date.now());
-      await loadRoomPanes(roomId);
+      await loadRoomPanes(roomId, options.panePayload);
       emitAppDiagnosticsPerformance({
         category: "PERFORMANCE",
         metric: "ROOM_HYDRATION",
@@ -2235,7 +2294,7 @@ export function App() {
     if (!me.isAuthenticated) return;
     // Prefetch only after authentication so the login surface never probes a
     // protected runtime endpoint. Multi-pane rooms still share one flight.
-    api.warmCliRuntimes();
+    api.warmCliRuntimes(); api.reportInstallActivity();
     if (me.user?.role === "ADMIN") api.warmCliRuntimeSettings();
 
     let roomPayload = await api.rooms({ all: true });
@@ -2294,7 +2353,8 @@ export function App() {
             const panePayload = await api.panes(roomId);
             if (!appMountedRef.current) return;
             if (panePayload.data.length === 0) return;
-            await loadRoomRuntime(roomId, undefined, { loadMetadata: false });
+            await loadRoomRuntime(roomId, undefined, { loadMetadata: false, panePayload });
+            scheduleWarmRoomPreparation(roomId);
           } catch {
             // Best-effort background hydration.
           }
@@ -2724,8 +2784,9 @@ export function App() {
     }
   }
 
-  async function addRoomPanes(roomId: string, input: CreateRoomPanesRequest) {
+  async function addRoomPanes(roomId: string, input: CreateRoomPanesRequest, onCreated?: (created: Pane[]) => void) {
     const result = await api.createRoomPanes(roomId, input);
+    onCreated?.(result.data);
     const createdPane = result.data.at(-1);
     if (shellMode === "mobile" && selectedRoomIdRef.current === roomId && createdPane) {
       selectedPaneIdRef.current = createdPane.id;
@@ -2835,17 +2896,37 @@ export function App() {
     await addRoomPanes(selectedRoomId, { panes: newPanes });
   }
 
-  // Job Copilot: the operator picks the agent (Claude Code recommended) before the pane opens.
-  async function addJobApplyPane(count = 1) {
-    if (!selectedRoomId || panes.length >= 16) return;
-    setJobCopilotLaunch({ roomId: selectedRoomId, count: Math.min(Math.max(1, count), 16 - panes.length) });
+  // Copilot panes (Job, Mail, Marketing): the operator picks the agent and account once (Claude Code recommended); later panes
+  // open with it on every device. The dialog shows again when "ask every time" is on or the saved CLI is not ready.
+  function copilotPaneItems(kind: CopilotKind, count: number, choice: CopilotLaunchChoice) {
+    return Array.from({ length: count }, () => ({
+      mode: kind.mode, terminalRuntimeId: choice.terminalRuntimeId, ...(choice.accountProfileId ? { accountProfileId: choice.accountProfileId } : {})
+    }));
   }
 
-  async function createJobCopilotPanes(choice: JobCopilotLaunchChoice) {
-    const launch = jobCopilotLaunch;
+  // The new panes' CLIs start on the chosen account (the pane row cannot hold it; see the copilot contracts).
+  function rememberCopilotPaneAccount(created: Pane[], choice: CopilotLaunchChoice) {
+    if (choice.accountProfileId) rememberNewPaneAccount(created.map((pane) => pane.id), choice.terminalRuntimeId, choice.accountProfileId);
+  }
+
+  async function addCopilotPane(kind: CopilotKind, count = 1) {
+    if (!selectedRoomId || panes.length >= 16) return;
+    const launch = { kind, roomId: selectedRoomId, count: Math.min(Math.max(1, count), 16 - panes.length) };
+    const decision = await resolveCopilotLaunch(kind).catch(() => null);
+    if (!decision?.open) {
+      setCopilotLaunch({ ...launch, preselect: decision?.preselect ?? null, notice: decision?.notice ?? null });
+      return;
+    }
+    await addRoomPanes(launch.roomId, { panes: copilotPaneItems(kind, launch.count, decision.choice) }, (created) => rememberCopilotPaneAccount(created, decision.choice));
+  }
+  const addJobApplyPane = (count = 1) => addCopilotPane(JOB_COPILOT_KIND, count);
+  const addMailCopilotPane = (count = 1) => addCopilotPane(MAIL_COPILOT_KIND, count);
+
+  async function createCopilotPanes(choice: CopilotLaunchChoice) {
+    const launch = copilotLaunch;
     if (!launch) return;
-    await addRoomPanes(launch.roomId, { panes: Array.from({ length: launch.count }, () => ({ mode: "JOB_APPLY" as const, terminalRuntimeId: choice.terminalRuntimeId })) });
-    setJobCopilotLaunch(null);
+    await addRoomPanes(launch.roomId, { panes: copilotPaneItems(launch.kind, launch.count, choice) }, (created) => rememberCopilotPaneAccount(created, choice));
+    setCopilotLaunch(null);
   }
 
   async function addT3CodePane(count = 1) {
@@ -3067,6 +3148,7 @@ export function App() {
   }
 
   async function selectRoom(roomId: string, options: { keepCompactSurfaceOpen?: boolean } = {}) {
+    const outgoingRoomId = selectedRoomIdRef.current;
     const warmRuntimeReady = Boolean(
       warmRoomIdsRef.current.includes(roomId) &&
       roomRuntimesRef.current[roomId] &&
@@ -3081,6 +3163,7 @@ export function App() {
     // this callback until Chrome captures all visible pane surfaces, including
     // canvases/iframes, adding work even when the target runtime is already warm.
     activateRoom(roomId);
+    if (outgoingRoomId && outgoingRoomId !== roomId) scheduleWarmRoomPreparation(outgoingRoomId);
     recordRoomSwitchMeasurementPhase(measurement, "activated");
     if (!options.keepCompactSurfaceOpen) setIsCompactSideSurfaceOpen(false);
     if (warmRuntimeReady) {
@@ -3159,33 +3242,49 @@ export function App() {
         : "The room and its panes will be removed.",
       confirmLabel: "Delete room"
     });
-    if (confirmed) await deleteRoom(room.id);
+    if (confirmed) await deleteRooms([room.id]);
   }
 
-  async function deleteRoom(roomId: string) {
-    if (deletePendingRoomId) return;
-    const deletedRoom = rooms.find((room) => room.id === roomId);
-    const nextRooms = rooms.filter((room) => room.id !== roomId);
+  // The Test rooms group deletes all its rooms behind one confirmation.
+  async function requestTestRoomsDelete(targets: Room[]) {
+    if (deletePendingRoomId || !targets.length) return;
+    const activeCli = targets.reduce((sum, room) => sum + (roomCliActivityCounts[room.id] ?? 0), 0);
+    const confirmed = await roomDeleteConfirm.confirm({
+      title: `Delete ${targets.length} test ${targets.length === 1 ? "room" : "rooms"}?`,
+      message: activeCli > 0
+        ? `They have ${activeCli} active CLI ${activeCli === 1 ? "session" : "sessions"} that will be terminated. The rooms and their panes will be removed.`
+        : "The rooms and their panes will be removed.",
+      confirmLabel: "Delete rooms"
+    });
+    if (confirmed) await deleteRooms(targets.map((room) => room.id));
+  }
+
+  async function deleteRooms(roomIds: string[]) {
+    if (deletePendingRoomId || !roomIds.length) return;
+    const deletedIds = new Set(roomIds);
+    const deletedRooms = rooms.filter((room) => deletedIds.has(room.id));
+    const nextRooms = rooms.filter((room) => !deletedIds.has(room.id));
     const candidateRooms = !isAdminMode ? nextRooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id) : nextRooms;
-    const nextSelectedRoomId = selectedRoomId === roomId ? candidateRooms[0]?.id ?? null : selectedRoomId;
-    setDeletePendingRoomId(roomId);
+    const selectedDeleted = selectedRoomId !== null && deletedIds.has(selectedRoomId);
+    const nextSelectedRoomId = selectedDeleted ? candidateRooms[0]?.id ?? null : selectedRoomId;
+    setDeletePendingRoomId(roomIds[0]!);
     setError(null);
     setRooms(nextRooms);
     setRoomCliActivityCounts((current) => {
-      if (!(roomId in current)) return current;
+      if (!roomIds.some((roomId) => roomId in current)) return current;
       const next = { ...current };
-      delete next[roomId];
+      for (const roomId of roomIds) delete next[roomId];
       return next;
     });
     setRoomCliRuntimeIds((current) => {
-      if (!(roomId in current)) return current;
+      if (!roomIds.some((roomId) => roomId in current)) return current;
       const next = { ...current };
-      delete next[roomId];
+      for (const roomId of roomIds) delete next[roomId];
       return next;
     });
-    if (selectedRoomId === roomId) {
+    if (selectedDeleted) {
       activateRoom(nextSelectedRoomId);
-      removeRoomRuntime(roomId);
+      for (const roomId of roomIds) removeRoomRuntime(roomId);
       if (nextSelectedRoomId) {
         await loadRoomRuntime(nextSelectedRoomId);
       } else {
@@ -3196,13 +3295,16 @@ export function App() {
         setSwarmState(await api.swarm());
       }
     } else {
-      removeRoomRuntime(roomId);
+      for (const roomId of roomIds) removeRoomRuntime(roomId);
     }
     try {
-      await api.deleteRoom(roomId);
-    } catch (err) {
-      if (deletedRoom) setRooms(sortRoomsByOrder([...nextRooms, deletedRoom]));
-      setError(err instanceof Error ? err.message : "Room delete failed");
+      const results = await Promise.allSettled(roomIds.map((roomId) => api.deleteRoom(roomId)));
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) {
+        // Only the rooms the server refused come back.
+        setRooms(sortRoomsByOrder([...nextRooms, ...deletedRooms.filter((room) => results[roomIds.indexOf(room.id)]?.status === "rejected")]));
+        setError(failure.reason instanceof Error ? failure.reason.message : "Room delete failed");
+      }
     } finally {
       setDeletePendingRoomId(null);
     }
@@ -3317,6 +3419,7 @@ export function App() {
           setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
           setSelectedPaneId(pane.id);
           setIsMemoryWorkspaceOpen(false);
+          setIsSpaceGatewayOpen(false);
         }
       }
       await refreshRoomEvents(roomId);
@@ -3341,6 +3444,7 @@ export function App() {
         setPanes((current) => [...current.filter((candidate) => candidate.id !== pane.id), pane]);
         setSelectedPaneId(pane.id);
         setIsMemoryWorkspaceOpen(false);
+        setIsSpaceGatewayOpen(false);
       }
       await refreshRoomEvents(selectedRoomId);
     } catch (err) {
@@ -4135,7 +4239,9 @@ export function App() {
           setSelectedPaneId(handoff.paneId);
           setPendingBrowserHandoffPaneId(handoff.paneId);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          // A closed pane (409) or a handoff that no longer exists (404) never comes back; only retry transient failures.
+          if (error instanceof SpaceApiError && (error.status === 404 || error.status === 409)) return;
           handledBrowserHandoffEventIdsRef.current.delete(event.id);
         });
     };
@@ -4153,20 +4259,25 @@ export function App() {
     source.addEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
     source.addEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
     source.addEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
-    // Job Copilot activity reaches its pane through a window event; the pane refreshes without waiting for its poll.
-    const handleJobApplyUpdated = (message: MessageEvent<string>) => {
+    // Job, Mail and Marketing Copilot activity reaches its pane through a window event (copilot-kit/copilot-stream.ts).
+    const stopCopilotStreams = forwardCopilotStreamEvents(source);
+    // Notifications travel as ids only; the store reads the owner's records and delivers the new ones.
+    const handleNotification = (message: MessageEvent<string>) => {
       const event = parseStreamEvent(message.data);
-      if (!event || event.type !== "JOB_APPLY_UPDATED" || !event.paneId) return;
-      dispatchJobApplyLiveEvent({ paneId: event.paneId, roomId: event.roomId, eventId: event.id, message: event.message, payload: event.payload });
+      if (!event || (event.type !== "NOTIFICATION_CREATED" && event.type !== "NOTIFICATION_UPDATED") || replaying) return;
+      dispatchNotificationStreamEvent(event.payload);
     };
-    source.addEventListener("JOB_APPLY_UPDATED", handleJobApplyUpdated as EventListener);
+    source.addEventListener("NOTIFICATION_CREATED", handleNotification as EventListener);
+    source.addEventListener("NOTIFICATION_UPDATED", handleNotification as EventListener);
     return () => {
       source.removeEventListener("replay-start", handleReplayStart);
       source.removeEventListener("replay-complete", handleReplayComplete);
       source.removeEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
       source.removeEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
       source.removeEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
-      source.removeEventListener("JOB_APPLY_UPDATED", handleJobApplyUpdated as EventListener);
+      stopCopilotStreams();
+      source.removeEventListener("NOTIFICATION_CREATED", handleNotification as EventListener);
+      source.removeEventListener("NOTIFICATION_UPDATED", handleNotification as EventListener);
       source.close();
     };
   }, [activeTerminalPanesBootstrapped, auth?.isAuthenticated]);
@@ -4476,6 +4587,7 @@ export function App() {
   const isRoomsSurfaceVisible = Boolean(auth?.isAuthenticated)
     && appView === "workspace"
     && !isMemoryWorkspaceOpen
+    && !isSpaceGatewayOpen
     && systemAnalyticsTab === null
     && activeSideSurface === "rooms"
     && isSideSurfaceOpen;
@@ -4749,13 +4861,30 @@ export function App() {
     return panes.every((pane) => (pane.columnSpan ?? 1) === first) ? first : null;
   }
 
+  // Room Agent attention keeps the toolbar count; its desktop alerts arrive as Space notifications now.
+  const roomAgentAttention = useRoomAgentAttention(Boolean(auth?.user));
+  // Space notifications: a click opens the room, the pane and the surface the notification points at; panes get the target.
+  const notificationStore = useNotificationStore();
+  const navigateToNotification = useCallback<NotificationNavigator>((link) => {
+    void (async () => {
+      if (link.roomId) {
+        activateRoom(link.roomId);
+        await loadRoomRuntimeRef.current(link.roomId).catch(() => undefined);
+      }
+      if (link.paneId) setSelectedPaneId(link.paneId);
+      if (link.surface) sideSurfaces.openSideSurface(link.surface as SideSurface);
+      if (link.paneId && link.target) window.dispatchEvent(new CustomEvent("space:notification-open", { detail: { paneId: link.paneId, target: link.target } }));
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activateRoom, sideSurfaces.openSideSurface]);
+  useNotificationBootstrap(auth?.user?.id ?? null, navigateToNotification);
   const roomToolbarActions = useMemo<IconToolbarAction[]>(
     () => {
       return buildRoomToolbarActions({
         role: auth?.user?.role,
         hasUser: Boolean(auth?.user),
         shellMode,
-        docks: { ...sideSurfaces, hiddenDockIds },
+        docks: { ...sideSurfaces, hiddenDockIds, roomAgentAttention: roomAgentAttention.total, notificationAttention: notificationStore.pending.total },
         visibility: { isWidgetHidden, isPaneHidden },
         popovers: toolbarPopovers,
         preferences: userPreferences,
@@ -4765,13 +4894,14 @@ export function App() {
         },
         create: {
           isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
-          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addLivePane
+          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addLivePane
         },
         tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
         workspace: {
-          isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen, setSystemAnalyticsTab, agentsDashboardSummary, setIsAgentsDashboardOpen,
+          isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen, isSpaceGatewayOpen, setIsSpaceGatewayOpen, setSystemAnalyticsTab, agentsDashboardSummary, setIsAgentsDashboardOpen,
           resourceIndicatorsVisible, toggleResourceIndicators, isDebugModeActive, debugModePending, toggleDebugMode, isDemoModeActive,
-          setIsDemoModeActive, setAdminModeRequested, openHelp, openBenchmark, signOut, isServerActionsMenuOpen, setIsServerActionsMenuOpen
+          setIsDemoModeActive, setAdminModeRequested, openHelp, openBenchmark, signOut, isServerActionsMenuOpen, setIsServerActionsMenuOpen,
+          gatewayCompression: { mode: gatewayCompression.mode, pending: gatewayCompression.pending, request: gatewayCompression.request }
         }
       });
     },
@@ -4789,6 +4919,7 @@ export function App() {
       isCompactShell,
       isCodexEnabled,
       isMemoryWorkspaceOpen,
+      isSpaceGatewayOpen,
       isCliLauncherOpen,
       isOskKeyboardOpen,
       isPaneLayoutMenuOpen,
@@ -4816,9 +4947,14 @@ export function App() {
       isDebugModeActive,
       debugModePending,
       toggleDebugMode,
+      gatewayCompression.mode,
+      gatewayCompression.pending,
+      gatewayCompression.request,
       hiddenDockIds,
       hiddenPaneIds,
-      hiddenWidgetIds
+      hiddenWidgetIds,
+      roomAgentAttention.total,
+      notificationStore.pending.total
     ]
   );
   const serverActionCommands = manage.buildCommands({
@@ -4827,6 +4963,7 @@ export function App() {
     reclaimMemory: (anchor) => toolbarMetricsRef.current?.openMemoryReclaim(anchor),
     openSystemAnalytics: () => {
       setIsMemoryWorkspaceOpen(false);
+      setIsSpaceGatewayOpen(false);
       setSystemAnalyticsTab("overview");
     }
   });
@@ -4997,6 +5134,8 @@ export function App() {
       else if (action.id === "add-demos") void addDemosPane(count);
       else if (action.id === "add-t3code") void addT3CodePane(count);
       else if (action.id === "add-jobs") void addJobApplyPane(count);
+      else if (action.id === "add-mail") void addMailCopilotPane(count);
+      else if (action.id === "add-marketing") void addCopilotPane(MARKETING_COPILOT_KIND, count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }
@@ -5375,6 +5514,10 @@ export function App() {
       pendingPaneHeaderFocusIdRef.current = pane.id;
     }
   });
+  const roomAgentOnOpenPane = useStableCallback((paneId: string) => {
+    const pane = panes.find((candidate) => candidate.id === paneId);
+    if (pane) void paneCardOnOpenExisting(pane);
+  });
   const paneCardOnClose = useStableCallback(closePane);
   const paneCardOnMaximize = useStableCallback(toggleMaximize);
   const paneCardOnRestoreLayout = useStableCallback(() => {
@@ -5640,11 +5783,9 @@ export function App() {
 
   const { entries: filteredRoomEntries, isRoomListFiltered } = selectRoomEntries({
     rooms, selectedRoomId, panes, roomRuntimes, completions: paneCompletionLifecycle.panes, roomCliActivityCounts,
-    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById
-  });
+    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById, notificationRooms: notificationStore.pending.byRoom });
   const roomsSurfaceContent = (
     <RoomsDockPanel
-      panelRef={roomsDock.roomsPanelRef}
       dock={roomsDock}
       adminUsers={adminUsers}
       entries={filteredRoomEntries}
@@ -5652,15 +5793,13 @@ export function App() {
       catalog={{ rooms, setRooms, selectedRoomId, panes, roomRuntimes, roomPaneLoadStates, warmRoomIds, warmRoomEnabled, roomPaneCounts, roomCliRuntimeIds }}
       access={{ auth, isAdminMode, runtimeKind }}
       actions={{
-        createRoom, roomCreationPending, selectRoom, requestRoomDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
+        createRoom, roomCreationPending, selectRoom, requestRoomDelete, requestTestRoomsDelete, deletePendingRoomId, setSelectedPaneId, addFilesPane, addRootAdminPane,
         isRoomWorktreeEnabled, setRoomWorktreeEnabled: userPreferences.setRoomWorktreeEnabled, projectPresets, reportError: setError,
         roomDeleteConfirmDialog: roomDeleteConfirm.confirmDialog
       }}
-      composer={{ preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface, shellMode, modernColorMode }}
+      composer={{ preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface, modernColorMode }}
     />
   );
-
-  useRoomsDockFit(roomsDock, activeSideSurface, [filteredRoomEntries.length, rooms.length, roomSearch, adminRoomFilterMode, adminSelectedUserId, presentationPanes.length]);
 
   function resumeAgentSessionCodexThread(threadId: string) {
     if (!activePane || !isCodexEnabled) return;
@@ -5728,13 +5867,16 @@ export function App() {
   );
   const renderSideSurfaceContent = (surface: SideSurface, onClose?: () => void, onNavigate?: (id: string) => void) =>
     surface === "rooms" ? (
-      onNavigate ? cloneElement(roomsSurfaceContent, { panelRef: undefined }) : roomsSurfaceContent
+      roomsSurfaceContent
+    ) : surface === "notifications" ? (
+      <LazyNotificationCenterDock />
     ) : surface === "room-agent" ? (
       <LazyRoomAgentDock
         activeRoom={activeRoom}
         selectedBrowserPaneId={activePane?.mode === "BROWSER" && activePane.id === selectedPaneId ? activePane.id : undefined}
         isCodexEnabled={isCodexEnabled}
         refreshKey={roomEvents.at(-1)?.id ?? null}
+        onOpenPane={roomAgentOnOpenPane}
       />
     ) : surface === "settings" ? (
       <AgentSettingsDock
@@ -5800,7 +5942,7 @@ export function App() {
     ) : surface === "agent-files" ? (
       <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} paneTitles={agentFilesPaneTitles} />
     ) : surface === "shared-chat" ? (
-      <LazySharedChatDock />
+      <LazySharedChatDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
     ) : surface === "clipboard" ? (
       <LazyClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
@@ -6043,8 +6185,8 @@ export function App() {
             className={
               uiTheme === "codex"
                 ? "modern-theme-page codex-theme-page"
-                : uiTheme === "motion"
-                  ? "modern-theme-page motion-theme-page"
+                : uiTheme === "motion" || uiTheme === "aurora"
+                  ? `modern-theme-page ${uiTheme}-theme-page`
                   : "modern-theme-page"
             }
             data-ui-theme={uiTheme}
@@ -6076,12 +6218,23 @@ export function App() {
   const shellClassName = ["space-shell", `shell-${shellMode}`, isRoomFocusMode ? "room-focus-mode" : ""].filter(Boolean).join(" ");
   const workspaceClassName = ["workspace", showInlineSideSurface ? "" : "side-surface-hidden"].filter(Boolean).join(" ");
   const boardClassName = ["board", showPaneNavigation ? "has-pane-navigation" : ""].filter(Boolean).join(" ");
+  // Presentation state controls stacking. Keep resident siblings in stable ID
+  // order so React never detaches/reinserts their DOM just to activate a room.
   const mountedRoomRuntimeIds = selectedRoomId
     ? Array.from(new Set(
         [selectedRoomId, displayedRoomId, preparingRoomId, ...warmRoomIds]
           .filter((roomId): roomId is string => Boolean(roomId))
-      ))
+      )).sort()
     : [];
+  const roomRuntimeStackHasEmptyState = mountedRoomRuntimeIds.some((roomId) => {
+    return roomRuntimeLayerHasEmptyState({
+      roomId,
+      selectedRoomId,
+      selectedPanes: panes,
+      runtimePanes: roomRuntimes[roomId]?.panes,
+      category: activeCategoryColorByRoom[roomId] ?? null
+    });
+  });
 
   function renderRoomRuntimeLayer(roomId: string) {
     const isActive = roomId === selectedRoomId;
@@ -6298,8 +6451,8 @@ export function App() {
       >
         {layerPanes.length === 0 && layerPaneLoadState === "loading" ? (
           <div className="empty-state" role={isInteractive ? "status" : undefined}>
-            <Loader2 aria-hidden="true" />
-            <h3>Loading panes</h3>
+            <img src="/brand/space-launch.svg" alt="" width="88" height="110" />
+            <h3 className="sr-only">Loading panes</h3>
           </div>
         ) : layerPanes.length === 0 && layerPaneLoadState === "error" ? (
           <div className="empty-state" role={isInteractive ? "alert" : undefined}>
@@ -6369,7 +6522,9 @@ export function App() {
                         gridAutoRows: `${layerRowPx}px`
                       }
                     : {
-                        gridTemplateRows: shellMode === "mobile" || layerFullscreenLayout
+                        // A maximized pane spans every row (1 / -1) while the others are hidden;
+                        // one row keeps it at the grid's height instead of N × 20rem with a scrollbar.
+                        gridTemplateRows: shellMode === "mobile" || layerFullscreenLayout || layerHasMaximizedPane
                           ? "minmax(0, 1fr)"
                           : `repeat(${layerActualBaseRows}, minmax(20rem, 1fr))`
                       })
@@ -6394,6 +6549,7 @@ export function App() {
                       isTarget={isPresented && layerActivePane?.id === pane.id}
                       isMoveDialogOpen={isInteractive && paneMoveDialog?.pane.id === pane.id}
                       isVisibleInShell={isPresented && (layerShellVisiblePaneIds.has(pane.id) || floatingYouTubePaneIds.has(pane.id))}
+                      isPresentationInteractive={isInteractive}
                       isFloatingYouTube={pane.mode === "YOUTUBE" && floatingYouTubePaneIds.has(pane.id)}
                       onToggleYouTubeFloating={pane.mode === "YOUTUBE" ? () => toggleYouTubeFloating(pane.id) : undefined}
                       maskSensitiveData={maskSensitiveData}
@@ -6596,6 +6752,7 @@ export function App() {
       roomId={presentationRoom?.id}
       onOpenAnalytics={(tab) => {
         setIsMemoryWorkspaceOpen(false);
+        setIsSpaceGatewayOpen(false);
         setSystemAnalyticsTab(tab);
       }}
       onChanged={refreshToolbarSystemState}
@@ -6613,9 +6770,6 @@ export function App() {
                 <SettingsDisclosure title="Telegram notifications" description="Get updates in Telegram." scope="Installation" icon={Bell}>
                   <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyTelegramIntegrationCard canManage isCodexEnabled={isCodexEnabled} /></RecoverableSurface>
                 </SettingsDisclosure>
-                <SettingsDisclosure title="Codex CLI defaults" description="Set defaults for future CLI sessions." scope="New sessions" icon={Terminal}>
-                  <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyCodexCliDefaultsCard client={api} isCodexEnabled={isCodexEnabled} /></RecoverableSurface>
-                </SettingsDisclosure>
               </SettingsSections>
             ) : undefined;
 
@@ -6632,7 +6786,6 @@ export function App() {
                 return <LazyAdminCodexToolsDialog embedded initialTool={id === "codex-lb-speed-control" ? "speed" : id === "cli-session-cleanup" ? "cleanup" : "history"} isCodexEnabled={isCodexEnabled} anyCliEnabled={anyCliEnabled} onClose={back} />;
               if (id === "system-services") return <LazySystemServicesDialog embedded onClose={back} />;
               if (id === "user-management") return <LazyUserManagementDialog embedded currentUserId={auth?.user?.id} onClose={back} />;
-              if (id === "space-gateway") return <LazySpaceGatewayDialog embedded onClose={back} />;
               if (id === "setup-connections") return <LazySetupConnectionsWizard embedded open onOpenMaintenance={() => navigate("space-cli-maintenance")} connectionsContent={setupConnectionsContent} checks={api} finish={api.finishSetup} loadOverview={api.setupOverview} openLogin={async connection => {
                   manageLoginPendingRef.current = true; setManageLoginPending(true);
                   try { await openSetupConnectionLogin(connection); }
@@ -6694,8 +6847,10 @@ export function App() {
       content = <LazyServerActionsMenu actions={serverActionCommands} mobile={false} onClose={onBack} triggerRef={triggerRef}
         initialAction={id === "server-restart" ? null : id} renderAction={(actionId, back, navigate) => renderWorkspaceManageAction(actionId, back, navigate, true)}
         renderGroupIntro={renderManageGroupIntro} />;
-    } else if (["space-cli-maintenance", "cli-update-all", "publish-space-release", "codex-lb-speed-control", "cli-session-cleanup", "codex-history-purge", "user-management", "space-gateway"].includes(id)) {
+    } else if (["space-cli-maintenance", "cli-update-all", "publish-space-release", "codex-lb-speed-control", "cli-session-cleanup", "codex-history-purge", "user-management"].includes(id)) {
       content = renderWorkspaceManageAction(id, onBack, onNavigate, true);
+    } else if (id === "space-gateway") {
+      content = <LazySpaceGatewayDialog embedded onClose={onBack} />;
     } else if (id === "memory-workspace") {
       content = <MemoryWorkspaceErrorBoundary onClose={onBack}><LazyMemoryWorkspace shellMode={shellMode}
         activeRoomId={activeRoom?.id ?? null} onClose={onBack} /></MemoryWorkspaceErrorBoundary>;
@@ -6924,9 +7079,9 @@ export function App() {
           <LazyAdminOperationsDialog initialTool={manage.adminOperationTool} onClose={manage.closeAdminOperationTool} />
         </RecoverableSurface>
       ) : null}
-      {jobCopilotLaunch ? (
-        <RecoverableSurface fallback={<div role="status">Loading Job Copilot…</div>}>
-          <LazyJobCopilotLaunchDialog onClose={() => setJobCopilotLaunch(null)} onCreate={createJobCopilotPanes} />
+      {copilotLaunch ? (
+        <RecoverableSurface fallback={<div role="status">Loading {copilotLaunch.kind.label}…</div>}>
+          <LazyCopilotLaunchDialog kind={copilotLaunch.kind} preselect={copilotLaunch.preselect} notice={copilotLaunch.notice} onClose={() => setCopilotLaunch(null)} onCreate={createCopilotPanes} />
         </RecoverableSurface>
       ) : null}
 
@@ -6955,7 +7110,11 @@ export function App() {
                 const surface = actionId.replace("surface-", "") as SideSurface;
                 toggleSideSurface(surface);
               } else if (actionId === "memory-workspace") {
+                setIsSpaceGatewayOpen(false);
                 setIsMemoryWorkspaceOpen(true);
+              } else if (actionId === "space-gateway") {
+                setIsMemoryWorkspaceOpen(false);
+                setIsSpaceGatewayOpen(true);
               } else if (actionId === "system-resources") {
                 openSystemResources();
               } else if (actionId === "benchmark") {
@@ -6986,8 +7145,9 @@ export function App() {
       {manage.serverRestart.isOpen ? <ServerRestartDialog controller={manage.serverRestart} /> : null}
 
       {manage.cliRuntimeRestartAll.isOpen ? <CliRuntimeRestartAllDialog controller={manage.cliRuntimeRestartAll} /> : null}
+      {gatewayCompression.dialog}
 
-      {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
+      {auth.user?.role === "ADMIN" && (isRoomToolbarHidden || isMobilePaneFocused || isMemoryWorkspaceOpen || isSpaceGatewayOpen || systemAnalyticsTab || !presentationRoom) ? renderToolbarMetrics(true) : null}
       {auth.user?.role === "ADMIN" ? (
         <RecoverableSurface fallback={isAgentsDashboardOpen ? <div role="status">Loading agents dashboard…</div> : null}>
           <LazyAgentsDashboard key={auth.user.id} userId={auth.user.id} open={isAgentsDashboardOpen} rooms={rooms} completions={paneCompletionLifecycle.panes}
@@ -7090,8 +7250,8 @@ export function App() {
 
       <div className="workspace-stage">
       <section className={workspaceClassName}
-        inert={isMemoryWorkspaceOpen || undefined}
-        aria-hidden={isMemoryWorkspaceOpen || undefined}>
+        inert={isMemoryWorkspaceOpen || isSpaceGatewayOpen || undefined}
+        aria-hidden={isMemoryWorkspaceOpen || isSpaceGatewayOpen || undefined}>
         <InlineSideSurface sideSurfaces={sideSurfaces} launcherActions={roomToolbar.orderedActions} renderSurface={renderSideSurfaceContent} fallback={sideSurfaceLoadingFallback} />
         <CompactSideSurfaceDrawer sideSurfaces={sideSurfaces} launcherActions={roomToolbar.orderedActions} renderSurface={renderSideSurfaceContent} fallback={sideSurfaceLoadingFallback} />
 
@@ -7243,6 +7403,7 @@ export function App() {
           <div
             className="room-runtime-stack"
             data-ui-background={uiBackground}
+            data-has-empty-state={roomRuntimeStackHasEmptyState ? "true" : "false"}
             aria-busy={preparingRoomId ? "true" : "false"}
             data-presentation-generation={roomPresentationGenerationRef.current}
           >
@@ -7281,6 +7442,11 @@ export function App() {
           </RecoverableSurface>
         </MemoryWorkspaceErrorBoundary>
       </div> : null}
+      {isSpaceGatewayOpen && auth.user?.role === "ADMIN" ? <div className="workspace-cover">
+        <RecoverableSurface fallback={<div className="memory-workspace-loading" role="status">Loading Space Gateway…</div>}>
+          <LazySpaceGatewayDialog fullscreen onClose={() => setIsSpaceGatewayOpen(false)} />
+        </RecoverableSurface>
+      </div> : null}
       </div>
       <QuickLinksPopover open={isQuickLinksOpen} triggerRef={quickLinksButtonRef} onClose={() => setIsQuickLinksOpen(false)} onOpen={openUserLink} onManage={manageLinks} />
       {activeUserLink && !workspaceNavigationDetail ? (
@@ -7289,6 +7455,7 @@ export function App() {
         </RecoverableSurface>
       ) : null}
       <LiveDebugToastView notices={notices} />
+      <NotificationToastHost />
       </main>
       <StreamingOverlay theme={uiTheme !== "classic" ? "modern" : "classic"} />
       </StreamingOverlayProvider>

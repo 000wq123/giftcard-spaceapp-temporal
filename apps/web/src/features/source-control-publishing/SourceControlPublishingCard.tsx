@@ -138,7 +138,7 @@ export function SourceControlPublishingCard({
         <GitBranch aria-hidden="true" />
         <span>
           <strong>Source control publishing</strong>
-          <small>Protected credentials for fixed Gitea and GitHub repositories.</small>
+          <small>Lets Space publish its own code to these repositories.</small>
         </span>
         <SettingsActionMenu
           label="Source control publishing actions"
@@ -226,6 +226,7 @@ export function SourceControlPublishingCard({
                       setTokens((current) => ({ ...current, [provider]: value }));
                     }}
                   />
+                  <small>Create an access token in your {label} account settings and paste it here (at least 20 characters).</small>
                 </label>
                 <button
                   type="submit"
@@ -273,7 +274,7 @@ export function SourceControlPublishingCard({
       {error ? <p className="source-control-feedback error" role="alert">{error}</p> : null}
       {feedback ? <p className="source-control-feedback success" role="status" aria-live="polite">{feedback}</p> : null}
       <p className="settings-flat-note">
-        Tokens are write-only: Space verifies them before storage and never returns them to the browser.
+        Space checks each token before saving it and never shows it again.
       </p>
     </section>
   );

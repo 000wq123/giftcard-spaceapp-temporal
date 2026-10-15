@@ -4,7 +4,6 @@ import { writeVoiceComposerSettings, type VoiceComposerSettings } from "../../vo
 import { Mic, RefreshCw } from "../ui-theme/app-icons.js";
 import { SettingsActionMenu } from "../settings/SettingsActionMenu.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { CliShortcutVisibilitySettings } from "../terminal-pane/CliShortcutVisibilitySettings.js";
 
 export function VoiceSettingsCard() {
   const voiceInput = useVoiceInput();
@@ -209,65 +208,6 @@ export function VoiceSettingsCard() {
             </label>
           </div>
         </details>
-      </div>
-      <div className="voice-float-settings">
-        <div className="settings-flat-subheading">
-          <strong>Terminal controls</strong>
-          <small>Choose which controls appear in CLI panes.</small>
-        </div>
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="terminal-context-menu"
-          label="Right-click menu"
-          checked={Boolean(settings.terminalContextMenu ?? true)}
-          onChange={(terminalContextMenu) => updateVoiceSettings({ terminalContextMenu })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-shortcuts-button"
-          label="Shortcuts"
-          checked={settings.terminalShortcutsButton}
-          onChange={(terminalShortcutsButton) => updateVoiceSettings({ terminalShortcutsButton })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-variables-button"
-          label="Prompt variables"
-          checked={settings.terminalVariablesButton}
-          onChange={(terminalVariablesButton) => updateVoiceSettings({ terminalVariablesButton })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-plans-button"
-          label="Plans"
-          checked={settings.terminalPlansButton}
-          onChange={(terminalPlansButton) => updateVoiceSettings({ terminalPlansButton })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-voice-button"
-          label="Voice mic"
-          checked={settings.terminalVoiceButton}
-          onChange={(terminalVoiceButton) => updateVoiceSettings({ terminalVoiceButton })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-model-picker"
-          label="Model choice"
-          checked={settings.terminalModelPicker}
-          onChange={(terminalModelPicker) => updateVoiceSettings({ terminalModelPicker })}
-        />
-        <SpaceToggle
-          className="settings-flat-row settings-flat-toggle-row voice-toggle"
-          name="float-turn-control"
-          label="Turn control"
-          checked={settings.terminalTurnControl}
-          onChange={(terminalTurnControl) => updateVoiceSettings({ terminalTurnControl })}
-        />
-        <CliShortcutVisibilitySettings
-          hiddenIds={settings.terminalHiddenShortcuts}
-          onChange={(terminalHiddenShortcuts) => updateVoiceSettings({ terminalHiddenShortcuts })}
-        />
       </div>
       <p className="settings-flat-note voice-settings-help">Uses {providerDescriptor?.displayName || currentProvider} {settings.model} ({settings.voice}). Finished speech is submitted immediately.</p>
     </section>

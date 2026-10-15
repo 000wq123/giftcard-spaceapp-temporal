@@ -21,12 +21,13 @@ import { WORKSPACE_TEXT_SIZE_PICKER_ID } from "../workspace-text-size-picker/Wor
 import type { IconToolbarAction } from "../../icon-toolbar.js";
 import type { Pane } from "@space/contracts";
 import {
-  ALargeSmall, Activity, Boxes, Camera, CircleHelp, ClipboardList, Clock3, Cpu, Crop, Crosshair, Database, Dumbbell, Eye, EyeOff,
+  ALargeSmall, Activity, Boxes, Camera, CircleHelp, ClipboardList, Mail, Clock3, Cpu, Crop, Crosshair, Database, Dumbbell, Eye, EyeOff,
   FolderPlus, Gauge, Globe, Keyboard, LayoutDashboard, ListFilter, LogOut, Maximize2, MessageSquare, Mic, Minimize2,
-  Monitor, MoreHorizontal, Music2, Network, Palette, PanelsTopLeft, Radio, RefreshCw, Rocket, ServerCog, Settings2,
-  ShieldCheck, SlidersHorizontal, Sparkles, Star, StickyNote, Terminal, Timer, Youtube
+  Monitor, MoreHorizontal, Music2, Network, Palette, PanelsTopLeft, Radio, RefreshCw, Rocket, ServerCog, Settings,
+  ShieldCheck, Shrink, SlidersHorizontal, Sparkles, Star, StickyNote, Terminal, Timer, Youtube
 } from "../ui-theme/app-icons.js";
 import type { ToolbarPopovers } from "./useToolbarPopovers.js";
+import { serverModuleOn } from "../pane-visibility/server-modules.js";
 
 // The room toolbar's action catalog, in its default order. Users can hide and
 // reorder these; the Workspace menu, rails and overflow menus reuse them.
@@ -41,6 +42,9 @@ export interface RoomToolbarActionsContext {
   shellMode: ShellMode;
   docks: Pick<SideSurfaces, "sourceControlAvailable" | "sideSurfaceToggleLabel" | "toggleSideSurface" | "isSideSurfaceOpen" | "activeSideSurface"> & {
     hiddenDockIds: string[];
+    /** Questions and problems across all rooms that wait for the operator in the Room Agent. */
+    roomAgentAttention?: number;
+    notificationAttention?: number;
   };
   visibility: {
     isWidgetHidden(id: Parameters<ReturnType<typeof useWidgetsVisibility>["isWidgetHidden"]>[0]): boolean;
@@ -70,6 +74,8 @@ export interface RoomToolbarActionsContext {
     addDemosPane: () => Promise<void>;
     addT3CodePane: () => Promise<void>;
     addJobApplyPane: () => Promise<void>;
+    addMailCopilotPane: () => Promise<void>;
+    addMarketingCopilotPane: () => Promise<void>;
     addLivePane: () => Promise<unknown>;
   };
   tools: {
@@ -84,6 +90,9 @@ export interface RoomToolbarActionsContext {
   workspace: {
     isMemoryWorkspaceOpen: boolean;
     setIsMemoryWorkspaceOpen: (open: boolean) => void;
+    /** Space Gateway as a full-screen workspace page (ADMIN), next to the memory workspace. */
+    isSpaceGatewayOpen: boolean;
+    setIsSpaceGatewayOpen: (open: boolean) => void;
     setSystemAnalyticsTab: (tab: SystemAnalyticsTab | null) => void;
     agentsDashboardSummary: AgentDashboardSummary | null;
     setIsAgentsDashboardOpen: (open: boolean) => void;
@@ -92,6 +101,8 @@ export interface RoomToolbarActionsContext {
     isDebugModeActive: boolean;
     debugModePending: boolean;
     toggleDebugMode: () => Promise<void>;
+    /** Space Gateway context compression (ADMIN): null hides the toggle until the mode is known. */
+    gatewayCompression: { mode: "ON" | "OFF" | null; pending: boolean; request: () => void };
     isDemoModeActive: boolean;
     setIsDemoModeActive: (active: boolean) => void;
     setAdminModeRequested: (requested: boolean) => void;
@@ -115,29 +126,31 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
   } = context.popovers;
   const { cliFloatsHidden, toggleCliFloats, maskSensitiveData, toggleMaskSensitiveData, isRoomFocusMode, toggleRoomFocusMode, isRoomToolbarHidden, terminalFontSize } = context.preferences;
   const { activeRoom, selectedRoomId, panes, paneLayoutPending, setPaneLayoutError, activeRoomCategoryFilter, activeRoomCategoryColors, cycleRoomCategoryColor } = context.room;
-  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addLivePane } = context.create;
+  const { isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane, addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane, addLivePane } = context.create;
   const { desktopWidgets, openStickyNote, isBrowserFullscreen, captureRoomScreen, reloadRoomWindow } = context.tools;
   const { isSnipToolOpen, setIsSnipToolOpen } = context.tools.snip;
   const { toolbarVpnRoute, vpnCityPending, rotateVpnCityFromToolbar } = context.tools.vpn;
   const {
-    isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen, setSystemAnalyticsTab, agentsDashboardSummary, setIsAgentsDashboardOpen,
-    resourceIndicatorsVisible, toggleResourceIndicators, isDebugModeActive, debugModePending, toggleDebugMode, isDemoModeActive,
-    setIsDemoModeActive, setAdminModeRequested, openHelp, openBenchmark, signOut, isServerActionsMenuOpen, setIsServerActionsMenuOpen
+    isMemoryWorkspaceOpen, setIsMemoryWorkspaceOpen, isSpaceGatewayOpen, setIsSpaceGatewayOpen, setSystemAnalyticsTab, agentsDashboardSummary,
+    setIsAgentsDashboardOpen, resourceIndicatorsVisible, toggleResourceIndicators, isDebugModeActive, debugModePending, toggleDebugMode, isDemoModeActive,
+    setIsDemoModeActive, setAdminModeRequested, openHelp, openBenchmark, signOut, isServerActionsMenuOpen, setIsServerActionsMenuOpen,
+    gatewayCompression
   } = context.workspace;
   const actions: IconToolbarAction[] = [
   ...(Object.entries(sideSurfaceMeta) as Array<[SideSurface, (typeof sideSurfaceMeta)[SideSurface]]>)
     .filter(([surface]) => surface !== "health" && (surface !== "streaming" || role === "ADMIN") && (surface !== "source-control" || sourceControlAvailable) && !hiddenDockIds.includes(surface))
     .map(([surface, meta]) => {
       const label = sideSurfaceToggleLabel(surface);
+      const attention = surface === "room-agent" ? context.docks.roomAgentAttention ?? 0 : surface === "notifications" ? context.docks.notificationAttention ?? 0 : 0;
       return {
         id: `surface-${surface}`,
         label,
-        title: label,
+        title: attention ? (surface === "notifications" ? `${label} · ${attention} unread` : `${label} · ${attention} need${attention === 1 ? "s" : ""} you`) : label,
         ariaLabel: label,
         icon: meta.icon,
         onClick: () => toggleSideSurface(surface),
         ariaPressed: isSideSurfaceOpen && activeSideSurface === surface,
-        className: "toolbar-surface-toggle"
+        className: attention ? "toolbar-surface-toggle has-attention" : "toolbar-surface-toggle"
       };
     }),
   {
@@ -148,10 +161,25 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     icon: Network,
     onClick: () => {
       setSystemAnalyticsTab(null);
+      setIsSpaceGatewayOpen(false);
       setIsMemoryWorkspaceOpen(true);
     },
     ariaExpanded: isMemoryWorkspaceOpen
   },
+  // Space Gateway opens full screen like the memory workspace (operator request 2026-10-13); it left the Manage menu.
+  ...(role === "ADMIN" ? [{
+    id: "space-gateway",
+    label: "Space Gateway",
+    title: "Open Space Gateway full screen: pooled accounts, API keys, request logs, routing and compression",
+    ariaLabel: "Space Gateway",
+    icon: Network,
+    onClick: () => {
+      setSystemAnalyticsTab(null);
+      setIsMemoryWorkspaceOpen(false);
+      setIsSpaceGatewayOpen(true);
+    },
+    ariaExpanded: isSpaceGatewayOpen
+  }] : []),
   {
     id: "quick-links",
     label: "Quick Links",
@@ -394,6 +422,18 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     disabled: debugModePending,
     hideable: true
   },
+  // Space Gateway compression for every CLI, chat and agent; the click asks for confirmation first.
+  ...(role === "ADMIN" && gatewayCompression.mode !== null ? [{
+    id: "gateway-compression",
+    label: gatewayCompression.mode === "ON" ? "Turn off context compression" : "Turn on context compression",
+    title: gatewayCompression.mode === "ON" ? "Turn off context compression" : "Turn on context compression",
+    ariaLabel: gatewayCompression.mode === "ON" ? "Turn off context compression" : "Turn on context compression",
+    icon: Shrink,
+    onClick: gatewayCompression.request,
+    ariaPressed: gatewayCompression.mode === "ON",
+    disabled: gatewayCompression.pending,
+    hideable: true
+  } satisfies IconToolbarAction] : []),
   {
     id: "font-down",
     label: "Workspace text size",
@@ -519,6 +559,34 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         onClick: () => {
           if (!activeRoom) return;
           void addJobApplyPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
+  ...(!isPaneHidden("mail")
+    ? [{
+        id: "add-mail",
+        label: "Mail Copilot",
+        title: "Add Mail Copilot pane",
+        ariaLabel: "Add Mail Copilot pane",
+        icon: Mail,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addMailCopilotPane();
+        },
+        disabled: !activeRoom || panes.length >= 16
+      }]
+    : []),
+  ...(!isPaneHidden("marketing")
+    ? [{
+        id: "add-marketing",
+        label: "Marketing Copilot",
+        title: "Add Marketing Copilot pane",
+        ariaLabel: "Add Marketing Copilot pane",
+        icon: Rocket,
+        onClick: () => {
+          if (!activeRoom) return;
+          void addMarketingCopilotPane();
         },
         disabled: !activeRoom || panes.length >= 16
       }]
@@ -660,7 +728,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     label: "Advanced settings",
     title: "All advanced settings in one place",
     ariaLabel: "Advanced settings",
-    icon: Settings2,
+    icon: Settings,
     onClick: () => {
       setAdminModeRequested(true);
       toggleSideSurface("settings");
@@ -680,6 +748,7 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     icon: Monitor,
     onClick: () => {
       setIsMemoryWorkspaceOpen(false);
+      setIsSpaceGatewayOpen(false);
       setSystemAnalyticsTab("overview");
     }
   }, {
@@ -690,14 +759,15 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
     icon: ServerCog,
     onClick: () => openManage("system-services")
   }] : []),
-  {
+  // The games are an optional server module (off by default in public installs).
+  ...(serverModuleOn("games") ? [{
     id: "benchmark",
     label: "Games Benchmark",
     title: "Open the AI Games Benchmark: Asteroids and Chess",
     ariaLabel: "Games Benchmark",
     icon: Crosshair,
     onClick: openBenchmark
-  },
+  }] : []),
   {
     id: "vibe-music",
     label: "Vibe music",

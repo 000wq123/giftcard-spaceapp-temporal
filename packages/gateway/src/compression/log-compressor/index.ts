@@ -95,6 +95,8 @@ export interface CompressLogOptions {
   bias?: number;
   /** Optional sink for the original. The marker and `cacheKey` are emitted either way, as Headroom's Python API does. */
   store?: LogCcrStore;
+  /** Lines kept whatever the caps say (Space Gateway: test failures, assertions and counts); upstream has no such hook. */
+  protect?: (line: string) => boolean;
 }
 
 export function compressLog(content: string, options: CompressLogOptions = {}): LogCompressionResult {
@@ -108,7 +110,7 @@ export function compressLog(content: string, options: CompressLogOptions = {}): 
 
   const formatDetected = detectLogFormat(lines);
   const logLines = parseLogLines(lines, config);
-  const selected = selectLines(logLines, options.bias ?? 1, config);
+  const selected = selectLines(logLines, options.bias ?? 1, config, options.protect);
   const { text, stats } = formatOutput(selected, logLines);
   const compressionRatio = byteLength(text) / Math.max(byteLength(content), 1);
 
@@ -179,8 +181,9 @@ export function parseLogLines(lines: readonly string[], config: LogCompressorCon
 // ─── Selection ─────────────────────────────────────────────────────────
 
 const byScoreThenLine = (a: LogLine, b: LogLine): number => b.score - a.score || a.lineNumber - b.lineNumber;
+const byLine = (a: LogLine, b: LogLine): number => a.lineNumber - b.lineNumber;
 
-function selectLines(logLines: readonly LogLine[], bias: number, config: LogCompressorConfig): LogLine[] {
+function selectLines(logLines: readonly LogLine[], bias: number, config: LogCompressorConfig, protect?: (line: string) => boolean): LogLine[] {
   const adaptiveMax = computeOptimalK(logLines.map((line) => line.content), bias, 10, config.maxTotalLines);
 
   const errors: LogLine[] = [];
@@ -211,6 +214,9 @@ function selectLines(logLines: readonly LogLine[], bias: number, config: LogComp
 
   selectWithFirstLast(errors, config.maxErrors, config).forEach(insert);
   selectWithFirstLast(fails, config.maxErrors, config).forEach(insert);
+  // Protected test lines bypass the error cap here and the final cap below; they get context like any kept line.
+  const protectedLines = protect ? logLines.filter((line) => protect(line.content)) : [];
+  protectedLines.forEach(insert);
   if (config.dedupeWarnings) warnings = dedupeSimilar(warnings);
   warnings.slice(0, config.maxWarnings).forEach(insert);
 
@@ -241,9 +247,11 @@ function selectLines(logLines: readonly LogLine[], bias: number, config: LogComp
     if (!selectedIndices.has(index) && index < logLines.length && !collapsedFrames.has(index)) insert(logLines[index]!);
   }
 
-  let ordered = [...selected.values()].sort((a, b) => a.lineNumber - b.lineNumber);
+  let ordered = [...selected.values()].sort(byLine);
   if (ordered.length > adaptiveMax) {
-    ordered = ordered.sort(byScoreThenLine).slice(0, adaptiveMax).sort((a, b) => a.lineNumber - b.lineNumber);
+    const pinned = new Set(protectedLines.map((line) => line.lineNumber));
+    const rest = ordered.filter((line) => !pinned.has(line.lineNumber)).sort(byScoreThenLine).slice(0, Math.max(0, adaptiveMax - pinned.size));
+    ordered = [...protectedLines, ...rest].sort(byLine);
   }
   return ordered;
 }

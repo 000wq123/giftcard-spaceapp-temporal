@@ -1,14 +1,29 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import type { Artifact, CliAccountProfile, JobApplyCandidate, JobApplyPaneMetadata, JobApplyProfile, JobApplySite, Pane } from "@space/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { jobApplyMailboxConnected, type Artifact, type ConnectorCapability, type JobApplyCandidate, type JobApplyPaneMetadata, type JobApplyProfile, type JobApplySite, type JobCopilotLaunchSettings, type Pane } from "@space/contracts";
 import { api } from "../../api.js";
+import { BROWSER_PANE_ACCOUNT_SELECTED_EVENT, dispatchBrowserPaneActionEvent } from "../browser-pane/events.js";
+import { GoogleAccountMenuItems } from "../browser-pane/GoogleAccountMenuItems.js";
+import type { YouTubeAccounts } from "../browser-pane/youtube-accounts.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { Check, Plus, Trash2 } from "../ui-theme/app-icons.js";
-import { JOB_COPILOT_PREFERRED_RUNTIME_ID, readLastClaudeAccountProfileId, writeLastClaudeAccountProfileId, type JobCopilotRuntimeOption } from "./agent-runtimes.js";
+import { AgentAccountField, useJobCopilotAccounts } from "./AgentAccountField.js";
+import { jobCopilotAgentLabel, loadPaneAccountProfileId, type JobCopilotRuntimeOption } from "./agent-runtimes.js";
 
 export type SetupStep = "profile" | "mailbox" | "limits" | "agent";
 const STEPS: Array<{ id: SetupStep; label: string }> = [
-  { id: "profile", label: "CV & profile" }, { id: "mailbox", label: "Mailbox" }, { id: "limits", label: "Limits" }, { id: "agent", label: "Agent" }
+  { id: "profile", label: "CV & profile" }, { id: "mailbox", label: "Google account" }, { id: "limits", label: "Limits" }, { id: "agent", label: "Agent" }
 ];
+const GOOGLE_ACCESS: Array<{ capability: ConnectorCapability; label: string }> = [
+  { capability: "MAIL_READ", label: "Read email: codes, links, recruiter replies" },
+  { capability: "MAIL_COMPOSE", label: "Draft replies (you send them from Gmail)" },
+  { capability: "CALENDAR", label: "Calendar: busy times and interviews" },
+  { capability: "MAIL_ORGANIZE", label: "Organize mail: file application emails under Job Applications labels and archive receipts" }
+];
+
+/** Google consent for the copilot's account: Gmail read, drafts and labels plus Calendar, returning to this tab with a Job Copilot notice. */
+export function jobCopilotGoogleConsentUrl(email: string): string {
+  return `/api/connectors/google/start?${new URLSearchParams({ capabilities: GOOGLE_ACCESS.map(({ capability }) => capability).join(","), loginHint: email, source: "job-copilot" })}`;
+}
 const SITES: JobApplySite[] = ["linkedin", "greenhouse", "ashby", "lever", "workday", "indeed", "other"];
 const SITE_LABEL: Record<JobApplySite, string> = { linkedin: "LinkedIn", greenhouse: "Greenhouse", ashby: "Ashby", lever: "Lever", workday: "Workday", indeed: "Indeed", other: "Other" };
 
@@ -46,18 +61,25 @@ function parseList(text: string): string[] {
   return text.split(",").map((value) => value.trim()).filter(Boolean).slice(0, 100);
 }
 
-export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, onProfileChange, onSettingsChange, onSwitchRuntime, onToggleAlerts }: {
+export function SetupWizard({ pane, profile, settings, runtimeOptions, switching = false, accountRevision = 0, footer = null, onProfileChange, onSettingsChange, onSwitchAgent, onSetDefault }: {
   pane: Pane;
   profile: JobApplyProfile;
   settings: JobApplyPaneMetadata;
   runtimeOptions: JobCopilotRuntimeOption[];
-  alerts: boolean;
+  /** The pane's agent is being switched (its CLI restarts). */
+  switching?: boolean;
+  /** Changes after each agent switch, so the Agent step reloads the pane's account. */
+  accountRevision?: number;
+  /** Shown at the end of the last step, Agent (Start over). */
+  footer?: ReactNode;
   onProfileChange(profile: JobApplyProfile): void;
   onSettingsChange(settings: JobApplyPaneMetadata): void;
-  onSwitchRuntime(runtimeId: string): void;
-  onToggleAlerts(checked: boolean): void;
+  /** Switch this pane's CLI, or its account (the CLI restarts on it). */
+  onSwitchAgent(runtimeId: string, accountProfileId?: string): void;
+  /** New Job Copilot panes open with this pane's agent and account. */
+  onSetDefault(): void;
 }) {
-  const [step, setStep] = useState<SetupStep>(() => !profile.cvArtifactId || !profile.candidate.fullName ? "profile" : !profile.mailbox ? "mailbox" : "limits");
+  const [step, setStep] = useState<SetupStep>(() => !profile.cvArtifactId || !profile.candidate.fullName ? "profile" : !jobApplyMailboxConnected(profile) ? "mailbox" : "limits");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<Artifact[]>([]);
@@ -66,10 +88,67 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, o
   const [candidate, setCandidate] = useState<JobApplyCandidate>(profile.candidate);
   const [mailbox, setMailbox] = useState({ host: profile.mailbox?.host ?? "imap.gmail.com", port: profile.mailbox?.port ?? 993, secure: profile.mailbox?.secure ?? true, user: profile.mailbox?.user ?? "", password: "" });
   const [draft, setDraft] = useState<JobApplyPaneMetadata>(settings);
-  const [claudeProfiles, setClaudeProfiles] = useState<CliAccountProfile[]>([]);
-  const [claudeProfileId, setClaudeProfileId] = useState(readLastClaudeAccountProfileId);
-  const [notificationState, setNotificationState] = useState<NotificationPermission | "unsupported">(() => ("Notification" in window ? Notification.permission : "unsupported"));
   const completeness = useMemo(() => profileCompleteness(profile), [profile]);
+  const [launch, setLaunch] = useState<JobCopilotLaunchSettings | null>(null);
+  const [googleAccounts, setGoogleAccounts] = useState<YouTubeAccounts | null>(null);
+  const [googleAccountsError, setGoogleAccountsError] = useState<string | null>(null);
+  const [choosingAccount, setChoosingAccount] = useState(false);
+  const choosingTimer = useRef<number | null>(null);
+
+  // The same accounts as the pane browser's Google account menu; reloaded whenever the pane switches accounts.
+  const loadGoogleAccounts = useCallback(() => {
+    api.browserAccounts(pane.id).then((accounts) => { setGoogleAccounts(accounts); setGoogleAccountsError(null); })
+      .catch((error: unknown) => setGoogleAccountsError(errorText(error)));
+  }, [pane.id]);
+  useEffect(() => { if (step === "mailbox") loadGoogleAccounts(); }, [loadGoogleAccounts, step]);
+  const runtimeId = pane.terminalRuntimeId ?? null;
+  const runtimeOption = runtimeOptions.find((option) => option.runtime.id === runtimeId) ?? null;
+  const runtimeLabel = runtimeId ? jobCopilotAgentLabel(runtimeId, runtimeOption?.runtime) : "";
+  const accounts = useJobCopilotAccounts(step === "agent" ? runtimeId : null);
+  const [paneAccount, setPaneAccount] = useState<string | null>(null);
+  // The Agent step shows the saved default and the account this pane's CLI runs on now (the terminal's account menu changes it too).
+  useEffect(() => {
+    if (step !== "agent") return;
+    let cancelled = false;
+    api.userSettings().then((userSettings) => { if (!cancelled) setLaunch(userSettings.jobCopilot ?? null); }).catch(() => undefined);
+    void loadPaneAccountProfileId(pane.id, runtimeId).then((accountProfileId) => { if (!cancelled) setPaneAccount(accountProfileId); });
+    return () => { cancelled = true; };
+  }, [accountRevision, pane.id, runtimeId, step]);
+  const isDefault = Boolean(launch && !launch.askOnLaunch && runtimeId && launch.runtimeId === runtimeId && (launch.accountProfileId ?? null) === paneAccount);
+  useEffect(() => {
+    function accountSelected(event: Event) {
+      if ((event as CustomEvent<{ paneId?: string }>).detail?.paneId !== pane.id) return;
+      if (choosingTimer.current !== null) window.clearTimeout(choosingTimer.current);
+      setChoosingAccount(false);
+      loadGoogleAccounts();
+      // The API made the chosen account the copilot's Google account; show its access.
+      api.jobApplyProfile().then((response) => onProfileChange(response.profile)).catch(() => undefined);
+    }
+    window.addEventListener(BROWSER_PANE_ACCOUNT_SELECTED_EVENT, accountSelected);
+    return () => {
+      window.removeEventListener(BROWSER_PANE_ACCOUNT_SELECTED_EVENT, accountSelected);
+      if (choosingTimer.current !== null) window.clearTimeout(choosingTimer.current);
+    };
+  }, [loadGoogleAccounts, onProfileChange, pane.id]);
+
+  // Every Google account the operator could allow: the pane browser's account first, then those already allowed, then the menu's others.
+  const mailAccountEmails = useMemo(() => [...new Set([
+    ...(profile.google ? [profile.google.email] : []),
+    ...profile.googleAccounts.map((account) => account.email),
+    ...(googleAccounts?.profiles ?? []).flatMap((entry) => entry.email ? [entry.email.trim().toLowerCase()] : [])
+  ])], [googleAccounts, profile.google, profile.googleAccounts]);
+
+  /** The pane browser opens the account (it owns the session restart and the Google sign-in); the API then names it the copilot's account. */
+  function chooseGoogleAccount(profileId: string, signIn = false) {
+    setMessage(null);
+    setChoosingAccount(true);
+    if (choosingTimer.current !== null) window.clearTimeout(choosingTimer.current);
+    choosingTimer.current = window.setTimeout(() => {
+      setChoosingAccount(false);
+      setMessage("The pane browser did not switch accounts. Try again once it has finished loading.");
+    }, 30_000);
+    dispatchBrowserPaneActionEvent({ paneId: pane.id, roomId: pane.roomId, action: "account", profileId, signIn });
+  }
 
   useEffect(() => { setDraft(settings); }, [settings]);
 
@@ -78,7 +157,6 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, o
     api.artifacts({ roomId: pane.roomId, collection: "AGENT_FILES", pageSize: 100, sortOrder: "desc" })
       .then((page) => { if (!cancelled) setFiles(page.data.filter((artifact) => !artifact.deletedAt)); })
       .catch(() => { if (!cancelled) setFiles([]); });
-    api.listCliAccountProfiles(JOB_COPILOT_PREFERRED_RUNTIME_ID).then((response) => { if (!cancelled) setClaudeProfiles(response.profiles); }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [pane.roomId]);
 
@@ -148,7 +226,7 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, o
 
   const stepDone: Record<SetupStep, boolean> = {
     profile: Boolean(profile.cvArtifactId && profile.candidate.fullName && profile.candidate.email),
-    mailbox: Boolean(profile.mailbox),
+    mailbox: jobApplyMailboxConnected(profile),
     limits: true,
     agent: Boolean(pane.terminalRuntimeId)
   };
@@ -263,22 +341,68 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, o
       ) : null}
 
       {step === "mailbox" ? (
-        <form className="jc-form" onSubmit={connectMailbox}>
-          <p className="jc-muted">The copilot reads verification codes and confirmation links through Space. The app password is sealed on the server and never shown again.</p>
-          <div className="jc-form-grid">
-            <label className="jc-field"><span>IMAP host</span><input value={mailbox.host} onChange={(event) => setMailbox({ ...mailbox, host: event.target.value })} required /></label>
-            <label className="jc-field"><span>Port</span><input type="number" min={1} max={65535} value={mailbox.port} onChange={(event) => setMailbox({ ...mailbox, port: Number.parseInt(event.target.value, 10) || 993 })} /></label>
-          </div>
-          <SpaceToggle label="TLS" checked={mailbox.secure} onChange={(checked) => setMailbox({ ...mailbox, secure: checked })} />
-          <label className="jc-field"><span>Email address</span><input type="email" value={mailbox.user} onChange={(event) => setMailbox({ ...mailbox, user: event.target.value })} required /></label>
-          <label className="jc-field"><span>App password</span><input type="password" autoComplete="off" value={mailbox.password} onChange={(event) => setMailbox({ ...mailbox, password: event.target.value })} required /></label>
-          <div className="jc-actions">
-            <button type="submit" className="jc-button primary" disabled={busy}>Connect</button>
-            <button type="button" className="jc-button" disabled={busy || !profile.mailbox} onClick={() => void testMailbox()}>Test</button>
-            <button type="button" className="jc-button ghost danger" disabled={busy || !profile.mailbox} onClick={() => void disconnectMailbox()}>Disconnect</button>
-            <span className="jc-muted">{profile.mailbox ? `Connected as ${profile.mailbox.user}` : "Not connected"}</span>
-          </div>
-        </form>
+        <div className="jc-form">
+          <section className="jc-google" aria-label="Google account">
+            <p className="jc-muted">Choose the Google account Job Copilot works with. The pane browser opens it, so “Sign in with Google” on job boards uses it. With Gmail &amp; Calendar allowed, the copilot also reads verification codes and recruiter mail, drafts replies for you and keeps your calendar.</p>
+            {googleAccounts?.profiles.length ? (
+              <div className="jc-account-list" role="menu" aria-label="Google accounts for Job Copilot" aria-busy={choosingAccount || undefined}>
+                <GoogleAccountMenuItems accounts={googleAccounts} onSelect={(profileId) => chooseGoogleAccount(profileId)} onSignIn={(profileId) => chooseGoogleAccount(profileId, true)} />
+              </div>
+            ) : (
+              <p className="jc-muted" role="status">{googleAccountsError ?? (googleAccounts ? "No Google accounts yet. Link one in Settings → Google accounts." : "Loading Google accounts…")}</p>
+            )}
+            {choosingAccount ? <p className="jc-muted" role="status">Opening the Google account in the pane browser…</p> : null}
+            <h4 className="jc-google-heading">Mail &amp; calendar access</h4>
+            <p className="jc-muted">The copilot reads codes, links and recruiter mail from every account below that allowed Gmail. Drafts and calendar events use the pane browser's account unless the copilot names another.</p>
+            {mailAccountEmails.length ? mailAccountEmails.map((email) => {
+              const capabilities = profile.googleAccounts.find((account) => account.email === email)?.capabilities ?? [];
+              const missing = GOOGLE_ACCESS.some(({ capability }) => !capabilities.includes(capability));
+              return (
+                <div key={email} className="jc-google-access" aria-label={`Google access for ${email}`}>
+                  <div className="jc-google-access-head">
+                    <strong>{email}</strong>
+                    {email === profile.google?.email ? <span className="jc-tag accent">Pane browser</span> : null}
+                  </div>
+                  <ul>
+                    {GOOGLE_ACCESS.map(({ capability, label }) => {
+                      const granted = capabilities.includes(capability);
+                      return <li key={capability} data-granted={granted ? "true" : "false"}>{granted ? <Check aria-hidden="true" /> : <span aria-hidden="true" />}<span>{label}{granted ? "" : " · not allowed yet"}</span></li>;
+                    })}
+                  </ul>
+                  {profile.googleAvailable && missing ? <div className="jc-actions"><a className="jc-button primary" href={jobCopilotGoogleConsentUrl(email)}>Allow Gmail &amp; Calendar</a></div> : null}
+                </div>
+              );
+            }) : <p className="jc-muted">No Google account yet. Link one in Settings → Google accounts, or sign in to one in the pane browser.</p>}
+            <div className="jc-actions">
+              <button type="button" className="jc-button" disabled={busy || !jobApplyMailboxConnected(profile)} onClick={() => void testMailbox()}>Test mail</button>
+            </div>
+            {profile.googleAvailable ? (
+              <details className="jc-help">
+                <summary>Google says “Access blocked”?</summary>
+                <p>While the server's Google Cloud app is in Testing, only its test users can allow access. In Google Cloud Console open Google Auth Platform → Audience and add the account under Test users, or publish the app. Enable the Gmail API and Google Calendar API for the same project. Access allowed in Testing ends after seven days; Job Copilot then asks you to allow it again.</p>
+              </details>
+            ) : <p className="jc-muted">Google sign-in is not configured on this server, so Gmail and Calendar cannot be allowed here. Use an IMAP mailbox below for verification codes.</p>}
+          </section>
+          <details className="jc-imap" open={Boolean(profile.mailbox) || undefined}>
+            <summary>{profile.mailbox ? `IMAP mailbox · ${profile.mailbox.user}` : "Use an IMAP mailbox instead"}</summary>
+            <form className="jc-form" onSubmit={connectMailbox}>
+              <p className="jc-muted">Without Gmail access the copilot reads verification codes and confirmation links from this mailbox. The app password is sealed on the server and never shown again.</p>
+              <div className="jc-form-grid">
+                <label className="jc-field"><span>IMAP host</span><input value={mailbox.host} onChange={(event) => setMailbox({ ...mailbox, host: event.target.value })} required /></label>
+                <label className="jc-field"><span>Port</span><input type="number" min={1} max={65535} value={mailbox.port} onChange={(event) => setMailbox({ ...mailbox, port: Number.parseInt(event.target.value, 10) || 993 })} /></label>
+              </div>
+              <SpaceToggle label="TLS" checked={mailbox.secure} onChange={(checked) => setMailbox({ ...mailbox, secure: checked })} />
+              <label className="jc-field"><span>Email address</span><input type="email" value={mailbox.user} onChange={(event) => setMailbox({ ...mailbox, user: event.target.value })} required /></label>
+              <label className="jc-field"><span>App password</span><input type="password" autoComplete="off" value={mailbox.password} onChange={(event) => setMailbox({ ...mailbox, password: event.target.value })} required /></label>
+              <div className="jc-actions">
+                <button type="submit" className="jc-button primary" disabled={busy}>Connect</button>
+                <button type="button" className="jc-button" disabled={busy || !profile.mailbox} onClick={() => void testMailbox()}>Test</button>
+                <button type="button" className="jc-button ghost danger" disabled={busy || !profile.mailbox} onClick={() => void disconnectMailbox()}>Disconnect</button>
+                <span className="jc-muted">{profile.mailbox ? `Connected as ${profile.mailbox.user}` : "Not connected"}</span>
+              </div>
+            </form>
+          </details>
+        </div>
       ) : null}
 
       {step === "limits" ? (
@@ -312,33 +436,39 @@ export function SetupWizard({ pane, profile, settings, runtimeOptions, alerts, o
         <div className="jc-form">
           <label className="jc-field">
             <span>Copilot agent</span>
-            <select value={pane.terminalRuntimeId ?? ""} onChange={(event) => { if (event.target.value && event.target.value !== pane.terminalRuntimeId) onSwitchRuntime(event.target.value); }}>
-              {!pane.terminalRuntimeId ? <option value="">Choose a CLI…</option> : null}
+            <select value={runtimeId ?? ""} disabled={switching} onChange={(event) => {
+              const next = event.target.value;
+              if (next && next !== runtimeId) onSwitchAgent(next);
+            }}>
+              {!runtimeId ? <option value="">Choose a CLI…</option> : null}
               {runtimeOptions.map(({ runtime, ready, recommended }) => (
                 <option key={runtime.id} value={runtime.id} disabled={!ready}>{runtime.displayName}{recommended ? " (recommended)" : ""}{ready ? "" : ` — ${runtime.statusReason}`}</option>
               ))}
             </select>
           </label>
-          <p className="jc-muted">Switching the agent restarts this pane's CLI session. Claude Code is recommended for long, tool-heavy application loops.</p>
-          {pane.terminalRuntimeId === JOB_COPILOT_PREFERRED_RUNTIME_ID && claudeProfiles.length > 1 ? (
-            <label className="jc-field">
-              <span>Claude account for the next restart</span>
-              <select value={claudeProfileId} onChange={(event) => { setClaudeProfileId(event.target.value); writeLastClaudeAccountProfileId(event.target.value); }}>
-                {claudeProfiles.map((entry) => <option key={entry.profileId} value={entry.profileId}>{entry.displayName}</option>)}
-              </select>
-            </label>
+          {runtimeId ? (
+            <AgentAccountField runtimeId={runtimeId} runtimeLabel={runtimeLabel} accounts={accounts} value={paneAccount} disabled={switching}
+              onChange={(profileId) => onSwitchAgent(runtimeId, profileId)} />
           ) : null}
-          <SpaceToggle label="Handoff alerts" detail="Chime and a browser notification when the copilot needs you (CAPTCHA, login, a question)." checked={alerts} onChange={onToggleAlerts} />
+          <p className="jc-muted">Switching the agent or its account restarts this pane's CLI session. Claude Code is recommended for long, tool-heavy application loops.</p>
+          <div className="jc-default-agent">
+            <p className="jc-muted" role="status">
+              {launch && !launch.askOnLaunch
+                ? `New Job Copilot panes open with ${jobCopilotAgentLabel(launch.runtimeId, runtimeOptions.find((option) => option.runtime.id === launch.runtimeId)?.runtime)}${launch.accountProfileId ? ` (${launch.accountProfileId} account)` : ""} without asking.`
+                : "New Job Copilot panes ask which agent to use."} Change it in Settings → Job Copilot.
+            </p>
+            <button type="button" className="jc-button" disabled={!runtimeId || switching || isDefault} onClick={() => {
+              onSetDefault();
+              if (runtimeId) setLaunch({ runtimeId, accountProfileId: paneAccount, askOnLaunch: false });
+            }}>{isDefault ? "This is your default agent" : "Set as default"}</button>
+          </div>
+          <p className="jc-muted">Handoff, question and review alerts arrive as Space notifications: toasts, sound, desktop and Telegram follow Settings → Notifications.</p>
           <SpaceToggle label="Telegram alerts" detail="Needs-you moments and run summaries go to the paired Telegram bot (Settings → Telegram)." checked={settings.settings.notifications.telegram}
             onChange={(checked) => void run("Telegram alerts", async () => {
               const response = await api.updateJobApplySettings(pane.id, { ...settings, settings: { ...settings.settings, notifications: { ...settings.settings.notifications, telegram: checked } } });
               onSettingsChange(response.metadata);
             })} />
-          <div className="jc-actions">
-            <button type="button" className="jc-button" disabled={notificationState !== "default"} onClick={() => { void Notification.requestPermission().then((permission) => setNotificationState(permission)); }}>
-              {notificationState === "granted" ? "Browser notifications allowed" : notificationState === "denied" ? "Browser notifications blocked" : notificationState === "unsupported" ? "Browser notifications unsupported" : "Allow browser notifications"}
-            </button>
-          </div>
+          {footer}
         </div>
       ) : null}
       {message ? <p className="jc-message" role="status">{message}</p> : null}

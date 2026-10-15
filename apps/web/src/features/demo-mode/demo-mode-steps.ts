@@ -94,7 +94,7 @@ export const DEMO_MODE_STEPS: DemoModeStep[] = [
     badge: "Side Docks",
     description: "Slide-out side docks keep your shared context, artifacts, and tools neatly organized without cluttering active code panes.",
     features: [
-      "Shared Chat & Media Gallery with direct screen clip sharing",
+      "Research Council & Media Gallery with direct screen clip sharing",
       "Agent Files dock for reviewed deliverables and persistent downloads",
       "Private Clipboard for operator notes, plans, and copy/paste history",
       "Tasks dock for tracking long-running asynchronous jobs"

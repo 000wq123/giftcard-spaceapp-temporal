@@ -127,6 +127,7 @@
 .dots-info-computer small[data-status="ready"]::before { background: #4fbf7f; }
 .dots-info-computer small[data-status="working"]::before { background: var(--room-accent); }
 .dots-info-computer-thumb { width: 40px; height: 28px; flex: 0 0 auto; object-fit: contain; border-radius: 6px; background: color-mix(in srgb, var(--room-accent) 16%, var(--room-surface)); }
+.dots-info-computer-thumb[data-source="browser"] { object-fit: cover; object-position: top; }
 .dots-info-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .dots-info-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 4px 8px; border-radius: 8px; }
 .dots-info-list li > span, .dots-info-list a span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -138,6 +139,15 @@
 .dots-chat-shell .dots-info-more { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 2px 8px; color: var(--room-muted); background: transparent; border: 0; font: inherit; font-size: .75rem; cursor: pointer; }
 .dots-info-more svg { width: 13px; height: 13px; }
 .dots-computer-dialog { width: min(640px, calc(100vw - 32px)); max-height: min(80vh, 720px); overflow: auto; }
+.dots-outputs-dialog { width: min(560px, calc(100vw - 32px)); max-height: min(80vh, 720px); overflow: auto; }
+.dots-outputs-dialog h3 { margin: 0 0 4px; font-size: 1rem; }
+.dots-output-files, .dots-output-versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.dots-output-files > li > strong { display: block; overflow-wrap: anywhere; margin-bottom: 4px; }
+.dots-output-versions { gap: 4px; }
+.dots-output-versions > li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: .82rem; }
+.dots-output-versions a { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: inherit; }
+.dots-output-versions a svg { width: 14px; height: 14px; }
+.dots-output-removed { margin-left: auto; color: var(--room-muted, inherit); font-size: .75rem; }
 @container dots-chat (max-width: 420px) { .dots-identity-text .dots-status { display: none; } .dots-header { padding: 4px; } }
 
 @keyframes dots-typing { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
@@ -328,13 +338,13 @@
   background-color: color-mix(in srgb, var(--room-text) 9%, transparent); }
 
 /* Settings → Dots. */
-.dots-settings { display: grid; gap: 14px; color: var(--room-text, inherit); }
+.dots-settings { display: grid; gap: 10px; color: var(--room-text, inherit); }
 .dots-settings-group { display: grid; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--room-border, currentColor); }
 .dots-settings-group:last-child { border-bottom: 0; }
 .dots-settings-group h4, .dots-settings-group .dots-connections h4 { margin: 0; font-size: .85rem; }
 .dots-settings-group .dots-connections { margin: 0; padding: 0; border: 0; }
 .dots-settings-field, .dots-settings-form label { display: grid; gap: 4px; font-size: .8rem; }
-.dots-settings-field small, .dots-settings-form small { color: var(--room-muted, inherit); font-size: .72rem; }
+.dots-settings-field small, .dots-settings-form small { color: var(--room-muted, inherit); font-size: .72rem; opacity: .78; }
 .dots-settings select, .dots-settings input:not([type="checkbox"]), .dots-settings textarea { min-height: 32px; padding: 4px 8px; color: var(--room-text, inherit); background: var(--room-surface, transparent); border: 1px solid var(--room-border, currentColor); border-radius: 8px; font: inherit; }
 .dots-settings select:focus-visible, .dots-settings input:focus-visible, .dots-settings textarea:focus-visible, .dots-settings button:focus-visible { outline: 2px solid var(--room-accent, currentColor); outline-offset: 2px; }
 .dots-settings-form { display: grid; gap: 10px; }
@@ -350,6 +360,7 @@
 .dots-settings .dots-settings-tabs button[role="tab"][aria-selected="true"] { color: var(--room-text, inherit); border-bottom-color: var(--room-accent, currentColor); }
 .dots-settings .dots-panel { padding: 12px 0 0; overflow: visible; }
 .dots-settings-notice { margin: 0; font-size: .75rem; color: var(--room-muted, inherit); }
+.dots-settings-usage { margin: 0; font-size: .72rem; color: var(--room-muted, inherit); opacity: .85; overflow-wrap: anywhere; }
 .dots-settings-quiet { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
 .dots-settings-quiet label { display: grid; gap: 4px; font-size: .8rem; }
 .dots-settings-quiet small { flex-basis: 100%; color: var(--room-muted, inherit); font-size: .72rem; }
@@ -359,3 +370,26 @@
 .dots-bubble-files span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dots-bubble-files svg { width: 13px; height: 13px; flex: 0 0 auto; }
 .dots-notice-text { margin: 0; white-space: pre-wrap; }
+
+/* Settings → Dots: the basics for all Dots show; the rest fold into cards with a one-line summary.
+   The toggle starts with .space-shell to outrank the theme's dock button surface rule. */
+.dots-part { min-width: 0; border: 1px solid var(--room-border, #343638); border-radius: 10px; overflow: clip; }
+.dots-part[data-open="true"] { border-color: color-mix(in srgb, var(--room-accent, #79b8ff) 45%, var(--room-border, #343638)); }
+.space-shell .dots-settings .dots-part > button.dots-part-toggle {
+  width: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 1rem; align-items: center; gap: .6rem;
+  padding: .65rem .75rem; border: 0; border-radius: 0; background: transparent; color: var(--room-text, #f4efe5); text-align: left; box-shadow: none;
+}
+.space-shell .dots-settings .dots-part > button.dots-part-toggle:hover { background: color-mix(in srgb, var(--room-accent, #79b8ff) 8%, transparent); }
+.dots-part-toggle > span { min-width: 0; display: grid; gap: .15rem; }
+.dots-part-toggle strong { font-size: .82rem; }
+.dots-part-toggle small { font-size: .72rem; font-weight: 400; opacity: .72; }
+.dots-part-toggle > svg { width: 1rem; height: 1rem; transition: transform .15s ease; }
+.dots-part[data-open="true"] > .dots-part-toggle > svg { transform: rotate(90deg); }
+.dots-part-body { padding: .7rem .75rem .75rem; border-top: 1px solid var(--room-border, #343638); }
+.dots-part-body .dots-settings-group { padding-bottom: 0; border-bottom: 0; }
+/* The card title already names these parts. */
+.dots-part-body .dots-connections > h4 { display: none; }
+.dots-permissions-label { font-size: .75rem; font-weight: 600; }
+.dots-connect-unavailable { display: grid; gap: .2rem; }
+.dots-setup-details > summary { width: fit-content; font-size: .72rem; cursor: pointer; }
+.dots-setup-details p { margin: .3rem 0 0; font-size: .72rem; overflow-wrap: anywhere; }

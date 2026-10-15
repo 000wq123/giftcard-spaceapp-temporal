@@ -424,13 +424,15 @@
 }
 
 .system-analytics-coverage.is-native,
-.system-analytics-status.is-running {
+.system-analytics-status.is-running,
+.system-analytics-status.is-completed {
   border-color: #42776e;
   background: #172724;
   color: #aee8dd;
 }
 
-.system-analytics-coverage.is-session-only {
+.system-analytics-coverage.is-session-only,
+.system-analytics-status.is-failed {
   border-color: #75633f;
   background: #292317;
   color: #ebd09a;

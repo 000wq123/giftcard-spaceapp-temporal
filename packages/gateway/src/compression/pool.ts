@@ -102,7 +102,7 @@ export class CompressionPool {
 
   readonly run: BlockRunner = (text, deadline, options = {}) => new Promise((resolve) => {
     if (this.closed || deadline <= Date.now()) { resolve(null); return; }
-    const block: BlockOptions = options.codeText ? { codeText: options.codeText, lossy: options.lossy ?? false } : {};
+    const block: BlockOptions = { ...(options.codeText ? { codeText: options.codeText, lossy: options.lossy ?? false } : {}), ...(options.exact ? { exact: true } : {}) };
     const job: Job = { id: this.nextId++, text, deadline, tokenizer: options.tokenizer ?? "o200k", block, settled: false, resolve, onLate: options.onLate };
     this.queue.push(job);
     // A job still waiting for a free worker at its deadline gives up, so callers never wait past the budget.

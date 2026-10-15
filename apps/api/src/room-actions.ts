@@ -17,7 +17,9 @@ import type { CliTerminalManager } from "./cli-terminal.js";
 import type { SpaceAgentAdapter } from "./space-agent.js";
 import type { RoomPlanInventoryProvider } from "./room-plan-inventory.js";
 import { unavailableRoomTaskEvaluator, type RoomTaskEvaluator } from "./room-task-evaluator.js";
-import type { RoomPaneController } from "./room-pane-control.js";
+import type { RoomCommandAction, RoomPaneController } from "./room-pane-control.js";
+import { roomApprovalPromptCue } from "./room-terminal-screen.js";
+import { classifyPaneApproval } from "./room-agent-guardrails.js";
 import { summarizeNativeTasks } from "./room-task-telemetry.js";
 import { isCliRuntimeTerminalLaunchable } from "./cli-runtimes.js";
 import { executeDurableRoomControl, RetryableRoomControlError, UnconfirmedRoomControlError } from "./room-control-execution.js";
@@ -561,7 +563,8 @@ export function createRoomActionExecutor(options: {
           markedInstruction,
           input.traceId,
           checkpoint.marker,
-          input.actionId
+          input.actionId,
+          true
         );
         checkpoint = {
           ...checkpoint,
@@ -737,6 +740,27 @@ export function createRoomActionExecutor(options: {
     return { paneId: pane.id, sessionId: response.session.sessionId };
   }
 
+  /**
+   * The Room Agent answers approval prompts by itself only when the deterministic guardrails find
+   * nothing protected or destructive on the pane's screen. The answer is bound to the inspected prompt.
+   */
+  async function guardPromptAnswer(pane: Pane, change: RoomCommandAction): Promise<RoomCommandAction> {
+    const answers = change.answer !== undefined || (!change.command && (change.selection !== undefined || change.key === "ENTER"));
+    if (!answers) return change;
+    const observed = await options.paneController!.inspect(pane, { fresh: true });
+    const screen = observed.text ?? "";
+    if (change.answer === undefined && !roomApprovalPromptCue(screen)) return change;
+    const verdict = classifyPaneApproval(screen);
+    if (verdict.level !== "SAFE") {
+      throw new Error(`Operator approval required: ${pane.paneName ?? pane.title} asks about ${verdict.reasons.join(", ")}. `
+        + "Tell the operator what the pane asks; only the operator may answer it.");
+    }
+    if (change.expectedPromptFingerprint && observed.promptFingerprint && change.expectedPromptFingerprint !== observed.promptFingerprint) {
+      throw new Error("The pane's question changed since it was inspected; inspect it again before answering.");
+    }
+    return { ...change, expectedPromptFingerprint: change.expectedPromptFingerprint ?? observed.promptFingerprint };
+  }
+
   async function perform(
     bridge: SpaceAgentRoomActionBridgeRequest,
     request: SpaceAgentRoomActionRequest,
@@ -852,8 +876,8 @@ export function createRoomActionExecutor(options: {
           pane = await paneInRoom(bridge.roomId, change.paneId, bridge.agentPaneId);
         }
         await assertActionCanContinue(bridge, actionId);
-        return change.type === "configure_pane" ? options.paneController.configure(pane, change, traceId)
-          : options.paneController.command(pane, change, traceId);
+        if (change.type === "configure_pane") return options.paneController.configure(pane, change, traceId);
+        return options.paneController.command(pane, await guardPromptAnswer(pane, change), traceId);
       }
       case "start":
       case "resume": {

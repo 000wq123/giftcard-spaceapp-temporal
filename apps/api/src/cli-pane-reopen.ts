@@ -9,7 +9,8 @@ export interface CliPaneReopen {
 }
 
 export interface CliPaneReopener {
-  reopen(paneId: string, reopen: () => Pane | PromiseLike<Pane>, traceId: string): CliPaneReopen;
+  /** `resume` replaces the default resume for this call (a new Job Copilot pane continues the previous pane's task). */
+  reopen(paneId: string, reopen: () => Pane | PromiseLike<Pane>, traceId: string, resume?: (pane: Pane, traceId: string) => Promise<boolean>): CliPaneReopen;
   /** Waits (bounded) for a reopen resume in flight, so a session read sees the resumed session. */
   settled(paneId: string, timeoutMs?: number): Promise<void>;
 }
@@ -26,13 +27,13 @@ export function createCliPaneReopener(options: {
 }): CliPaneReopener {
   const pending = new Map<string, Promise<boolean>>();
   return {
-    reopen(paneId, reopen, traceId) {
+    reopen(paneId, reopen, traceId, resume = options.resume) {
       // Registered before the reopen runs: its event can reach a client before the resume ends.
       const pane = Promise.resolve().then(reopen);
       // A failed reopen rejects `pane` for the caller; it has nothing to resume.
       const resumed: Promise<boolean> = pane
         .then(
-          (reopened) => options.resume(reopened, traceId).catch((error: unknown) => {
+          (reopened) => resume(reopened, traceId).catch((error: unknown) => {
             options.onResumeError?.(paneId, error);
             return false;
           }),

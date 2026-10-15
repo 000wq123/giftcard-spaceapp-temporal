@@ -1,5 +1,117 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { createCipheriv, createDecipheriv, randomBytes, scrypt, type ScryptOptions } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import type { EncryptedConfigSecrets, ImportConfigResult, SpaceConfigBundle } from "@space/contracts";
+
+// Allowlist: only third-party provider keys travel; instance keys (gateway encryption/internal
+// tokens, sessions, harness gateway keys) are bound to the source host and never leave it.
+const portableApiKeyName = /^(claude|anthropic|codex|openai|gemini|google|deepseek|openrouter|qwen|kimi|grok|xai|opencode|autohand|elevenlabs|vercel|jev)([-_][a-z0-9_-]+)?$/;
+export function isPortableApiKeyName(name: string): boolean {
+  return portableApiKeyName.test(name) && !/(gateway|session|internal)/.test(name);
+}
+
+export class ConfigSecretsError extends Error {
+  readonly code = "WRONG_PASSPHRASE_OR_TAMPERED";
+  constructor() {
+    super("Wrong passphrase, or the backup file was changed. Nothing was imported.");
+  }
+}
+
+/** A CLI login as captured on export: auth-file basenames mapped to base64 contents. */
+export interface CliAuthCapture {
+  files: Record<string, string>;
+  capturedAt: string;
+  sourcePlatform: string;
+}
+
+export interface ConfigSecretsPayload {
+  apiKeys?: Record<string, string>;
+  cliAuth?: Record<string, CliAuthCapture>;
+}
+
+const scryptAsync = promisify(scrypt) as (password: string, salt: Buffer, keylen: number, options: ScryptOptions) => Promise<Buffer>;
+const kdfParams = { N: 131072, r: 8, p: 1 } as const;
+const kdfOptions = { ...kdfParams, maxmem: 256 * 1024 * 1024 };
+const configSecretsAad = (version: string) => `spaceapp-configuration-bundle/${version}`;
+
+export async function encryptConfigSecrets(payload: ConfigSecretsPayload, passphrase: string, version: string): Promise<EncryptedConfigSecrets> {
+  const salt = randomBytes(16);
+  const nonce = randomBytes(12);
+  const aad = configSecretsAad(version);
+  const key = await scryptAsync(passphrase, salt, 32, kdfOptions);
+  const plain = Buffer.from(JSON.stringify(payload), "utf8");
+  try {
+    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    cipher.setAAD(Buffer.from(aad));
+    const ciphertext = Buffer.concat([cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
+    return {
+      alg: "AES-256-GCM",
+      kdf: { name: "scrypt", ...kdfParams, salt: salt.toString("base64") },
+      nonce: nonce.toString("base64"),
+      ciphertext: ciphertext.toString("base64"),
+      aad
+    };
+  } finally {
+    key.fill(0);
+    plain.fill(0);
+  }
+}
+
+/** Throws ConfigSecretsError for a wrong passphrase or any change to the blob, its AAD or the bundle version. */
+export async function decryptConfigSecrets(blob: EncryptedConfigSecrets, passphrase: string, version: string): Promise<ConfigSecretsPayload> {
+  const aad = configSecretsAad(version);
+  if (blob.aad !== aad) throw new ConfigSecretsError();
+  const key = await scryptAsync(passphrase, Buffer.from(blob.kdf.salt, "base64"), 32, kdfOptions);
+  let plain: Buffer | null = null;
+  try {
+    const sealed = Buffer.from(blob.ciphertext, "base64");
+    if (sealed.length < 17) throw new ConfigSecretsError();
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(blob.nonce, "base64"));
+    decipher.setAAD(Buffer.from(aad));
+    decipher.setAuthTag(sealed.subarray(sealed.length - 16));
+    plain = Buffer.concat([decipher.update(sealed.subarray(0, sealed.length - 16)), decipher.final()]);
+    return JSON.parse(plain.toString("utf8")) as ConfigSecretsPayload;
+  } catch {
+    throw new ConfigSecretsError();
+  } finally {
+    key.fill(0);
+    plain?.fill(0);
+  }
+}
+
+/** Moves every secret into the encrypted blob; the plaintext bundle keeps names only. No passphrase, no secrets. */
+export async function sealConfigBundle(bundle: SpaceConfigBundle, secrets: ConfigSecretsPayload, passphrase: string | undefined): Promise<SpaceConfigBundle> {
+  const apiKeyNames = Object.keys(secrets.apiKeys ?? {});
+  const cliAuthRuntimes = Object.keys(secrets.cliAuth ?? {});
+  if (!apiKeyNames.length && !cliAuthRuntimes.length) return bundle;
+  if (!passphrase || passphrase.length < 12) {
+    throw new Error("A passphrase of at least 12 characters is required to export API keys or CLI logins.");
+  }
+  return {
+    ...bundle,
+    metadata: { ...bundle.metadata, apiKeysCount: apiKeyNames.length, credentialsCount: cliAuthRuntimes.length },
+    sections: {
+      apiKeys: { included: apiKeyNames.length > 0, encrypted: true, names: apiKeyNames },
+      cliAuth: { included: cliAuthRuntimes.length > 0, encrypted: true, runtimes: cliAuthRuntimes }
+    },
+    encrypted: await encryptConfigSecrets(secrets, passphrase, bundle.version)
+  };
+}
+
+export interface ConfigImportHooks {
+  /** Writes the decrypted CLI logins where this host's CLIs read them and reports per runtime. */
+  applyCliAuth?(cliAuth: Record<string, CliAuthCapture>): Promise<NonNullable<ImportConfigResult["cliAuth"]>>;
+}
+
+/** The bundle's secrets: decrypted with the passphrase, or the plaintext API keys of a 1.0.0 bundle. */
+export async function openConfigBundleSecrets(bundle: SpaceConfigBundle, passphrase: string | undefined): Promise<{ secrets: ConfigSecretsPayload; warnings: string[] }> {
+  if (!bundle.encrypted) return { secrets: { apiKeys: bundle.data.apiKeys }, warnings: [] };
+  if (!passphrase) {
+    return { secrets: {}, warnings: ["This backup's API keys and CLI logins are encrypted; enter its passphrase to restore them."] };
+  }
+  return { secrets: await decryptConfigSecrets(bundle.encrypted, passphrase, bundle.version), warnings: [] };
+}
 
 export function collectExportableApiKeys(): Record<string, string> {
   const keys: Record<string, string> = {};
@@ -20,6 +132,7 @@ export function collectExportableApiKeys(): Record<string, string> {
         for (const file of files) {
           if (file.endsWith(".key")) {
             const providerName = file.replace(/^space-/, "").replace(/\.key$/, "");
+            if (!isPortableApiKeyName(providerName)) continue;
             try {
               const content = readFileSync(join(dir, file), "utf8").trim();
               if (content && !keys[providerName]) {
@@ -47,7 +160,7 @@ export function collectExportableApiKeys(): Record<string, string> {
             const val = rest.join("=").trim().replace(/^["']|["']$/g, "");
             if (k && val) {
               const lowerKey = k.toLowerCase().replace(/_api_key|_key$/, "");
-              if (!keys[lowerKey]) {
+              if (isPortableApiKeyName(lowerKey) && !keys[lowerKey]) {
                 keys[lowerKey] = val;
               }
             }
@@ -79,66 +192,6 @@ export function collectExportableApiKeys(): Record<string, string> {
   return keys;
 }
 
-export function collectExportableCredentials(): Record<string, string> {
-  const creds: Record<string, string> = {};
-  const home = process.env.HOME || "/var/lib/spaceapp-user";
-  const codexHome = process.env.CODEX_HOME || join(home, ".codex");
-
-  const candidates: Array<{ provider: string; path: string }> = [
-    { provider: "claude", path: join(codexHome, "space-claude", ".credentials.json") },
-    { provider: "claude", path: "/var/lib/spaceapp-cli/providers/claude/.credentials.json" },
-    { provider: "cursor", path: join(codexHome, "space-cursor", ".config", "cursor", "auth.json") },
-    { provider: "cursor", path: "/var/lib/spaceapp-cli/providers/cursor/.config/cursor/auth.json" },
-    { provider: "gemini", path: join(codexHome, "space-gemini", "profiles", "7", "home", ".gemini", "oauth_creds.json") },
-    { provider: "gemini", path: "/var/lib/spaceapp-cli/providers/gemini/.gemini/oauth_creds.json" },
-    { provider: "qwen", path: join(codexHome, "space-qwen", ".qwen", "oauth_creds.json") },
-    { provider: "qwen", path: "/var/lib/spaceapp-cli/providers/qwen/.qwen/oauth_creds.json" },
-    { provider: "grok", path: join(codexHome, "space-grok", ".grok", "credentials.json") },
-    { provider: "grok", path: "/var/lib/spaceapp-cli/providers/grok/.grok/credentials.json" },
-    { provider: "kimi", path: join(codexHome, "space-kimi", ".kimi", "credentials.json") },
-    { provider: "kimi", path: "/var/lib/spaceapp-cli/providers/kimi/.kimi/credentials.json" },
-    { provider: "copilot", path: join(codexHome, "space-copilot", "config.json") },
-    { provider: "copilot", path: "/var/lib/spaceapp-cli/providers/copilot/config.json" }
-  ];
-
-  for (const { provider, path } of candidates) {
-    if (!creds[provider] && existsSync(path)) {
-      try {
-        const data = readFileSync(path, "utf8").trim();
-        if (data) {
-          creds[provider] = data;
-        }
-      } catch {}
-    }
-  }
-
-  const codexHomesDir = join(codexHome, "space-codex-homes");
-  if (!creds["codex"] && existsSync(codexHomesDir)) {
-    try {
-      const entries = readdirSync(codexHomesDir);
-      let latestAuth: string | null = null;
-      let latestMtime = 0;
-      for (const entry of entries) {
-        const authPath = join(codexHomesDir, entry, "auth.json");
-        if (existsSync(authPath)) {
-          try {
-            const stat = statSync(authPath);
-            if (stat.mtimeMs > latestMtime && stat.size > 2) {
-              latestMtime = stat.mtimeMs;
-              latestAuth = authPath;
-            }
-          } catch {}
-        }
-      }
-      if (latestAuth) {
-        creds["codex"] = readFileSync(latestAuth, "utf8").trim();
-      }
-    } catch {}
-  }
-
-  return creds;
-}
-
 export function writeImportedApiKeys(
   apiKeys: Record<string, string>,
   options: { secretsDir?: string } = {}
@@ -162,45 +215,11 @@ export function writeImportedApiKeys(
 
   let imported = 0;
   for (const [provider, key] of Object.entries(apiKeys)) {
-    if (key && typeof key === "string") {
+    if (key && typeof key === "string" && isPortableApiKeyName(provider)) {
       const fileName = `${provider}.key`;
       const filePath = join(targetDir, fileName);
       try {
         writeFileSync(filePath, key.trim() + "\n", { mode: 0o600 });
-        imported++;
-      } catch {}
-    }
-  }
-  return { imported, targetDir };
-}
-
-export function writeImportedCredentials(
-  credentials: Record<string, string>,
-  options: { credentialsDir?: string } = {}
-): { imported: number; targetDir: string } {
-  let targetDir = options.credentialsDir;
-  if (!targetDir) {
-    if (existsSync("/var/lib/spaceapp-cli/providers")) {
-      targetDir = "/var/lib/spaceapp-cli/providers";
-    } else if (existsSync("/backups")) {
-      targetDir = "/backups/providers-credentials";
-    } else {
-      targetDir = "./secrets/credentials";
-    }
-  }
-
-  try {
-    mkdirSync(targetDir, { recursive: true });
-  } catch {}
-
-  let imported = 0;
-  for (const [provider, data] of Object.entries(credentials)) {
-    if (data && typeof data === "string") {
-      const provDir = join(targetDir, provider);
-      try {
-        mkdirSync(provDir, { recursive: true });
-        const authFileName = provider === "claude" ? ".credentials.json" : "auth.json";
-        writeFileSync(join(provDir, authFileName), data.trim() + "\n", { mode: 0o600 });
         imported++;
       } catch {}
     }

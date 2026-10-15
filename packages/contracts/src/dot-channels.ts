@@ -63,7 +63,18 @@ export function parseChannelCommand(raw: string, dotNames: string[]): ChannelCom
   return { kind: "message", dot: null, text: raw.trim() };
 }
 
-export interface ChannelProviderStatus { provider: ChannelProvider; configured: boolean; reason: string | null }
+export interface ChannelProviderStatus {
+  provider: ChannelProvider; configured: boolean; reason: string | null;
+  /** Opens the direct conversation with the Space app (Slack: SPACE_SLACK_APP_ID); null when the server does not know its app. */
+  appUrl?: string | null;
+}
+/** Slack's link to the direct conversation with an app; null for anything that is not a Slack app id. */
+export function slackAppUrl(appId: string | null | undefined, teamId?: string | null): string | null {
+  const app = appId?.trim() ?? "";
+  if (!/^A[A-Z0-9]{6,30}$/.test(app)) return null;
+  const team = teamId && /^[TE][A-Z0-9]{6,30}$/.test(teamId) ? `&team=${teamId}` : "";
+  return `https://slack.com/app_redirect?app=${app}${team}`;
+}
 export interface ChannelIdentitySummary { identityId: string; provider: ChannelProvider; tenantId: string; displayName: string | null; linkedAt: string }
 export interface ChannelThreadSummary {
   threadId: string; provider: ChannelProvider; conversationKind: ChannelConversationKind; dotId: string; replyInThread: boolean; updatedAt: string;

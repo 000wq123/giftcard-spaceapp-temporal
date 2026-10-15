@@ -7,7 +7,6 @@ import type {
   CliSessionReapResponse,
   CliSessionStats,
   ToolbarModelStats,
-  CodexCliModeDefaultsResponse,
   CodexAppServerHandshakeCheck,
   CodexAppServerStatus,
   CodexAppServerTurnSmokeCheck,
@@ -72,7 +71,6 @@ export type DemoFixture = {
   events: Event[];
   providers: Provider[];
   providerSettings: ProviderSettings;
-  codexCliModeDefaults: CodexCliModeDefaultsResponse;
   telegramIntegration: TelegramIntegrationStatus;
   voiceTranscriptionSettings: VoiceTranscriptionSettings;
   models: Model[];
@@ -861,33 +859,6 @@ export function createDemoFixture(): DemoFixture {
       titleGenerationModelId: "gpt-5.6-sol",
       titleGenerationReasoningEffort: "low",
       updatedAt: DEMO_FIXED_AT
-    },
-    codexCliModeDefaults: {
-      defaults: {
-        build: { modelId: "gpt-5.6-sol", reasoningEffort: "high" },
-        plan: { modelId: "gpt-5.6-sol", reasoningEffort: "xhigh" },
-        updatedAt: DEMO_FIXED_AT
-      },
-      catalog: {
-        status: "AVAILABLE",
-        models: [
-          {
-            id: "gpt-5.6-sol",
-            displayName: "GPT-5.6 Sol",
-            isDefault: true,
-            defaultReasoningEffort: "high",
-            supportedReasoningEfforts: ["medium", "high", "xhigh"]
-          },
-          {
-            id: "gpt-5.6-mini",
-            displayName: "GPT-5.6 Mini",
-            isDefault: false,
-            defaultReasoningEffort: "medium",
-            supportedReasoningEfforts: ["low", "medium", "high"]
-          }
-        ],
-        error: null
-      }
     },
     telegramIntegration: {
       connectionStatus: "CONNECTED",

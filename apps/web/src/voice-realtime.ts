@@ -8,6 +8,7 @@ import {
   type VoiceTranscriptionModel
 } from "@space/contracts";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime } from "./runtime/SpaceRuntime.js";
+import { noteVoiceRelayClose, voiceRelayCloseExplanation } from "./voice-relay-close.js";
 import {
   createAudioContextWithFallback,
   downsampleBuffer,
@@ -415,9 +416,10 @@ async function openGoogleVoiceSession(
     fail("Google Gemini Live voice connection failed.");
   };
 
-  openSocket.onclose = () => {
+  openSocket.onclose = (event) => {
+    noteVoiceRelayClose("google", event.reason);
     if (!closed && !committed) {
-      fail("Google Gemini Live voice connection closed unexpectedly.");
+      fail(voiceRelayCloseExplanation(event.reason, "Google Gemini Live") ?? "Google Gemini Live voice connection closed unexpectedly.");
     }
   };
 
@@ -679,10 +681,9 @@ async function openOpenAiVoiceSession(
       transcript?: unknown;
       error?: { message?: unknown };
     };
+    // Dictation: only what the operator said. The model's own reply (output transcript) is never part of it.
     switch (typed.type) {
       case "session.input_transcript.delta":
-      case "session.output_transcript.delta":
-      case "response.audio_transcript.delta":
       case "conversation.item.input_audio_transcription.delta":
         if (typeof typed.delta === "string" && typed.delta) {
           transcript += typed.delta;
@@ -690,8 +691,6 @@ async function openOpenAiVoiceSession(
         }
         break;
       case "session.input_transcript.done":
-      case "session.output_transcript.done":
-      case "response.audio_transcript.done":
       case "conversation.item.input_audio_transcription.completed": {
         clearFallbackDoneTimer();
         const payloadText =
@@ -749,20 +748,15 @@ async function openOpenAiVoiceSession(
       .split(/\r?\n/)
       .filter((line) => !line.startsWith("a=candidate:"))
       .join("\r\n");
+    // Dictation only: without the Live pane's opening, prompt and delegation the server asks the model to
+    // transcribe, not to converse (a conversing gpt-live session also bills spoken replies).
     const answer = await api.createVoiceRealtimeCall({
       provider: "openai",
       offerSdp: cleanOfferSdp,
       model: options.model,
       language: options.language,
       delay: options.delay,
-      voice: options.voice as VoiceModelVoice,
-      opening: options.opening,
-      prompt: options.prompt,
-      delegatedModel: options.delegatedModel,
-      delegatedType: options.delegatedType,
-      delegatedReasoningEffort: options.delegatedReasoningEffort,
-      delegatedWebSearch: options.delegatedWebSearch,
-      delegatedPrompt: options.delegatedPrompt
+      voice: options.voice as VoiceModelVoice
     });
     if (!answer.answerSdp) {
       throw new Error("OpenAI Live session did not return an SDP answer.");

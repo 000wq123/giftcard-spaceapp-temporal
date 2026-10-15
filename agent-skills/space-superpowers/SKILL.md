@@ -8,7 +8,7 @@ metadata:
 # Superpowers in Space
 
 An index of the 15 Superpowers skills. Read only the one the task needs, at
-`<this folder>/<skill>/SKILL.md` (with MCP: `get_skill space-superpowers/<skill>`).
+`<this folder>/<skill>/SKILL.md` (with MCP: `space_get_skill space-superpowers/<skill>`).
 Upstream treats every skill as mandatory ("1% chance ... must invoke"). In Space
 a skill is used when it fits the work or the operator asks for it, not merely
 because it exists; quick questions, ops checks and small edits rarely need one.

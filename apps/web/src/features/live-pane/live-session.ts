@@ -18,6 +18,7 @@ import {
   PANE_TYPES
 } from "@space/contracts";
 import { getSpaceRuntime, DEMO_LOCAL_REPLY } from "../../runtime/SpaceRuntime.js";
+import { noteVoiceRelayClose, voiceRelayCloseExplanation } from "../../voice-relay-close.js";
 import {
   updateLiveSessionStats,
   recordMcpToolCall,
@@ -110,7 +111,8 @@ export interface LiveSessionCallbacks {
   onAudioLevel?: (level: number, source: "user" | "assistant") => void;
   onMicSilence?: (silent: boolean) => void;
   onLogEvent?: (type: string, payload: unknown) => void;
-  onError?: (message: string) => void;
+  /** `retryable: false` when reconnecting would repeat a request the provider rejected. */
+  onError?: (message: string, options?: { retryable?: boolean }) => void;
   /** Provider-issued resumption handle for reconnect orchestration. */
   onSessionResumption?: (handle: string | null, resumable: boolean) => void;
   /** Called once when a resumable Google transport closes unexpectedly. */
@@ -961,6 +963,7 @@ export async function openGoogleGeminiConversationSession(
 
   socket.onclose = (event) => {
     clearTimeout(connectionTimeout);
+    noteVoiceRelayClose("google", event.reason);
     console.log("[GeminiLive][DIAG] WebSocket CLOSED — code:", event.code, "wasClean:", event.wasClean, "socketOpened:", socketOpened, "setupComplete:", setupComplete, "totalMsgs:", _diagMsgCount, "totalAudioChunks:", _diagAudioChunkCount);
     if (!closed) {
       const resumableHandle = sessionResumable && sessionResumptionHandle ? sessionResumptionHandle : null;
@@ -973,11 +976,11 @@ export async function openGoogleGeminiConversationSession(
         callbacks.onStatusChange?.("connecting");
         return;
       }
-      const detail = socketOpened
+      const detail = voiceRelayCloseExplanation(event.reason, "Google Gemini Live") ?? (socketOpened
         ? setupComplete
           ? `Google Gemini Live disconnected (Code ${event.code}${reasonMsg})`
           : `Google Gemini Live rejected the session setup (Code ${event.code}${reasonMsg}). The provider closed the connection before acknowledging setup; check the selected model, voice and tool schema.`
-        : `Google Gemini Live: connection failed before opening (Code ${event.code}${reasonMsg}). The browser could not establish a WebSocket to Google.`;
+        : `Google Gemini Live: connection failed before opening (Code ${event.code}${reasonMsg}). The browser could not establish a WebSocket to Google.`);
       console.error("[GeminiLive]", detail);
       callbacks.onError?.(detail);
       callbacks.onStatusChange?.("error");
@@ -6398,8 +6401,9 @@ export async function openOpenAiVoiceConversationSession(
   options: LiveSessionOptions,
   callbacks: LiveSessionCallbacks = {}
 ): Promise<LiveSessionHandle> {
-  const isGptLiveSession = options.model.startsWith("gpt-live-") && options.model !== "gpt-live-transcribe";
-  const conversationItemEvent = isGptLiveSession ? "response.item.create" : "conversation.item.create";
+  // The server may answer with another protocol when it had to switch models.
+  let isGptLiveSession = options.model.startsWith("gpt-live-") && options.model !== "gpt-live-transcribe";
+  let conversationItemEvent = isGptLiveSession ? "response.item.create" : "conversation.item.create";
   const runtime = getSpaceRuntime();
   if (runtime.kind === "demo") {
     throw new Error(DEMO_LOCAL_REPLY);
@@ -6652,10 +6656,10 @@ export async function openOpenAiVoiceConversationSession(
     }
   });
 
-  const fail = (msg: string) => {
+  const fail = (msg: string, retryable = true) => {
     if (closed) return;
     updateLiveSessionStats({ lastError: msg, sessionActive: false, connectionState: "closed", dataChannelState: "closed" });
-    callbacks.onError?.(msg);
+    callbacks.onError?.(msg, { retryable });
     callbacks.onStatusChange?.("error");
     close();
   };
@@ -7310,8 +7314,9 @@ export async function openOpenAiVoiceConversationSession(
 
       case "error":
       case "session.error": {
-        const errObj = (msg.error || rawMsg.error) as { message?: string } | undefined;
-        fail(errObj?.message || "An error occurred during the live conversation session.");
+        const errObj = (msg.error || rawMsg.error) as { message?: string; type?: string } | undefined;
+        // OpenAI rejected the session configuration itself; the same request would fail again.
+        fail(errObj?.message || "An error occurred during the live conversation session.", sessionReady || errObj?.type !== "invalid_request_error");
         break;
       }
 
@@ -7416,6 +7421,19 @@ export async function openOpenAiVoiceConversationSession(
 
     if (!answer.answerSdp) {
       throw new Error("OpenAI Live session did not return an SDP answer.");
+    }
+    if (answer.protocol) {
+      isGptLiveSession = answer.protocol === "gpt-live";
+      conversationItemEvent = isGptLiveSession ? "response.item.create" : "conversation.item.create";
+    }
+    updateLiveSessionStats({ model: answer.model ?? realtimeCallPayload.model, delegatedModel: isGptLiveSession ? answer.delegatedModel ?? realtimeCallPayload.delegatedModel : undefined });
+    for (const fallback of answer.fallbacks ?? []) {
+      callbacks.onTranscriptUpdate?.({
+        id: `live-model-fallback:${fallback.kind}:${fallback.requested}:${fallback.used}`,
+        role: "system",
+        text: `${fallback.requested} is not working right now (${fallback.reason.slice(0, 160)}), so Live uses ${fallback.used}${fallback.kind === "delegated" ? " for delegated tasks" : ""}. ${fallback.requested} is retried automatically.`,
+        timestamp: new Date().toLocaleTimeString()
+      });
     }
 
     await connection.setRemoteDescription({ type: "answer", sdp: answer.answerSdp });

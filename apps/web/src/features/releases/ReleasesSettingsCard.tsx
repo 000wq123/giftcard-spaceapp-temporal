@@ -63,18 +63,19 @@ export function ReleasesSettingsCard({ client = api }: { client?: ReleasesClient
     }
   }, [load]);
 
+  // Text sits in divs: the Modern theme makes dock paragraphs, spans and strong text inherit their colour.
   if (!report) {
     return (
-      <section className="deploy-queue-card releases-card" aria-label="Releases">
-        {error ? <p role="alert">{error}</p> : <p className="deploy-queue-muted">Loading releases…</p>}
+      <section className="releases-card" aria-label="Releases">
+        {error ? <div className="releases-error" role="alert">{error}</div> : <div className="releases-muted">Loading releases…</div>}
       </section>
     );
   }
 
   if (!report.available) {
     return (
-      <section className="deploy-queue-card releases-card" aria-label="Releases">
-        <p className="deploy-queue-muted">There is no dev instance on this server. Changes deploy straight to this instance.</p>
+      <section className="releases-card" aria-label="Releases">
+        <div className="releases-muted">There is no dev instance on this server. Changes deploy straight to this instance.</div>
       </section>
     );
   }
@@ -83,54 +84,62 @@ export function ReleasesSettingsCard({ client = api }: { client?: ReleasesClient
   const promoting = Boolean(report.promotion && PROMOTION_BUSY.has(report.promotion.status));
   const devBusy = Boolean(report.devQueue.current);
   const upToDate = report.pendingCount === 0;
-  const blocked = !report.managedHere ? "Promote from the stable instance."
+  const blocked = !report.managedHere ? "You are on the test copy (dev). Promote from your everyday Space (stable)."
     : promoting ? "A promotion is already in progress."
       : devBusy ? "Dev is deploying a change; promote when it finishes."
         : upToDate ? "Stable already runs everything that is on dev."
           : null;
 
   return (
-    <section className="deploy-queue-card releases-card" aria-label="Releases">
-      <div className="releases-instances">
-        <div className="releases-instance">
-          <span className="deploy-queue-chip tone-ok">Stable</span>
-          <code>{short(report.stable.commit)}</code>
-          <span className="deploy-queue-muted">The instance you work in</span>
+    <section className="releases-card" aria-label="Releases">
+      <div className="releases-versions">
+        <div className="releases-version">
+          <span className="releases-dot tone-ok" aria-hidden="true" />
+          <div className="releases-version-copy">
+            <div className="releases-version-name">Stable · your everyday Space</div>
+            <div className="releases-muted">The version you work in.</div>
+          </div>
+          <code title={report.stable.commit ?? undefined}>{short(report.stable.commit)}</code>
         </div>
-        <div className="releases-instance">
-          <span className="deploy-queue-chip tone-warn">Dev</span>
-          <code>{short(report.dev.commit)}</code>
-          <a href={report.dev.url} target="_blank" rel="noopener noreferrer">Open dev</a>
+        <div className="releases-version">
+          <span className="releases-dot tone-warn" aria-hidden="true" />
+          <div className="releases-version-copy">
+            <div className="releases-version-name">Dev · the test copy</div>
+            <div className="releases-muted">
+              {report.defaultTarget === "dev" ? "Agent changes land here first." : "Agent changes go straight to stable."}{" "}
+              <a href={report.dev.url} target="_blank" rel="noopener noreferrer">Open dev</a>
+            </div>
+          </div>
+          <code title={report.dev.commit ?? undefined}>{short(report.dev.commit)}</code>
         </div>
-        <button type="button" className="deploy-queue-refresh" onClick={() => void load()} aria-label="Refresh releases">
+      </div>
+
+      <div className="releases-status">
+        {promotion && report.promotion ? (
+          <span className={`deploy-queue-chip tone-${promotion.tone}`} title={report.promotion.note ?? undefined}>{promotion.label}</span>
+        ) : <div className="releases-muted">No promotion yet.</div>}
+        <button type="button" className="deploy-queue-refresh" onClick={() => void load()} aria-label="Refresh releases" title="Refresh">
           <RefreshCw size={14} aria-hidden="true" />
         </button>
       </div>
-      <p className="deploy-queue-muted">
-        Agent changes go to {report.defaultTarget === "dev" ? "dev first" : "stable directly"}. Stable changes only when you promote dev.
-      </p>
-      {error ? <p role="alert">{error}</p> : null}
-      {message ? <p role="status" className="releases-message">{message}</p> : null}
-      {promotion && report.promotion ? (
-        <p className="releases-promotion">
-          <span className={`deploy-queue-chip tone-${promotion.tone}`}>{promotion.label}</span>
-          {report.promotion.note ? <span className="deploy-queue-note">{report.promotion.note}</span> : null}
-        </p>
-      ) : null}
+      {error ? <div className="releases-error" role="alert">{error}</div> : null}
+      {message ? <div role="status" className="releases-message">{message}</div> : null}
 
-      <h4>On dev, not yet on stable ({report.pendingCount})</h4>
-      {report.pending.length ? (
-        <ul className="releases-pending">
-          {report.pending.map((change) => <li key={change.commit}>{change.summary}</li>)}
-        </ul>
-      ) : <p className="deploy-queue-muted">Nothing is waiting.</p>}
+      <div className="releases-pending-block">
+        <h4>On dev, not yet on stable ({report.pendingCount})</h4>
+        {report.pending.length ? (
+          <ul className="releases-pending">
+            {report.pending.map((change) => <li key={change.commit}>{change.summary}</li>)}
+          </ul>
+        ) : <div className="releases-muted">Nothing is waiting.</div>}
+      </div>
 
       {confirming ? (
         <div className="releases-confirm" role="group" aria-label="Confirm promotion">
-          <p>
+          <div>
             Stable builds and restarts once (about 5 minutes). CLI sessions keep running, and a failed check rolls stable back
             automatically. Promote {report.pendingCount} change{report.pendingCount === 1 ? "" : "s"} now?
-          </p>
+          </div>
           <div className="releases-actions">
             <button type="button" className="releases-primary" disabled={busy} onClick={() => void run(() => client.promoteRelease())}>
               {busy ? "Promoting…" : "Promote now"}
@@ -143,19 +152,19 @@ export function ReleasesSettingsCard({ client = api }: { client?: ReleasesClient
           <button type="button" className="releases-primary" disabled={Boolean(blocked) || busy} onClick={() => setConfirming(true)}>
             Promote dev to stable
           </button>
-          {blocked ? <span className="deploy-queue-muted">{blocked}</span> : null}
+          {blocked ? <div className="releases-muted">{blocked}</div> : null}
         </div>
       )}
 
       {report.hotfixes.length ? (
-        <>
-          <h4>Stable hotfixes waiting for approval</h4>
-          <ul className="deploy-queue-list">
+        <div className="releases-pending-block">
+          <h4>Urgent fixes waiting for your approval</h4>
+          <ul className="releases-hotfixes">
             {report.hotfixes.map((hotfix) => (
               <li key={hotfix.id} className="releases-hotfix">
-                <div className="deploy-queue-ticket-body">
-                  <strong>{hotfix.summary || hotfix.branch}</strong>
-                  <span className="deploy-queue-meta"><code>{hotfix.sha.slice(0, 10)}</code> · {hotfix.branch}</span>
+                <div className="releases-version-copy">
+                  <div className="releases-version-name">{hotfix.summary || hotfix.branch}</div>
+                  <div className="releases-muted"><code>{hotfix.sha.slice(0, 10)}</code> · {hotfix.branch}</div>
                 </div>
                 <button type="button" disabled={busy || !report.managedHere} onClick={() => void run(() => client.approveHotfix(hotfix.id))}>
                   Approve
@@ -163,7 +172,7 @@ export function ReleasesSettingsCard({ client = api }: { client?: ReleasesClient
               </li>
             ))}
           </ul>
-        </>
+        </div>
       ) : null}
     </section>
   );

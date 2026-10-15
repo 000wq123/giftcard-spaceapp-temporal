@@ -108,6 +108,10 @@ const codexThreadBindRetryMs = 4_000;
 const codexThreadBindMaxMs = 30_000;
 const cliTurnMarkerTtlMs = 15 * 60_000;
 const cliStartupReadyTimeoutMs = 15_000;
+// Hermes, Droid and Qoder take 10-20 s to draw their composer after a fresh start.
+const cliComposerReadyTimeoutMs = 45_000;
+const cliComposerQuietMs = 750;
+const cliComposerSettleMaxMs = 6_000;
 const cliLoginTimeoutMs = 15 * 60_000;
 const cliLoginObservationIntervalMs = 1_000;
 const cliCredentialObservationTimeoutMs = 5_000;
@@ -246,6 +250,25 @@ export function codexInputReady(output: string): boolean {
     footerIndex > promptIndex &&
     footerIndex > progressIndex &&
     footerIndex > modelState.normalizedOutput.lastIndexOf("loading");
+}
+
+// What each terminal CLI shows once its composer owns input (seen in tmux on 2026-10-14). Text sent to a CLI
+// that has just started arrives before that and is lost: Claude, Droid and Hermes dropped Space Control prompts.
+const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
+  "cli:claude": /\? for shortcuts|shift\+tab to cycle/,
+  "cli:qwen": /type your message/,
+  "cli:cursor": /plan, search, build anything|run everything/,
+  "cli:omp": /π >|⇧⇥ to change thinking/,
+  "cli:droid": /\? for help/,
+  "cli:hermes": /─ ready │|❯ try "/,
+  "cli:grok": /│\s*❯/
+};
+
+/** Whether the runtime's composer is open in this output; null when Space knows no marker for the runtime. */
+export function cliComposerReady(runtimeId: string, output: string): boolean | null {
+  if (runtimeId === "cli:gemini") return geminiInputReady(output);
+  const pattern = cliComposerReadyPatterns[runtimeId];
+  return pattern ? pattern.test(output.replace(codexControlAnsiPattern, "").toLowerCase()) : null;
 }
 
 export function geminiInputReady(output: string): boolean {
@@ -977,12 +1000,15 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
     env.SPACE_BROWSER_ACTION_ENDPOINT = `${apiBaseUrl}/api/cli/browser/actions`;
     env.SPACE_BROWSER_COMMAND_ENDPOINT = `${apiBaseUrl}/api/cli/browser/commands`;
     env.SPACE_BROWSER_ACTION_TOKEN = cliBrowserBridgeToken;
-    // Job Applications tools share the pane bridge token; the API decides what the pane may do.
+    // Job, Mail and Marketing Copilot tools share the pane bridge token; the API decides what the pane may do.
     env.SPACE_JOB_APPLY_ENDPOINT = `${apiBaseUrl}/api/cli/job-apply`;
+    env.SPACE_MAIL_COPILOT_ENDPOINT = `${apiBaseUrl}/api/cli/mail-copilot`;
+    env.SPACE_MARKETING_COPILOT_ENDPOINT = `${apiBaseUrl}/api/cli/marketing-copilot`;
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
-  const controlToken=context.runtimeId==="cli:codex"?issueControlToken(config.internalApiToken,context):null;
+  // Space Control for CLI panes: Codex (phase one) and Claude Code (operator decision 2026-10-14).
+  const controlToken=context.runtimeId==="cli:codex"||context.runtimeId==="cli:claude"?issueControlToken(config.internalApiToken,context):null;
   if(controlToken){env.SPACE_CONTROL_TOKEN=controlToken;env.SPACE_CONTROL_ENDPOINT=`${cliAgentFilesApiBaseUrl(config)}/api/cli/control/mcp`;}
   const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
   if (cliAgentFilesToken) {
@@ -1862,7 +1888,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);
@@ -2044,7 +2070,8 @@ export class CliTerminalManager {
     const session = await this.ensurePaneTransportReady(pane, traceId, selection);
     const managed = this.sessions.get(session.sessionId);
     if (!managed) throw new SpaceConflictError(`CLI session ${session.sessionId} detached before it became ready for input.`);
-    await this.waitForInputReady(managed);
+    // Starting or resuming a pane must not wait for the composer: it may open on a sign-in screen.
+    await this.waitForInputReady(managed, false);
     return (await this.options.store.getPaneCliSession(session.sessionId)) ?? session;
   }
 
@@ -2053,7 +2080,9 @@ export class CliTerminalManager {
     data: string,
     traceId: string,
     turnMarker: string | null = null,
-    inputIdempotencyKey?: string
+    inputIdempotencyKey?: string,
+    /** A prompt waits for the CLI's composer; answers, keys and commands go to whatever is on screen. */
+    waitForComposer = false
   ): Promise<{ turnMarker: string | null; markerAtMs: number }> {
     const session = await this.options.store.getPaneCliSession(sessionId);
     if (!session) throw new SpaceNotFoundError(`CLI session ${sessionId} was not found.`);
@@ -2088,7 +2117,7 @@ export class CliTerminalManager {
     if (data.length > 0 && terminalData.length === 0) {
       return { turnMarker: null, markerAtMs: Date.now() };
     }
-    if (terminalData.length > 0) await this.waitForInputReady(managed);
+    if (terminalData.length > 0) await this.waitForInputReady(managed, waitForComposer);
     await this.flushHostOutput(managed);
 
     const sendToHost = (candidate: ManagedCliSession) => {
@@ -2107,7 +2136,7 @@ export class CliTerminalManager {
       if (this.sessions.get(session.sessionId) === managed) this.sessions.delete(session.sessionId);
       managed = (await this.getOrSpawnSession(session, runtime, traceId)).managed;
       activateTransport(managed);
-      if (terminalData.length > 0) await this.waitForInputReady(managed);
+      if (terminalData.length > 0) await this.waitForInputReady(managed, waitForComposer);
       await this.flushHostOutput(managed);
       inputResult = await sendToHost(managed);
     }
@@ -2815,6 +2844,8 @@ export class CliTerminalManager {
     pendingHostEvents.splice(0, pendingHostEvents.length, ...eventsAfterReplay);
     const restoredInputReady = session.runtimeId === "cli:gemini"
       ? Boolean(inspected && geminiInputReady(startupOutput))
+      // A CLI already running in the host keeps accepting input; a new one waits for its composer.
+      : cliComposerReady(session.runtimeId, "") !== null ? Boolean(inspected)
       : !isCodexDirectParityRuntime(session.runtimeId) ||
       Boolean(
         inspected &&
@@ -4377,7 +4408,7 @@ export class CliTerminalManager {
     }
   }
 
-  private async waitForInputReady(managed: ManagedCliSession): Promise<void> {
+  private async waitForInputReady(managed: ManagedCliSession, waitForComposer = true): Promise<void> {
     if (managed.runtimeId === "cli:gemini" && !managed.inputReady) {
       const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs);
       while (!managed.closed && Date.now() < deadline) {
@@ -4388,6 +4419,25 @@ export class CliTerminalManager {
         await delay(25);
       }
       throw new SpaceConflictError("Gemini has not opened its native composer; no input was sent. Wait for sign-in and try again.");
+    }
+    if (waitForComposer && !managed.inputReady && cliComposerReady(managed.runtimeId, "") !== null) {
+      const deadline = Date.now() + (this.options.startupReadyTimeoutMs ?? cliComposerReadyTimeoutMs);
+      while (!managed.closed && Date.now() < deadline) {
+        if (cliComposerReady(managed.runtimeId, managed.startupOutput + managed.controlOutput)) {
+          // The first frame shows the composer while the CLI is still mounting its input: Claude Code then keeps
+          // typed text as "early input" and drops its Enter. Wait until the output has been quiet for 750 ms.
+          const settleUntil = Math.min(deadline, Date.now() + cliComposerSettleMaxMs);
+          let revision = managed.controlOutputRevision, quietSince = Date.now();
+          while (!managed.closed && Date.now() < settleUntil && Date.now() - quietSince < cliComposerQuietMs) {
+            await delay(50);
+            if (managed.controlOutputRevision !== revision) { revision = managed.controlOutputRevision; quietSince = Date.now(); }
+          }
+          managed.inputReady = true;
+          return;
+        }
+        await delay(50);
+      }
+      throw new SpaceConflictError("The CLI has not opened its input yet (still starting, or waiting for sign-in or a question); no input was sent.");
     }
     if (managed.inputReady || !isCodexDirectParityRuntime(managed.runtimeId)) return;
     const timeoutMs = this.options.startupReadyTimeoutMs ?? cliStartupReadyTimeoutMs;

@@ -22,6 +22,8 @@ export function createLiveCoordinator(deps: {
   onState?: (state: LiveCoordinatorState) => void;
   onTurn?: (item: LiveTranscriptItem) => void;
   notifications?: { list: () => Promise<ControlWatch[]>; ack: (roomId: string, id: string) => Promise<unknown>; visible: () => boolean };
+  /** Further spoken notices (the Room Agent's questions for the operator), delivered after watches, one per round. */
+  announcements?: { list: () => Promise<Array<{ id: string; roomId: string; text: string }>>; ack: (id: string) => void };
 }) {
   let state: LiveCoordinatorState = { ownerId: "", roomId: null, roomName: "", context: null, contextState: "unavailable", status: "idle", enabled: false, muted: false, error: null, transcripts: [], handle: null };
   const listeners = new Set<() => void>();
@@ -86,13 +88,20 @@ export function createLiveCoordinator(deps: {
     const version = generation;
     try {
       const watches = await deps.notifications.list();
-      for (const watch of watches.slice(0, 20)) {
+      const notices: Array<{ id: string; roomId: string; text: string; ack: () => unknown }> = watches.slice(0, 20).map(watch => ({
+        id: `watch:${watch.id}`, roomId: watch.roomId, ack: () => deps.notifications!.ack(watch.roomId, watch.id),
+        text: `${watch.paneDetails?.title ?? watch.paneId}: ${watch.status === "VERIFIED" ? "Task completed" : watch.status.toLowerCase()}. ${watch.reason ?? ""} (Room: ${watch.roomId})` }));
+      if (deps.announcements) {
+        const announcements = await deps.announcements.list().catch(() => []);
+        notices.push(...announcements.slice(0, 10).map(notice => ({ id: `room-agent:${notice.id}`, roomId: notice.roomId, text: notice.text, ack: () => deps.announcements!.ack(notice.id) })));
+      }
+      for (const notice of notices) {
         if (disposed || generation !== version || !deps.notifications.visible() || inputActive || Date.now() - lastInputAt < 1500 || !state.handle || !["active", "listening"].includes(state.status)) break;
-        const id = `watch:${watch.id}`;
+        const id = notice.id;
         const alreadyPresented = state.transcripts.some(item => item.id === id);
         if (!alreadyPresented) {
-          const item: LiveTranscriptItem = { id, roomId: watch.roomId, roomName: watch.roomId, role: "system", timestamp: new Date().toISOString(), createdAtMs: Date.now(),
-            text: `${watch.paneDetails?.title ?? watch.paneId}: ${watch.status === "VERIFIED" ? "Task completed" : watch.status.toLowerCase()}. ${watch.reason ?? ""} (Room: ${watch.roomId})` };
+          const item: LiveTranscriptItem = { id, roomId: notice.roomId, roomName: notice.roomId, role: "system", timestamp: new Date().toISOString(), createdAtMs: Date.now(),
+            text: notice.text };
           if (!await deps.history.persistNotification(item)) continue;
           if (generation !== version || disposed) return;
           addTurn(item, false);
@@ -100,7 +109,7 @@ export function createLiveCoordinator(deps: {
           // claimed as delivered based solely on a successful socket.send.
           if (deps.notifications.visible() && !inputActive && Date.now() - lastInputAt >= 1500 && ["active", "listening"].includes(state.status)) state.handle?.notify?.(item.text, id);
         }
-        await deps.notifications.ack(watch.roomId, watch.id);
+        await notice.ack();
         if (!alreadyPresented) break;
       }
     } catch { /* Unacknowledged notifications remain durable on the server. */ }
@@ -157,7 +166,12 @@ export function createLiveCoordinator(deps: {
         if (status === "idle" || status === "error") scheduleReconnect();
         else if (status === "active" || status === "listening") reconnectAttempts = 0;
       },
-      onError: message => { if (current()) { patch({ error: message, status: "error" }); scheduleReconnect(); } },
+      onError: (message, options) => {
+        if (!current()) return;
+        // A rejected configuration fails again on every retry and each new session is billed.
+        if (options?.retryable === false) { stop(); patch({ error: message, status: "error" }); return; }
+        patch({ error: message, status: "error" }); scheduleReconnect();
+      },
       onReconnect: resumeSession => { if (current()) { cancelReconnect(); scheduleReconnect(resumeSession); } },
       onRemoteStream: stream => { if (current()) deps.onStream?.(stream); }
     };

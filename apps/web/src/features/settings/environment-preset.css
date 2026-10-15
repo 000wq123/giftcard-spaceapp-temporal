@@ -133,7 +133,9 @@
   border-color: rgba(255, 255, 255, 0.06);
 }
 
-.environment-pill.is-active {
+/* .space-shell outranks the theme's dock button surface rule (0,4,0), which hid the active choice. */
+.environment-pill.is-active,
+.space-shell .environment-preset-controls > button.environment-pill.is-active {
   background: color-mix(in srgb, var(--room-accent, #528bff) 14%, var(--room-surface, #181b1d));
   border-color: color-mix(in srgb, var(--room-accent, #528bff) 55%, var(--room-border, #343638));
   color: var(--room-text, #ffffff);
@@ -342,4 +344,11 @@
   .environment-pill .environment-pill-hint {
     display: none;
   }
+}
+
+.environment-preset-note {
+  margin: 0;
+  color: var(--room-muted, #949a9b);
+  font-size: 0.72rem;
+  line-height: 1.4;
 }

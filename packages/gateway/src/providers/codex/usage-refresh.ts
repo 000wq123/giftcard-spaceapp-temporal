@@ -36,6 +36,7 @@ export function startCodexUsagePoller(input: {
   return startAccountUsagePoller({
     pool: input.pool, intervalMs: input.intervalMs, onError: input.onError,
     refresh: (account) => refreshCodexAccountUsage({ repository: input.repository, pool: input.pool, account, fetchImpl: input.fetchImpl }),
-    isAuthError: (error) => error instanceof CodexUsageError && (error.statusCode === 401 || error.statusCode === 403)
+    isAuthError: (error) => error instanceof CodexUsageError && (error.statusCode === 401 || error.statusCode === 403),
+    isTokenRejected: (error) => error instanceof CodexUsageError && error.statusCode === 401
   });
 }

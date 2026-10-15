@@ -16,7 +16,6 @@ function readArg(name: string): string {
 const listenPath = readArg("--listen");
 const upstreamPath = readArg("--upstream");
 const readyFile = readArg("--ready-file");
-const defaultsProjectionPath = readArg("--defaults-projection");
 const runtimeKey = basename(dirname(listenPath));
 
 function writeDiagnostic(event: CodexAppServerMultiplexerDiagnostic | Record<string, unknown>): void {
@@ -27,7 +26,6 @@ rmSync(readyFile, { force: true });
 const multiplexer = await startCodexAppServerSocketMultiplexer({
   listenPath,
   upstreamPath,
-  defaultsProjectionPath,
   onDiagnostic: writeDiagnostic,
   onPrimaryInitialized: () => {
     writeFileSync(readyFile, `${JSON.stringify({ ready: true, pid: process.pid })}\n`, { mode: 0o600 });

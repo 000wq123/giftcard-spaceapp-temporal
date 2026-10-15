@@ -54,6 +54,7 @@ export const agentRunUsageSchema = z.discriminatedUnion("status", [
   agentRunMeasuredUsageSchema
 ]);
 export type AgentRunMeasuredUsage = z.infer<typeof agentRunMeasuredUsageSchema>;
+export type AgentRunUsage = z.infer<typeof agentRunUsageSchema>;
 export type AgentRunCost = z.infer<typeof agentRunCostSchema>;
 
 /**

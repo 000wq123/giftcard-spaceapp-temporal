@@ -192,6 +192,31 @@
 .snip-toast-action svg { width: 13px; height: 13px; }
 @keyframes snip-pop { from { opacity: 0; transform: translateY(-4px); } }
 
+/* Docked on the right rail: a 48x52 card in the desktop widgets' rail column */
+.snip-capsule.is-dock-preview { outline: 2px dashed var(--snip-accent); outline-offset: 3px; }
+.snip-rail-card {
+  position: fixed; right: 2px; z-index: 240; box-sizing: border-box;
+  width: 48px; height: 52px; padding: 3px;
+  border: 1.5px solid var(--snip-accent); border-radius: 12px;
+  background: color-mix(in srgb, var(--snip-surface) 94%, transparent);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  user-select: none; touch-action: none; cursor: grab;
+  transition: top 0.22s cubic-bezier(0.2, 0, 0, 1);
+}
+.snip-rail-card.is-dragging { z-index: 9999; cursor: grabbing; transition: none; }
+.snip-rail-card.is-undocking { opacity: 0.85; }
+.snip-ui .snip-rail-snip {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  width: 100%; height: 100%; padding: 0; border: 0; border-radius: 9px;
+  background: transparent; color: var(--snip-text); cursor: inherit;
+}
+.snip-ui .snip-rail-snip:hover:not(:disabled) { background: var(--snip-accent-tint); }
+.snip-rail-snip svg { width: 16px; height: 16px; color: var(--snip-accent); }
+.snip-rail-verb { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.snip-rail-target { max-width: 40px; overflow: hidden; color: var(--snip-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.snip-rail-card .snip-toast { top: 0; right: calc(100% + 8px); left: auto; width: 280px; }
+
 .snip-inline-hint { margin: 10px 0 0; color: var(--room-muted, #a7a59e); font-size: 12.5px; line-height: 1.5; }
 
 /* ---------- selection layer ---------- */

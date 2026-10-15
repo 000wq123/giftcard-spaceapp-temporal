@@ -21,7 +21,7 @@ import {
   Zap,
   Palette,
   CheckCircle2,
-  AlertCircle,
+  CircleAlert,
   Plus,
   ExternalLink
 } from "../ui-theme/app-icons.js";
@@ -255,23 +255,15 @@ export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean 
 
   return (
     <div className="plugins-settings-container">
-      <div className="plugins-header-block">
-        <div className="plugins-header-title-row">
-          <div>
-            <h2>Plugins</h2>
-            <p>Accounts and services your agents can act through.</p>
-            {canManage ? null : <p className="plugins-readonly-note" role="note">Only an administrator can change installation plugins.</p>}
-          </div>
-          <div className="plugins-header-actions">
-          </div>
-        </div>
-      </div>
+      {/* The Settings section above already names and explains Plugins. */}
+      {canManage ? null : <p className="plugins-readonly-note" role="note">Only an administrator can change installation plugins.</p>}
 
       <div className="plugins-search-bar-wrap">
         <Search className="plugins-search-icon" />
         <input
           type="text"
           className="plugins-search-input"
+          aria-label="Search plugins"
           placeholder="Search plugins"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -344,7 +336,7 @@ export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean 
       </div>
 
       <div className="plugins-footer-banner">
-        Built-in plugins are installed once for every agent: skill bundles appear in each CLI&apos;s skill list, and Context7 runs on demand through the MCP dispatcher. Turning a plugin off here turns it off for every agent. Repository providers are personal to your account.
+        A connected plugin works for every agent on this Space; built-in ones (such as Context7) start only when a task needs them. Repository providers (GitHub, Gitea and others) are personal: each person connects their own account.
       </div>
 
       {selectedPlugin && (
@@ -438,7 +430,7 @@ export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean 
 
                 {actionError && (
                   <div className="plugin-error-alert">
-                    <AlertCircle size={16} className="plugin-alert-icon" />
+                    <CircleAlert size={16} className="plugin-alert-icon" />
                     <span>{actionError}</span>
                   </div>
                 )}
@@ -546,7 +538,7 @@ export function PluginsSettingsCard({ canManage = true }: { canManage?: boolean 
 
                 {actionError && (
                   <div className="plugin-error-alert">
-                    <AlertCircle size={16} className="plugin-alert-icon" />
+                    <CircleAlert size={16} className="plugin-alert-icon" />
                     <span>{actionError}</span>
                   </div>
                 )}

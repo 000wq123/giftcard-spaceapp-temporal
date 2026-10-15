@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, writeFile, access } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, writeFile, access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { spawn } from "node:child_process";
 import { basename, dirname, join } from "node:path";
@@ -19,6 +19,7 @@ import {
 } from "@space/contracts";
 import { parseSkillFrontmatter, type SpaceStore } from "@space/runtime";
 import { cliRuntimeDescriptors } from "./cli-runtime-descriptors.js";
+import { nestedBundleSkills } from "./plugins-service.js";
 
 export interface AgentToolsOptions {
   baseRoot?: string;
@@ -632,6 +633,31 @@ async function readSkillsFiles(root: string): Promise<string[]> {
   }
 }
 
+// Codex matches skills.config entries by real path, so a link and its target are the same skill.
+const canonicalPath = (path: string) => realpath(path).catch(() => path);
+
+/**
+ * Codex lists every nested SKILL.md in its prompt. Bundle sub-skills are read through their
+ * bundle's index (as Claude Code and space_list_skills do), so each one gets a disabled
+ * skills.config entry; an entry that already exists is the operator's choice and stays.
+ * Returns how many entries were added.
+ */
+export async function hideNestedCodexSkills(options: AgentToolsOptions = {}): Promise<number> {
+  const effective = effectiveOptions(options);
+  const configPath = resolveRuntimeLayout("cli:codex", effective).skillsConfigPath;
+  const raw = configPath ? await rootReadFile(effective.rootWriterCommand, configPath) : null;
+  if (!configPath || raw === null) return 0;
+  const known = new Set(await Promise.all(parseTomlSkills(raw).map((entry) => canonicalPath(entry.path))));
+  const missing: string[] = [];
+  for (const skill of await nestedBundleSkills(effective.skillsRoot)) {
+    if (!known.has(await canonicalPath(skill.path))) missing.push(skill.path);
+  }
+  if (missing.length === 0) return 0;
+  const blocks = missing.flatMap((path) => ["", "# space-agent-tools-managed", ...renderTomlSkillBlock(path, false)]);
+  await rootWriteBackedUpFileAtomic(effective.rootWriterCommand, configPath, `${raw.trimEnd()}\n${blocks.join("\n")}\n`);
+  return missing.length;
+}
+
 export async function discoverAgentTools(store: SpaceStore, options: AgentToolsOptions = {}): Promise<DiscoveredState> {
   const effective = effectiveOptions(options);
   const layout = cliRuntimeDescriptors.map((descriptor) => resolveRuntimeLayout(descriptor.id, effective));
@@ -990,6 +1016,13 @@ export async function applyAgentTools(
             const skillEnabled = applyEnabled(assignment, runtimeLayout.runtimeId) ?? onDisk?.enabled ?? true;
             desiredSkills.push({ path: entry.skillPath ?? "", enabled: skillEnabled });
             if (applyEnabled(assignment, runtimeLayout.runtimeId) === true) enabledSkillIds.push(entry.toolId);
+          }
+        }
+        if (runtimeLayout.skillsFormat === "codex-toml") {
+          // Nested bundle sub-skills are not in the catalog; their entries (hideNestedCodexSkills) stay as they are.
+          const nested = new Set(await Promise.all((await nestedBundleSkills(effective.skillsRoot)).map((skill) => canonicalPath(skill.path))));
+          for (const entry of parseTomlSkills(raw)) {
+            if (!desiredSkills.some((skill) => skill.path === entry.path) && nested.has(await canonicalPath(entry.path))) desiredSkills.push(entry);
           }
         }
         const rebuilt = rewriteManagedToml(raw, desiredServers, desiredSkills);

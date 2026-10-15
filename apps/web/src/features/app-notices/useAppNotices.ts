@@ -96,11 +96,12 @@ export function useAppNotices(): AppNotices {
       const params = new URLSearchParams(window.location.search);
       const googleLinked = params.get("googleLinked");
       const googleLinkError = params.get("googleLinkError");
-      const connectorResult = connectorResultMessage(params.get("connector"));
+      const connectorResult = connectorResultMessage(params.get("connector"), params.get("connectorFor"));
       if (connectorResult) {
         if (connectorResult.tone === "notice") setAccountNotice(connectorResult.text);
         else setAccountError(connectorResult.text);
         params.delete("connector");
+        params.delete("connectorFor");
         const query = params.toString();
         window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
       } else if (googleLinked === "true") {

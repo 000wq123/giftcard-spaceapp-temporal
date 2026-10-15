@@ -2,11 +2,12 @@ import { randomBytes } from "node:crypto";
 import {
   gatewayAccountListSchema, gatewayApiKeyCreatedResponseSchema, gatewayApiKeyListSchema, gatewayRequestLogListSchema, gatewayRequestLogFacetsSchema,
   gatewayRequestLogSchema, gatewayCompressionStatsSchema, gatewayReportSchema, gatewaySettingsSchema, type GatewayCompressionStats, gatewayStatusSchema,
+  gatewayClaudeApiKeyUseSchema, type GatewayClaudeApiKeyUse,
   type GatewayReport, type GatewayReportRow, type GatewayAccount, type GatewayAccountDetail, type GatewayApiKey, type GatewayApiKeyCreateRequest,
   type GatewayApiKeyCreatedResponse, type GatewayApiKeyDetail, type GatewayDashboard, type GatewayDashboardRange, type GatewayHealth,
   type GatewayProvider, type GatewayRequestLog, type GatewayRequestLogFacets, type GatewayRequestLogFilter, type GatewayRequestLogList,
   type GatewaySettings, type GatewaySettingsUpdateRequest, type GatewayStatus, gatewayApiKeyUpdateRequestSchema, gatewayAccountUpdateRequestSchema,
-  type GatewayHeadroomHistory, type GatewayHeadroomLifetime, type GatewayHeadroomSession, type GatewayHistorySeries
+  type GatewayHeadroomHistory, type GatewayHeadroomLifetime, type GatewayHeadroomSession, type GatewayHistorySeries, isGatewayFreePlan
 } from "@space/contracts";
 import type { z } from "zod";
 import type { GatewayAccountRecord, GatewayApiKeyRecord, GatewayRepository } from "@space/db";
@@ -48,6 +49,8 @@ export interface GatewayAdminService {
   requestLogCsv(filter: GatewayRequestLogFilter): Promise<string>;
   dashboard(range: GatewayDashboardRange): Promise<GatewayDashboard>;
   health(): Promise<GatewayHealth>;
+  /** The Claude API key account and what went through it, for the "never used without reason" check. */
+  claudeApiKeyUse(): Promise<GatewayClaudeApiKeyUse>;
   accountDetail(accountId: string): Promise<GatewayAccountDetail | null>;
   /** Pause or resume, alias and warm-up opt-in. */
   updateAccount(accountId: string, patch: GatewayAccountUpdate): Promise<GatewayAccount | null>;
@@ -70,7 +73,7 @@ export interface GatewayAdminService {
   importAntigravityProfile(profileId: string): Promise<{ status: number; body: unknown }>;
   /** Adds an OpenAI API key account: a pasted key, or the server's Space OpenAI key file. */
   /** OpenAI, OpenRouter or DeepSeek API keys (OpenAI may use this server's key). */
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
 }
 
 export class GatewayAccountNotFoundError extends Error {}
@@ -78,6 +81,10 @@ export class GatewayAccountNotFoundError extends Error {}
 export class GatewayKeyPolicyError extends Error {}
 /** Settings the gateway could not apply (LAN access outside the private ranges, ...). */
 export class GatewaySettingsError extends Error {}
+/** A free-plan account stays paused: the gateway never sends it traffic (operator rule 2026-10-13). */
+export class GatewayAccountFreePlanError extends Error {
+  constructor() { super("Free plan accounts stay paused. Sign in again on a paid plan, then resume."); }
+}
 
 /** Strips the encrypted credential envelope and the key hash before anything leaves the API. */
 function publicAccount(record: GatewayAccountRecord): GatewayAccount {
@@ -109,6 +116,8 @@ export function createGatewayAdminService(options: {
   antigravityProfileSource?: { list(): Promise<AntigravityProfileLocation[]>; read(path: string): Promise<string> };
   /** The server's own OpenAI API key (the one Space uses for voice). */
   spaceOpenAiKeyFile?: string;
+  /** The Claude API key the "api" pane profile bills (the Space installation key). */
+  spaceClaudeKeyFile?: string;
   healthProbes?: GatewayHealthProbes;
 }): GatewayAdminService {
   const { repository } = options;
@@ -228,7 +237,21 @@ export function createGatewayAdminService(options: {
       return gatewayAccountListSchema.parse({ data: (await repository.listAccounts()).map(publicAccount) });
     },
 
+    async claudeApiKeyUse() {
+      const [accounts, settings] = await Promise.all([repository.listAccounts(), repository.getSettings()]);
+      const key = accounts.find((account) => account.provider === "CLAUDE" && account.source === "API_KEY"
+        && account.status !== "PAUSED" && account.status !== "DEACTIVATED") ?? null;
+      const totals = key ? await repository.usageTotals({ accountId: key.id }) : null;
+      return gatewayClaudeApiKeyUseSchema.parse({
+        fallbackEnabled: settings.claudeApiKeyFallback,
+        account: key && totals ? { id: key.id, label: key.alias ?? key.label, status: key.status, createdAt: key.createdAt, lastUsedAt: key.lastUsedAt,
+          requests: totals.requests, costUsd: totals.costUsd } : null,
+        checkedAt: now().toISOString()
+      });
+    },
+
     async setAccountPaused(accountId, paused) {
+      if (!paused && isGatewayFreePlan((await knownAccount(accountId))?.planType)) throw new GatewayAccountFreePlanError();
       const updated = await repository.setAccountStatus(accountId, paused ? "PAUSED" : "ACTIVE", paused ? "Paused by an administrator." : null);
       return updated ? publicAccount(updated) : null;
     },
@@ -255,6 +278,7 @@ export function createGatewayAdminService(options: {
         enforcedReasoningEffort: input.enforcedReasoningEffort,
         accountIds: input.accountIds,
         compressionOverride: input.compressionOverride,
+        outputPolicyOverride: input.outputPolicyOverride,
         limits: input.limits.map((limit) => ({ ...limit, resetAt: nextReset(limit.limitWindow, current) })),
         expiresAt: input.expiresAt,
         createdBy: actorUserId
@@ -365,6 +389,7 @@ export function createGatewayAdminService(options: {
     async updateAccount(accountId, patch) {
       let record: GatewayAccountRecord | null = await knownAccount(accountId);
       if (!record) return null;
+      if (patch.paused === false && isGatewayFreePlan(record.planType)) throw new GatewayAccountFreePlanError();
       if (patch.alias !== undefined || patch.warmupEnabled !== undefined) {
         record = await repository.updateAccountPreferences(accountId, { alias: patch.alias, warmupEnabled: patch.warmupEnabled });
       }
@@ -429,6 +454,13 @@ export function createGatewayAdminService(options: {
         entry.original += row.originalTokens; entry.compressed += row.compressedTokens;
         strategies.set(key, entry);
       }
+      const providers = new Map<string, { provider: string; requests: number; modifiedRequests: number; original: number; compressed: number }>();
+      for (const row of rows.filter((item) => item.mode === "ON" && item.strategy === "")) {
+        const entry = providers.get(row.provider) ?? { provider: row.provider, requests: 0, modifiedRequests: 0, original: 0, compressed: 0 };
+        entry.requests += row.requests; entry.modifiedRequests += row.modifiedRequests;
+        entry.original += row.originalTokens; entry.compressed += row.compressedTokens;
+        providers.set(row.provider, entry);
+      }
       const history = new Map<string, { hour: string; appliedSaved: number; shadowSaved: number; requests: number }>();
       for (const row of rows.filter((item) => item.strategy === "")) {
         const entry = history.get(row.hour) ?? { hour: row.hour, appliedSaved: 0, shadowSaved: 0, requests: 0 };
@@ -439,6 +471,10 @@ export function createGatewayAdminService(options: {
       }
       return gatewayCompressionStatsSchema.parse({
         hours, applied: totals("ON"), shadow: totals("SHADOW"),
+        byProvider: [...providers.values()].sort((left, right) => left.provider.localeCompare(right.provider)).map((entry) => ({ provider: entry.provider,
+          requests: entry.requests, modifiedRequests: entry.modifiedRequests, originalTokens: entry.original, compressedTokens: entry.compressed,
+          tokensSaved: Math.max(0, entry.original - entry.compressed),
+          savingsPercent: entry.original > 0 ? Math.min(100, ((entry.original - entry.compressed) / entry.original) * 100) : 0 })),
         byStrategy: [...strategies.values()].map((entry) => ({ mode: entry.mode, strategy: entry.strategy, blocks: entry.blocks, rejectedBlocks: entry.rejectedBlocks,
           errorBlocks: entry.errorBlocks, tokensSaved: Math.max(0, entry.original - entry.compressed),
           savingsPercent: entry.original > 0 ? Math.min(100, ((entry.original - entry.compressed) / entry.original) * 100) : 0 })),
@@ -477,7 +513,11 @@ export function createGatewayAdminService(options: {
     async addOpenAiApiKey(input) {
       let apiKey = input.apiKey?.trim() ?? "";
       let sourceRef: string | undefined;
-      if (input.useSpaceKey) {
+      if (input.useSpaceKey && input.provider === "CLAUDE") {
+        apiKey = (await readFile(options.spaceClaudeKeyFile ?? "/opt/spaceapp/secrets/space-claude.key", "utf8").catch(() => "")).trim();
+        if (!apiKey) return { status: 404, body: { error: { code: "space_key_missing", message: "This server has no readable Space Claude key." } } };
+        sourceRef = "space-claude";
+      } else if (input.useSpaceKey) {
         apiKey = (await readFile(options.spaceOpenAiKeyFile ?? "/opt/spaceapp/secrets/space-openai-voice.key", "utf8").catch(() => "")).trim();
         if (!apiKey) return { status: 404, body: { error: { code: "space_key_missing", message: "This server has no Space OpenAI key." } } };
         sourceRef = "space-openai-voice";

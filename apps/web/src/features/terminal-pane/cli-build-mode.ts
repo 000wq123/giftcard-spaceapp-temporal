@@ -1,3 +1,19 @@
+import { linesAboveClaudeAgentPanel } from './claude-agent-panel.js';
+
+export type ClaudeFooterModeLabel = 'accept edits' | 'plan mode' | 'bypass permissions' | 'auto mode' | 'manual mode';
+
+// Claude Code opens its footer with the permission mode: "⏵⏵ bypass permissions on", "⏸ plan mode on".
+// The "(shift+tab to cycle)" hint after it is dropped while background shells run ("· 3 shells").
+export function claudeFooterModeLabel(line: string): ClaudeFooterModeLabel | null {
+  const label = /^\s*(?:⏵⏵|⏸)\s*(accept edits|plan mode|bypass permissions|auto mode|manual mode) on\b/i.exec(line)?.[1];
+  return label ? label.toLowerCase() as ClaudeFooterModeLabel : null;
+}
+
+// Claude's footer and prompt lines: its background agent panel is drawn below them.
+export function claudeFooterLines(screen: string): string[] {
+  return linesAboveClaudeAgentPanel(screen.split(/\r?\n/)).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
 // Read the current native control rail, never a historical assistant response.
 export function cliBuildModeState(runtimeId: string, screen: string): 'plan' | 'build' | 'other' | null {
   const lines = screen.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
@@ -36,8 +52,11 @@ export function cliBuildModeState(runtimeId: string, screen: string): 'plan' | '
   if (runtimeId === 'cli:claude') {
     // Every permission mode outside Plan is Build. Space launches Claude in bypass permissions, so
     // cycling on to default mode would make it ask before every tool.
-    if (/plan mode on.*shift\+tab to cycle/i.test(footer)) return 'plan';
-    if (/\? for shortcuts|shift\+tab to cycle/i.test(footer)) return 'build';
+    const rail = claudeFooterLines(screen).slice(-6);
+    const label = rail.map(claudeFooterModeLabel).findLast(Boolean);
+    if (label) return label === 'plan mode' ? 'plan' : 'build';
+    if (/plan mode on.*shift\+tab to cycle/i.test(rail.join('\n'))) return 'plan';
+    if (/\? for shortcuts|shift\+tab to cycle/i.test(rail.join('\n'))) return 'build';
   }
   if (runtimeId === 'cli:kimi') {
     const rail = lines.findLast(line => /(?:Ask When Needed|Never Ask|Auto).*thinking:/i.test(line));

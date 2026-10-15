@@ -5,6 +5,56 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-15
+
+Source: sanitized Space app @ a41d4b238a (4255 files). Addresses the
+independent reviews of 1.1.4; open items are listed in
+`docs/quality/KNOWN_LIMITATIONS.md`.
+
+### Security
+
+- The API no longer grants credentialed CORS to other local origins, and
+  rejects session requests that browser fetch metadata (or the Origin header)
+  marks as another site. A page on another `127.0.0.1` port can no longer
+  read the CSRF token or use your session.
+- `/metrics` answers only loopback scrapers and administrators.
+- Child processes (agent CLIs, demo projects, browsers, git) no longer receive
+  the session secret or the database URL.
+- Stored database passwords use a purpose-bound key; an unreadable password is
+  reported instead of being used blank. Backups no longer carry the Google
+  OAuth client or Telegram secrets.
+- Admin Mode refuses to delete direct children of system roots and the
+  workspace with its parents, and every Admin Mode file change is audited.
+- Third-party images (PostgreSQL, Temporal, codex-lb) are pinned by digest.
+
+### Changed
+
+- The UI no longer calls SpaceApp open source: it is source-available (BSL)
+  until its Change Date, as the LICENSE says.
+- **Optional modules:** the games, Job, Mail and Marketing Copilot, Slack/Teams
+  channels, Telegram, the waitlist and the desktop update routes run only when
+  enabled. New installs start with none of them; an upgraded installation keeps
+  all of them. Change the `optionalModules` field of the launcher's
+  `config.json` (`all`, `none` or a list such as `job-copilot,games`) and run
+  `spaceapp repair` (see `docs/operations.md`).
+- A multi-file upload that fails part-way reports which files were saved.
+- `npm test` runs every exported workspace suite; the quality evidence
+  (`docs/quality/`) ships with the code, and
+  `scripts/verify-export-provenance.mjs` checks this tree against its export
+  manifest.
+
+### Fixed
+
+- When the first-launch free-model check fails, OpenCode still gets the
+  installation instructions and its permission for the memory folder, so the
+  first task no longer stops at an "Access external directory" prompt. The
+  check runs again on the next launch.
+- A Claude Code login imported with a configuration bundle also marks Claude
+  Code as onboarded, so its pane no longer repeats the first-run login screens.
+- A configuration backup exported from a newer SpaceApp now imports what this
+  version knows: settings and entries it does not recognise are skipped and
+  named in a warning, and a file with a broken structure is still refused.
+
 ## [1.1.4] - 2026-10-13
 
 - A CLI pane in a room without a project starts in its own `/workspaces/<room>`

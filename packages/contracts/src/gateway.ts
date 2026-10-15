@@ -12,13 +12,47 @@ export const gatewayProviderSchema = z.enum([
 /** Same states as codex-lb accounts. */
 export const gatewayAccountStatusSchema = z.enum(["ACTIVE", "RATE_LIMITED", "QUOTA_EXCEEDED", "PAUSED", "REAUTH_REQUIRED", "DEACTIVATED"]);
 
+/**
+ * Free plans never serve gateway traffic (operator rule 2026-10-13): an account whose plan is or becomes free is
+ * paused with this reason, and resuming it is refused until a sign-in on a paid plan replaces the free one.
+ */
+export const GATEWAY_FREE_PLAN_PAUSE_REASON = "Free plan: paused automatically and never used. Sign in again on a paid plan, then resume.";
+
+export function isGatewayFreePlan(planType: string | null | undefined): boolean {
+  const plan = (planType ?? "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  return plan === "free" || plan === "free_workspace";
+}
+
 export const gatewayRoutingStrategySchema = z.enum([
   "CAPACITY_WEIGHTED", "RELATIVE_AVAILABILITY", "USAGE_WEIGHTED", "ROUND_ROBIN", "FILL_FIRST", "SEQUENTIAL_DRAIN", "RESET_DRAIN", "SINGLE_ACCOUNT"
 ]);
 
 export const gatewayTrafficClassSchema = z.enum(["INTERACTIVE", "BACKGROUND", "TRANSLATION"]);
-export const gatewayCompressionModeSchema = z.enum(["OFF", "SHADOW", "ON"]);
+// Off or On. Shadow (measure without sending) was removed on 2026-10-13 (migration 0172); statistics keep its history.
+export const gatewayCompressionModeSchema = z.enum(["OFF", "ON"]);
 export const gatewayCompressionProfileSchema = z.enum(["CACHE", "TOKEN"]);
+/**
+ * Output policy: response rules Space Gateway adds to an agent's system prompt (plan clipboard:1QB_tqacF15X, B2).
+ * CONCISE = terse replies with the payload verbatim (after caveman v3.2.0, Apache-2.0), LEAN = the smallest complete
+ * change (after ponytail v5.2.0, MIT), BOTH = concise then lean. Measured 2026-10-13: LEAN cuts Claude Code cost 15%
+ * and Antigravity 17% with quality unchanged; nothing helped Codex.
+ */
+export const gatewayOutputPolicySchema = z.enum(["OFF", "CONCISE", "LEAN", "BOTH"]);
+/** Providers whose compression and output policy can differ from the global settings. */
+export const gatewayCompressionProviderIdSchema = z.enum(["CLAUDE", "CODEX", "ANTIGRAVITY"]);
+/** One provider's compression settings; a missing field inherits the global setting (output policy: Off). */
+export const gatewayCompressionProviderSettingsSchema = z.object({
+  mode: gatewayCompressionModeSchema,
+  profile: gatewayCompressionProfileSchema,
+  codeText: gatewayCompressionModeSchema,
+  timeBudgetMs: z.number().int().min(10).max(5000),
+  outputPolicy: gatewayOutputPolicySchema
+}).partial().strict();
+export const gatewayCompressionProvidersSchema = z.object({
+  CLAUDE: gatewayCompressionProviderSettingsSchema,
+  CODEX: gatewayCompressionProviderSettingsSchema,
+  ANTIGRAVITY: gatewayCompressionProviderSettingsSchema
+}).partial().strict();
 export const gatewayLimitTypeSchema = z.enum(["TOTAL_TOKENS", "INPUT_TOKENS", "OUTPUT_TOKENS", "COST_USD"]);
 export const gatewayLimitWindowSchema = z.enum(["DAILY", "WEEKLY", "MONTHLY"]);
 export const gatewayReasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -86,6 +120,8 @@ export const gatewayApiKeySchema = z.object({
   accountScopeEnabled: z.boolean(),
   accountIds: z.array(gatewayIdSchema).max(500),
   compressionOverride: gatewayCompressionModeSchema.nullable(),
+  /** Overrides the provider's output policy for this key (OFF keeps Space's own jobs out of it); null follows the provider. */
+  outputPolicyOverride: gatewayOutputPolicySchema.nullable(),
   limits: z.array(gatewayApiKeyLimitSchema).max(20),
   expiresAt: isoSchema.nullable(),
   lastUsedAt: isoSchema.nullable(),
@@ -101,6 +137,7 @@ export const gatewayApiKeyCreateRequestSchema = z.object({
   enforcedReasoningEffort: gatewayReasoningEffortSchema.nullable().default(null),
   accountIds: z.array(gatewayIdSchema).max(500).default([]),
   compressionOverride: gatewayCompressionModeSchema.nullable().default(null),
+  outputPolicyOverride: gatewayOutputPolicySchema.nullable().default(null),
   limits: z.array(z.object({
     limitType: gatewayLimitTypeSchema,
     limitWindow: gatewayLimitWindowSchema,
@@ -132,6 +169,7 @@ export const gatewayApiKeyUpdateRequestSchema = z.object({
   enforcedReasoningEffort: gatewayReasoningEffortSchema.nullable().optional(),
   accountIds: z.array(gatewayIdSchema).max(500).optional(),
   compressionOverride: gatewayCompressionModeSchema.nullable().optional(),
+  outputPolicyOverride: gatewayOutputPolicySchema.nullable().optional(),
   limits: z.array(gatewayApiKeyLimitInputSchema).max(20).optional(),
   expiresAt: isoSchema.nullable().optional(),
   resetUsage: z.boolean().optional()
@@ -159,9 +197,14 @@ export const gatewaySettingsSchema = z.object({
   exhaustionFloorPercent: z.number().min(0).max(50),
   compressionMode: gatewayCompressionModeSchema,
   compressionProfile: gatewayCompressionProfileSchema,
-  /** Code and prose compression (lossless folds, CodeAware, TextCrusher): SHADOW measures it; ON also needs mode ON. */
+  /** Code and prose compression (lossless folds, CodeAware, TextCrusher); ON applies while compressionMode is ON. */
   compressionCodeText: gatewayCompressionModeSchema,
   compressionTimeBudgetMs: z.number().int().min(10).max(5000),
+  /**
+   * Per-provider compression and output policy over the settings above (an update replaces the whole object). A
+   * key's compression override still wins for the mode.
+   */
+  compressionProviders: gatewayCompressionProvidersSchema,
   requestLogRetentionDays: z.number().int().min(1).max(365),
   /** Display preferences for the admin views. */
   displayTimeFormat: gatewayTimeFormatSchema,
@@ -173,6 +216,11 @@ export const gatewaySettingsSchema = z.object({
   promptCacheTtlSeconds: z.number().int().min(60).max(7 * 86_400),
   /** An imported sign-in never replaces an account with the same email but a different upstream account. */
   importWithoutOverwrite: z.boolean(),
+  /**
+   * Claude API key fallback: when every pooled Claude account is out of quota, requests go through a Claude API-key
+   * account (paid per token); the accounts take over again at their next reset. Off: the key is never used.
+   */
+  claudeApiKeyFallback: z.boolean(),
   /** Limit warm-up: one tiny request right after a confirmed window reset, so the next window starts counting at once. */
   warmupEnabled: z.boolean(),
   warmupWindows: gatewayWindowChoiceSchema,
@@ -225,7 +273,7 @@ export const gatewayRequestLogSchema = z.object({
   clientName: z.string().max(80).nullable(),
   /** The project a request belongs to, from the `x-space-project` header. */
   project: z.string().max(200).nullable(),
-  /** Context tokens before and after compression, when compression ran (On or Shadow). */
+  /** Context tokens before and after compression, when compression ran. */
   compressionTokensBefore: z.number().int().min(0).nullable(),
   compressionTokensAfter: z.number().int().min(0).nullable(),
   /** `limit_warmup` for the gateway's own warm-up requests, which statistics leave out; null for client traffic. */
@@ -235,7 +283,9 @@ export const gatewayRequestLogSchema = z.object({
   /** Which compressors changed the request and the waste signals found in its tool output (tokens). */
   compressionDetail: z.object({
     strategies: z.array(z.string().max(40)).max(10),
-    waste: z.record(z.string().max(40), z.number().int().min(0))
+    waste: z.record(z.string().max(40), z.number().int().min(0)),
+    /** The output policy the gateway added to the request's system prompt, when one was. */
+    outputPolicy: gatewayOutputPolicySchema.optional()
   }).strict().nullable()
 }).strict();
 
@@ -298,6 +348,24 @@ export const gatewayUsageAggregateSchema = z.object({
 }).strict();
 
 export const gatewayServiceStateSchema = z.enum(["RUNNING", "DRAINING", "UNREACHABLE", "NOT_INSTALLED"]);
+
+/**
+ * The Claude API key account of Space Gateway and what went through it (operator request 2026-10-13: the key must
+ * never serve while a subscription account can). Polled by the ADMIN rail to raise an alert on first use.
+ */
+export const gatewayClaudeApiKeyUseSchema = z.object({
+  fallbackEnabled: z.boolean(),
+  account: z.object({
+    id: gatewayIdSchema,
+    label: z.string().max(200),
+    status: gatewayAccountStatusSchema,
+    createdAt: isoSchema,
+    lastUsedAt: isoSchema.nullable(),
+    requests: z.number().int().min(0),
+    costUsd: z.number().min(0)
+  }).strict().nullable(),
+  checkedAt: isoSchema
+}).strict();
 
 export const gatewayStatusSchema = z.object({
   service: z.object({
@@ -368,6 +436,10 @@ export const gatewayCompressionStatsSchema = z.object({
   hours: z.number().int().min(1).max(24 * 90),
   applied: gatewayCompressionTotalsSchema,
   shadow: gatewayCompressionTotalsSchema,
+  /** Applied compression per provider. */
+  byProvider: z.array(z.object({ provider: z.string().max(40), requests: z.number().int().min(0), modifiedRequests: z.number().int().min(0),
+    originalTokens: z.number().int().min(0), compressedTokens: z.number().int().min(0), tokensSaved: z.number().int().min(0),
+    savingsPercent: z.number().min(0).max(100) }).strict()).max(20),
   byStrategy: z.array(z.object({ mode: z.enum(["SHADOW", "ON"]), strategy: z.string().max(40), blocks: z.number().int().min(0),
     rejectedBlocks: z.number().int().min(0), errorBlocks: z.number().int().min(0), tokensSaved: z.number().int().min(0),
     savingsPercent: z.number().min(0).max(100) }).strict()).max(40),
@@ -661,6 +733,10 @@ export type GatewayRoutingStrategy = z.infer<typeof gatewayRoutingStrategySchema
 export type GatewayTrafficClass = z.infer<typeof gatewayTrafficClassSchema>;
 export type GatewayCompressionMode = z.infer<typeof gatewayCompressionModeSchema>;
 export type GatewayCompressionProfile = z.infer<typeof gatewayCompressionProfileSchema>;
+export type GatewayOutputPolicy = z.infer<typeof gatewayOutputPolicySchema>;
+export type GatewayCompressionProviderId = z.infer<typeof gatewayCompressionProviderIdSchema>;
+export type GatewayCompressionProviderSettings = z.infer<typeof gatewayCompressionProviderSettingsSchema>;
+export type GatewayCompressionProviders = z.infer<typeof gatewayCompressionProvidersSchema>;
 export type GatewayLimitType = z.infer<typeof gatewayLimitTypeSchema>;
 export type GatewayLimitWindow = z.infer<typeof gatewayLimitWindowSchema>;
 export type GatewayReasoningEffort = z.infer<typeof gatewayReasoningEffortSchema>;
@@ -703,6 +779,7 @@ export type GatewayHeadroomHistory = z.infer<typeof gatewayHeadroomHistorySchema
 export type GatewayApiKeyDetail = z.infer<typeof gatewayApiKeyDetailSchema>;
 export type GatewayServiceState = z.infer<typeof gatewayServiceStateSchema>;
 export type GatewayStatus = z.infer<typeof gatewayStatusSchema>;
+export type GatewayClaudeApiKeyUse = z.infer<typeof gatewayClaudeApiKeyUseSchema>;
 export type GatewayAccountList = z.infer<typeof gatewayAccountListSchema>;
 export type GatewayApiKeyList = z.infer<typeof gatewayApiKeyListSchema>;
 export type GatewayReportRow = z.infer<typeof gatewayReportRowSchema>;

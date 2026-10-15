@@ -121,7 +121,7 @@ export interface SpaceAgentAdapter {
 
 export type SpaceAgentControl = Pick<
   CodexAppServerControlService,
-  "readConfigRequirements" | "listModels" | "listCollaborationModes" | "setGoal" | "clearGoal"
+  "readConfigRequirements" | "readConfiguredModel" | "listModels" | "listCollaborationModes" | "setGoal" | "clearGoal"
 >;
 
 export type SpaceAgentGoalReader = (threadId: string) => Promise<AgentPaneGoal | null>;

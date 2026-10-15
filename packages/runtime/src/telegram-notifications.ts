@@ -6,7 +6,7 @@ import {
   type TelegramIntegrationRecord
 } from "./telegram.js";
 
-export type TelegramOutboxSourceType = "CHAT" | "ROOM_AGENT" | "TERMINAL" | "TEST";
+export type TelegramOutboxSourceType = "CHAT" | "ROOM_AGENT" | "TERMINAL" | "TEST" | "NOTIFICATION";
 export type TelegramOutboxStatus = "PENDING" | "SENDING" | "RETRY" | "DELIVERED" | "CANCELLED" | "FAILED";
 
 export interface TelegramOutboxRecord {
@@ -82,17 +82,24 @@ export function normalizeTelegramTaskTitle(value: string, fallback = "Untitled t
   return codePoints(normalized).slice(0, 120).join("");
 }
 
+/** Room Agent notices (source key `room-agent-event:`) ask the operator for something instead of reporting a completion. */
+export const ROOM_AGENT_NOTICE_SOURCE_PREFIX = "room-agent-event:";
+/** Space notifications (source key `space-notification:`): the pane or service that raised it is the agent label. */
+export const NOTIFICATION_SOURCE_PREFIX = "space-notification:";
+
 export function formatTelegramCompletionParts(
-  input: Pick<TelegramOutboxRecord, "agentLabel" | "roomName" | "taskTitle" | "completedAt" | "finalResponse">,
+  input: Pick<TelegramOutboxRecord, "agentLabel" | "roomName" | "taskTitle" | "completedAt" | "finalResponse"> & { sourceKey?: string },
   maxCharacters = 2_500
 ): string[] {
   const boundedMax = Math.max(500, Math.min(Math.trunc(maxCharacters), 2_500));
+  const notice = input.sourceKey?.startsWith(ROOM_AGENT_NOTICE_SOURCE_PREFIX) ?? false;
+  const notification = input.sourceKey?.startsWith(NOTIFICATION_SOURCE_PREFIX) ?? false;
   const header = [
-    "Space — Task completed",
-    `Agent: ${input.agentLabel}`,
+    notification ? `Space — ${input.agentLabel}` : notice ? "Space — Room Agent needs you" : "Space — Task completed",
+    ...(notification ? [] : [`Agent: ${input.agentLabel}`]),
     `Room: ${input.roomName}`,
-    `Task: ${input.taskTitle}`,
-    `Completed: ${input.completedAt}`
+    `${notice || notification ? (notification ? "About" : "Question") : "Task"}: ${input.taskTitle}`,
+    `${notice || notification ? "At" : "Completed"}: ${input.completedAt}`
   ].join("\n");
   const single = `${header}\n\n${input.finalResponse}\n\n[END]`;
   if (codePoints(single).length <= boundedMax) return [single];

@@ -46,7 +46,7 @@ export function AlarmLogModal({ isOpen, onClose }: AlarmLogModalProps) {
   };
 
   const formatSourceLabel = (src: QuotaAlarmLogEntry["triggerSource"]) =>
-    src === "manual_test" ? "Manual test" : "Quota became available";
+    src === "manual_test" ? "Manual test" : src === "claude_api_key_fallback" ? "Claude API key used (fallback)" : "Quota became available";
 
   return (
     <div className="widget-alarm-log-overlay" role="dialog" aria-modal="true" aria-label="Alarm History & Conditions Log">

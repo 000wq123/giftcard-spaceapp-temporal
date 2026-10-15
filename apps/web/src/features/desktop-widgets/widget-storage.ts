@@ -43,7 +43,7 @@ const DEFAULT_PUSHUP_CONFIG: PushupReminderWidgetConfig = {
 
 const DEFAULT_PROMO_CONFIG: SpaceAppPromoWidgetConfig = {
   headline: "SpaceApp.dev it's FREE!!!",
-  subheadline: "OPENSOURCE!!!",
+  subheadline: "SOURCE-AVAILABLE",
   platformText: "FOR ALL PLATFORMS",
   url: "https://spaceapp.dev"
 };
@@ -76,6 +76,43 @@ export const WIDGET_DOCK_HEIGHTS: Record<DesktopWidgetId, number> = {
   "spaceapp-promo": 52,
   "streaming-metrics": 52
 };
+
+// The Snip Tool docks on the right rail too. Its card shares the rail column with the
+// docked widgets, so resolveRailDockCollisions places both; its state is stored on its own.
+export const SNIP_RAIL_ID = "snip-tool";
+export const SNIP_RAIL_HEIGHT = 52;
+export const SNIP_RAIL_CHANGED_EVENT = "space:snip-tool:rail-changed";
+const SNIP_RAIL_KEY = "space.snip-tool.rail-dock.v1";
+
+export type RailDockId = DesktopWidgetId | typeof SNIP_RAIL_ID;
+
+/** A docked Snip Tool: its rail position, and whether the tool is open (a closed one frees its slot). */
+export interface SnipRailDock {
+  y: number;
+  open: boolean;
+}
+
+export function loadSnipRailDock(): SnipRailDock | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const saved = JSON.parse(localStorage.getItem(SNIP_RAIL_KEY) ?? "null");
+    return saved && Number.isFinite(saved.y) ? { y: saved.y, open: saved.open !== false } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSnipRailDock(dock: SnipRailDock | null): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (dock) localStorage.setItem(SNIP_RAIL_KEY, JSON.stringify(dock));
+    else localStorage.removeItem(SNIP_RAIL_KEY);
+  } catch {
+    return;
+  }
+  // Rail slots are also resolved inside widget state updates; the card re-renders after them.
+  queueMicrotask(() => window.dispatchEvent(new CustomEvent(SNIP_RAIL_CHANGED_EVENT, { detail: dock })));
+}
 
 export function getRailTopBoundary(): number {
   if (typeof document !== "undefined") {
@@ -159,26 +196,59 @@ export function getFloatingTopBoundary(): number {
   return 0;
 }
 
-export function resolveRailDockCollisions(
+/**
+ * The Live orb of the collapsed rail sits mid-gap in the rail column (workspace-chrome.css); docked
+ * items keep clear of it. Returns the blocked stretches, gap included, top to bottom.
+ */
+function getRailObstacles(viewportW: number): Array<[number, number]> {
+  if (typeof document === "undefined") return [];
+  return Array.from(document.querySelectorAll(".room-toolbar-collapsed .room-live-rail-button, .room-toolbar-collapsed .live-pane-orb-button"))
+    .map((el) => el.getBoundingClientRect())
+    .filter((rect) => rect.height > 0 && rect.right >= viewportW - DOCK_WIDTH - DOCK_MARGIN_RIGHT - 12)
+    .map((rect): [number, number] => [rect.top - DOCK_GAP, rect.bottom + DOCK_GAP])
+    .sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Places the rail column: the docked widgets and, when given and open, the docked Snip Tool.
+ * Widget states are updated in place; the snip card's resolved y is returned.
+ */
+function resolveRailColumn(
   states: Record<DesktopWidgetId, DesktopWidgetState>,
-  activeId?: DesktopWidgetId,
-  viewportW = typeof window !== "undefined" ? window.innerWidth : 1200,
-  viewportH = typeof window !== "undefined" ? window.innerHeight : 800
-): boolean {
+  activeId: RailDockId | undefined,
+  viewportW: number,
+  viewportH: number,
+  snip: SnipRailDock | null
+): { changed: boolean; snipY: number | null } {
   const dockX = Math.max(12, viewportW - DOCK_WIDTH - DOCK_MARGIN_RIGHT);
   const minRailTop = getRailTopBoundary();
   const maxBottom = viewportH - 12;
 
-  const railWidgets = (Object.keys(states) as DesktopWidgetId[])
-    .map((id) => ({ ...states[id], origX: states[id]?.x ?? 0 }))
-    .filter((w): w is DesktopWidgetState & { origX: number } => Boolean(w && w.enabled && w.dockedToRail && w.minimized && w.dockPosition !== "header"));
+  const railItems: Array<{ id: RailDockId; y: number; origX: number; height: number }> = (Object.keys(states) as DesktopWidgetId[])
+    .filter((id) => {
+      const w = states[id];
+      return Boolean(w && w.enabled && w.dockedToRail && w.minimized && w.dockPosition !== "header");
+    })
+    .map((id) => ({ id, y: states[id]!.y, origX: states[id]!.x ?? 0, height: WIDGET_DOCK_HEIGHTS[id] ?? 52 }));
+  if (snip?.open) railItems.push({ id: SNIP_RAIL_ID, y: snip.y, origX: dockX, height: SNIP_RAIL_HEIGHT });
 
-  if (railWidgets.length === 0) return false;
+  if (railItems.length === 0) return { changed: false, snipY: null };
 
-  let changed = false;
+  const obstacles = getRailObstacles(viewportW);
+  /** Moves an item off any obstacle: to the nearer side, above only when it stays at or below min. */
+  const clear = (y: number, height: number, min: number) => {
+    for (const [top, bottom] of obstacles) {
+      if (y < bottom && y + height > top) y = y + height / 2 < (top + bottom) / 2 && top - height >= min ? top - height : bottom;
+    }
+    return y;
+  };
+  const clearAbove = (y: number, height: number) => {
+    for (const [top, bottom] of [...obstacles].reverse()) if (y < bottom && y + height > top) y = top - height;
+    return y;
+  };
 
   // 1. Sort by y coordinate. If tied, prioritize activeId, then original x coordinate (e.g. from header toolbar)
-  railWidgets.sort((a, b) => {
+  railItems.sort((a, b) => {
     if (a.y === b.y) {
       if (a.id === activeId) return -1;
       if (b.id === activeId) return 1;
@@ -187,60 +257,76 @@ export function resolveRailDockCollisions(
     return a.y - b.y;
   });
 
-  // 2. Clamp first/top widget to at least minRailTop
-  if (railWidgets[0]!.y < minRailTop) {
-    railWidgets[0]!.y = minRailTop;
-    states[railWidgets[0]!.id] = { ...states[railWidgets[0]!.id]!, y: minRailTop };
-    changed = true;
-  }
+  // 2. Clamp first/top item to at least minRailTop
+  railItems[0]!.y = clear(Math.max(railItems[0]!.y, minRailTop), railItems[0]!.height, minRailTop);
 
   // 3. Forward pass: ensure no overlap from top to bottom
-  for (let i = 0; i < railWidgets.length - 1; i++) {
-    const current = railWidgets[i]!;
-    const next = railWidgets[i + 1]!;
-    const currentH = WIDGET_DOCK_HEIGHTS[current.id] ?? 52;
-    const minNextY = current.y + currentH + DOCK_GAP;
-
-    if (next.y < minNextY) {
-      next.y = minNextY;
-      states[next.id] = { ...states[next.id]!, y: minNextY };
-      changed = true;
-    }
+  for (let i = 0; i < railItems.length - 1; i++) {
+    const current = railItems[i]!;
+    const next = railItems[i + 1]!;
+    const min = current.y + current.height + DOCK_GAP;
+    next.y = clear(Math.max(next.y, min), next.height, min);
   }
 
-  // 4. Backward pass: if bottom widget extends past maxBottom, shift upwards
-  const lastIndex = railWidgets.length - 1;
-  const lastWidget = railWidgets[lastIndex]!;
-  const lastH = WIDGET_DOCK_HEIGHTS[lastWidget.id] ?? 52;
-
-  if (lastWidget.y + lastH > maxBottom) {
-    lastWidget.y = Math.max(minRailTop, maxBottom - lastH);
-    states[lastWidget.id] = { ...states[lastWidget.id]!, y: lastWidget.y };
-    changed = true;
-
+  // 4. Backward pass: if the bottom item extends past maxBottom, shift upwards
+  const lastIndex = railItems.length - 1;
+  const lastItem = railItems[lastIndex]!;
+  if (lastItem.y + lastItem.height > maxBottom) {
+    lastItem.y = Math.max(minRailTop, clearAbove(maxBottom - lastItem.height, lastItem.height));
     for (let i = lastIndex - 1; i >= 0; i--) {
-      const prev = railWidgets[i]!;
-      const next = railWidgets[i + 1]!;
-      const prevH = WIDGET_DOCK_HEIGHTS[prev.id] ?? 52;
-      const maxPrevY = next.y - prevH - DOCK_GAP;
-
-      if (prev.y > maxPrevY) {
-        prev.y = Math.max(minRailTop, maxPrevY);
-        states[prev.id] = { ...states[prev.id]!, y: prev.y };
-        changed = true;
-      }
+      const prev = railItems[i]!;
+      const maxPrevY = railItems[i + 1]!.y - prev.height - DOCK_GAP;
+      if (prev.y > maxPrevY) prev.y = Math.max(minRailTop, clearAbove(maxPrevY, prev.height));
     }
   }
 
-  // 5. Ensure all rail widgets have correct dockX
-  for (const w of railWidgets) {
-    if (states[w.id]!.x !== dockX) {
-      states[w.id] = { ...states[w.id]!, x: dockX };
+  // 5. Write the slots back; every rail widget also takes the rail's x
+  let changed = false;
+  let snipY: number | null = null;
+  for (const item of railItems) {
+    if (item.id === SNIP_RAIL_ID) {
+      snipY = item.y;
+      continue;
+    }
+    const current = states[item.id]!;
+    if (current.y !== item.y || current.x !== dockX) {
+      states[item.id] = { ...current, y: item.y, x: dockX };
       changed = true;
     }
   }
+  return { changed, snipY };
+}
 
+export function resolveRailDockCollisions(
+  states: Record<DesktopWidgetId, DesktopWidgetState>,
+  activeId?: RailDockId,
+  viewportW = typeof window !== "undefined" ? window.innerWidth : 1200,
+  viewportH = typeof window !== "undefined" ? window.innerHeight : 800
+): boolean {
+  const snip = loadSnipRailDock();
+  const { changed, snipY } = resolveRailColumn(states, activeId, viewportW, viewportH, snip);
+  if (snip && snipY !== null && snipY !== snip.y) saveSnipRailDock({ ...snip, y: snipY });
   return changed;
+}
+
+/** Docks the Snip Tool card on the rail at y (or moves it there); docked widgets make room for it. */
+export function placeSnipOnRail(y: number): SnipRailDock {
+  const states = loadWidgetStates();
+  const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
+  const { changed, snipY } = resolveRailColumn(states, SNIP_RAIL_ID, viewportW, viewportH, { y, open: true });
+  if (changed) saveWidgetStates(states);
+  const dock = { y: snipY ?? y, open: true };
+  saveSnipRailDock(dock);
+  return dock;
+}
+
+/** Records whether a docked Snip Tool is open; reopening takes its rail slot back. */
+export function setSnipRailOpen(open: boolean): void {
+  const dock = loadSnipRailDock();
+  if (!dock) return;
+  if (open) placeSnipOnRail(dock.y);
+  else if (dock.open) saveSnipRailDock({ ...dock, open: false });
 }
 
 export function enforceRailDockSlots(

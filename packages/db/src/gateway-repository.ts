@@ -1,6 +1,7 @@
+import { gatewayCompressionProvidersSchema } from "@space/contracts";
 import type {
   GatewayAccount, GatewayAccountStatus, GatewayApiKey, GatewayApiKeyLimit, GatewayCompressionMode, GatewayLimitType,
-  GatewayLimitWindow, GatewayProvider, GatewayReasoningEffort, GatewayRequestLog, GatewayRequestLogFacets,
+  GatewayLimitWindow, GatewayOutputPolicy, GatewayProvider, GatewayReasoningEffort, GatewayRequestLog, GatewayRequestLogFacets,
   GatewayRequestLogFilter, GatewaySettings, GatewaySettingsUpdateRequest, GatewayTrafficClass, GatewayUsageAggregate
 } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
@@ -69,6 +70,8 @@ export interface GatewayApiKeyInsert {
   enforcedReasoningEffort: GatewayReasoningEffort | null;
   accountIds: string[];
   compressionOverride: GatewayCompressionMode | null;
+  /** Null (the default) follows the provider's output policy. */
+  outputPolicyOverride?: GatewayOutputPolicy | null;
   limits: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow; maxValue: number; modelFilter: string | null; resetAt: string }[];
   expiresAt: string | null;
   createdBy: string | null;
@@ -90,6 +93,7 @@ export interface GatewayApiKeyPatch {
   enforcedReasoningEffort?: GatewayReasoningEffort | null;
   accountIds?: string[];
   compressionOverride?: GatewayCompressionMode | null;
+  outputPolicyOverride?: GatewayOutputPolicy | null;
   expiresAt?: string | null;
   limits?: { limitType: GatewayLimitType; limitWindow: GatewayLimitWindow; maxValue: number; modelFilter: string | null; resetAt: string }[];
   resetUsage?: boolean;
@@ -343,8 +347,9 @@ export const defaultGatewaySettings: Omit<GatewaySettings, "updatedAt"> = {
   exhaustionFloorPercent: 3,
   compressionMode: "OFF",
   compressionProfile: "TOKEN",
-  compressionCodeText: "SHADOW",
+  compressionCodeText: "ON",
   compressionTimeBudgetMs: 250,
+  compressionProviders: {},
   requestLogRetentionDays: 30,
   displayTimeFormat: "24H",
   displayAccountWindows: "BOTH",
@@ -352,6 +357,7 @@ export const defaultGatewaySettings: Omit<GatewaySettings, "updatedAt"> = {
   upstreamStreamTransport: "DEFAULT",
   promptCacheTtlSeconds: 1800,
   importWithoutOverwrite: true,
+  claudeApiKeyFallback: false,
   warmupEnabled: false,
   warmupWindows: "BOTH",
   warmupModel: "auto",
@@ -375,6 +381,7 @@ const settingsColumns: Record<keyof Omit<GatewaySettings, "updatedAt">, string> 
   compressionProfile: "compression_profile",
   compressionCodeText: "compression_code_text",
   compressionTimeBudgetMs: "compression_time_budget_ms",
+  compressionProviders: "compression_providers",
   requestLogRetentionDays: "request_log_retention_days",
   displayTimeFormat: "display_time_format",
   displayAccountWindows: "display_account_windows",
@@ -382,6 +389,7 @@ const settingsColumns: Record<keyof Omit<GatewaySettings, "updatedAt">, string> 
   upstreamStreamTransport: "upstream_stream_transport",
   promptCacheTtlSeconds: "prompt_cache_ttl_seconds",
   importWithoutOverwrite: "import_without_overwrite",
+  claudeApiKeyFallback: "claude_api_key_fallback",
   warmupEnabled: "warmup_enabled",
   warmupWindows: "warmup_windows",
   warmupModel: "warmup_model",
@@ -397,6 +405,17 @@ const settingsColumns: Record<keyof Omit<GatewaySettings, "updatedAt">, string> 
 const iso = (value: unknown): string | null => value === null || value === undefined ? null : new Date(value as string).toISOString();
 const num = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
 
+/** The per-provider object as stored; a database without migration 0184, or an unreadable value, inherits everything. */
+function compressionProvidersRecord(value: unknown): GatewaySettings["compressionProviders"] {
+  let raw: unknown = value ?? {};
+  if (typeof raw === "string") { try { raw = JSON.parse(raw) as unknown; } catch { return {}; } }
+  const parsed = gatewayCompressionProvidersSchema.safeParse(raw);
+  return parsed.success ? parsed.data : {};
+}
+
+const copyProviders = (providers: GatewaySettings["compressionProviders"]) =>
+  Object.fromEntries(Object.entries(providers).map(([provider, entry]) => [provider, { ...entry }])) as GatewaySettings["compressionProviders"];
+
 function settingsRecord(row: Record<string, unknown>): GatewaySettings {
   return {
     routingStrategy: row.routing_strategy as GatewaySettings["routingStrategy"],
@@ -405,11 +424,12 @@ function settingsRecord(row: Record<string, unknown>): GatewaySettings {
     planPriority: (row.plan_priority as string[] | null) ?? [],
     stickyReallocationBudgetThresholdPercent: Number(row.sticky_reallocation_budget_threshold_percent),
     exhaustionFloorPercent: Number(row.exhaustion_floor_percent),
-    compressionMode: row.compression_mode as GatewaySettings["compressionMode"],
+    // Shadow was removed (migration 0172); a row read before that migration keeps what Shadow did.
+    compressionMode: row.compression_mode === "ON" ? "ON" : "OFF",
     compressionProfile: row.compression_profile as GatewaySettings["compressionProfile"],
-    // Before migration 0166 code and prose compression is measured only.
-    compressionCodeText: (row.compression_code_text as GatewaySettings["compressionCodeText"] | undefined) ?? defaultGatewaySettings.compressionCodeText,
+    compressionCodeText: row.compression_code_text === "OFF" ? "OFF" : "ON",
     compressionTimeBudgetMs: Number(row.compression_time_budget_ms),
+    compressionProviders: compressionProvidersRecord(row.compression_providers),
     requestLogRetentionDays: Number(row.request_log_retention_days),
     // A database without migration 0160 yet (an older stable during a rollout) reads as the defaults.
     displayTimeFormat: (row.display_time_format as GatewaySettings["displayTimeFormat"] | undefined) ?? defaultGatewaySettings.displayTimeFormat,
@@ -418,6 +438,7 @@ function settingsRecord(row: Record<string, unknown>): GatewaySettings {
     upstreamStreamTransport: (row.upstream_stream_transport as GatewaySettings["upstreamStreamTransport"] | undefined) ?? defaultGatewaySettings.upstreamStreamTransport,
     promptCacheTtlSeconds: row.prompt_cache_ttl_seconds === undefined ? defaultGatewaySettings.promptCacheTtlSeconds : Number(row.prompt_cache_ttl_seconds),
     importWithoutOverwrite: row.import_without_overwrite === undefined ? defaultGatewaySettings.importWithoutOverwrite : Boolean(row.import_without_overwrite),
+    claudeApiKeyFallback: row.claude_api_key_fallback === undefined ? defaultGatewaySettings.claudeApiKeyFallback : Boolean(row.claude_api_key_fallback),
     warmupEnabled: row.warmup_enabled === undefined ? defaultGatewaySettings.warmupEnabled : Boolean(row.warmup_enabled),
     warmupWindows: (row.warmup_windows as GatewaySettings["warmupWindows"] | undefined) ?? defaultGatewaySettings.warmupWindows,
     warmupModel: (row.warmup_model as string | undefined) ?? defaultGatewaySettings.warmupModel,
@@ -476,6 +497,8 @@ function accountRecord(row: Record<string, unknown>, windows: Record<string, unk
   };
 }
 
+const outputPolicies = new Set<GatewayOutputPolicy>(["OFF", "CONCISE", "LEAN", "BOTH"]);
+
 function apiKeyRecord(row: Record<string, unknown>, accounts: Record<string, unknown>[], limits: Record<string, unknown>[]): GatewayApiKeyRecord {
   const keyId = row.key_id as string;
   return {
@@ -491,7 +514,9 @@ function apiKeyRecord(row: Record<string, unknown>, accounts: Record<string, unk
     enforcedReasoningEffort: (row.enforced_reasoning_effort as GatewayReasoningEffort | null) ?? null,
     accountScopeEnabled: Boolean(row.account_scope_enabled),
     accountIds: accounts.filter((item) => item.key_id === keyId).map((item) => item.account_id as string),
-    compressionOverride: (row.compression_override as GatewayCompressionMode | null) ?? null,
+    compressionOverride: row.compression_override === "ON" ? "ON" : row.compression_override ? "OFF" : null,
+    // A database without migration 0185 has no override column: the key follows the provider.
+    outputPolicyOverride: outputPolicies.has(row.output_policy_override as GatewayOutputPolicy) ? row.output_policy_override as GatewayOutputPolicy : null,
     limits: limits.filter((item) => item.key_id === keyId).map((item): GatewayApiKeyLimit => ({
       limitType: item.limit_type as GatewayLimitType,
       limitWindow: item.limit_window as GatewayLimitWindow,
@@ -622,7 +647,7 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const assignments = entries.map(([key], index) => `${settingsColumns[key]}=$${index + 1}`);
     const row = (await this.pool.query<Record<string, unknown>>(
       `UPDATE space_gateway_settings SET ${assignments.join(", ")}, updated_at=now() WHERE settings_id=1 RETURNING *`,
-      entries.map(([, value]) => value))).rows[0];
+      entries.map(([key, value]) => (key === "compressionProviders" ? JSON.stringify(value) : value)))).rows[0];
     return row ? settingsRecord(row) : this.getSettings();
   }
 
@@ -769,12 +794,14 @@ export class PostgresGatewayRepository implements GatewayRepository {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // The output policy column (migration 0185) is written only when set, so a key can be created before the migration ran.
+      const policy = input.outputPolicyOverride ?? null;
       await client.query(`INSERT INTO space_gateway_api_keys(key_id,name,key_hash,key_prefix,traffic_class,allowed_models,enforced_model,
-          allowed_reasoning_efforts,enforced_reasoning_effort,account_scope_enabled,compression_override,expires_at,created_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          allowed_reasoning_efforts,enforced_reasoning_effort,account_scope_enabled,compression_override,expires_at,created_by${policy ? ",output_policy_override" : ""})
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${policy ? ",$14" : ""})`,
         [input.keyId, input.name, input.keyHash, input.keyPrefix, input.trafficClass, input.allowedModels, input.enforcedModel,
           input.allowedReasoningEfforts, input.enforcedReasoningEffort, input.accountIds.length > 0, input.compressionOverride,
-          input.expiresAt, input.createdBy]);
+          input.expiresAt, input.createdBy, ...(policy ? [policy] : [])]);
       for (const accountId of input.accountIds) {
         await client.query(`INSERT INTO space_gateway_api_key_accounts(key_id,account_id) VALUES ($1,$2)`, [input.keyId, accountId]);
       }
@@ -806,12 +833,14 @@ export class PostgresGatewayRepository implements GatewayRepository {
           enforced_reasoning_effort=CASE WHEN $9::boolean THEN $10 ELSE enforced_reasoning_effort END,
           compression_override=CASE WHEN $11::boolean THEN $12 ELSE compression_override END,
           expires_at=CASE WHEN $13::boolean THEN $14::timestamptz ELSE expires_at END,
-          account_scope_enabled=CASE WHEN $15::boolean THEN $16 ELSE account_scope_enabled END, updated_at=now()
+          account_scope_enabled=CASE WHEN $15::boolean THEN $16 ELSE account_scope_enabled END,${has("outputPolicyOverride") ? " output_policy_override=$17," : ""}
+          updated_at=now()
         WHERE key_id=$1`,
         [keyId, patch.name ?? null, patch.isActive ?? null, patch.trafficClass ?? null, patch.allowedModels ?? null,
           has("enforcedModel"), patch.enforcedModel ?? null, patch.allowedReasoningEfforts ?? null,
           has("enforcedReasoningEffort"), patch.enforcedReasoningEffort ?? null, has("compressionOverride"), patch.compressionOverride ?? null,
-          has("expiresAt"), patch.expiresAt ?? null, has("accountIds"), (patch.accountIds ?? []).length > 0]);
+          has("expiresAt"), patch.expiresAt ?? null, has("accountIds"), (patch.accountIds ?? []).length > 0,
+          ...(has("outputPolicyOverride") ? [patch.outputPolicyOverride ?? null] : [])]);
       if (patch.accountIds) {
         await client.query(`DELETE FROM space_gateway_api_key_accounts WHERE key_id=$1`, [keyId]);
         for (const accountId of patch.accountIds) {
@@ -1170,13 +1199,16 @@ export class PostgresGatewayRepository implements GatewayRepository {
 /** In-memory twin for tests and demo mode. */
 export class InMemoryGatewayRepository implements GatewayRepository {
   settings: GatewaySettings = { ...defaultGatewaySettings, planPriority: [...defaultGatewaySettings.planPriority],
-    lanAllowedSources: [...defaultGatewaySettings.lanAllowedSources], updatedAt: new Date(0).toISOString() };
+    lanAllowedSources: [...defaultGatewaySettings.lanAllowedSources], compressionProviders: {}, updatedAt: new Date(0).toISOString() };
   accounts: GatewayAccountRecord[] = [];
   keys: GatewayApiKeyRecord[] = [];
   logs: GatewayRequestLog[] = [];
   private nextLogId = 1;
 
-  async getSettings() { return { ...this.settings, planPriority: [...this.settings.planPriority], lanAllowedSources: [...this.settings.lanAllowedSources] }; }
+  async getSettings() {
+    return { ...this.settings, planPriority: [...this.settings.planPriority], lanAllowedSources: [...this.settings.lanAllowedSources],
+      compressionProviders: copyProviders(this.settings.compressionProviders) };
+  }
   async updateSettings(patch: GatewaySettingsUpdateRequest) {
     const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
     this.settings = { ...this.settings, ...defined, updatedAt: new Date().toISOString() };
@@ -1295,7 +1327,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
       id: input.keyId, name: input.name, keyPrefix: input.keyPrefix, keyHash: input.keyHash, isActive: true, trafficClass: input.trafficClass,
       allowedModels: [...input.allowedModels], enforcedModel: input.enforcedModel, allowedReasoningEfforts: [...input.allowedReasoningEfforts],
       enforcedReasoningEffort: input.enforcedReasoningEffort, accountScopeEnabled: input.accountIds.length > 0, accountIds: [...input.accountIds],
-      compressionOverride: input.compressionOverride,
+      compressionOverride: input.compressionOverride, outputPolicyOverride: input.outputPolicyOverride ?? null,
       limits: input.limits.map((limit) => ({ ...limit, currentValue: 0 })),
       expiresAt: input.expiresAt, lastUsedAt: null, createdAt: new Date().toISOString()
     };
@@ -1313,6 +1345,7 @@ export class InMemoryGatewayRepository implements GatewayRepository {
     if (patch.allowedReasoningEfforts !== undefined) key.allowedReasoningEfforts = [...patch.allowedReasoningEfforts];
     if (patch.enforcedReasoningEffort !== undefined) key.enforcedReasoningEffort = patch.enforcedReasoningEffort;
     if (patch.compressionOverride !== undefined) key.compressionOverride = patch.compressionOverride;
+    if (patch.outputPolicyOverride !== undefined) key.outputPolicyOverride = patch.outputPolicyOverride;
     if (patch.expiresAt !== undefined) key.expiresAt = patch.expiresAt;
     if (patch.accountIds !== undefined) { key.accountIds = [...patch.accountIds]; key.accountScopeEnabled = patch.accountIds.length > 0; }
     if (patch.limits) key.limits = mergeKeyLimits(key.limits, patch.limits, patch.resetUsage === true);

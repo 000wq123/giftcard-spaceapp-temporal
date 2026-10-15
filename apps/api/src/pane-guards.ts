@@ -29,8 +29,8 @@ export async function getLatestRoomEvent(store: SpaceStore, roomId: string): Pro
 
 export class PaneClosedConflictError extends SpaceConflictError {}
 
-// A Job Applications pane owns both a CLI agent session and a managed browser session.
-const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY"];
+// Copilot panes own a CLI agent session (Job and Marketing Copilot also a managed browser session).
+const CLI_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT"];
 
 export function isCliPane(pane: Pick<Pane, "mode">): boolean {
   return CLI_PANE_MODES.includes(pane.mode);
@@ -38,14 +38,14 @@ export function isCliPane(pane: Pick<Pane, "mode">): boolean {
 
 export function assertCliPaneCompatible(pane: Pane) {
   if (!isCliPane(pane)) {
-    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL or JOB_APPLY panes.`);
+    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT or MARKETING_COPILOT panes.`);
   }
   if (pane.isClosed) {
     throw new PaneClosedConflictError(`Pane ${pane.id} is closed.`);
   }
 }
 
-const BROWSER_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["BROWSER", "YOUTUBE", "JOB_APPLY"];
+const BROWSER_PANE_MODES: ReadonlyArray<Pane["mode"]> = ["BROWSER", "YOUTUBE", "JOB_APPLY", "MARKETING_COPILOT"];
 
 export function isBrowserPane(pane: Pick<Pane, "mode">): boolean {
   return BROWSER_PANE_MODES.includes(pane.mode);
@@ -53,7 +53,7 @@ export function isBrowserPane(pane: Pick<Pane, "mode">): boolean {
 
 export function assertBrowserPaneCompatible(pane: Pane) {
   if (!isBrowserPane(pane)) {
-    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE or JOB_APPLY panes.`);
+    throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE, JOB_APPLY or MARKETING_COPILOT panes.`);
   }
   if (pane.isClosed) {
     throw new SpaceConflictError(`Pane ${pane.id} is closed.`);

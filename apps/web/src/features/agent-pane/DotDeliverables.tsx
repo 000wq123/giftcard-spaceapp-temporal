@@ -95,3 +95,23 @@ export function DotWorkspaceFiles({ dot, roomId, rootEntries, refreshKey, readFo
       </li>)}</ul>}
   </>;
 }
+
+/** Every published version of each file, newest file first (the Dot card's Show more). Only lists and downloads; it never publishes. */
+export function DotOutputVersions({ dot, items }: { dot: DotProfile; items: DotDeliverable[] }) {
+  const groups = new Map<string, DotDeliverable[]>();
+  for (const item of items.filter((value) => value.dotId === dot.dotId)) groups.set(item.name, [...(groups.get(item.name) ?? []), item]);
+  const files = [...groups.entries()].map(([name, versions]) => ({ name, versions: [...versions].sort((a, b) => b.version - a.version) }))
+    .sort((a, b) => b.versions[0]!.createdAt.localeCompare(a.versions[0]!.createdAt));
+  if (!files.length) return <p className="dots-info-empty">No outputs yet</p>;
+  return <ul className="dots-output-files">{files.map(({ name, versions }) => <li key={name}>
+    <strong>{name}</strong>
+    <ul className="dots-output-versions">{versions.map((version, index) => <li key={version.deliverableId}>
+      <span>Version {version.version}{index === 0 ? " (latest)" : ""}</span>
+      <span className="dots-computer-file-meta">{size(version.byteSize)} · <time dateTime={version.createdAt}>{when(version.createdAt)}</time>
+        {version.publishedBy === "DOT" ? ` · requested by ${dot.name}` : ""}</span>
+      {/* A version whose Agent File was deleted keeps its number but has nothing to download. */}
+      {version.artifactId ? <a href={api.agentFileDownloadUrl(version.artifactId)} download aria-label={`Download ${name} version ${version.version}`}>
+        <Download aria-hidden="true" />Download</a> : <span className="dots-output-removed">Removed from Agent Files</span>}
+    </li>)}</ul>
+  </li>)}</ul>;
+}

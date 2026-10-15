@@ -41,6 +41,11 @@ export * from "./source-control.js";
 export * from "./worktrees.js";
 export * from "./t3code.js";
 export * from "./job-apply.js";
+export * from "./copilot.js";
+export * from "./mail-copilot.js";
+export * from "./marketing-copilot.js";
+export * from "./notifications.js";
+export * from "./council.js";
 export * from "./version.js";
 export * from "./observability.js";
 

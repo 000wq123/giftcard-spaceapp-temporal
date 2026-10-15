@@ -176,7 +176,8 @@ export function PromptVariablesManagerModal({
               <Search aria-hidden="true" />
               <input
                 type="text"
-                placeholder="Search variables (name, label, value)..."
+                placeholder="Search variables"
+                aria-label="Search variables"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -362,7 +363,7 @@ export function PromptVariablesManagerModal({
                 <p>
                   {search
                     ? `No prompt variables matched "${search}".`
-                    : "No prompt variables defined yet. Create your first variable to quickly insert technical definitions using #."}
+                    : "No variables yet. Save text you reuse under a short #name, then type #name in any prompt to insert it."}
                 </p>
                 {!isCreating ? (
                   <button type="button" className="prompt-variables-btn primary" onClick={handleStartCreate}>

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { Pane } from "@space/contracts";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import { readStoredBoolean } from "../../stored-boolean.js";
 import { LiveRailContextMenu } from "./LiveRailContextMenu.js";
+import type { LiveTranscriptItem } from "./live-session.js";
 
 // The lower rail's Live voice button: the shared Live session status it mirrors,
 // its right-click menu and the per-browser choice to hide its animated graphic.
@@ -119,19 +120,22 @@ export function LiveRailButton({ liveRail, onActivate, disabled }: { liveRail: L
         }}
         disabled={disabled}
       >
-        {!isLiveRailGraphicDisabled ? (
-          <>
-            <span className="room-live-rail-glow" aria-hidden="true" />
-            <span className="room-live-rail-sphere" aria-hidden="true">
-              <span className="room-live-rail-line line-one" />
-              <span className="room-live-rail-line line-two" />
-              <span className="room-live-rail-line line-three" />
-              <span className="room-live-rail-line line-four" />
-              <span className="room-live-rail-core" />
-            </span>
-          </>
-        ) : null}
+        {!isLiveRailGraphicDisabled ? <LiveOrb status={liveRailStatus} /> : null}
       </button>
+  );
+}
+
+/** Glass sphere with a light "liquid" whose level, color and motion follow the Live status. */
+export function LiveOrb({ status, className = "" }: { status: LiveRailStatus; className?: string }) {
+  return (
+    <span className={`live-orb ${className}`} data-live-status={status} aria-hidden="true">
+      <span className="live-orb-liquid">
+        <span className="live-orb-wave is-back" />
+        <span className="live-orb-wave is-front" />
+      </span>
+      <span className="live-orb-iris" />
+      <span className="live-orb-shine" />
+    </span>
   );
 }
 
@@ -147,5 +151,42 @@ export function LiveRailMenu({ liveRail }: { liveRail: LiveRail }) {
       onToggleGraphic={toggleLiveRailGraphic}
       onClose={() => setLiveRailContextMenu(null)}
     />
+  );
+}
+
+const LIVE_CAPTION_HOLD_MS = 6000;
+
+/** The latest spoken phrase and whether to show it: history present at mount is never captioned,
+ *  and a caption fades LIVE_CAPTION_HOLD_MS after its last update. */
+export function useLiveCaption(transcripts: LiveTranscriptItem[]) {
+  const item = transcripts.findLast(entry => (entry.role === "user" || entry.role === "assistant") && !entry.toolCall && !entry.id.startsWith("tool_") && entry.text.trim());
+  const key = item ? `${item.id}:${item.text}` : "";
+  const initialKeyRef = useRef(key);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!key || key === initialKeyRef.current) return;
+    // shortcut: freshness comes from createdAtMs (first chunk of a turn), 60 s covers one long answer; upgrade if turns get longer.
+    if (Date.now() - (item?.createdAtMs ?? Date.now()) > 60_000) return;
+    initialKeyRef.current = "";
+    setVisible(true);
+    const timer = window.setTimeout(() => setVisible(false), LIVE_CAPTION_HOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { item, visible };
+}
+
+/** Gemini-style caption card: the user's words in italics, at most three lines with the newest words in view. */
+export function LiveCaption({ item, visible, className = "", style }: { item: LiveTranscriptItem; visible: boolean; className?: string; style?: CSSProperties }) {
+  const textRef = useRef<HTMLParagraphElement | null>(null);
+  useLayoutEffect(() => {
+    const text = textRef.current;
+    if (!text) return;
+    text.scrollTop = text.scrollHeight;
+    text.dataset.overflowing = String(text.scrollHeight > text.clientHeight + 1);
+  }, [item.text, visible]);
+  return (
+    <div className={`live-caption is-${item.role}${visible ? " is-visible" : ""} ${className}`} style={style} aria-hidden="true">
+      <p ref={textRef}>{item.text}</p>
+    </div>
   );
 }

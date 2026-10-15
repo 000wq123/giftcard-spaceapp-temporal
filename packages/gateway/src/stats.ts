@@ -1,5 +1,6 @@
 import type { GatewayCompressionRow, GatewayRepository } from "@space/db";
 import type { CompressionCache } from "./compression/engine.js";
+import { headroomWasteSignalNames } from "./compression/waste-signals.js";
 
 /**
  * Headroom-compatible statistics (`GET /stats`), after Headroom 0.37's `/stats` (Apache-2.0, Headroom Contributors):
@@ -44,7 +45,7 @@ export async function buildHeadroomStats(input: { repository: GatewayRepository;
   const since = new Date(now.getTime() - input.hours * 3_600_000).toISOString();
   const [requests, compression, signals] = await Promise.all([input.repository.requestStatsSince(since), input.repository.compressionSince(since),
     input.repository.compressionSignalsSince(since)]);
-  const waste: Record<string, number> = {};
+  const waste: Record<string, number> = Object.fromEntries(headroomWasteSignalNames.map((name) => [name, 0]));
   const pipeline: Record<string, { average_ms: number; max_ms: number; count: number }> = {};
   for (const row of signals) {
     if (row.kind === "waste") waste[row.name] = (waste[row.name] ?? 0) + Math.round(row.value);

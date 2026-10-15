@@ -231,14 +231,17 @@ async function readCredentialStatus(commandPath: string): Promise<CliCredentialS
       timeout: credentialStatusTimeoutMs,
       maxBuffer: 128
     });
-    if (stdout === "READY\n" || stdout === "READY\r\n") return "READY";
-    if (stdout === "READY_QUOTA_EXHAUSTED\n" || stdout === "READY_QUOTA_EXHAUSTED\r\n") {
-      return "READY_QUOTA_EXHAUSTED";
-    }
-    return null;
+    return parseCredentialStatus(stdout);
   } catch {
     return null;
   }
+}
+
+/** A wrapper's `credential-status` answer. */
+export function parseCredentialStatus(stdout: string): CliCredentialStatus | null {
+  if (stdout === "READY\n" || stdout === "READY\r\n") return "READY";
+  if (stdout === "READY_QUOTA_EXHAUSTED\n" || stdout === "READY_QUOTA_EXHAUSTED\r\n") return "READY_QUOTA_EXHAUSTED";
+  return null;
 }
 
 export async function observeCliRuntimeCredential(runtime: AgentRuntime): Promise<string | null> {
@@ -489,7 +492,8 @@ const cliRuntimeCacheInvalidatingRoutePrefixes = [
   "/api/cli/runtime-settings/",
   "/api/cli/runtimes/:runtimeId/account-profiles",
   "/api/cli/providers",
-  "/api/admin/cli-maintenance/"
+  "/api/admin/cli-maintenance/",
+  "/api/configuration/import"
 ] as const;
 
 export function invalidatesCliRuntimeCache(method: string, routeUrl: string | undefined): boolean {

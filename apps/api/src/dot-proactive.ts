@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { DotProfile, DotUserSettings } from "@space/contracts";
+import { estimateAgentRunCost, type AgentRunCost, type AgentRunUsage, type DotProactiveUsageEntry, type DotProfile, type DotUserSettings,
+  type ModelPriceCatalog } from "@space/contracts";
 import type { DotHomeRepository, DotsRepository } from "@space/db";
 
 // Space Dots Stage 8: the Dot writes to the user on its own, like ChatGPT dot. Every check only
@@ -12,7 +13,15 @@ export interface ProactiveCandidate {
   /** The mail cursor this item moves (EMAIL only). */
   cursorKey?: string;
 }
-export interface ProactiveDecision { items: Array<{ index: number; text: string }> }
+/** Tokens the model gateway reported for one call, and the model it says answered. */
+export interface ProactiveModelUsage {
+  model: string | null; inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number; totalTokens: number;
+}
+export interface ProactiveDecision { items: Array<{ index: number; text: string }>; usage?: ProactiveModelUsage | null }
+/** A decision that failed after the gateway answered; `usage` is what that answer reported. */
+export class ProactiveDecisionError extends Error {
+  constructor(message: string, readonly usage: ProactiveModelUsage | null = null) { super(message); }
+}
 export type ProactiveDecider = (input: { dotName: string; language: string | null; style: string | null; userSample: string | null;
   now: string; timeZone: string; candidates: ProactiveCandidate[] }) => Promise<ProactiveDecision>;
 type ToolOutcome = { status: "COMPLETED"; result: unknown } | { status: "BLOCKED"; statusReason: string };
@@ -24,6 +33,10 @@ export interface DotProactiveDeps {
   connectorTool(owner: string, toolId: string, args: Record<string, unknown>): Promise<ToolOutcome>;
   decide: ProactiveDecider;
   timeZone(owner: string): Promise<string>;
+  /** Records each model call (Settings → Dots shows the totals); `model` names calls whose gateway reported none. */
+  usage?: { model: string; prices(): Promise<ModelPriceCatalog | null>; record(owner: string, entry: DotProactiveUsageEntry): Promise<void> };
+  /** Queues a new notice for the owner's Slack (Settings → Dots → Also send to Slack); false when no Slack account is linked. */
+  alsoSlack?: (owner: string, notice: { sourceKey: string; dotName: string; content: string; link: { label: string; url: string } | null }) => Promise<boolean>;
   now?: () => Date;
   log?: (message: string, detail: Record<string, unknown>) => void;
 }
@@ -78,6 +91,23 @@ function calendarLink(provider: "GOOGLE" | "MICROSOFT", email: string) {
 
 export function createDotProactiveService(deps: DotProactiveDeps) {
   const clock = () => deps.now?.() ?? new Date();
+  /** Records one model call with the Stage 7 measurement; recording never fails the check. */
+  async function recordCall(owner: string, call: Omit<DotProactiveUsageEntry, "model" | "usage" | "cost">, reported: ProactiveModelUsage | null) {
+    if (!deps.usage) return;
+    try {
+      const observedAt = clock().toISOString();
+      const model = reported?.model || deps.usage.model;
+      const usage: AgentRunUsage = reported ? { status: "MEASURED", inputTokens: reported.inputTokens, cachedInputTokens: reported.cachedInputTokens,
+        outputTokens: reported.outputTokens, reasoningOutputTokens: reported.reasoningOutputTokens, totalTokens: reported.totalTokens,
+        source: "Space Gateway chat/completions usage", observedAt, model }
+        : { status: "UNKNOWN", reason: call.status === "FAILED" ? "The call failed before the model gateway reported usage." : "The model gateway reported no usage." };
+      const cost: AgentRunCost = usage.status === "MEASURED" ? estimateAgentRunCost(usage, await deps.usage.prices().catch(() => null), observedAt)
+        : { status: "UNKNOWN", amountUsd: null, source: null, observedAt: null, priceCatalogVersion: null, reason: "No usage was reported, so no price applies." };
+      await deps.usage.record(owner, { ...call, model, usage, cost });
+    } catch (error) {
+      deps.log?.("Dot proactive usage was not recorded.", { owner, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   async function checkOwner(owner: string, settings: DotUserSettings, timeZone: string, now: Date): Promise<number> {
     const state = await deps.home.proactiveState(owner);
     const day = localDay(now, timeZone);
@@ -136,8 +166,12 @@ export function createDotProactiveService(deps: DotProactiveDeps) {
       if (fresh.length) {
         const context = await deps.home.conversationContext(owner, dot.dotId, "proactive").catch(() => null);
         const userSample = context?.messages.filter((message) => message.author === "USER").at(-1)?.content.slice(0, 200) ?? null;
+        const call = { calledAt: now.toISOString(), dotId: dot.dotId, candidates: fresh.length };
         const decision = await deps.decide({ dotName: dot.name, language: dot.preferences.language ?? null, style: dot.preferences.communicationStyle ?? null,
-          userSample, now: now.toISOString(), timeZone, candidates: fresh });
+          userSample, now: now.toISOString(), timeZone, candidates: fresh }).catch(async (error: unknown) => {
+          await recordCall(owner, { ...call, status: "FAILED", notices: 0 }, error instanceof ProactiveDecisionError ? error.usage : null);
+          throw error;
+        });
         const chosen = new Set<number>();
         for (const item of decision.items) {
           if (sent >= MAX_PER_CHECK || today >= settings.proactive.maxPerDay) break;
@@ -147,8 +181,15 @@ export function createDotProactiveService(deps: DotProactiveDeps) {
           chosen.add(item.index);
           // The sender's address only: a display name is the sender's own text and never reaches the notice.
           const content = candidate.kind === "EMAIL" && candidate.from ? `${text}\n\nFrom: ${candidate.from}` : text;
-          if (await deps.home.addNotice({ dotId: dot.dotId, content, link: candidate.link, sourceHash: candidate.sourceHash })) { sent += 1; today += 1; }
+          if (!await deps.home.addNotice({ dotId: dot.dotId, content, link: candidate.link, sourceHash: candidate.sourceHash })) continue;
+          sent += 1; today += 1;
+          // Slack gets the same text once per notice; its delivery is retried by the channel outbox and never fails the check.
+          if (settings.proactive.alsoSlack && deps.alsoSlack) {
+            await deps.alsoSlack(owner, { sourceKey: `dot-notice:${dot.dotId}:${candidate.sourceHash}`, dotName: dot.name, content, link: candidate.link })
+              .catch((error) => deps.log?.("Dot notice to Slack failed.", { owner, error: error instanceof Error ? error.message : String(error) }));
+          }
         }
+        await recordCall(owner, { ...call, status: "COMPLETED", notices: sent }, decision.usage ?? null);
       }
       await save(cursors, null);
       return sent;
@@ -208,11 +249,26 @@ export function createProactiveDecider(options: { baseUrl: string | null; apiKey
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ model: options.model, messages: [{ role: "system", content: system }, { role: "user", content: user }] })
     });
-    if (!response.ok) throw new Error(`The model gateway answered ${response.status}.`);
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+    if (!response.ok) throw new ProactiveDecisionError(`The model gateway answered ${response.status}.`);
+    const payload = await response.json() as { model?: unknown; usage?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
+    const usage = reportedUsage(payload);
     const content = String(payload.choices?.[0]?.message?.content ?? "").replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
-    const parsed = decisionSchema.safeParse(JSON.parse(content || "{\"items\":[]}"));
-    if (!parsed.success) throw new Error("The model returned an invalid decision.");
-    return parsed.data;
+    let parsed: ReturnType<typeof decisionSchema.safeParse> | null = null;
+    try { parsed = decisionSchema.safeParse(JSON.parse(content || "{\"items\":[]}")); } catch { parsed = null; }
+    if (!parsed?.success) throw new ProactiveDecisionError("The model returned an invalid decision.", usage);
+    return { ...parsed.data, usage };
   };
+}
+
+/** The OpenAI-style `usage` of a chat completion; null when the gateway reported no token counts. */
+export function reportedUsage(payload: { model?: unknown; usage?: unknown }): ProactiveModelUsage | null {
+  const usage = payload.usage as { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown;
+    prompt_tokens_details?: { cached_tokens?: unknown }; completion_tokens_details?: { reasoning_tokens?: unknown } } | null | undefined;
+  const tokens = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const input = tokens(usage?.prompt_tokens); const output = tokens(usage?.completion_tokens);
+  if (input === null || output === null) return null;
+  return { model: typeof payload.model === "string" && payload.model.trim() ? payload.model.trim().slice(0, 200) : null,
+    inputTokens: input, cachedInputTokens: Math.min(input, tokens(usage?.prompt_tokens_details?.cached_tokens) ?? 0), outputTokens: output,
+    reasoningOutputTokens: Math.min(output, tokens(usage?.completion_tokens_details?.reasoning_tokens) ?? 0),
+    totalTokens: tokens(usage?.total_tokens) ?? input + output };
 }

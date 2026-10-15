@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { WorktreeError } from "./worktree-error.js";
+import { childProcessEnv } from "../child-process-env.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,7 +22,7 @@ async function gitPaths(directory: string): Promise<{ gitDir: string; commonDir:
     const { stdout } = await execFileAsync(
       "git",
       ["-C", directory, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel"],
-      { timeout: 10_000, maxBuffer: 64 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
+      { timeout: 10_000, maxBuffer: 64 * 1024, env: { ...childProcessEnv(), GIT_TERMINAL_PROMPT: "0" } }
     );
     const [gitDir, commonDir, topLevel] = stdout.trim().split("\n").map((line) => line.trim());
     if (!gitDir || !commonDir || !topLevel) return null;

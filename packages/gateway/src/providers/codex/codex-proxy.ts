@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { GatewaySettings } from "@space/contracts";
+import type { GatewayCompressionMode, GatewayOutputPolicy, GatewaySettings } from "@space/contracts";
 import type { GatewayAccountRecord, GatewayCompressionRow, GatewayCompressionSignalRow, GatewayRequestLogInsert } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { gatewayError, gatewayErrors } from "../../errors.js";
 import { applyRequestPolicy, checkKeyLimits, PolicyRejection, type PolicyResult } from "../../policy.js";
-import { compressResponsesBodyAsync, type AsyncBlockRunner, type CompressionCache } from "../../compression/engine.js";
+import { compressResponsesBodyAsync, type AsyncBlockRunner, type CompressionCache, type RawBlockRegistry } from "../../compression/engine.js";
+import { outputPolicyText, requestOutputPolicy, withResponsesOutputPolicy } from "../../compression/output-policy.js";
+import { effectiveCompression, requestCompressionMode } from "../../compression/provider-settings.js";
 import { compressionDetail, compressionRows, compressionSignalRows } from "../../compression/recorder.js";
 import { costUsd } from "../../pricing/pricing.js";
 import { StickyStore } from "../../accounts/sticky-store.js";
 import { hashKey, header, readBounded } from "../../proxy-util.js";
-import { requestOrigin } from "../../client-detect.js";
+import { detectClient, requestOrigin } from "../../client-detect.js";
 import type { RequestLogWriter } from "../../request-log-writer.js";
 import { selectAccount, USAGE_LIMIT_REACHED, permanentFailureCodes, type UpstreamError } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
@@ -45,7 +47,7 @@ export interface CodexProxyOptions {
   maxAccountAttempts?: number;
   preOutputBufferBytes?: number;
   /** Context compression (the Headroom rewrite); absent means requests are never compressed. */
-  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; record: (rows: GatewayCompressionRow[]) => Promise<void>;
+  compression?: { run: AsyncBlockRunner; cache?: CompressionCache; rawBlocks?: RawBlockRegistry; record: (rows: GatewayCompressionRow[]) => Promise<void>;
     recordSignals?: (rows: GatewayCompressionSignalRow[]) => Promise<void> };
   /** Conversation affinity; without it bindings live in memory only. */
   sticky?: { threads: StickyStore; continuations: StickyStore };
@@ -64,6 +66,13 @@ export interface CodexProxyOptions {
 }
 
 export type FailureKind = "rate_limit" | "quota" | "transient" | "permanent" | "surface";
+
+/** What compression and the output policy read from a request's key. */
+export interface CodexRequestKey {
+  name: string;
+  compressionOverride: GatewayCompressionMode | null;
+  outputPolicyOverride?: GatewayOutputPolicy | null;
+}
 
 export interface UpstreamFailure {
   kind: FailureKind;
@@ -109,11 +118,15 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
   const webSocketHealth = options.upstreamWebSocketHealth ?? new UpstreamWebSocketHealth(now);
   const openWebSocket = options.openWebSocket ?? openUpstreamWebSocket;
 
-  async function recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure) {
+  /** Records a failed attempt; the account to retry on when its rejected access token (HTTP 401) was refreshed. */
+  async function recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure): Promise<GatewayAccountRecord | null> {
+    const code = failure.code in permanentFailureCodes ? failure.code : "token_invalidated";
+    if (failure.kind === "permanent" && failure.status === 401) return options.pool.refreshRejectedToken(account, code);
     if (failure.kind === "rate_limit") await options.pool.markRateLimited(account, failure.error);
     else if (failure.kind === "quota") await options.pool.markQuotaExceeded(account, failure.error);
-    else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, failure.code in permanentFailureCodes ? failure.code : "token_invalidated");
+    else if (failure.kind === "permanent") await options.pool.markPermanentFailure(account, code);
     else options.pool.markTransientError(account.id);
+    return null;
   }
 
   /** Passive usage from `x-codex-*` headers (an HTTP reply or a WebSocket handshake). */
@@ -129,16 +142,35 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
   }
 
   /**
-   * Context compression of a request body under the effective mode: Shadow measures only. Never throws; on any
-   * failure the original body is used.
+   * Context compression and the output policy of a request body, under Codex's settings (the global ones overlaid by
+   * the provider's) and the key's overrides. Never throws; on any failure the original body is used.
    */
-  async function compressRequest(body: Record<string, unknown>, compressionMode: GatewaySettings["compressionMode"], settings: GatewaySettings, startedAt: number) {
+  async function compressRequest(body: Record<string, unknown>, request: FastifyRequest, key: CodexRequestKey, settings: GatewaySettings, startedAt: number,
+    sessionKey: string | null = null) {
     const result: { outgoing: Record<string, unknown>; saved: number | null; measured: { before: number; after: number } | null;
       detail: GatewayRequestLogInsert["compressionDetail"] } = { outgoing: body, saved: null, measured: null, detail: null };
-    if (compressionMode === "OFF" || !options.compression) return result;
+    const effective = effectiveCompression(settings, "CODEX");
+    const compressionMode = requestCompressionMode(effective, key.compressionOverride, header(request, "x-space-gateway-compression"));
+    const outputPolicy = requestOutputPolicy({ policy: effective.outputPolicy, key, clientName: detectClient(request.headers),
+      headerValue: header(request, "x-space-gateway-output-policy") });
+    if (compressionMode !== "OFF" && options.compression) await compressInto(result, body, compressionMode, effective, startedAt, sessionKey);
+    const policyText = outputPolicyText(outputPolicy);
+    const withPolicy = policyText ? withResponsesOutputPolicy(result.outgoing, policyText) : null;
+    if (withPolicy) {
+      result.outgoing = withPolicy;
+      result.detail = { ...(result.detail ?? { strategies: [], waste: {} }), outputPolicy };
+    }
+    return result;
+  }
+
+  async function compressInto(result: { outgoing: Record<string, unknown>; saved: number | null; measured: { before: number; after: number } | null;
+    detail: GatewayRequestLogInsert["compressionDetail"] }, body: Record<string, unknown>, compressionMode: "ON",
+    effective: ReturnType<typeof effectiveCompression>, startedAt: number, sessionKey: string | null) {
+    if (!options.compression) return;
     try {
       const outcome = await compressResponsesBodyAsync(body, { run: options.compression.run, cache: options.compression.cache,
-        timeBudgetMs: settings.compressionTimeBudgetMs, codeText: settings.compressionCodeText, profile: settings.compressionProfile });
+        timeBudgetMs: effective.timeBudgetMs, codeText: effective.codeText, profile: effective.profile,
+        sessionKey: sessionKey ?? undefined, rawBlocks: options.compression.rawBlocks });
       if (outcome.tokensBefore > 0) result.measured = { before: outcome.tokensBefore, after: outcome.tokensAfter };
       if (compressionMode === "ON" && outcome.modified) {
         result.outgoing = outcome.body;
@@ -152,7 +184,6 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     } catch {
       // Compression never blocks a request: the original body goes upstream.
     }
-    return result;
   }
 
   /** Settles a finished request against its key and writes its log entry. */
@@ -248,17 +279,16 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     const clientStreams = chatBody ? chatBody.stream === true : policy.body.stream === true;
     const includeUsage = Boolean((chatBody?.stream_options as { include_usage?: unknown } | undefined)?.include_usage);
     const settings = await options.settings();
-    const compressionMode = header(request, "x-space-gateway-compression")?.toLowerCase() === "off" ? "OFF" : key.compressionOverride ?? settings.compressionMode;
-    const compressed = await compressRequest(policy.body, compressionMode, settings, startedAt);
+    const stickySource = typeof policy.body.prompt_cache_key === "string" ? "prompt_cache_key"
+      : header(request, "session_id") ? "session_id" : header(request, "x-codex-session-id") ? "x-codex-session-id" : null;
+    const stickyRaw = stickySource === "prompt_cache_key" ? String(policy.body.prompt_cache_key) : stickySource ? header(request, stickySource) : null;
+    const stickyHash = stickyRaw ? hashKey(`codex:${stickyRaw}`) : null;
+    const compressed = await compressRequest(policy.body, request, key, settings, startedAt, stickyHash);
     const { outgoing, saved: compressionSaved, measured: compressionMeasured, detail } = compressed;
     const upstreamBody = JSON.stringify({ ...outgoing, stream: true });
     let upstreamTransport: "http" | "websocket" = "http";
     const previousResponseId = typeof policy.body.previous_response_id === "string" ? policy.body.previous_response_id : null;
     const ownerAccountId = previousResponseId ? await responseOwners.get(hashKey(`codex-response:${previousResponseId}`)) ?? null : null;
-    const stickySource = typeof policy.body.prompt_cache_key === "string" ? "prompt_cache_key"
-      : header(request, "session_id") ? "session_id" : header(request, "x-codex-session-id") ? "x-codex-session-id" : null;
-    const stickyRaw = stickySource === "prompt_cache_key" ? String(policy.body.prompt_cache_key) : stickySource ? header(request, stickySource) : null;
-    const stickyHash = stickyRaw ? hashKey(`codex:${stickyRaw}`) : null;
     const scope = key.accountScopeEnabled ? new Set(key.accountIds) : null;
     const tried = new Set<string>();
     const controller = new AbortController();
@@ -277,8 +307,10 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
     });
 
     let lastFailure: UpstreamFailure | null = null;
+    let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const { account, none } = await pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+      retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
           const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
@@ -342,7 +374,9 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         const failure = parseUpstreamError(await readBounded(upstream), upstream.status);
         lastFailure = failure;
         if (failure.kind === "surface") break;
-        await recordFailure(account, failure);
+        retryWith = await recordFailure(account, failure);
+        // The same account once more, with its refreshed token: it does not count as another attempt.
+        if (retryWith) { attempt -= 1; continue; }
         if (ownerAccountId) break;
         continue;
       }
@@ -483,8 +517,10 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
       stickyKeyHash: stickyHash ? stickyHash.slice(0, 16) : null, errorMessage: null, ...requestOrigin(request), ...fields
     });
     let lastFailure: UpstreamFailure | null = null;
+    let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const { account, none } = await pickAccount(settings, scope, tried, stickyHash, null, policy.model);
+      const { account, none } = retryWith ? { account: retryWith, none: undefined } : await pickAccount(settings, scope, tried, stickyHash, null, policy.model);
+      retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
           const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
@@ -512,7 +548,8 @@ export function registerCodexProxyRoutes(app: FastifyInstance, helpers: GatewayR
         const failure = parseUpstreamError(await readBounded(upstream), upstream.status);
         lastFailure = failure;
         if (failure.kind === "surface") break;
-        await recordFailure(account, failure);
+        retryWith = await recordFailure(account, failure);
+        if (retryWith) attempt -= 1;
         continue;
       }
       const text = await upstream.text();

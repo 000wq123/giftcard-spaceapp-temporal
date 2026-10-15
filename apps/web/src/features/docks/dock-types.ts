@@ -2,6 +2,7 @@ import type { LucideIcon } from "../ui-theme/app-icons.js";
 
 export type SideSurface =
   | "rooms"
+  | "notifications"
   | "room-agent"
   | "shared-chat"
   | "media"

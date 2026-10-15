@@ -1,17 +1,24 @@
 import { useState } from "react";
-import type { JobApplication, JobApplyEvent, JobApplyPendingItem } from "@space/contracts";
+import type { JobApplication, JobApplyEvent, JobApplyPendingItem, JobApplyStats } from "@space/contracts";
 import { api } from "../../api.js";
-import { AlertTriangle, Camera, Check, CheckCircle2, CircleHelp, FileText, Flame, Pause, Play, Send, Square, Upload, UserCheck, X } from "../ui-theme/app-icons.js";
+import { AlertTriangle, Archive, Camera, Check, CheckCircle2, CircleHelp, FileText, Flame, Pause, Play, Send, Square, Upload, UserCheck, X } from "../ui-theme/app-icons.js";
+import { shortDay } from "./CommandBar.js";
 import { relativeTime } from "./QueueTab.js";
 
 const EVENT_ICON: Record<JobApplyEvent["type"], typeof Check> = {
   STARTED: Play, STEP: FileText, FIELD_FILLED: FileText, UPLOAD: Upload, SUBMITTED: Send, VERIFIED: CheckCircle2, FAILED: AlertTriangle,
   HANDOFF_REQUESTED: UserCheck, HANDOFF_RESOLVED: UserCheck, QUESTION: CircleHelp, ANSWERED: Check, REVIEW_REQUESTED: CircleHelp, REVIEW_DECIDED: Check,
-  NOTE: FileText, SCREENSHOT: Camera, RUN_STARTED: Play, RUN_PAUSED: Pause, RUN_RESUMED: Play, RUN_STOPPED: Square, RUN_FINISHED: Flame
+  NOTE: FileText, SCREENSHOT: Camera, RUN_STARTED: Play, RUN_PAUSED: Pause, RUN_RESUMED: Play, RUN_STOPPED: Square, RUN_FINISHED: Flame, MAIL: Archive
 };
 const EVENT_TONE: Partial<Record<JobApplyEvent["type"], string>> = {
   VERIFIED: "ok", SUBMITTED: "info", FAILED: "bad", QUESTION: "warn", REVIEW_REQUESTED: "warn", HANDOFF_REQUESTED: "warn", RUN_FINISHED: "ok"
 };
+
+/** Mail triage: an email that asks for something stands out like a question; filed mail stays quiet. */
+function eventTone(event: JobApplyEvent): string {
+  if (event.type === "MAIL") return event.payload.category === "ACTION_NEEDED" ? "warn" : event.payload.category === "REJECTION" ? "bad" : "muted";
+  return EVENT_TONE[event.type] ?? "muted";
+}
 
 function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem; application: JobApplication | null; onDone(): void }) {
   const [answer, setAnswer] = useState("");
@@ -79,10 +86,46 @@ function PendingCard({ item, application, onDone }: { item: JobApplyPendingItem;
   );
 }
 
-export function ActivityTab({ events, pending, applications, selectedId, onSelect, onChanged }: {
+/** The whole picture: totals since the first day (or the last reset), per day, and the earlier history apart. */
+function OverviewCard({ stats }: { stats: JobApplyStats }) {
+  const activeDays = stats.days.filter((day) => day.applied > 0).length;
+  const { imported, archived } = stats.earlier;
+  return (
+    <section className="jc-card jc-overview" aria-label="Overview">
+      <header className="jc-overview-head">
+        <strong>Overview</strong>
+        <span className="jc-muted">{stats.firstDay ? `Since ${shortDay(stats.firstDay)} · ${activeDays} active day${activeDays === 1 ? "" : "s"}` : "No applications yet"}</span>
+      </header>
+      <div className="jc-overview-totals">
+        <span className="jc-counter"><strong>{stats.totals.applied}</strong> applied</span>
+        <span className="jc-counter ok"><strong>{stats.totals.verified}</strong> verified</span>
+        {stats.totals.failed ? <span className="jc-counter bad"><strong>{stats.totals.failed}</strong> failed</span> : null}
+        <span className="jc-counter">Today <strong>{stats.today.applied}</strong></span>
+      </div>
+      {stats.days.length > 0 ? (
+        <details className="jc-overview-days" open>
+          <summary>Per day</summary>
+          <table>
+            <thead><tr><th scope="col">Day</th><th scope="col">Applied</th><th scope="col">Verified</th><th scope="col">Failed</th></tr></thead>
+            <tbody>
+              {stats.days.map((day) => (
+                <tr key={day.day}><th scope="row">{shortDay(day.day)}</th><td>{day.applied}</td><td>{day.verified}</td><td>{day.failed}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      ) : null}
+      {archived.sent || archived.failed ? <p className="jc-muted">Archived (before the last reset): {archived.sent} sent · {archived.failed} failed</p> : null}
+      {imported.sent || imported.failed ? <p className="jc-muted">Earlier campaign (imported): {imported.sent} sent · {imported.failed} failed</p> : null}
+    </section>
+  );
+}
+
+export function ActivityTab({ events, pending, applications, stats = null, selectedId, onSelect, onChanged }: {
   events: JobApplyEvent[];
   pending: JobApplyPendingItem[];
   applications: JobApplication[];
+  stats?: JobApplyStats | null;
   selectedId: string | null;
   onSelect(id: string | null): void;
   onChanged(): void;
@@ -91,6 +134,7 @@ export function ActivityTab({ events, pending, applications, selectedId, onSelec
   const visible = selectedId ? events.filter((event) => event.applicationId === selectedId) : events;
   return (
     <div className="jc-activity" role="tabpanel" id="jc-panel-activity" aria-labelledby="jc-tab-activity">
+      {stats && !selectedId ? <OverviewCard stats={stats} /> : null}
       {pending.map((item) => <PendingCard key={item.id} item={item} application={item.applicationId ? byId.get(item.applicationId) ?? null : null} onDone={onChanged} />)}
       {selectedId ? (
         <div className="jc-activity-filter">
@@ -109,7 +153,7 @@ export function ActivityTab({ events, pending, applications, selectedId, onSelec
             const Icon = EVENT_ICON[event.type];
             const application = event.applicationId ? byId.get(event.applicationId) : null;
             return (
-              <li key={event.id} className={`jc-event tone-${EVENT_TONE[event.type] ?? "muted"}`}>
+              <li key={event.id} className={`jc-event tone-${eventTone(event)}`}>
                 <span className="jc-event-icon" aria-hidden="true"><Icon /></span>
                 <div className="jc-event-body">
                   <p>{event.message}</p>

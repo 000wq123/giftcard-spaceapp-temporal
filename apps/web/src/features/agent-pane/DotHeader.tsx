@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import type { AgentPaneSession, DotProfile } from "@space/contracts";
-import { ChevronDown, MoreHorizontal, PanelRight, Phone, Settings2, SquarePen } from "../ui-theme/app-icons.js";
+import { ChevronDown, MoreHorizontal, PanelRight, Phone, Settings, SquarePen } from "../ui-theme/app-icons.js";
 
 const artwork: Record<DotProfile["appearance"]["character"], string> = {
   astronaut: "orbit", star: "nova", robot: "byte", comet: "comet", moon: "luna", planet: "cosmo"
@@ -107,7 +107,7 @@ export function DotHeader({ dots, selected, status, blocked, motionActive, onSel
           <img src={dotArtwork(dot)} alt="" width="36" height="36" /><span>{dot.name}</span>
         </button>)}
         <button type="button" role="menuitem" className="dots-choice-manage" onKeyDown={(event) => navigate(event, dots.length, dots.length + 1, 3, dotsPopup, dotMenu)}
-          onClick={() => { dotsPopup.close(); onManage(); }}><Settings2 aria-hidden="true" /><span>Manage Dots in Settings</span></button>
+          onClick={() => { dotsPopup.close(); onManage(); }}><Settings aria-hidden="true" /><span>Manage Dots in Settings</span></button>
       </div> : null}
     </div>
     <div className="dots-header-end">

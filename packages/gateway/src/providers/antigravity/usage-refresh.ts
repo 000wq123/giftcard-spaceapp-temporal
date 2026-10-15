@@ -33,6 +33,7 @@ export function startAntigravityUsagePoller(input: { repository: GatewayReposito
   return startAccountUsagePoller({
     pool: input.pool, intervalMs: input.intervalMs, onError: input.onError,
     refresh: (account) => refreshAntigravityAccountUsage({ repository: input.repository, pool: input.pool, account, fetchImpl: input.fetchImpl }),
-    isAuthError: (error) => error instanceof CodeAssistError && (error.statusCode === 401 || error.statusCode === 403)
+    isAuthError: (error) => error instanceof CodeAssistError && (error.statusCode === 401 || error.statusCode === 403),
+    isTokenRejected: (error) => error instanceof CodeAssistError && error.statusCode === 401
   });
 }

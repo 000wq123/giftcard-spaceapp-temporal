@@ -10,7 +10,7 @@ import "./agent-capabilities.css";
 export type { AgentToolsUsage } from "./agent-tools-usage.js";
 
 type Tab = "skills" | "backends" | "routing";
-const tabs: Array<[Tab, string]> = [["skills", "Skills"], ["backends", "MCP backends"], ["routing", "Routing"]];
+const tabs: Array<[Tab, string]> = [["skills", "Skills"], ["backends", "Tool servers"], ["routing", "Routing"]];
 
 function day(iso: string | null | undefined): string {
   return iso ? iso.slice(0, 10) : "";
@@ -109,6 +109,7 @@ export function AgentCapabilitiesCard() {
     }
   }
 
+  // Text sits in divs: the Modern theme makes dock paragraphs, spans and strong text inherit their colour.
   return (
     <div className="agent-capabilities">
       <div className="agent-capabilities-tabs" role="tablist" aria-label="Agent capabilities">
@@ -118,15 +119,18 @@ export function AgentCapabilitiesCard() {
           </button>
         ))}
       </div>
-      {error ? <p className="agent-capabilities-error" role="alert">{error}</p> : null}
+      {error ? <div className="agent-capabilities-error" role="alert">{error}</div> : null}
 
       {tab === "skills" ? (
         <section aria-label="Skills">
-          <p className="agent-capabilities-note">
+          <div className="agent-capabilities-intro">
+            Skills are ready-made instructions an agent reads only when a task needs them. Switch one off to stop every agent from using it.
+          </div>
+          <div className="agent-capabilities-note">
             {usage?.available
-              ? `Uses in the last ${usage.windowDays ?? 30} days: Claude Code skill invocations, Codex reads of installed skill files, and skill reads through Space's MCP dispatcher.${usage.complete === false ? " Still counting older sessions." : ""}`
+              ? `Counts how often Claude Code, Codex and Space's tool dispatcher used each skill in the last ${usage.windowDays ?? 30} days.${usage.complete === false ? " Older sessions are still being counted." : ""}`
               : usage?.reason ?? "Usage is not available yet."}
-          </p>
+          </div>
           <div className="agent-capabilities-toolbar">
             <SpaceToggle
               compact
@@ -135,25 +139,27 @@ export function AgentCapabilitiesCard() {
               checked={unusedOnly}
               onChange={setUnusedOnly}
             />
-            <button type="button" disabled={drafts.size === 0 || applying} onClick={() => void apply()}>
-              {applying ? "Applying..." : drafts.size ? `Apply ${drafts.size} change${drafts.size === 1 ? "" : "s"}` : "No changes"}
-            </button>
+            {drafts.size || applying ? (
+              <button type="button" className="agent-capabilities-apply" disabled={applying} onClick={() => void apply()}>
+                {applying ? "Applying..." : `Apply ${drafts.size} change${drafts.size === 1 ? "" : "s"}`}
+              </button>
+            ) : null}
           </div>
-          {message ? <p className="agent-capabilities-note" role="status">{message}</p> : null}
+          {message ? <div className="agent-capabilities-note" role="status">{message}</div> : null}
           <ul className="agent-capabilities-list">
             {visibleSkills.map((skill) => {
               const pending = drafts.has(skill.toolId);
               const enabled = pending ? !skill.enabled : skill.enabled;
               return (
-                <li key={skill.toolId} data-skill={skill.name}>
+                <li key={skill.toolId} data-skill={skill.name} data-pending={pending || undefined}>
                   <div className="agent-capabilities-main">
-                    <strong>{skill.name}</strong>
-                    <span className="agent-capabilities-description">{skill.description}</span>
-                    <span className="agent-capabilities-meta">
+                    <div className="agent-capabilities-name">{skill.name}</div>
+                    <div className="agent-capabilities-description" title={skill.description}>{skill.description}</div>
+                    <div className="agent-capabilities-meta">
                       {skill.usage?.uses
                         ? `${skill.usage.uses} use${skill.usage.uses === 1 ? "" : "s"}, last ${day(skill.usage.lastUsedAt)} (${Object.keys(skill.usage.byRuntime).map(runtimeLabel).join(", ")})`
                         : "Not used in 30 days"}
-                    </span>
+                    </div>
                   </div>
                   <SpaceToggle compact className={pending ? "agent-capabilities-pending" : undefined} checked={enabled}
                     label={pending ? "Pending" : enabled ? "On" : "Off"} ariaLabel={`${skill.name} for every agent`}
@@ -166,15 +172,18 @@ export function AgentCapabilitiesCard() {
       ) : null}
 
       {tab === "backends" ? (
-        <section aria-label="MCP backends">
-          <p className="agent-capabilities-note">Backends start on demand through the MCP dispatcher. Turn one off for a runtime or model in Routing.</p>
+        <section aria-label="Tool servers">
+          <div className="agent-capabilities-intro">
+            Tool servers (MCP) give agents extra abilities, such as a browser or Space operations. Each one starts only when a task needs it.
+            To keep one away from a specific agent, use Routing.
+          </div>
           <ul className="agent-capabilities-list">
             {backends.map((backend) => (
               <li key={backend.id} data-backend={backend.id}>
                 <div className="agent-capabilities-main">
-                  <strong>{backend.name} <code>{backend.id}</code></strong>
-                  <span className="agent-capabilities-description">{backend.description}</span>
-                  <span className="agent-capabilities-meta">
+                  <div className="agent-capabilities-name">{backend.name} <code>{backend.id}</code></div>
+                  <div className="agent-capabilities-description" title={backend.description}>{backend.description}</div>
+                  <div className="agent-capabilities-meta">
                     {backend.stale
                       ? "Tool list could not be refreshed; agents see the last known tools."
                       : `${backend.toolCount ?? 0} tools cached ${day(backend.schemaBuiltAt)}`}
@@ -182,11 +191,11 @@ export function AgentCapabilitiesCard() {
                     {backend.usage?.calls
                       ? `${backend.usage.calls} calls, ${backend.usage.errors} failed, p95 ${backend.usage.p95Ms ?? "?"} ms, last ${day(backend.usage.lastUsedAt)}`
                       : "No calls in 30 days"}
-                  </span>
+                  </div>
                 </div>
               </li>
             ))}
-            {backends.length === 0 ? <li className="agent-capabilities-note">No backend information has been collected yet.</li> : null}
+            {backends.length === 0 ? <li className="agent-capabilities-empty">No tool server information has been collected yet.</li> : null}
           </ul>
         </section>
       ) : null}

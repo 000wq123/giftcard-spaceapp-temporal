@@ -117,8 +117,39 @@ import type {
   JobApplyDiscoverRequest,
   JobApplyDiscoverResult,
   JobApplyMailboxInput,
+  JobApplyMailCheckResult,
   JobApplyPaneMetadata,
+  MailAccountSummary,
+  MailComposeInput,
+  MailCopilotEvent,
+  MailCopilotMemory,
+  MailCopilotMemoryCreate,
+  MailCopilotMemoryQuery,
+  MailCopilotMemoryUpdate,
+  MailCopilotPaneMetadata,
+  MarketingCopilotPaneMetadata,
+  MarketingCampaign,
+  MarketingEvent,
+  MarketingMemory,
+  MarketingMetric,
+  MarketingPost,
+  MarketingRule,
+  MarketingRunView,
+  MailCopilotReviewDecision,
+  MailCopilotRunView,
+  MailRule,
+  MailHabitSender,
+  MailRuleDecision,
+  MailRuleProposal,
+  MailCopilotView,
+  MailCopilotViewInput,
+  MailLabel,
+  MailThread,
+  MailThreadAction,
+  MailThreadsPage,
   JobApplyProfile,
+  JobApplyResetResult,
+  JobApplyStats,
   JobApplyProfileUpdate,
   BrowserPageListResponse,
   BrowserPageSummary,
@@ -131,6 +162,10 @@ import type {
   ClipboardSource,
   SharedChatMessage,
   SendSharedChatMessageInput,
+  CouncilModelsResponse,
+  CouncilRun,
+  CouncilRunSummary,
+  CreateCouncilRunInput,
   ListSharedChatMessagesQuery,
   AuditChainEntry,
   ListAuditChainQuery,
@@ -190,13 +225,13 @@ import type {
   AgentSessionHistoryResponse,
   SystemServicesResponse,
   SystemAnalyticsCliSessionsResponse,
+  SystemAnalyticsInstallsResponse,
   SystemAnalyticsModelsResponse,
   SystemAnalyticsOverviewResponse,
   SystemAnalyticsProcessesResponse,
   SystemAnalyticsRange,
   SystemAnalyticsResourcesResponse,
   OpencodeBenchResponse,
-  CodexCliModeDefaultsResponse,
   CodexHistoryPurgeExecuteRequest,
   CodexHistoryPurgePreviewResponse,
   CodexHistoryPurgeResponse,
@@ -229,6 +264,7 @@ import type {
   GatewaySettings,
   GatewaySettingsUpdateRequest,
   GatewayStatus,
+  GatewayClaudeApiKeyUse,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
   ClaudeUsageAccountList,
@@ -310,7 +346,6 @@ import type {
   ReleasePreview,
   Room,
   UpdatePaneCliModelSettingsResult,
-  UpdateCodexCliModeDefaultsInput,
   UpdateCliRuntimeSettingInput,
   UpdateCliRuntimeSettingResult,
   UpdateCliRuntimeVpnInput,
@@ -324,6 +359,7 @@ import type {
   RoomCliActivityResponse,
   RoomPanesResult,
   RoomPaneLayoutResult,
+  RoomAgentEvent,
   RoomAgentSession,
   Skill,
   SetupClaimInput,
@@ -401,6 +437,7 @@ import type {
 import { SpaceApiError } from "./runtime/SpaceRuntime.js";
 import { reportCoreApiFailure, reportCoreApiSuccess } from "./core-api-state.js";
 import { consumeAuthBootstrap } from "./auth-bootstrap-cache.js";
+import { noteServerModules } from "./features/pane-visibility/server-modules.js";
 import {
   CLI_RUNTIME_VISIBILITY_EVENT,
   readCliRuntimeVisibilityChange
@@ -656,12 +693,28 @@ export interface ConfigurationInspectResult {
     apiKeysCount?: number;
     credentialsCount?: number;
   };
+  secrets: {
+    encrypted: boolean;
+    plaintextApiKeys: boolean;
+    cliAuthRuntimes: string[];
+  };
+  /** What this host lacks for the backup (folders, CLIs, account profiles, provider endpoints). */
+  warnings: string[];
+  missingProjectRoots: string[];
   rooms: Array<{
     id: string;
     name: string;
     order: number;
     panesCount: number;
   }>;
+}
+
+export interface ConfigurationCliLogin {
+  runtimeId: string;
+  displayName: string;
+  exportable: boolean;
+  loggedIn: boolean;
+  rotatesRefreshToken: boolean;
 }
 
 export type BrowserInputPayload = BrowserRuntimeInput;
@@ -1162,6 +1215,8 @@ function createDeduplicatedFlight<T>(fetcher: () => Promise<T>, ttlMs = 15_000) 
   };
 }
 
+let installActivityReported = false;
+
 const fetchCodexEnvironment = createDeduplicatedFlight(() => request<CodexEnvironment>("/api/codex/environment"), 15_000);
 const fetchToolbarUsageAccounts = createDeduplicatedFlight(() => request<CodexUsageAccountList>("/api/admin/codex-usage-accounts"), 15_000);
 const fetchToolbarAntigravityUsageAccounts = createDeduplicatedFlight(() => request<AntigravityUsageAccountList>("/api/admin/antigravity-usage-accounts"), 15_000);
@@ -1180,16 +1235,27 @@ export const api = {
   appVersion: () => request<AppVersionStatus>("/api/app/version"),
   reportClientError: (report: ClientErrorReport) =>
     request<null>("/api/client-errors", { method: "POST", body: JSON.stringify(report) }),
+  // The API forwards this only in public installations whose owner turned telemetry on, at most once a day.
+  // shortcut: sent once per page load, so a tab left open for days counts only on the day it loaded; add a daily timer if that matters.
+  reportInstallActivity: () => {
+    if (installActivityReported) return Promise.resolve(null);
+    installActivityReported = true;
+    return request<null>("/api/telemetry/active", { method: "POST", body: JSON.stringify({
+      screen: `${window.screen.width}x${window.screen.height}`,
+      dpr: String(Math.round(window.devicePixelRatio * 100) / 100),
+      lang: navigator.language.split("-").slice(0, 2).join("-")
+    }) }).catch(() => null);
+  },
   harnessHealth: () => singleFlightRequest("harness-health", () => request<HarnessHealth>("/api/harness/healthz")),
   harnessUrl: "/api/harness/",
   eventStreamUrl,
-  me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")),
+  me: () => Promise.resolve(consumeAuthBootstrap() ?? request<AuthMe>("/api/auth/me")).then(noteServerModules),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
   claimSetup: (input: SetupClaimInput) =>
     request<SetupClaimResponse>("/api/setup/claim", {
       method: "POST",
       body: JSON.stringify(input)
-    }),
+    }).then(noteServerModules),
   setupOverview: () => request<SetupOverview>("/api/setup/overview"),
   setupStarterRoom: () =>
     request<SetupStarterRoomResponse>("/api/setup/starter-room", { method: "POST" }),
@@ -1224,7 +1290,7 @@ export const api = {
     return request<AuthMe>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password })
-    });
+    }).then(noteServerModules);
   },
   logout: async () => {
     const result = await request<{ ok: true }>("/api/auth/logout", { method: "POST" });
@@ -1237,8 +1303,13 @@ export const api = {
     return request<AuthMe>("/api/auth/google/credential", {
       method: "POST",
       body: JSON.stringify({ credential })
-    });
+    }).then(noteServerModules);
   },
+  configureGoogleOAuth: (input: { clientId: string; clientSecret: string }) =>
+    request<{ ok: true; googleAuthEnabled: boolean }>("/api/auth/google/configure", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   unlinkGoogleAccount: () =>
     request<{ ok: true }>("/api/auth/google/unlink", {
       method: "POST"
@@ -1336,6 +1407,17 @@ export const api = {
   auditVerify: () => request<AuditVerifyResponse>("/api/audit/verify"),
   clearSharedChat: () =>
     request<{ deletedCount: number }>("/api/shared-chat/messages", { method: "DELETE" }),
+  councilModels: () => request<CouncilModelsResponse>("/api/council/models"),
+  councilRuns: () => request<{ runs: CouncilRunSummary[] }>("/api/council/runs"),
+  councilRun: (id: string) => request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}`),
+  createCouncilRun: (input: CreateCouncilRunInput) =>
+    request<{ run: CouncilRun }>("/api/council/runs", { method: "POST", body: JSON.stringify(input) }),
+  councilRunAction: (id: string, action: "answers" | "changes" | "approve" | "stop" | "cancel" | "resume" | "another-round", body?: unknown) =>
+    request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}/${action}`, {
+      method: "POST",
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    }),
+  deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1484,6 +1566,29 @@ export const api = {
     request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/transcript`, {
       method: "DELETE"
     }),
+  setRoomAgentMonitor: (roomId: string, settings: { enabled?: boolean; autopilot?: boolean }) =>
+    request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/monitor`, {
+      method: "PATCH", body: JSON.stringify(settings)
+    }),
+  acknowledgeRoomAgentEvent: (roomId: string, eventId: string) =>
+    request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/events/${encodeURIComponent(eventId)}/ack`, {
+      method: "POST", body: JSON.stringify({})
+    }),
+  answerRoomAgentEvent: (roomId: string, eventId: string, input: { answer?: string; submit?: boolean; decline?: boolean }) =>
+    request<RoomAgentSession>(`/api/rooms/${encodeURIComponent(roomId)}/room-agent/events/${encodeURIComponent(eventId)}/answer`, {
+      method: "POST", body: JSON.stringify(input)
+    }),
+  roomAgentPending: () => request<{ rooms: Record<string, number>; latest: RoomAgentEvent[] }>("/api/room-agent/pending"),
+  // Space notifications: what waits for the user, the newest records, read / acknowledge, and a test.
+  notificationsPending: () => request<import("@space/contracts").NotificationsPending>("/api/notifications/pending", { cache: "no-store" }),
+  notifications: (query: { status?: "OPEN" | "ALL"; source?: string; limit?: number; before?: string } = {}) =>
+    request<{ notifications: import("@space/contracts").SpaceNotification[] }>(`/api/notifications?${new URLSearchParams({ ...(query.status ? { status: query.status } : {}),
+      ...(query.source ? { source: query.source } : {}), ...(query.limit ? { limit: String(query.limit) } : {}), ...(query.before ? { before: query.before } : {}) })}`, { cache: "no-store" }),
+  notification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}`, { cache: "no-store" }),
+  markNotificationRead: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+  ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
+  readAllNotifications: () => request<{ read: number }>("/api/notifications/read-all", { method: "POST" }),
+  testNotification: () => request<{ notification: import("@space/contracts").SpaceNotification }>("/api/notifications/test", { method: "POST" }),
   codexHistory: (
     input:
       | number
@@ -1614,6 +1719,7 @@ export const api = {
   },
   systemAnalyticsCliSessions: (range: SystemAnalyticsRange) =>
     request<SystemAnalyticsCliSessionsResponse>(`/api/admin/system-analytics/cli-sessions?range=${encodeURIComponent(range)}`),
+  systemAnalyticsInstalls: () => request<SystemAnalyticsInstallsResponse>("/api/admin/system-analytics/installs"),
   opencodeBench: (range: SystemAnalyticsRange = "7d", refresh = false) =>
     request<OpencodeBenchResponse>(`/api/admin/system-analytics/opencode-bench?range=${encodeURIComponent(range)}${refresh ? "&refresh=true" : ""}`),
   opencodeBenchProbe: (provider: string, model: string) =>
@@ -1628,6 +1734,7 @@ export const api = {
     body: JSON.stringify({})
   }),
   gatewayStatus: () => request<GatewayStatus>("/api/admin/gateway/status"),
+  gatewayClaudeApiKeyUse: () => request<GatewayClaudeApiKeyUse>("/api/admin/gateway/claude-api-key"),
   gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),
   setGatewayAccountPaused: (accountId: string, paused: boolean) =>
     request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
@@ -1684,7 +1791,7 @@ export const api = {
     "/api/admin/gateway/antigravity/profiles"),
   importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
-  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
+  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
     request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
       "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
   importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
@@ -1981,6 +2088,7 @@ export const api = {
   updateDotSettings: (input: import("@space/contracts").UpdateDotUserSettings) =>
     request<{ settings: import("@space/contracts").DotUserSettings }>("/api/dots/settings", { method: "PUT", body: JSON.stringify(input) }),
   dotModels: () => request<import("@space/contracts").DotModelChoices>("/api/dots/models"),
+  dotProactiveUsage: (days = 7) => request<import("@space/contracts").DotProactiveUsage>(`/api/dots/proactive/usage?days=${days}`),
   dotMemories: (dotId: string, query: { scope?: import("@space/contracts").DotMemoryScope; q?: string } = {}) => {
     const params = new URLSearchParams();
     if (query.scope) params.set("scope", query.scope);
@@ -2005,6 +2113,8 @@ export const api = {
   createChannelLinkCode: () => request<{ code: string; expiresAt: string }>("/api/channels/link-codes", { method: "POST", body: "{}" }),
   unlinkChannelIdentity: (identityId: string) =>
     request<{ identityId: string; unlinked: boolean }>(`/api/channels/identities/${encodeURIComponent(identityId)}`, { method: "DELETE" }),
+  /** A one-use consent URL (10 minutes) for another browser, from a `/api/connectors/:provider/start` URL with a login hint. */
+  connectorConsentLink: (startUrl: string) => request<{ url: string; expiresAt: string }>(`${startUrl}&link=1`, { cache: "no-store" }),
   disconnectConnector: (accountId: string) =>
     request<{ accountId: string; disconnected: boolean }>(`/api/connectors/${encodeURIComponent(accountId)}`, { method: "DELETE" }),
   dotWorkspace: (dotId: string, folder = "") =>
@@ -2403,12 +2513,6 @@ export const api = {
     invalidateCliRuntimeSettings();
     return result;
   },
-  codexCliModeDefaults: () => request<CodexCliModeDefaultsResponse>("/api/cli/codex-defaults"),
-  updateCodexCliModeDefaults: (input: UpdateCodexCliModeDefaultsInput) =>
-    request<CodexCliModeDefaultsResponse>("/api/cli/codex-defaults", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
   reportCliClientEvent: (input: CliTerminalClientEventInput) =>
     request<CliTerminalClientEventResponse>("/api/cli/client-events", {
       method: "POST",
@@ -3574,18 +3678,108 @@ export const api = {
   testJobApplyMailbox: () =>
     request<{ ok: true; verifiedAt: string; recent: Array<{ from: string; subject: string; receivedAt: string | null; snippet: string }> }>("/api/job-apply/mailbox/test", { method: "POST", body: "{}" }),
   clearJobApplyMailbox: () => request<{ profile: JobApplyProfile }>("/api/job-apply/mailbox", { method: "DELETE" }),
+  resetJobApply: (expectedCampaignStartedAt: string | null) =>
+    request<{ reset: JobApplyResetResult }>("/api/job-apply/reset", { method: "POST", body: JSON.stringify({ confirm: "RESET", expectedCampaignStartedAt }) }),
+  jobApplyStats: (tz: string) => request<{ stats: JobApplyStats }>(`/api/job-apply/stats?tz=${encodeURIComponent(tz)}`, { cache: "no-store" }),
   jobApplications: (status?: JobApplicationStatus) =>
-    request<{ applications: JobApplication[] }>(`/api/job-apply/applications${status ? `?status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
+    request<{ applications: JobApplication[] }>(`/api/job-apply/applications?limit=1000${status ? `&status=${encodeURIComponent(status)}` : ""}`, { cache: "no-store" }),
   createJobApplication: (input: JobApplicationCreate) =>
     request<{ application: JobApplication; created: boolean }>("/api/job-apply/applications", { method: "POST", body: JSON.stringify(input) }),
   updateJobApplication: (id: string, input: JobApplicationUpdate) =>
     request<{ application: JobApplication }>(`/api/job-apply/applications/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  checkJobApplyMail: (paneId: string) =>
+    request<JobApplyMailCheckResult>("/api/job-apply/applications/check-mail", { method: "POST", body: JSON.stringify({ paneId }) }),
   importJobApplyCsv: (input: { csv: string; paneId?: string | null }) =>
     request<{ imported: number; skipped: number; duplicates: number }>("/api/job-apply/applications/import-csv", { method: "POST", body: JSON.stringify(input) }),
   jobApplySettings: (paneId: string) =>
     request<{ metadata: JobApplyPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/settings`, { cache: "no-store" }),
   updateJobApplySettings: (paneId: string, metadata: JobApplyPaneMetadata) =>
     request<{ metadata: JobApplyPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  // Mail Copilot: pane settings (autonomy, accounts, notifications, agent) and the operator's current view.
+  mailCopilotSettings: (paneId: string) =>
+    request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { cache: "no-store" }),
+  updateMailCopilotSettings: (paneId: string, metadata: MailCopilotPaneMetadata) =>
+    request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  marketingCopilotSettings: (paneId: string) =>
+    request<{ metadata: MarketingCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/settings`, { cache: "no-store" }),
+  updateMarketingCopilotSettings: (paneId: string, metadata: MarketingCopilotPaneMetadata) =>
+    request<{ metadata: MarketingCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  marketingCopilotRun: (paneId: string) =>
+    request<MarketingRunView>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/run`, { cache: "no-store" }),
+  marketingCopilotRunAction: (paneId: string, action: "start" | "pause" | "stop") =>
+    request<MarketingRunView & { kickoffSent?: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/run/${action}`, { method: "POST", body: "{}" }),
+  createMarketingBrief: (paneId: string, input: { text: string; campaignId?: string | null; channels?: string[] }) =>
+    request<{ brief: MarketingEvent }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/briefs`, { method: "POST", body: JSON.stringify(input) }),
+  marketingEvents: (paneId: string, limit = 150) =>
+    request<{ events: MarketingEvent[] }>(`/api/marketing-copilot/events?paneId=${encodeURIComponent(paneId)}&limit=${limit}`, { cache: "no-store" }),
+  answerMarketingQuestion: (paneId: string, input: { questionId: string; answer: string }) =>
+    request<{ memory: MarketingMemory }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/answer`, { method: "POST", body: JSON.stringify(input) }),
+  marketingPosts: () => request<{ posts: MarketingPost[] }>("/api/marketing-copilot/posts?limit=300", { cache: "no-store" }),
+  decideMarketingPost: (paneId: string, postId: string, input: { decision: "approve" | "edit" | "revise" | "reject"; title?: string | null; body?: string; scheduledAt?: string | null; note?: string }) =>
+    request<{ post: MarketingPost }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/posts/${encodeURIComponent(postId)}/review`, { method: "POST", body: JSON.stringify(input) }),
+  retryMarketingPost: (paneId: string, postId: string) =>
+    request<{ post: MarketingPost }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/posts/${encodeURIComponent(postId)}/retry`, { method: "POST", body: "{}" }),
+  marketingCampaigns: () => request<{ campaigns: MarketingCampaign[] }>("/api/marketing-copilot/campaigns", { cache: "no-store" }),
+  createMarketingCampaign: (paneId: string, input: { name: string; goal?: string | null; channels?: string[] }) =>
+    request<{ campaign: MarketingCampaign }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/campaigns`, { method: "POST", body: JSON.stringify(input) }),
+  decideMarketingCampaign: (paneId: string, campaignId: string, decision: "approve" | "complete" | "cancel") =>
+    request<{ campaign: MarketingCampaign }>(`/api/marketing-copilot/campaigns/${encodeURIComponent(campaignId)}/decide?paneId=${encodeURIComponent(paneId)}`, { method: "POST", body: JSON.stringify({ decision }) }),
+  marketingRules: () => request<{ rules: MarketingRule[] }>("/api/marketing-copilot/rules", { cache: "no-store" }),
+  decideMarketingRule: (ruleId: string, decision: "approve" | "reject" | "retire") =>
+    request<{ rule: MarketingRule }>(`/api/marketing-copilot/rules/${encodeURIComponent(ruleId)}/decide`, { method: "POST", body: JSON.stringify({ decision }) }),
+  marketingMemory: (query: { query?: string; limit?: number } = {}) =>
+    request<{ memories: MarketingMemory[] }>(`/api/marketing-copilot/memory?limit=${query.limit ?? 100}${query.query ? `&query=${encodeURIComponent(query.query)}` : ""}`, { cache: "no-store" }),
+  rememberMarketingMemory: (input: { kind: MarketingMemory["kind"]; text: string; key?: string | null; channel?: MarketingMemory["channel"]; pinned?: boolean }) =>
+    request<{ memory: MarketingMemory }>("/api/marketing-copilot/memory", { method: "POST", body: JSON.stringify(input) }),
+  updateMarketingMemory: (id: string, patch: { text?: string; pinned?: boolean }) =>
+    request<{ memory: MarketingMemory }>(`/api/marketing-copilot/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  marketingAnalytics: () => request<{ metrics: MarketingMetric[]; topPosts: MarketingPost[]; published: number }>("/api/marketing-copilot/analytics", { cache: "no-store" }),
+  forgetMarketingMemory: (id: string) => request<{ forgotten: boolean }>(`/api/marketing-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  updateMailCopilotView: (paneId: string, view: MailCopilotViewInput) =>
+    request<{ view: MailCopilotView | null }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/view`, { method: "PUT", body: JSON.stringify(view) }),
+  // The mailbox of the pane's Google accounts (owner-scoped; paneId narrows to the pane's chosen accounts).
+  mailAccounts: (paneId?: string) =>
+    request<{ accounts: MailAccountSummary[] }>(`/api/mail-copilot/accounts${paneId ? `?paneId=${encodeURIComponent(paneId)}` : ""}`, { cache: "no-store" }),
+  mailLabels: (paneId: string | undefined, account: string) =>
+    request<{ labels: MailLabel[] }>(`/api/mail-copilot/labels?${new URLSearchParams({ account, ...(paneId ? { paneId } : {}) })}`, { cache: "no-store" }),
+  mailThreads: (paneId: string | undefined, query: { account: string; labelId: string; q?: string; pageToken?: string; max?: number }) =>
+    request<MailThreadsPage>(`/api/mail-copilot/threads?${new URLSearchParams({ account: query.account, labelId: query.labelId, ...(query.q ? { q: query.q } : {}),
+      ...(query.pageToken ? { pageToken: query.pageToken } : {}), ...(query.max ? { max: String(query.max) } : {}), ...(paneId ? { paneId } : {}) })}`, { cache: "no-store" }),
+  mailThread: (paneId: string | undefined, account: string, threadId: string, images = false) =>
+    request<{ thread: MailThread }>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}?${new URLSearchParams({ account, images: images ? "1" : "0", ...(paneId ? { paneId } : {}) })}`, { cache: "no-store" }),
+  modifyMailThread: (paneId: string | undefined, threadId: string, input: MailThreadAction) =>
+    request<{ ok: true }>(`/api/mail-copilot/threads/${encodeURIComponent(threadId)}/modify`, { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
+  sendMail: (paneId: string | undefined, input: MailComposeInput) =>
+    request<{ messageId: string; threadId: string }>("/api/mail-copilot/messages/send", { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
+  saveMailDraft: (paneId: string | undefined, input: MailComposeInput) =>
+    request<{ draftId: string; messageId: string }>("/api/mail-copilot/drafts", { method: "POST", body: JSON.stringify({ ...input, ...(paneId ? { paneId } : {}) }) }),
+  // The copilot's run, activity, questions, reviews and memory (the rail).
+  mailCopilotRun: (paneId: string) => request<MailCopilotRunView>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run`, { cache: "no-store" }),
+  startMailCopilotRun: (paneId: string) => request<MailCopilotRunView & { kickoffSent: boolean }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/start`, { method: "POST", body: "{}" }),
+  pauseMailCopilotRun: (paneId: string) => request<MailCopilotRunView>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/pause`, { method: "POST", body: "{}" }),
+  stopMailCopilotRun: (paneId: string) => request<MailCopilotRunView>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/run/stop`, { method: "POST", body: "{}" }),
+  syncMailCopilot: (paneId: string) => request<{ accounts: number; created: number }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/sync`, { method: "POST", body: "{}" }),
+  mailCopilotEvents: (query: { paneId?: string; threadId?: string; since?: string; limit?: number } = {}) =>
+    request<{ events: MailCopilotEvent[] }>(`/api/mail-copilot/events?${new URLSearchParams(Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])))}`, { cache: "no-store" }),
+  answerMailQuestion: (paneId: string, input: { questionId: string; answer: string }) =>
+    request<{ memory: MailCopilotMemory }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/answer`, { method: "POST", body: JSON.stringify(input) }),
+  decideMailReview: (paneId: string, input: MailCopilotReviewDecision) =>
+    request<{ decision: string; sent: { messageId: string; threadId: string } | null }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/review`, { method: "POST", body: JSON.stringify(input) }),
+  mailMemory: (query: Partial<MailCopilotMemoryQuery> = {}) =>
+    request<{ memories: MailCopilotMemory[] }>(`/api/mail-copilot/memory?${new URLSearchParams({ ...(query.query ? { query: query.query } : {}), ...(query.kinds?.length ? { kinds: query.kinds.join(",") } : {}),
+      ...(query.pinnedOnly ? { pinnedOnly: "true" } : {}), ...(query.limit ? { limit: String(query.limit) } : {}) })}`, { cache: "no-store" }),
+  rememberMailMemory: (input: MailCopilotMemoryCreate) => request<{ memory: MailCopilotMemory }>("/api/mail-copilot/memory", { method: "POST", body: JSON.stringify(input) }),
+  updateMailMemory: (id: string, input: MailCopilotMemoryUpdate) => request<{ memory: MailCopilotMemory }>(`/api/mail-copilot/memory/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  mailRules: (query: { status?: MailRule["status"][] } = {}) =>
+    request<{ rules: MailRule[] }>(`/api/mail-copilot/rules${query.status?.length ? `?status=${query.status.join(",")}` : ""}`, { cache: "no-store" }),
+  createMailRule: (input: MailRuleProposal) => request<{ rule: MailRule }>("/api/mail-copilot/rules", { method: "POST", body: JSON.stringify(input) }),
+  decideMailRule: (id: string, input: MailRuleDecision) => request<{ rule: MailRule }>(`/api/mail-copilot/rules/${encodeURIComponent(id)}/decide`, { method: "POST", body: JSON.stringify(input) }),
+  forgetMailMemory: (id: string) => request<{ forgotten: boolean }>(`/api/mail-copilot/memory/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  mailHabits: (paneId: string) => request<{ habits: MailHabitSender[] }>(`/api/mail-copilot/habits?${new URLSearchParams({ paneId })}`, { cache: "no-store" }),
+  forgetMailHabits: (paneId: string, account: string, sender: string) =>
+    request<{ forgotten: number; retired: number }>(`/api/mail-copilot/habits?${new URLSearchParams({ paneId, account, sender })}`, { method: "DELETE" }),
+  mailAttachmentUrl: (paneId: string | undefined, account: string, messageId: string, attachmentId: string) =>
+    `/api/mail-copilot/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}?${new URLSearchParams({ account, ...(paneId ? { paneId } : {}) })}`,
   // Job Copilot v2: run supervisor, queue, memory, fields, activity, questions and reviews.
   jobApplyRun: (paneId: string) => request<JobApplyRunView>(`/api/panes/${encodeURIComponent(paneId)}/job-apply/run`, { cache: "no-store" }),
   startJobApplyRun: (paneId: string) =>
@@ -3690,13 +3884,14 @@ export const api = {
       body: formData
     }),
   exportConfigurationUrl: "/api/configuration/export",
-  exportConfiguration: (options?: { includeClosedPanes?: boolean; includeApiKeys?: boolean; includeCredentials?: boolean }) =>
+  exportConfiguration: (options?: { includeClosedPanes?: boolean; includeApiKeys?: boolean; includeCredentials?: boolean; passphrase?: string; cliAuthRuntimes?: string[] }) =>
     options && (options.includeClosedPanes || options.includeApiKeys || options.includeCredentials)
       ? request<SpaceConfigBundle>("/api/configuration/export", {
           method: "POST",
           body: JSON.stringify(options)
         })
       : request<SpaceConfigBundle>("/api/configuration/export", { cache: "no-store" }),
+  configurationCliLogins: () => request<{ items: ConfigurationCliLogin[] }>("/api/configuration/cli-logins", { cache: "no-store" }),
   inspectConfiguration: (bundle: unknown) =>
     request<ConfigurationInspectResult>("/api/configuration/inspect", {
       method: "POST",
@@ -3708,8 +3903,10 @@ export const api = {
     targetUserId?: string;
     importApiKeys?: boolean;
     importCredentials?: boolean;
-    secretsDir?: string;
-    credentialsDir?: string;
+    passphrase?: string;
+    cliAuthRuntimes?: string[];
+    cliAuthConflict?: "backup-and-replace" | "skip-if-logged-in";
+    pathRewrite?: { from: string; to: string };
   }) =>
     request<ImportConfigResult>("/api/configuration/import", {
       method: "POST",

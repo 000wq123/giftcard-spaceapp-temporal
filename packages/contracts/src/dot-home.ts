@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AgentRunCost, AgentRunUsage } from "./agent-run-ledger.js";
 import { dotIdSchema, dotPermissionModeSchema } from "./dots.js";
 import type { AgentPaneModelOption } from "./schemas.js";
 
@@ -43,6 +44,67 @@ export const updateDotUserSettingsSchema = z.object({
 export type DotProactiveSettings = z.infer<typeof dotProactiveSettingsSchema>;
 export type DotUserSettings = z.infer<typeof dotUserSettingsSchema>;
 export type UpdateDotUserSettings = z.infer<typeof updateDotUserSettingsSchema>;
+
+/**
+ * One model call of a proactive check. These calls have no Chat run, so they are recorded here (PROACTIVE) with the
+ * Stage 7 measurement: the usage the model gateway reported and the estimate from the operator's price catalog.
+ */
+export interface DotProactiveUsageEntry {
+  calledAt: string; dotId: string | null; model: string; status: "COMPLETED" | "FAILED";
+  candidates: number; notices: number; usage: AgentRunUsage; cost: AgentRunCost;
+}
+const count = z.number().int().min(0);
+export const dotProactiveUsageSchema = z.object({
+  kind: z.literal("PROACTIVE"),
+  days: z.number().int().min(1).max(30),
+  calls: count,
+  failedCalls: count,
+  notices: count,
+  /** Calls whose gateway reported tokens; the token totals cover only these. */
+  measuredCalls: count,
+  inputTokens: count, cachedInputTokens: count, outputTokens: count, reasoningOutputTokens: count, totalTokens: count,
+  /** Sum over the priced calls only; a call without a price is counted in `unknownCostCalls`, never as zero. */
+  estimatedCostUsd: z.number().finite().nonnegative().nullable(),
+  estimatedCalls: count,
+  unknownCostCalls: count,
+  /** Why the latest unpriced call has no cost. */
+  unknownCostReason: z.string().max(1000).nullable(),
+  priceCatalogVersions: z.array(z.string().max(160)).max(10),
+  models: z.array(z.string().max(200)).max(10),
+  lastCallAt: z.iso.datetime().nullable()
+}).strict();
+export type DotProactiveUsage = z.infer<typeof dotProactiveUsageSchema>;
+
+/** Totals of the calls in the window, newest first. */
+export function summarizeDotProactiveUsage(entries: DotProactiveUsageEntry[], days: number): DotProactiveUsage {
+  const summary: DotProactiveUsage = { kind: "PROACTIVE", days, calls: entries.length, failedCalls: 0, notices: 0, measuredCalls: 0, inputTokens: 0,
+    cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0, estimatedCostUsd: null, estimatedCalls: 0, unknownCostCalls: 0,
+    unknownCostReason: null, priceCatalogVersions: [], models: [], lastCallAt: null };
+  let cost = 0;
+  for (const entry of [...entries].sort((a, b) => b.calledAt.localeCompare(a.calledAt))) {
+    summary.lastCallAt ??= new Date(entry.calledAt).toISOString();
+    if (entry.status === "FAILED") summary.failedCalls += 1;
+    summary.notices += entry.notices;
+    if (!summary.models.includes(entry.model) && summary.models.length < 10) summary.models.push(entry.model);
+    if (entry.usage.status === "MEASURED") {
+      summary.measuredCalls += 1;
+      summary.inputTokens += entry.usage.inputTokens; summary.cachedInputTokens += entry.usage.cachedInputTokens;
+      summary.outputTokens += entry.usage.outputTokens; summary.reasoningOutputTokens += entry.usage.reasoningOutputTokens;
+      summary.totalTokens += entry.usage.totalTokens;
+    }
+    if (entry.cost.status === "UNKNOWN") {
+      summary.unknownCostCalls += 1;
+      summary.unknownCostReason ??= entry.cost.reason;
+    } else {
+      summary.estimatedCalls += 1;
+      cost += entry.cost.amountUsd;
+      const version = entry.cost.priceCatalogVersion;
+      if (version && !summary.priceCatalogVersions.includes(version) && summary.priceCatalogVersions.length < 10) summary.priceCatalogVersions.push(version);
+    }
+  }
+  summary.estimatedCostUsd = summary.estimatedCalls ? Math.round(cost * 1_000_000) / 1_000_000 : null;
+  return summary;
+}
 
 /** Models a Dot can use, from the same Chat catalog the panes use (Settings → Dots → Model). */
 export interface DotModelChoices {

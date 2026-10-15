@@ -131,6 +131,9 @@ export interface AgentReply {
 
 export type AgentRequester = (request: AgentRequest) => Promise<AgentReply>;
 
+/** A plain text request (no game snapshot), with the arena's limits unless overridden. */
+export type TextRequest = Omit<AgentRequest, "snapshot"> & { maxTokens?: number; reasoningEffort?: "low" | "medium" | "high"; timeoutMs?: number };
+
 class Limiter {
   private active = 0;
   private queue: Array<() => void> = [];
@@ -174,7 +177,7 @@ function abortReason(_signal: AbortSignal): ProviderFailure {
   return new ProviderFailure("timeout", "The decision deadline passed.");
 }
 
-async function requestCodex(request: AgentRequest): Promise<AgentReply> {
+async function requestCodex(request: TextRequest): Promise<AgentReply> {
   const apiKey = await getCodexApiKey();
   if (!apiKey) throw new ProviderFailure("error", "The Space Gateway key is unavailable.");
   let response: Response;
@@ -189,8 +192,8 @@ async function requestCodex(request: AgentRequest): Promise<AgentReply> {
           { role: "system", content: request.system },
           { role: "user", content: request.user }
         ],
-        reasoning_effort: "low",
-        max_tokens: 900
+        reasoning_effort: request.reasoningEffort ?? "low",
+        max_tokens: request.maxTokens ?? 900
       })
     });
   } catch (error) {
@@ -207,13 +210,13 @@ async function requestCodex(request: AgentRequest): Promise<AgentReply> {
   return { text, ...(Number.isFinite(tokens) ? { tokens } : {}) };
 }
 
-async function requestOpenRouter(request: AgentRequest): Promise<AgentReply> {
+async function requestOpenRouter(request: TextRequest): Promise<AgentReply> {
   const text = await requestOpenRouterDoctrine({
     modelId: request.modelId.slice("openrouter/".length),
     system: request.system,
     prompt: request.user,
-    timeoutMs: 60_000,
-    maxTokens: 900,
+    timeoutMs: request.timeoutMs ?? 60_000,
+    maxTokens: request.maxTokens ?? 900,
     title: "Space Asteroids Agent Arena",
     signal: request.signal
   });
@@ -222,7 +225,7 @@ async function requestOpenRouter(request: AgentRequest): Promise<AgentReply> {
   return { text };
 }
 
-async function requestOpenCode(request: AgentRequest): Promise<AgentReply> {
+async function requestOpenCode(request: TextRequest): Promise<AgentReply> {
   const command = await resolveNativeOpenCodeRuntime();
   if (!command) throw new ProviderFailure("error", "Verified OpenCode runtime not found.");
   const modelId = request.modelId.startsWith("opencode/") ? request.modelId.slice("opencode/".length) : request.modelId;
@@ -409,6 +412,29 @@ export const requestAgentReply: AgentRequester = (request) => {
         return requestJev(request);
       default:
         return Promise.reject(new ProviderFailure("error", "The scripted baseline is not a model."));
+    }
+  };
+  return limiter(provider).run(task, request.signal);
+};
+
+/** Runs a task in the provider's shared slot (the arena and the Research Council share the same limits). */
+export function runWithProviderSlot<T>(provider: ArenaProviderId, task: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  return limiter(provider).run(task, signal);
+}
+
+/** Text from a gateway, OpenRouter or OpenCode model; CLI-backed models (claude/, antigravity/) run in the worker instead. */
+export const requestModelText = (request: TextRequest): Promise<AgentReply> => {
+  const provider = providerForModel(request.modelId);
+  const task = (): Promise<AgentReply> => {
+    switch (provider) {
+      case "codex":
+        return requestCodex(request);
+      case "openrouter":
+        return requestOpenRouter(request);
+      case "opencode":
+        return requestOpenCode(request);
+      default:
+        return Promise.reject(new ProviderFailure("error", `${request.modelId} is not a text model of the gateway, OpenRouter or OpenCode.`));
     }
   };
   return limiter(provider).run(task, request.signal);

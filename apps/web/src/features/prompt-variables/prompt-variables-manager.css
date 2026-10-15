@@ -180,7 +180,21 @@
   height: 13px;
 }
 
-.prompt-variables-btn.primary {
+/* Inside a dock (Settings) the label is a grid and the theme paints every button with its surface;
+   these selectors keep the toolbar's buttons in one line and the primary button accented. */
+.prompt-variables-toolbar-actions > label.prompt-variables-btn {
+  display: inline-flex;
+}
+
+/* One height for the search box and every toolbar action, label or button. */
+.prompt-variables-modal-toolbar .prompt-variables-btn,
+.prompt-variables-modal-toolbar .prompt-variables-search-box input {
+  box-sizing: border-box;
+  min-height: 2.15rem;
+}
+
+.prompt-variables-btn.primary,
+.space-shell .prompt-variables-modal-dialog button.prompt-variables-btn.primary {
   background: var(--room-accent, #6db7aa);
   border: 1px solid var(--room-accent, #6db7aa);
   color: #0c1a17;
@@ -470,7 +484,7 @@
   color: var(--room-muted, #a7a59e);
 }
 
-.prompt-variables-empty-state svg {
+.prompt-variables-empty-state > svg {
   width: 32px;
   height: 32px;
   opacity: 0.4;

@@ -17,8 +17,8 @@ export async function controlSkills(name?: string) {
   const entries: Array<{ name: string; root: string }> = [];
   for (const root of skillRoots) {
     for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
-      // Space skills, plus the Space-native skills whose names predate the space- prefix.
-      if (!/^space[-a-z0-9]*$/.test(entry.name) && !["run-spaceapp-devtest", "job-applications"].includes(entry.name)) continue;
+      // Space skills; job-applications and run-spaceapp-devtest remain only as deprecated aliases.
+      if (!/^space[-a-z0-9]*$/.test(entry.name)) continue;
       if (!entries.some((e) => e.name === entry.name)) entries.push({ name: entry.name, root });
     }
   }

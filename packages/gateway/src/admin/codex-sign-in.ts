@@ -95,8 +95,9 @@ export function registerCodexSignInRoutes(app: FastifyInstance, options: CodexSi
         credentialsExpiresAt: credentials.accessExpiresAtMs ? new Date(credentials.accessExpiresAtMs).toISOString() : null, source, sourceRef: null,
         lastRefreshAt: lastRefreshAt ?? new Date(now()).toISOString()
       });
-      options.pool.invalidate();
-      if (replaced) return replaced;
+      options.pool.signedIn(target.id);
+      // Read back through the pool, which pauses a free-plan account before anyone sees it active.
+      if (replaced) return (await options.pool.accounts()).find((account) => account.id === replaced.id) ?? replaced;
     }
     const boundId = existing?.id ?? accountId;
     const saved = await options.repository.upsertAccount({
@@ -105,11 +106,11 @@ export function registerCodexSignInRoutes(app: FastifyInstance, options: CodexSi
       credentialsExpiresAt: credentials.accessExpiresAtMs ? new Date(credentials.accessExpiresAtMs).toISOString() : null,
       source, sourceRef: null, lastRefreshAt: lastRefreshAt ?? new Date(now()).toISOString()
     });
-    options.pool.invalidate();
+    options.pool.signedIn(saved.id);
     await fetchCodexUsage({ accessToken: credentials.accessToken, accountId: credentials.upstreamAccountId, fetchImpl: options.fetchImpl, maxRetries: 1 })
       .then((usage) => storeCodexUsage(options.repository, saved, usage)).catch(() => undefined);
     options.pool.invalidate();
-    return (await options.repository.listAccounts()).find((account) => account.id === saved.id) ?? saved;
+    return (await options.pool.accounts()).find((account) => account.id === saved.id) ?? saved;
   }
 
   const fail = (reply: FastifyReply, error: unknown) => {

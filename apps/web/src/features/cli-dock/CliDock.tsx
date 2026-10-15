@@ -7,8 +7,9 @@ import {
 import { CliRuntimeSettingsCard } from "../cli-runtime-settings/CliRuntimeSettingsCard.js";
 import { CliProvidersSettingsCard } from "../cli-providers-settings/CliProvidersSettingsCard.js";
 import { T3CodeServiceSettingsCard } from "../t3code-settings/T3CodeServiceSettingsCard.js";
+import { CliPaneControlsSettingsCard } from "../voice-input/CliPaneControlsSettingsCard.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { CodeXml, Gauge, GitBranch, Images } from "../ui-theme/app-icons.js";
+import { CodeXml, Gauge, GitBranch, Images, MousePointer2 } from "../ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "../settings/SettingsDisclosure.js";
 import { DockNotice } from "../dock-kit/DockKit.js";
 
@@ -59,6 +60,12 @@ export function CliDock({
           <T3CodeServiceSettingsCard />
         </SettingsDisclosure>
       ) : null}
+
+      <SettingsDisclosure title="CLI pane controls" description="Buttons and menus inside AI coding panes." scope="Your account" icon={MousePointer2}
+        help="Choose which buttons float over AI coding panes (CLI panes) and which commands the Shortcuts menu lists. Hiding a button doesn't switch its feature off."
+        keywords="terminal cli shortcuts right-click context menu buttons mic model stop turn plans variables">
+        <CliPaneControlsSettingsCard />
+      </SettingsDisclosure>
 
       <SettingsDisclosure title="Git worktrees" description="Whether new CLI panes work on their own branch copy." scope="Your account" icon={GitBranch}>
         <section className="agent-settings-card settings-flat-card cli-worktree-settings-card" aria-label="Git Worktrees default settings">

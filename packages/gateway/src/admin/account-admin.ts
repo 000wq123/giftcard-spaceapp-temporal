@@ -42,7 +42,10 @@ export function registerAccountAdminRoutes(app: FastifyInstance, options: {
       const claims = extractCodexClaims(credentials.idToken);
       idTokenParsed = Boolean(claims.email || claims.accountId || claims.chatgptUserId);
     }
-    const expiresAtMs = credentials.accessExpiresAtMs ?? (account.credentialsExpiresAt ? Date.parse(account.credentialsExpiresAt) : null);
+    const storedMs = account.credentialsExpiresAt ? Date.parse(account.credentialsExpiresAt) : null;
+    // A token the provider rejected is stored as expired at that moment, earlier than the expiry it was issued with.
+    const rejected = account.status === "REAUTH_REQUIRED" && storedMs !== null && (credentials.accessExpiresAtMs === null || storedMs < credentials.accessExpiresAtMs);
+    const expiresAtMs = rejected ? storedMs : credentials.accessExpiresAtMs ?? storedMs;
     return {
       accessExpiresAt: expiresAtMs !== null && Number.isFinite(expiresAtMs) ? new Date(expiresAtMs).toISOString() : null,
       refreshStored: Boolean(credentials.refreshToken),

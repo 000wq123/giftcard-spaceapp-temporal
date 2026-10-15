@@ -6,7 +6,7 @@ import {
   idSchema, setupClaimInputSchema, setupClaimResponseSchema, setupConnectionCheckRunSchema, setupConnectionSchema,
   setupOverviewSchema, setupStarterRoomResponseSchema, setupStatusSchema
 } from "@space/contracts";
-import { nowIso, type SpaceStore } from "@space/runtime";
+import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
 import { type AuthConfig, cookieName, hashPassword, operatorSessionTtlSeconds, signSession } from "./auth.js";
 import { sendApiError } from "./http-errors.js";
 import { recordAudit } from "./request-audit.js";
@@ -33,6 +33,8 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
   setupConnections: SetupConnectionsService;
   setupConnectionCheckRuns: SetupConnectionCheckRunManager;
   routeOptions: Pick<RouteShorthandOptions, "config">;
+  optionalModules?: string[];
+  onOwnerClaimed?: () => void;
 }) {
   const { auth, store, setupConnections, setupConnectionCheckRuns, routeOptions: defaultRouteRateLimitOptions } = options;
   app.get("/api/setup/status", defaultRouteRateLimitOptions, async () => {
@@ -46,6 +48,11 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
     },
     async (request, reply) => {
       const input = parseBody(setupClaimInputSchema, request.body);
+      // Refuse before scrypt when no claim can succeed, so this public route cannot be used to burn CPU (review F16).
+      const status = await store.getOwnerSetupStatus();
+      if (!status.setupRequired) throw new SpaceConflictError("SpaceApp owner setup is already claimed.");
+      if (!status.expiresAt) throw new SpaceConflictError("The SpaceApp setup token is not valid.");
+      if (Date.parse(status.expiresAt) <= Date.now()) throw new SpaceConflictError("The SpaceApp setup token has expired.");
       const tokenHash = createHash("sha256").update(input.token).digest("hex");
       const passwordHash = await hashPassword(input.password);
       const claimed = await store.claimOwnerSetup({
@@ -67,6 +74,7 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
           "Owner setup audit record failed."
         );
       });
+      options.onOwnerClaimed?.();
       const token = signSession(user, auth.sessionSecret);
       reply.setCookie(cookieName, token, {
         httpOnly: true,
@@ -81,7 +89,8 @@ export function registerSetupRoutes(app: FastifyInstance, options: {
         isSetupRequired: false,
         onboardingVersion: onboarding.onboardingVersion,
         isOnboardingComplete: onboarding.isComplete,
-        starterRoomId: onboarding.starterRoomId
+        starterRoomId: onboarding.starterRoomId,
+        optionalModules: options.optionalModules
       });
     }
   );

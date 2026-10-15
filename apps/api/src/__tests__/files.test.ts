@@ -272,6 +272,17 @@ describe("Filesystem Service & Security", () => {
           workspaceRoot: tempWorkspace
         })
       ).rejects.toThrow("Deleting protected system directory (/etc) is prohibited.");
+
+      // Review 2026-10-14: direct children of system roots and the workspace with its parents are protected too.
+      for (const targetPath of ["/etc/passwd", "/var/lib", "/srv", tempWorkspace, path.dirname(tempWorkspace)]) {
+        await expect(
+          deleteEntry({ targetPath, recursive: true, mode: "admin", user: testOperatorUser, workspaceRoot: tempWorkspace })
+        ).rejects.toThrow(/is prohibited/);
+      }
+      const nested = path.join(tempWorkspace, "nested", "dir");
+      await mkdir(nested, { recursive: true });
+      await writeFile(path.join(nested, "file.txt"), "x");
+      expect((await deleteEntry({ targetPath: path.join(tempWorkspace, "nested"), recursive: true, mode: "admin", user: testOperatorUser, workspaceRoot: tempWorkspace })).ok).toBe(true);
     });
   });
 

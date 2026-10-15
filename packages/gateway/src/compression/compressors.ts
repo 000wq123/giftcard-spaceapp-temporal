@@ -6,6 +6,7 @@ import type { Compressors, TokenCounter } from "./engine.js";
 import { compressLog } from "./log-compressor/index.js";
 import { compressSearchResults } from "./search-compressor/index.js";
 import { smartCrush } from "./smart-crusher/index.js";
+import { isProtectedLine } from "./test-output.js";
 import { crushText } from "./text-crusher/index.js";
 import { createTokenCounter } from "./tokenizer.js";
 
@@ -22,8 +23,9 @@ export function createCompressors(): Compressors {
       const result = smartCrush({ content: text, bias: 1.0 }, { enableCcrMarker: false });
       return result.wasModified ? result.compressed : null;
     },
+    // Test failures, assertions and counts are kept whatever the caps say (log compressor and TextCrusher below).
     logCompressor: (text) => {
-      const result = compressLog(text, { config: { enableCcr: false } });
+      const result = compressLog(text, { config: { enableCcr: false }, protect: isProtectedLine });
       return result.compressed === text ? null : result.compressed;
     },
     searchCompressor: (text) => {
@@ -41,7 +43,7 @@ export function createCompressors(): Compressors {
       return result.compressed === text ? null : result.compressed;
     },
     textCrusher: (text) => {
-      const result = crushText(text);
+      const result = crushText(text, "", null, undefined, { pin: isProtectedLine });
       return result.compressed === text ? null : result.compressed;
     }
   };

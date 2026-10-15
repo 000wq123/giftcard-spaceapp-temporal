@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
 import {
   Archive,
+  Bell,
   Bot,
   Clipboard,
   FolderOpen,
@@ -12,15 +13,18 @@ import {
   MessageSquare,
   PanelLeft,
   Radio,
-  Settings2,
+  Settings,
   Terminal,
   type LucideIcon
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
+import { workspaceDockOrder } from "../ui-theme/workspace-actions.js";
 
 export const DOCKS_HIDDEN_STORAGE_KEY = "space:docks-hidden:v1";
 export const DOCKS_VISIBILITY_EVENT = "space:docks-visibility-changed";
+export const DOCKS_ORDER_STORAGE_KEY = "space:docks-order:v1";
+export const DOCKS_ORDER_EVENT = "space:docks-order-changed";
 export const NON_HIDEABLE_DOCK_IDS = new Set<SideSurface>(["settings"]);
 
 export interface DockItemConfig {
@@ -41,6 +45,12 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     icon: PanelLeft
   },
   {
+    id: "notifications",
+    label: "Notifications",
+    description: "New mail, questions and alerts from every pane, with read and acknowledge.",
+    icon: Bell
+  },
+  {
     id: "room-agent",
     label: "Room Agent",
     description: "Ask an assistant to coordinate this room.",
@@ -48,8 +58,8 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
   },
   {
     id: "shared-chat",
-    label: "Shared Chat",
-    description: "A shared conversation for everyone in the room.",
+    label: "Council",
+    description: "Several models answer one question, review each other and agree on a Top 3.",
     icon: MessageSquare
   },
   {
@@ -104,7 +114,7 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     id: "settings",
     label: "Settings",
     description: "Appearance, notifications, and preferences.",
-    icon: Settings2,
+    icon: Settings,
     locked: true
   },
   {
@@ -169,22 +179,66 @@ export function writeHiddenDockIds(hiddenIds: string[], customStorage?: Storage)
   }
 }
 
+export function readDockOrder(customStorage?: Storage): string[] {
+  try {
+    const raw = getStorage(customStorage)?.getItem(DOCKS_ORDER_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? Array.from(new Set(parsed.filter((id): id is string => typeof id === "string" && VALID_DOCK_IDS.has(id)))) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeDockOrder(order: string[], customStorage?: Storage): void {
+  try {
+    const storage = getStorage(customStorage);
+    if (order.length > 0) storage?.setItem(DOCKS_ORDER_STORAGE_KEY, JSON.stringify(order));
+    else storage?.removeItem(DOCKS_ORDER_STORAGE_KEY);
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(DOCKS_ORDER_EVENT));
+  } catch {
+    // Ignore storage errors in restrictive environments
+  }
+}
+
+// Docks the operator placed come first in their order; the rest keep the Docks menu's default order.
+export function dockOrderRank(order: readonly string[]): (id: string) => number {
+  return (id) => {
+    const saved = order.indexOf(id);
+    if (saved !== -1) return saved;
+    const base = workspaceDockOrder.indexOf(`surface-${id}`);
+    return order.length + (base === -1 ? workspaceDockOrder.length : base);
+  };
+}
+
 export function useDocksVisibility(customStorage?: Storage) {
   const [hiddenDockIds, setHiddenDockIds] = useState<string[]>(() => readHiddenDockIds(customStorage));
+  const [dockOrder, setDockOrderState] = useState<string[]>(() => readDockOrder(customStorage));
 
   useEffect(() => {
     const handleUpdate = () => {
       setHiddenDockIds(readHiddenDockIds(customStorage));
+      setDockOrderState(readDockOrder(customStorage));
     };
     if (typeof window !== "undefined") {
       window.addEventListener(DOCKS_VISIBILITY_EVENT, handleUpdate);
+      window.addEventListener(DOCKS_ORDER_EVENT, handleUpdate);
       window.addEventListener("storage", handleUpdate);
       return () => {
         window.removeEventListener(DOCKS_VISIBILITY_EVENT, handleUpdate);
+        window.removeEventListener(DOCKS_ORDER_EVENT, handleUpdate);
         window.removeEventListener("storage", handleUpdate);
       };
     }
   }, [customStorage]);
+
+  const setDockOrder = useCallback(
+    (order: string[]) => {
+      writeDockOrder(order, customStorage);
+      setDockOrderState(order);
+      saveUserSettingDebounced("docksOrder", order);
+    },
+    [customStorage]
+  );
 
   const hiddenSet = useMemo(() => new Set(hiddenDockIds), [hiddenDockIds]);
 
@@ -236,7 +290,8 @@ export function useDocksVisibility(customStorage?: Storage) {
     writeHiddenDockIds([], customStorage);
     setHiddenDockIds([]);
     saveUserSettingDebounced("docksHidden", []);
-  }, [customStorage]);
+    setDockOrder([]);
+  }, [customStorage, setDockOrder]);
 
   return {
     hiddenDockIds,
@@ -245,6 +300,8 @@ export function useDocksVisibility(customStorage?: Storage) {
     hideDock,
     showDock,
     toggleDock,
-    resetDocks
+    resetDocks,
+    dockOrder,
+    setDockOrder
   };
 }

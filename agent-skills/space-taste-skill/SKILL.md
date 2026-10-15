@@ -8,7 +8,7 @@ metadata:
 # Taste Skill in Space
 
 An index of the 13 Taste Skill variants. Read only the variant the task needs, at
-`<this folder>/<variant>/SKILL.md` (with MCP: `get_skill space-taste-skill/<variant>`).
+`<this folder>/<variant>/SKILL.md` (with MCP: `space_get_skill space-taste-skill/<variant>`).
 They target landing pages, portfolios and redesigns, not dashboards, data
 tables or multi-step product UI; for those use `space-ui-ux-pro-max`.
 

@@ -13,6 +13,7 @@ import {
   type DemoProjectDefinition,
   type DemoVariantDefinition
 } from "./catalog.js";
+import { childProcessEnv } from "../child-process-env.js";
 
 const maximumLogBytes = 1024 * 1024;
 const retainedLogBytes = 256 * 1024;
@@ -269,7 +270,7 @@ export class DemoRunManager {
     const serverEntry = resolveServerEntry(this.options.demoRoot, variant);
     const port = await this.allocatePort();
     const environment: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...childProcessEnv(),
       NODE_ENV: "production",
       HOST: "127.0.0.1",
       PORT: String(port),

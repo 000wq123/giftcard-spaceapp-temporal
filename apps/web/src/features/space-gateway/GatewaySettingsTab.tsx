@@ -258,10 +258,15 @@ function PlanPriorityEditor({ value, onChange }: { value: string[]; onChange: (n
   );
 }
 
-export function GatewayRoutingTab({ settings, client, onSaved }: { settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void }) {
+export function GatewayRoutingTab({ settings, client, onSaved, onAddClaudeApiKey }: {
+  settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void;
+  /** Jumps to Accounts › Add account › Claude › API key. */
+  onAddClaudeApiKey?: () => void;
+}) {
   const [strategy, setStrategy] = useState<GatewayRoutingStrategy>(settings.routingStrategy);
   const [sticky, setSticky] = useState(settings.stickyThreadsEnabled);
   const [earlierReset, setEarlierReset] = useState(settings.preferEarlierReset);
+  const [apiKeyFallback, setApiKeyFallback] = useState(settings.claudeApiKeyFallback);
   const [planPriority, setPlanPriority] = useState<string[]>(settings.planPriority);
   const [floor, setFloor] = useState(String(settings.exhaustionFloorPercent));
   const [threshold, setThreshold] = useState(String(settings.stickyReallocationBudgetThresholdPercent));
@@ -272,7 +277,7 @@ export function GatewayRoutingTab({ settings, client, onSaved }: { settings: Gat
     <form className="space-gateway-panel" onSubmit={(event) => {
       event.preventDefault();
       void save({
-        routingStrategy: strategy, stickyThreadsEnabled: sticky, preferEarlierReset: earlierReset, planPriority,
+        routingStrategy: strategy, stickyThreadsEnabled: sticky, preferEarlierReset: earlierReset, claudeApiKeyFallback: apiKeyFallback, planPriority,
         exhaustionFloorPercent: Number(floor), stickyReallocationBudgetThresholdPercent: Number(threshold)
       });
     }}>
@@ -284,6 +289,15 @@ export function GatewayRoutingTab({ settings, client, onSaved }: { settings: Gat
       </label>
       <SpaceToggle checked={sticky} label="Sticky threads" detail="Keep a conversation on the same account to reuse its prompt cache." onChange={setSticky} />
       <SpaceToggle checked={earlierReset} label="Prefer earlier reset" detail="Among eligible accounts, use the one whose quota resets soonest." onChange={setEarlierReset} />
+      <SpaceToggle checked={apiKeyFallback} label="Claude API key fallback"
+        detail="When every Claude account is out of quota, send Claude requests through the Claude API key (paid per token). The accounts take over again at their next reset. The key must be in Accounts as a Claude API key account."
+        onChange={setApiKeyFallback} />
+      {onAddClaudeApiKey ? (
+        <div className="space-gateway-toolbar">
+          <button type="button" className="space-gateway-button" onClick={onAddClaudeApiKey}>Add Claude API key</button>
+          <span className="space-gateway-note">Opens Accounts › Add account › Claude › API key (this server's key, or one you paste).</span>
+        </div>
+      ) : null}
       <PlanPriorityEditor value={planPriority} onChange={setPlanPriority} />
       <div className="space-gateway-field-row">
         <label className="space-gateway-field">Exhaustion floor (%)

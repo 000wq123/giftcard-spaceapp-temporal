@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { PromptVariable } from "@space/contracts";
-import { Hash, Plus, Settings2, X } from "../ui-theme/app-icons.js";
+import { Hash, Plus, Settings, X } from "../ui-theme/app-icons.js";
 import { filterPromptVariables, usePromptVariables } from "./prompt-variables-store.js";
 import "./prompt-variables.css";
 
@@ -78,7 +78,7 @@ export function PromptVariableAutocomplete({
               title="Manage Prompt Variables"
               aria-label="Manage Prompt Variables"
             >
-              <Settings2 aria-hidden="true" />
+              <Settings aria-hidden="true" />
             </button>
           ) : null}
           <button

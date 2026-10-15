@@ -56,7 +56,11 @@ export const streamEventTypes: SpaceEvent["type"][] = [
   "REVIEW_DECISION_CREATED",
   "BROWSER_HANDOFF_REQUESTED",
   "ROOM_WATCHDOG_ALERT",
-  "JOB_APPLY_UPDATED"
+  "JOB_APPLY_UPDATED",
+  "MAIL_COPILOT_UPDATED",
+  "MARKETING_COPILOT_UPDATED",
+  "NOTIFICATION_CREATED",
+  "NOTIFICATION_UPDATED"
 ];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

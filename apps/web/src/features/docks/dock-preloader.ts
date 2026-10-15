@@ -1,6 +1,7 @@
 import { preloadIdleSurfaces } from "../../lazy-with-preload.js";
 
 let hasPreloaded = false;
+const NON_CRITICAL_DOCK_PRELOAD_DELAY_MS = 5_000;
 
 /**
  * Pre-warms the dynamic import chunks for all dock components during browser idle time.
@@ -45,9 +46,16 @@ export function preloadDockModules(): void {
     ]);
   };
 
-  if ("requestIdleCallback" in window && typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(() => prewarm(), { timeout: 3000 });
-  } else {
-    window.setTimeout(prewarm, 600);
-  }
+  // Keep the first hard refresh focused on the workspace shell and its active
+  // room. Loading every hidden dock at once creates a burst of script and CSS
+  // requests immediately after mount, competing with the room's own pane
+  // hydration. Docks remain lazy and start warming after the initial window has
+  // settled, preserving the fast second-open path without taxing startup.
+  window.setTimeout(() => {
+    if ("requestIdleCallback" in window && typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(() => prewarm(), { timeout: 10_000 });
+    } else {
+      prewarm();
+    }
+  }, NON_CRITICAL_DOCK_PRELOAD_DELAY_MS);
 }

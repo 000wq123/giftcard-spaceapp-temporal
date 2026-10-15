@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { DotModelChoices, DotPermissionMode, DotProfile, DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import type { ChannelsStatus, DotModelChoices, DotPermissionMode, DotProactiveUsage, DotProfile, DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { DotChannels } from "./DotChannels.js";
@@ -10,12 +10,50 @@ import { DotPanels } from "./DotPanels.js";
 import { DotModelSelect, DotProfileForm } from "./DotSettings.js";
 import { announceDotsUpdated, type DotSettingsSection } from "./dot-home-events.js";
 import { claimSettingsRequest } from "../settings/SettingsDisclosure.js";
+import { ChevronRight } from "../ui-theme/app-icons.js";
 import "./dots-chat.css";
 
 type DotTab = "Profile" | "Reminders and goals" | "Memory" | "Tools" | "Activity" | "Evaluation";
 const tabForSection: Partial<Record<DotSettingsSection, DotTab>> = { profile: "Profile", reminders: "Reminders and goals", memory: "Memory", tools: "Tools",
   evaluation: "Evaluation" };
 export interface DotSettingsRequest { dotId?: string; section?: DotSettingsSection; nonce: number }
+
+/** The folded parts of Settings → Dots; the basics for all Dots always show. */
+type DotsPart = "messages" | "accounts" | "channels" | "each";
+function partForRequest(request: DotSettingsRequest | null): DotsPart | null {
+  if (!request) return null;
+  if (request.section === "proactive") return "messages";
+  if (request.section === "accounts") return "accounts";
+  if (request.section === "channels") return "channels";
+  return request.dotId || (request.section && tabForSection[request.section]) ? "each" : null;
+}
+
+const usd = (amount: number) => `$${amount < 0.01 ? amount.toFixed(4) : amount.toFixed(2)}`;
+/** What the Dot's own messages cost in model use: measured tokens, and an estimate only for priced calls (Stage 7). */
+export function proactiveUsageText(usage: DotProactiveUsage): string {
+  const window = `Model use, last ${usage.days} day${usage.days === 1 ? "" : "s"}`;
+  if (!usage.calls) return `${window}: no check needed the model.`;
+  const calls = `${usage.calls} model call${usage.calls === 1 ? "" : "s"}${usage.failedCalls ? ` (${usage.failedCalls} failed)` : ""}`;
+  const tokens = `${usage.totalTokens.toLocaleString("en-US")} tokens${usage.measuredCalls < usage.calls
+    ? ` (${usage.calls - usage.measuredCalls} without a usage report)` : ""}`;
+  const cost = usage.estimatedCostUsd === null ? `cost unknown${usage.unknownCostReason ? `: ${usage.unknownCostReason}` : "."}`
+    : `about ${usd(usage.estimatedCostUsd)}${usage.unknownCostCalls ? ` for ${usage.estimatedCalls} of them; the others have no price` : ""}`
+      + ` (${usage.priceCatalogVersions.join(", ")}).`;
+  return `${window}: ${calls}, ${tokens}, ${cost}`;
+}
+
+/** A folded part with a one-line summary; its content mounts (and loads) when opened. */
+function DotsPartCard({ title, summary, open, onToggle, partRef, children }: {
+  title: string; summary: string; open: boolean; onToggle: () => void; partRef?: Ref<HTMLDivElement>; children: ReactNode;
+}) {
+  return <div ref={partRef} className="dots-part" data-open={open}>
+    <button type="button" className="dots-part-toggle" aria-expanded={open} onClick={onToggle}>
+      <span><strong>{title}</strong><small>{summary}</small></span>
+      <ChevronRight aria-hidden="true" />
+    </button>
+    {open ? <div className="dots-part-body">{children}</div> : null}
+  </div>;
+}
 
 /**
  * SpaceApp Settings → Dots: everything that configures the Dots, so the Dot pane stays a conversation.
@@ -35,7 +73,13 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<{ tone: "status" | "alert"; text: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const proactiveRef = useRef<HTMLElement>(null);
+  const [openParts, setOpenParts] = useState<Set<DotsPart>>(() => new Set(([partForRequest(freshRequest)].filter(Boolean) as DotsPart[])));
+  const togglePart = (part: DotsPart) => setOpenParts((current) => {
+    const next = new Set(current);
+    if (next.has(part)) next.delete(part); else next.add(part);
+    return next;
+  });
+  const proactiveRef = useRef<HTMLDivElement>(null);
   const accountsRef = useRef<HTMLDivElement>(null);
   const channelsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -54,9 +98,22 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
     if (request.dotId) setSelectedId(request.dotId);
     const target = request.section ? tabForSection[request.section] : undefined;
     if (target) setTab(target);
+    const part = partForRequest(request);
+    if (part) setOpenParts((current) => new Set(current).add(part));
     const ref = request.section === "accounts" ? accountsRef : request.section === "channels" ? channelsRef : request.section === "proactive" ? proactiveRef : null;
     window.setTimeout(() => ref?.current?.scrollIntoView?.({ block: "start" }), 0);
   }, [request?.nonce]);
+  // Whether "Also send to Slack" can work: Space has a Slack app and the user linked a Slack account.
+  const [channels, setChannels] = useState<ChannelsStatus | null>(null);
+  const [usage, setUsage] = useState<DotProactiveUsage | "unavailable" | null>(null);
+  const messagesOpen = openParts.has("messages");
+  useEffect(() => {
+    if (!messagesOpen) return;
+    let current = true;
+    void api.channels().then((value) => { if (current) setChannels(value); }).catch(() => undefined);
+    void api.dotProactiveUsage(7).then((value) => { if (current) setUsage(value); }).catch(() => { if (current) setUsage("unavailable"); });
+    return () => { current = false; };
+  }, [messagesOpen]);
   const selected = dots?.find((dot) => dot.dotId === selectedId) ?? dots?.[0] ?? null;
   useEffect(() => {
     let current = true;
@@ -86,6 +143,8 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
   if (failed) return <section className="dots-settings" aria-label="Dots settings"><p role="status">Dots settings are unavailable.</p>
     <button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></section>;
   if (!dots || !settings) return <section className="dots-settings" aria-label="Dots settings"><p role="status">Loading Dots…</p></section>;
+  const slackConfigured = Boolean(channels?.providers.some((provider) => provider.provider === "SLACK" && provider.configured));
+  const slackLinked = Boolean(channels?.identities.some((identity) => identity.provider === "SLACK"));
   const tabs: DotTab[] = ["Profile", "Reminders and goals", "Memory", "Tools", "Activity", ...(isAdmin && roomId ? ["Evaluation" as const] : [])];
   function moveTab(event: KeyboardEvent, index: number) {
     const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
@@ -116,11 +175,13 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
         <select aria-label="Default permissions for Dots" value={settings.defaultPermissionMode ?? ""} disabled={saving}
           onChange={(event) => void save({ defaultPermissionMode: (event.currentTarget.value || null) as DotPermissionMode | null })}>
           <option value="">Chat default</option><option value="approve_for_me">Approve for me</option><option value="full_access">Full access</option>
-        </select></label>
+        </select>
+        <small>How much a Dot may do without asking you. Approve for me lets a reviewer approve workspace actions; Full access runs without prompts.</small></label>
       {notice ? <p className="dots-settings-notice" role={notice.tone}>{notice.text}</p> : null}
     </section>
-    <section ref={proactiveRef} className="dots-settings-group" aria-label="Messages from your Dot">
-      <h4>Messages from your Dot</h4>
+    <DotsPartCard partRef={proactiveRef} title="Messages from your Dot" open={openParts.has("messages")} onToggle={() => togglePart("messages")}
+      summary={settings.proactive.enabled ? "On: a Dot tells you about new email and upcoming events." : "Off: Dots write only when you message them."}>
+    <section className="dots-settings-group" aria-label="Messages from your Dot">
       <SpaceToggle name="dots-proactive" label="Let a Dot message me about new email and upcoming events" checked={settings.proactive.enabled} disabled={saving}
         detail={settings.proactive.enabled ? "It reads only, and writes in its conversation when something needs you: account security, replies due, bills, travel, meetings soon."
           : "Dots write only when you message them."}
@@ -155,12 +216,25 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
             onChange={(event) => { const end = event.currentTarget.value; if (/^\d{2}:\d{2}$/.test(end)) void save({ proactive: { quietHours: { ...settings.proactive.quietHours!, end } } }); }} /></label>
           <small>In your time zone (Settings → Date and time). Nothing is checked during quiet hours.</small>
         </div> : null}
+        {slackConfigured || settings.proactive.alsoSlack ? <SpaceToggle compact name="dots-proactive-slack" label="Also send to Slack"
+          checked={settings.proactive.alsoSlack} disabled={saving || (!settings.proactive.alsoSlack && !slackLinked)}
+          detail={slackLinked ? "The same message, as a direct message from the Space app." : "Link your Slack account under Slack and Teams first."}
+          onChange={(alsoSlack) => void save({ proactive: { alsoSlack } })} /> : null}
       </> : null}
+      {usage ? <p className="dots-settings-usage">{usage === "unavailable" ? "Model use is unavailable." : proactiveUsageText(usage)}</p> : null}
     </section>
-    <div ref={accountsRef} className="dots-settings-group"><DotConnections /></div>
-    <div ref={channelsRef} className="dots-settings-group"><DotChannels /></div>
+    </DotsPartCard>
+    <DotsPartCard partRef={accountsRef} title="Connected accounts" summary="Email and calendar accounts your Dots may use."
+      open={openParts.has("accounts")} onToggle={() => togglePart("accounts")}>
+      <div className="dots-settings-group"><DotConnections /></div>
+    </DotsPartCard>
+    <DotsPartCard partRef={channelsRef} title="Slack and Teams" summary="Message your Dots from Slack or Teams."
+      open={openParts.has("channels")} onToggle={() => togglePart("channels")}>
+      <div className="dots-settings-group"><DotChannels /></div>
+    </DotsPartCard>
+    <DotsPartCard title="Each Dot" summary="One Dot's name, style, model, reminders, memory and tools."
+      open={openParts.has("each")} onToggle={() => togglePart("each")}>
     <section className="dots-settings-group" aria-label="Each Dot">
-      <h4>Each Dot</h4>
       <div className="dots-settings-picker" role="group" aria-label="Choose a Dot to set up">
         {dots.map((dot) => <button key={dot.dotId} type="button" aria-pressed={selected?.dotId === dot.dotId} onClick={() => setSelectedId(dot.dotId)}>
           <img src={dotArtwork(dot)} alt="" width="28" height="28" /><span>{dot.name}</span></button>)}
@@ -183,5 +257,6 @@ export function DotsSettingsCard({ roomId, isAdmin, request = null }: { roomId: 
         </div>
       </> : null}
     </section>
+    </DotsPartCard>
   </section>;
 }

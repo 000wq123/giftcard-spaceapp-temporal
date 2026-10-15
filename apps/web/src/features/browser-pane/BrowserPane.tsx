@@ -27,6 +27,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   RotateCw,
   Send,
   Smartphone,
@@ -81,11 +82,16 @@ import {
 import { BrowserCanvas, type BrowserCanvasHandle, type BrowserCanvasInput } from "./BrowserCanvas.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
 import {
+  BROWSER_PANE_ACCOUNT_SELECTED_EVENT,
   BROWSER_PANE_ACTION_EVENT,
   parseBrowserPaneActionDetail,
   registerBrowserPaneEventTarget
 } from "./events.js";
 import { BrowserLiveStatus } from "./BrowserLiveStatus.js";
+
+// shortcut: below this measured toolbar width the compact Live badge (state + fps, ~97px) would squeeze the address
+// field under the 160px the browser proofs require at 320px; upgrade to a two-row toolbar if phones need the badge.
+const LIVE_STATUS_MIN_TOOLBAR_WIDTH = 480;
 import { loadSharedBrowserStatus } from "./browser-status.js";
 
 export {
@@ -567,7 +573,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
   // A selection made meanwhile wins over an older answer.
   const googleAccountsRequestRef = useRef(0);
   function loadGoogleAccounts() {
-    if (observerOnly || pane.mode !== "BROWSER" || typeof api.browserAccounts !== "function") return () => undefined;
+    if (observerOnly || (pane.mode !== "BROWSER" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") || typeof api.browserAccounts !== "function") return () => undefined;
     const request = ++googleAccountsRequestRef.current;
     api.browserAccounts(pane.id).then((accounts) => { if (googleAccountsRequestRef.current === request) setGoogleAccounts(accounts); }).catch(() => undefined);
     return () => { if (googleAccountsRequestRef.current === request) googleAccountsRequestRef.current += 1; };
@@ -598,6 +604,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       setUrl(targetUrl);
       setGoogleAccounts((current) => current ? { ...current, selectedProfileId: selected.selectedProfileId, effectiveProfileId: selected.selectedProfileId } : current);
       setGoogleSignInTarget(profileId ? targetUrl : null);
+      window.dispatchEvent(new CustomEvent(BROWSER_PANE_ACCOUNT_SELECTED_EVENT, { detail: { paneId: pane.id, profileId: selected.selectedProfileId } }));
       applyResponse(await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The Google account could not be opened.");
@@ -1331,21 +1338,39 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
     }
   }
 
-  async function reconnect() {
+  // Restart: a stuck browser (a dead page, a frozen stream) stops and opens again on the page it showed. The pane keeps
+  // its account profile, so sign-ins and cookies stay.
+  async function restartBrowser() {
     if (pending) return;
+    const list = pageListRef.current;
+    const shown = (list?.pages.find((page) => page.pageId === list.activePageId) ?? list?.pages.find((page) => page.kind === "PAGE"))?.url;
+    if (session && session.status !== "CLOSED") await stopSession();
     setPending(true);
     setError(null);
     try {
       const submittedAddress = url.trim();
-      const targetUrl = submittedAddress ? resolveBrowserAddress(submittedAddress) : "about:blank";
+      const targetUrl = shown && /^https?:/.test(shown) ? shown : submittedAddress ? resolveBrowserAddress(submittedAddress) : "about:blank";
       let next = await api.startBrowserSession(pane.id, { viewport, targetUrl, ownerAgentId: `agent:${agentNumber}` });
       if (next.session.targetUrl !== targetUrl && next.session.currentUrl !== targetUrl) next = await api.navigateBrowser(pane.id, targetUrl);
       if (urlDraftRef.current?.trim() === submittedAddress) urlDraftRef.current = null;
       applyResponse(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser reconnect failed");
+      setError(err instanceof Error ? err.message : "Browser restart failed");
     } finally {
       setPending(false);
+    }
+  }
+
+  async function reloadPage() {
+    if (!session) return;
+    const lease = await acquireControlForInput();
+    if (!lease) return;
+    const payload: BrowserInputPayload = { type: "NAVIGATION", action: "RELOAD", leaseId: lease.leaseId };
+    if (sendRealtimeBrowserInput(payload)) return;
+    try {
+      appendFrame((await api.browserInput(pane.id, payload)).frame);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Page reload failed");
     }
   }
 
@@ -1564,6 +1589,12 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
 
   async function sendCanvasInput(input: BrowserCanvasInput) {
     if (!session) return;
+    // A bare hover is not an interaction: it must not take the browser from an agent (Job Copilot) and keep it
+    // through the lease heartbeat. Hover reaches the page only while a click, scroll or key already holds control.
+    if (input.type === "POINTER" && input.eventType === "mouseMoved" && input.button === "none") {
+      const held = controlLeaseRef.current;
+      if (!held || held.status !== "ACTIVE" || held.sessionId !== session.sessionId || Date.parse(held.expiresAt) <= Date.now()) return;
+    }
     const lease = await acquireControlForInput();
     if (lease) {
       const payload = { ...input, leaseId: lease.leaseId } as BrowserInputPayload;
@@ -1668,6 +1699,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       // Job Copilot "Return to agent": the operator gives the browser back without the toolbar.
       if (detail.action === "release") {
         void releaseControl();
+        return;
+      }
+      // Job Copilot Setup chooses the pane's Google account outside the toolbar.
+      if (detail.action === "account" && detail.profileId) {
+        void selectGoogleAccount(detail.profileId, detail.signIn === true);
       }
     }
     window.addEventListener(BROWSER_PANE_ACTION_EVENT, handleBrowserPaneAction);
@@ -1701,12 +1737,21 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
         disabled: !session || pending
       },
       {
+        id: "reload",
+        label: "Reload page",
+        title: "Reload the page",
+        ariaLabel: `Reload page ${pane.title}`,
+        icon: RotateCcw,
+        onClick: () => void reloadPage(),
+        disabled: !session || pending
+      },
+      {
         id: "reconnect",
-        label: "Reconnect browser",
-        title: "Reconnect browser",
-        ariaLabel: `Reconnect browser ${pane.title}`,
+        label: "Restart browser",
+        title: "Restart this pane's browser on the same page and account (sign-ins stay)",
+        ariaLabel: `Restart browser ${pane.title}`,
         icon: RotateCw,
-        onClick: () => void reconnect(),
+        onClick: () => void restartBrowser(),
         disabled: !status?.enabled || pending
       },
       {
@@ -2246,7 +2291,9 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
           ) : null}
         </div>
       </div>
-      <BrowserLiveStatus compact paneRef={paneRef} sessionId={session?.status === "CLOSED" ? null : session?.sessionId ?? null} paused={selectedFrameIndex !== null} handoff={handoff} />
+      {toolbarWidth === 0 || toolbarWidth >= LIVE_STATUS_MIN_TOOLBAR_WIDTH
+        ? <BrowserLiveStatus compact paneRef={paneRef} sessionId={session?.status === "CLOSED" ? null : session?.sessionId ?? null} paused={selectedFrameIndex !== null} handoff={handoff} />
+        : null}
       </div>
 
       <div className={`browser-workspace${debugOpen ? " with-debugger" : ""}`}>
@@ -2305,11 +2352,11 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
                   <strong>One browser, shared with your agents</strong>
                   <p>Agents in this room can inspect and operate this session. Take control to type or sign in; release control when the agent can continue.</p>
                   <dl><dt>Pane</dt><dd>{pane.id}</dd><dt>Session</dt><dd>{session?.sessionId ?? "No session"}</dd></dl>
-                  <p><code>browser_context</code> discovers this room's browsers.</p>
-                  <p><code>browser_devtools</code> reads console errors and network events, including while you hold control.</p>
-                  <p><code>browser_tabs</code>, <code>browser_extract_text</code> and <code>browser_screenshot</code> inspect the page.</p>
-                  <p><code>browser_click</code>, <code>browser_type</code>, <code>browser_scroll</code> and <code>browser_navigate</code> operate the same session.</p>
-                  <p><code>browser_request_handoff</code> asks you to complete login, CAPTCHA or MFA inside this browser.</p>
+                  <p><code>space_browser_context</code> discovers this room's browsers.</p>
+                  <p><code>space_browser_devtools</code> reads console errors and network events, including while you hold control.</p>
+                  <p><code>space_browser_tabs</code>, <code>space_browser_extract_text</code> and <code>space_browser_screenshot</code> inspect the page.</p>
+                  <p><code>space_browser_click</code>, <code>space_browser_type</code>, <code>space_browser_scroll</code> and <code>space_browser_navigate</code> operate the same session.</p>
+                  <p><code>space_browser_request_handoff</code> asks you to complete login, CAPTCHA or MFA inside this browser.</p>
                 </div>
               ) : null}
               {debugTab === "console" ? (
@@ -2530,7 +2577,7 @@ export function BrowserPane({ pane, agentNumber, observerOnly = false, uiTheme =
       {session?.status === "CLOSED" ? (
         <div className="browser-pane-notice" role="status">
           <span>Browser is stopped.</span>
-          {!observerOnly ? <button type="button" onClick={() => void reconnect()} disabled={pending}>Start browser</button> : null}
+          {!observerOnly ? <button type="button" onClick={() => void restartBrowser()} disabled={pending}>Start browser</button> : null}
         </div>
       ) : null}
       {audioState === "blocked" ? <button type="button" className="browser-pane-notice" onClick={resumeAudio}>Resume audio</button> : null}

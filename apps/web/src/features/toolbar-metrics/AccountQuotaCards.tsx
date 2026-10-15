@@ -34,7 +34,7 @@ export interface AccountQuotaEntry {
 
 export type AvailabilityCounts = Record<AccountAvailabilityFilter, number>;
 
-export function countAvailability(entries: AccountQuotaEntry[]): AvailabilityCounts {
+export function countAvailability(entries: Pick<AccountQuotaEntry, "availability">[]): AvailabilityCounts {
   const counts: AvailabilityCounts = { all: entries.length, available: 0, soon: 0, exhausted: 0 };
   for (const entry of entries) {
     const state = entry.availability.state;

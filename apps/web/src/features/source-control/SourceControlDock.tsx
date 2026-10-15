@@ -10,7 +10,7 @@ import { enabledProviders, providerAvailability, providerLabel } from "./Provide
 import { listWorktrees, mergeWorktree, removeWorktree } from "../worktrees/worktree-client.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
 import { DeployActivityPanel } from "../deploy-queue/DeployActivityPanel.js";
-import type { DeployQueueClient } from "../deploy-queue/DeployQueueSettingsCard.js";
+import type { DeployQueueClient } from "../deploy-queue/deploy-queue-format.js";
 import {
   DockButton,
   DockChips,

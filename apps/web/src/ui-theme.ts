@@ -1,8 +1,10 @@
-export type UiTheme = "classic" | "modern" | "codex" | "motion";
+import type { ModernIconPack } from "@space/icons";
+
+export type { ModernIconPack };
+export type UiTheme = "classic" | "modern" | "codex" | "motion" | "aurora";
 export type ModernAppearance = "system" | "dark" | "light";
 export type ModernColorMode = "dark" | "light";
-export type ModernIconPack = "lucide" | "material-rounded" | "motion";
-export type UiBackground = "spaceapp" | "none";
+export type UiBackground = "spaceapp" | "aurora" | "none";
 
 export const UI_THEME_STORAGE_KEY = "space.uiTheme.v1";
 export const MODERN_APPEARANCE_STORAGE_KEY = "space.modern.appearance.mode.v1";
@@ -46,7 +48,7 @@ export function migrateModernToolbarPreference(storage: Storage, classicKey: str
 
 export function readUiTheme(storage: Storage): UiTheme {
   const theme = storage.getItem(UI_THEME_STORAGE_KEY);
-  return theme === "classic" || theme === "codex" || theme === "motion" ? theme : "modern";
+  return theme === "classic" || theme === "codex" || theme === "motion" || theme === "aurora" ? theme : "modern";
 }
 
 export function writeUiTheme(storage: Storage, theme: UiTheme): UiTheme {
@@ -66,7 +68,7 @@ export function writeModernAppearance(storage: Storage, appearance: ModernAppear
 
 export function readModernIconPack(storage: Storage): ModernIconPack {
   const stored = storage.getItem(MODERN_ICON_PACK_STORAGE_KEY);
-  return stored === "material-rounded" || stored === "motion"
+  return stored === "material-rounded" || stored === "motion" || stored === "aurora"
     ? stored
     : "lucide";
 }
@@ -78,7 +80,7 @@ export function writeModernIconPack(storage: Storage, iconPack: ModernIconPack):
 
 export function readUiBackground(storage: Storage): UiBackground {
   const stored = storage.getItem(UI_BACKGROUND_STORAGE_KEY);
-  return stored === "none" ? "none" : "spaceapp";
+  return stored === "none" || stored === "aurora" ? stored : "spaceapp";
 }
 
 export function writeUiBackground(storage: Storage, background: UiBackground): UiBackground {

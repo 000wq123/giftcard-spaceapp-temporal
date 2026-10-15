@@ -40,7 +40,11 @@ export const dotComputerBrowserSchema = z.object({
   paneId: z.string().min(1).max(200),
   active: z.boolean(),
   currentUrl: z.string().max(2000).nullable(),
-  title: z.string().max(500).nullable()
+  title: z.string().max(500).nullable(),
+  /** The open browser session, for its latest picture in the Dot's card; null when none is open. */
+  sessionId: z.string().min(1).max(200).nullable(),
+  /** Its browser is running, so taking a picture never starts one. */
+  ready: z.boolean()
 }).strict();
 export const dotComputerSchema = z.object({
   dotId: dotIdSchema,

@@ -1,6 +1,6 @@
-import { readFile, writeFile, mkdir, symlink, unlink, lstat, realpath } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, symlink, unlink, lstat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type PluginCatalogItem,
   type PluginConnectionState,
@@ -8,6 +8,7 @@ import {
   type ConnectPluginInput,
   type AgentPluginConfig
 } from "@space/contracts";
+import { parseSkillFrontmatter } from "@space/runtime";
 
 const PLUGINS_DIR = "/opt/spaceapp/var/plugins";
 
@@ -17,7 +18,7 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     overview: "Personal Gitea connection for repository discovery, diffs, staging, commits and synchronization.",
     category: "developer", icon: "GitBranch", authType: "api_key",
     authFields: [
-      { key: "serverUrl", label: "Server URL", type: "url", required: false, placeholder: "https://git.example.invalid", description: "The Gitea server for your account." },
+      { key: "serverUrl", label: "Server URL", type: "url", required: false, placeholder: "https://example.invalid", description: "The Gitea server for your account." },
       { key: "token", label: "Personal Access Token", type: "password", required: true, placeholder: "", description: "Token with repository access. Permissions are checked for each selected repository." }
     ],
     preview: false, defaultEnabled: true, websiteUrl: "https://about.gitea.com", docsUrl: "https://docs.gitea.com", githubUrl: null,
@@ -299,8 +300,109 @@ export const DEFAULT_PLUGIN_CATALOG: PluginCatalogItem[] = [
     websiteUrl: "https://impeccable.style",
     docsUrl: "https://github.com/pbakaus/impeccable#readme",
     githubUrl: "https://github.com/pbakaus/impeccable",
-    installedVersion: "4.5.2",
-    latestVersion: "4.5.2",
+    // The pinned upstream commit, like every built-in bundle (agent-skills/space-impeccable/UPSTREAM.md); the overview names the skill version.
+    installedVersion: "919dbeb",
+    latestVersion: "919dbeb",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "google-workspace",
+    displayName: "Google Workspace CLI",
+    description: "Gmail, Drive, Calendar, Sheets, Docs, Slides, Chat, Meet and more through the gws CLI, with recipes and personas.",
+    overview: "The googleworkspace/cli skills (95: one per service and helper, plus workflow recipes and personas) for the pinned gws 0.22.5 CLI installed on the host. The operator signs in once with gws; agents never run its auth commands or read its credentials, and sending, sharing or deleting needs the operator's approval of that exact action.",
+    category: "productivity",
+    icon: "Layers",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/googleworkspace/cli",
+    docsUrl: "https://github.com/googleworkspace/cli#readme",
+    githubUrl: "https://github.com/googleworkspace/cli",
+    installedVersion: "a3768d0",
+    latestVersion: "a3768d0",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "hyperframes",
+    displayName: "HyperFrames",
+    description: "Video written as HTML: compositions, animation, captions, audio and slideshows rendered to MP4.",
+    overview: "HeyGen's HyperFrames skills (21) for the pinned hyperframes 0.8.156 CLI installed on the host, rendering with the host's Chrome and ffmpeg. Telemetry, update checks, self-install and skill mirroring stay off; cloud providers, publishing and optional local models run only with the operator's consent.",
+    category: "creative",
+    icon: "Sparkles",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://hyperframes.heygen.com",
+    docsUrl: "https://github.com/heygen-com/hyperframes#readme",
+    githubUrl: "https://github.com/heygen-com/hyperframes",
+    installedVersion: "d9edffa",
+    latestVersion: "d9edffa",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "claude-security",
+    displayName: "Claude Security Review",
+    description: "Anthropic's focused security review of the pending changes on a branch, with false-positive filtering.",
+    overview: "The security review prompt from anthropics/claude-code-security-review (the /security-review command) for every CLI: injection, authentication and authorization, crypto and secrets, code execution and data exposure in the branch diff, keeping only high-confidence findings. Read-only: findings are reported in the conversation. The GitHub Action itself is not included.",
+    category: "developer",
+    icon: "CheckCircle2",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://github.com/anthropics/claude-code-security-review",
+    docsUrl: "https://github.com/anthropics/claude-code-security-review#readme",
+    githubUrl: "https://github.com/anthropics/claude-code-security-review",
+    installedVersion: "0c6a49f",
+    latestVersion: "0c6a49f",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "openseo",
+    displayName: "OpenSEO",
+    description: "SEO workflows: keyword research, competitors, site audits, backlinks, local SEO, AI visibility and reports.",
+    overview: "The OpenSEO plugin skills (12) from every-app/open-seo. Their data comes from the hosted OpenSEO MCP server, which the operator connects in their own CLI with an OpenSEO account; Space stores no OpenSEO credentials. Without that connection the skills stop and say so, and tools that spend credits ask first.",
+    category: "analytics",
+    icon: "Globe",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://openseo.so",
+    docsUrl: "https://openseo.so/docs/mcp",
+    githubUrl: "https://github.com/every-app/open-seo",
+    installedVersion: "89e5a00",
+    latestVersion: "89e5a00",
+    hasUpdate: false,
+    mcpCommand: null,
+    mcpArgs: []
+  },
+  {
+    id: "stripe-best-practices",
+    displayName: "Stripe Best Practices",
+    description: "Stripe's official guidance for planning, building and reviewing Stripe integrations.",
+    overview: "The stripe-best-practices skill from stripe/ai: sandboxes and test mode, Checkout Sessions or PaymentIntents, Connect, Billing, Tax, Treasury, API migrations and key and webhook security. Space ships no Stripe MCP server and stores no Stripe key; live-mode actions need the operator's approval.",
+    category: "finance",
+    icon: "CreditCard",
+    authType: "none",
+    authFields: [],
+    preview: false,
+    defaultEnabled: true,
+    websiteUrl: "https://docs.stripe.com",
+    docsUrl: "https://github.com/stripe/ai/tree/main/skills/stripe-best-practices",
+    githubUrl: "https://github.com/stripe/ai",
+    installedVersion: "789ef5e",
+    latestVersion: "789ef5e",
     hasUpdate: false,
     mcpCommand: null,
     mcpArgs: []
@@ -367,8 +469,49 @@ export const BUILTIN_SKILLS_MAP: Record<string, { folder: string; aliases: strin
   impeccable: {
     folder: "space-impeccable",
     aliases: ["space-impeccable"]
+  },
+  "google-workspace": {
+    folder: "space-google-workspace",
+    aliases: ["space-google-workspace"]
+  },
+  hyperframes: {
+    folder: "space-hyperframes",
+    aliases: ["space-hyperframes"]
+  },
+  "claude-security": {
+    folder: "space-claude-security",
+    aliases: ["space-claude-security"]
+  },
+  openseo: {
+    folder: "space-openseo",
+    aliases: ["space-openseo"]
+  },
+  "stripe-best-practices": {
+    folder: "space-stripe-best-practices",
+    aliases: ["space-stripe-best-practices"]
   }
 };
+
+/**
+ * Sub-skills below each bundle's index, as seen under one skill root. Codex and OpenCode
+ * list every nested SKILL.md they find; Space keeps their catalogs to the bundle indexes.
+ */
+export async function nestedBundleSkills(root: string): Promise<Array<{ path: string; name: string }>> {
+  const found: Array<{ path: string; name: string }> = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const path = join(dir, entry.name);
+      // Codex scans six levels below a skill root.
+      if (entry.isDirectory() && depth < 5) await walk(path, depth + 1);
+      else if (entry.isFile() && entry.name === "SKILL.md" && depth > 0) {
+        found.push({ path, name: parseSkillFrontmatter(await readFile(path, "utf8")).name || basename(dir) });
+      }
+    }
+  };
+  for (const { folder } of Object.values(BUILTIN_SKILLS_MAP)) await walk(join(root, folder), 0);
+  return found.sort((a, b) => a.path.localeCompare(b.path));
+}
 
 const SKILL_DIRS = [
   "/var/lib/spaceapp-user/.codex/skills",
@@ -472,7 +615,12 @@ export class PluginsService {
     gstack: 6,
     "wshobson-skills": 17,
     "huashu-design": 1,
-    impeccable: 1
+    impeccable: 1,
+    "google-workspace": 95,
+    hyperframes: 21,
+    "claude-security": 1,
+    openseo: 12,
+    "stripe-best-practices": 1
   };
 
   async syncSkillSymlinks(): Promise<void> {
@@ -480,7 +628,8 @@ export class PluginsService {
     const connections = await this.loadConnections();
     for (const [pluginId, meta] of Object.entries(BUILTIN_SKILLS_MAP)) {
       const conn = connections.get(pluginId);
-      const isConnected = conn ? conn.status === "CONNECTED" : true;
+      // Without a stored choice a bundle follows its catalog default (some start off).
+      const isConnected = conn ? conn.status === "CONNECTED" : DEFAULT_PLUGIN_CATALOG.some((p) => p.id === pluginId && p.defaultEnabled);
       const sourceDir = findSkillSourceDir(meta.folder);
       if (!sourceDir) continue;
 
@@ -514,7 +663,11 @@ export class PluginsService {
         }
       }
     }
+    await this.onSkillsSynced?.();
   }
+
+  /** Runs after every link sync; the stable API sets it to hide nested sub-skills from Codex. */
+  onSkillsSynced?: () => Promise<unknown>;
 
   async isPluginConnected(pluginId: string): Promise<boolean> {
     const connections = await this.loadConnections();

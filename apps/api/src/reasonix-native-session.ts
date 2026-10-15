@@ -13,8 +13,10 @@ const execFileAsync = promisify(execFile);
  * therefore only resumable while a legacy JSONL file exists for it - that path
  * (or a `session_*` machine id) is the only accepted ref today.
  */
+// The CLI user's home differs per installation (public image: /var/lib/spaceapp-cli), so any absolute
+// home is accepted; "." and ".." segments are not.
 export const reasonixNativeSessionRefPattern =
-  /^(?:\/home\/spaceapp-user\/\.reasonix\/projects\/[A-Za-z0-9._-]+\/sessions\/[A-Za-z0-9._-]+\.jsonl|session_[0-9a-f]{32})$/u;
+  /^(?:(?:\/(?!\.{1,2}\/)[A-Za-z0-9._-]+){1,4}\/\.reasonix\/projects\/[A-Za-z0-9._-]+\/sessions\/[A-Za-z0-9._-]+\.jsonl|session_[0-9a-f]{32})$/u;
 
 export const reasonixSessionIndexCommand = "/opt/spaceapp/bin/deepseek-vscode-parity";
 export const reasonixSessionIndexTimeoutMs = 15_000;

@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
-import { X, FolderPlus, FileInput, Edit3, Trash2, AlertTriangle } from "../ui-theme/app-icons.js";
+import { X, FolderPlus, FileInput, TextCursorInput, Trash2, AlertTriangle } from "../ui-theme/app-icons.js";
 import type { FileItem } from "@space/contracts";
 
 export interface CreateModalProps {
@@ -92,7 +92,7 @@ export function RenameModal({ entry, onClose, onSubmit }: RenameModalProps) {
       <div className="fm-modal-card" style={{ maxWidth: "420px" }} onClick={(e) => e.stopPropagation()}>
         <div className="fm-modal-header">
           <div className="fm-modal-title">
-            <Edit3 size={16} />
+            <TextCursorInput size={16} />
             <span>Rename {entry.isDirectory ? "Folder" : "File"}</span>
           </div>
           <button className="fm-action-btn" onClick={onClose}>

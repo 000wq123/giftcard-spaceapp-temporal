@@ -108,7 +108,7 @@ export function AppDiagnosticsSettingsCard({
         <Activity aria-hidden="true" />
         <span>
           <strong>App diagnostics</strong>
-          <small>Global rolling technical capture for connected Space clients.</small>
+          <small>Records technical details from every open Space tab to help find a problem.</small>
         </span>
         <div className="settings-flat-heading-actions">
           <span className={`status ${isEnabled ? "bad" : "muted"}`}>{isEnabled ? "DEBUG ON" : "OFF"}</span>
@@ -150,23 +150,26 @@ export function AppDiagnosticsSettingsCard({
         name="app-diagnostics-enabled"
         ariaLabel="Enable global app diagnostics"
         label="Debug capture"
-        detail={pending ? "Updating global state…" : "Keep a rolling 24-hour technical trace."}
+        detail={pending ? "Updating…" : "Keeps the last 24 hours of technical details. Turn it off when you are done."}
         checked={isEnabled}
         disabled={!canManage || pending || !status}
         onChange={(nextEnabled) => void toggle(nextEnabled)}
       />
 
-      <p className="settings-flat-note">
-        8 GiB total · 512 MiB technical reserve · one visual recorder.
-      </p>
-      <dl className="app-diagnostics-metrics settings-flat-metrics" data-sensitive-ignore>
-        <div><dt>Enabled</dt><dd>{formatEnabledAt(status?.enabledAt ?? null)}</dd></div>
-        <div><dt>Storage</dt><dd>{formatBytes(status?.usage.totalBytes ?? 0)} / 8 GiB</dd></div>
-        <div><dt>Segments</dt><dd>{status?.usage.segmentCount ?? 0}</dd></div>
-        <div><dt>Dropped</dt><dd>{(status?.counters.droppedEvents ?? 0) + state.collector.droppedEvents}</dd></div>
-        <div><dt>Quota evictions</dt><dd>{status?.counters.quotaDrops ?? 0}</dd></div>
-        <div><dt>Recorder</dt><dd>{recordingElsewhere ? "Active in another tab" : recorder.status}</dd></div>
-      </dl>
+      <details className="app-diagnostics-details">
+        <summary>Technical details</summary>
+        <p className="settings-flat-note">
+          8 GiB total · 512 MiB technical reserve · one visual recorder.
+        </p>
+        <dl className="app-diagnostics-metrics settings-flat-metrics" data-sensitive-ignore>
+          <div><dt>Enabled</dt><dd>{formatEnabledAt(status?.enabledAt ?? null)}</dd></div>
+          <div><dt>Storage</dt><dd>{formatBytes(status?.usage.totalBytes ?? 0)} / 8 GiB</dd></div>
+          <div><dt>Segments</dt><dd>{status?.usage.segmentCount ?? 0}</dd></div>
+          <div><dt>Dropped</dt><dd>{(status?.counters.droppedEvents ?? 0) + state.collector.droppedEvents}</dd></div>
+          <div><dt>Quota evictions</dt><dd>{status?.counters.quotaDrops ?? 0}</dd></div>
+          <div><dt>Recorder</dt><dd>{recordingElsewhere ? "Active in another tab" : recorder.status}</dd></div>
+        </dl>
+      </details>
 
       {!canManage ? (
         <p className="settings-flat-note" role="status">

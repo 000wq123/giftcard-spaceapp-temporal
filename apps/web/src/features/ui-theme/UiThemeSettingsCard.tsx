@@ -39,24 +39,26 @@ export function UiThemeSettingsCard({
           aria-label="Interface theme"
           name="space-ui-theme"
           value={currentTheme}
-          onChange={(event) => onChange({
-            appearance: currentAppearance,
-            background: currentBackground,
-            iconPack: currentIconPack,
-            theme: event.target.value as UiTheme
-          })}
+          onChange={(event) => {
+            const theme = event.target.value as UiTheme;
+            // Aurora is a full set: choosing it also brings its background and icon pack.
+            onChange(theme === "aurora"
+              ? { appearance: currentAppearance, background: "aurora", iconPack: "aurora", theme }
+              : { appearance: currentAppearance, background: currentBackground, iconPack: currentIconPack, theme });
+          }}
         >
           <option value="classic">Classic</option>
           <option value="modern">Modern</option>
           <option value="codex">Codex LB</option>
           <option value="motion">Motion</option>
+          <option value="aurora">Aurora</option>
         </select>
       </label>
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Color mode</strong>
-          <small>Modern supports light and dark. Classic, Codex LB and Motion use dark colors.</small>
+          <small>Modern supports light and dark. Classic, Codex LB, Motion and Aurora use dark colors.</small>
         </span>
         <select
           aria-label="Modern color mode"
@@ -95,13 +97,14 @@ export function UiThemeSettingsCard({
           <option value="lucide">Lucide</option>
           <option value="material-rounded">Material Rounded</option>
           <option value="motion">Motion Geometric</option>
+          <option value="aurora">Aurora Neon</option>
         </select>
       </label>
 
       <label className="settings-flat-row">
         <span className="settings-flat-row-copy">
           <strong>Background</strong>
-          <small>SpaceApp artwork or clean theme default.</small>
+          <small>SpaceApp artwork, the animated Aurora sky or clean theme default.</small>
         </span>
         <select
           aria-label="Background"
@@ -115,6 +118,7 @@ export function UiThemeSettingsCard({
           })}
         >
           <option value="spaceapp">SpaceApp</option>
+          <option value="aurora">Aurora</option>
           <option value="none">Theme default (no background)</option>
         </select>
       </label>

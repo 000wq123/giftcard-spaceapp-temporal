@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Hash, Settings2, Wrench } from "../ui-theme/app-icons.js";
+import { Hash, Settings, Wrench } from "../ui-theme/app-icons.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { usePromptVariables } from "./prompt-variables-store.js";
 import { PromptVariablesManagerModal } from "./PromptVariablesManagerModal.js";
@@ -28,7 +28,7 @@ export function PromptVariablesSettingsCard() {
             onClick={() => setManagerOpen(true)}
             aria-label="Manage prompt variables"
           >
-            <Settings2 aria-hidden="true" style={{ width: 13, height: 13 }} />
+            <Settings aria-hidden="true" style={{ width: 13, height: 13 }} />
             <span>Manage ({variables.length})</span>
           </button>
         </div>

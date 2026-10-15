@@ -1,6 +1,7 @@
 import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
 import type { AccountPool } from "../../accounts/account-pool.js";
 import { startAccountUsagePoller } from "../../accounts/usage-poller.js";
+import { isClaudeApiKeyAccount } from "./api-key.js";
 import { ClaudeUsageError, fetchClaudeUsage, type ClaudeUsage } from "./usage.js";
 
 const FIVE_HOURS_MINUTES = 300;
@@ -29,7 +30,10 @@ export function startClaudeUsagePoller(input: {
 }) {
   return startAccountUsagePoller({
     pool: input.pool, intervalMs: input.intervalMs, onError: input.onError,
-    refresh: (account) => refreshClaudeAccountUsage({ repository: input.repository, pool: input.pool, account, fetchImpl: input.fetchImpl }),
-    isAuthError: (error) => error instanceof ClaudeUsageError && (error.statusCode === 401 || error.statusCode === 403)
+    // An API key has no plan usage to read; the OAuth usage endpoint would only reject it.
+    refresh: (account) => isClaudeApiKeyAccount(account) ? Promise.resolve(null)
+      : refreshClaudeAccountUsage({ repository: input.repository, pool: input.pool, account, fetchImpl: input.fetchImpl }),
+    isAuthError: (error) => error instanceof ClaudeUsageError && (error.statusCode === 401 || error.statusCode === 403),
+    isTokenRejected: (error) => error instanceof ClaudeUsageError && error.statusCode === 401
   });
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChannelProvider, ChannelsStatus } from "@space/contracts";
 import { api } from "../../api.js";
+import { UnavailableProvider } from "./DotConnections.js";
 
 const providerLabels: Record<ChannelProvider, string> = { SLACK: "Slack", TEAMS: "Teams" };
 
@@ -52,8 +53,8 @@ export function DotChannels({ read = api.channels, createCode = api.createChanne
     </li>)}</ul> : <p>No Slack or Teams account linked.</p>}
     <div className="dots-connection-providers">
       {configured.length ? <button type="button" onClick={() => void link()}>Create link code</button> : null}
-      {status.providers.filter((provider) => !provider.configured).map((provider) => <span key={provider.provider} className="dots-connect-unavailable"
-        title={provider.reason ?? undefined}>{providerLabels[provider.provider]}: {provider.reason}</span>)}
+      {status.providers.filter((provider) => !provider.configured).map((provider) =>
+        <UnavailableProvider key={provider.provider} label={providerLabels[provider.provider]} reason={provider.reason} />)}
     </div>
     {code ? <p role="status" className="dots-channel-code">Send <code>link {code.code}</code> to the Space app in a direct message in {configured.map((provider) =>
       providerLabels[provider.provider]).join(" or ")} before {new Date(code.expiresAt).toLocaleTimeString("en-US")}. The code works once.</p> : null}

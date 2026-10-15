@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { Pane } from "@space/contracts";
+import type { JobApplyStats, Pane } from "@space/contracts";
 import { cliRuntimePresentation } from "../../cli-runtime-presentation.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { BellRing, Check, ChevronDown, PanelRight, Pause, Play, Square, Terminal } from "../ui-theme/app-icons.js";
+import { BookmarkPlus, Check, ChevronDown, PanelRight, Pause, Play, RefreshCw, Square, Terminal } from "../ui-theme/app-icons.js";
 import { paneModelLabel, type JobCopilotRuntimeOption } from "./agent-runtimes.js";
 import type { JobApplyTodayCounts } from "./useJobApply.js";
 
@@ -12,11 +12,12 @@ export interface CommandBarProps {
   pane: Pane;
   runtimeOptions: JobCopilotRuntimeOption[];
   counts: JobApplyTodayCounts;
+  /** Totals since the first day; the counters fall back to today's when missing. */
+  stats?: JobApplyStats | null;
   runState: JobCopilotRunState;
   /** Completed / total of the current run; null when idle. */
   progress: { done: number; total: number } | null;
   paused: boolean;
-  alerts: boolean;
   railOpen: boolean;
   /** Stacked (phone) layout: two rows, no rail toggle; the rail tabs live at the bottom of the pane. */
   layout?: "split" | "stacked";
@@ -26,8 +27,11 @@ export interface CommandBarProps {
   runBusy: boolean;
   onRun(action: "start" | "pause" | "stop"): void;
   onSwitchRuntime(runtimeId: string): void;
+  /** A fresh conversation on the same agent; the current one stays in the task history. */
+  onNewSession?(): void;
+  /** New Job Copilot panes open with this pane's agent and account. */
+  onSetDefault(): void;
   onTogglePaused(checked: boolean): void;
-  onToggleAlerts(checked: boolean): void;
   onToggleRail(): void;
 }
 
@@ -45,8 +49,15 @@ function ProgressRing({ progress, state }: { progress: { done: number; total: nu
 
 const RUN_LABEL: Record<JobCopilotRunState, string> = { IDLE: "Idle", RUNNING: "Running", PAUSED: "Paused", STOPPED: "Stopped" };
 
-/** Agent chip with runtime picker, run state, today's counters and the compact toggles. */
-export function CommandBar({ pane, runtimeOptions, counts, runState, progress, paused, alerts, railOpen, layout = "split", switching, needsYou, runBusy, onRun, onSwitchRuntime, onTogglePaused, onToggleAlerts, onToggleRail }: CommandBarProps) {
+/** "2026-10-13" → "Oct 13", read as a local calendar day. */
+export function shortDay(day: string): string {
+  return new Date(`${day}T00:00:00`).toLocaleDateString("en", { month: "short", day: "numeric" });
+}
+
+/** Agent chip with runtime picker, run state, the counters since the first day and the compact toggles. */
+export function CommandBar({ pane, runtimeOptions, counts, stats = null, runState, progress, paused, railOpen, layout = "split", switching, needsYou, runBusy, onRun, onSwitchRuntime, onNewSession, onSetDefault, onTogglePaused, onToggleRail }: CommandBarProps) {
+  const shown = stats?.totals ?? counts;
+  const scope = stats?.firstDay ? `since ${shortDay(stats.firstDay)}` : "today";
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const runtimeId = pane.terminalRuntimeId ?? null;
@@ -93,6 +104,24 @@ export function CommandBar({ pane, runtimeOptions, counts, runState, progress, p
                 </button>
               );
             })}
+            {onNewSession ? (
+              <button type="button" role="menuitem" className="jc-menu-item" disabled={!runtimeId || switching}
+                onClick={() => { setMenuOpen(false); onNewSession(); }}>
+                <RefreshCw aria-hidden="true" />
+                <span className="jc-menu-item-copy">
+                  <strong>Start a new session</strong>
+                  <small>The copilot starts a fresh conversation; this one stays in the task history.</small>
+                </span>
+              </button>
+            ) : null}
+            <button type="button" role="menuitem" className="jc-menu-item jc-menu-default" disabled={!runtimeId}
+              onClick={() => { setMenuOpen(false); onSetDefault(); }}>
+              <BookmarkPlus aria-hidden="true" />
+              <span className="jc-menu-item-copy">
+                <strong>Set as default for new Job Copilot panes</strong>
+                <small>New panes open with this agent and account without asking.</small>
+              </span>
+            </button>
           </div>
         ) : null}
       </div>
@@ -101,6 +130,7 @@ export function CommandBar({ pane, runtimeOptions, counts, runState, progress, p
         <ProgressRing progress={progress} state={runState} />
         <span className="jc-run-label">{RUN_LABEL[runState]}{progress ? ` ${progress.done}/${progress.total}` : ""}</span>
         <span className="jc-run-queue" title="Queued postings">{counts.queued} queued</span>
+        {counts.deferred ? <span className="jc-run-queue" title={`Waiting for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)}`}>{counts.deferred} deferred</span> : null}
         {needsYou ? <span className="jc-run-needs" title="Questions or reviews waiting for you">{needsYou} need{needsYou === 1 ? "s" : ""} you</span> : null}
       </div>
       </div>
@@ -110,7 +140,8 @@ export function CommandBar({ pane, runtimeOptions, counts, runState, progress, p
           <button type="button" className="jc-button" disabled={runBusy} onClick={() => onRun("pause")} title="Pause after the current application"><Pause aria-hidden="true" /> Pause</button>
         ) : (
           <button type="button" className="jc-button primary" disabled={runBusy || (runState !== "PAUSED" && counts.queued === 0)} onClick={() => onRun("start")}
-            title={runState === "PAUSED" ? "Resume the run" : counts.queued === 0 ? "Queue a posting first" : "Start working through the queue"}>
+            title={runState === "PAUSED" ? "Resume the run" : counts.queued > 0 ? "Start working through the queue"
+              : counts.deferred ? `Every queued posting waits for an employer limit; the next one is free on ${counts.nextFreeAt?.slice(0, 10)}` : "Queue a posting first"}>
             <Play aria-hidden="true" /> {runState === "PAUSED" ? "Resume" : "Start"}
           </button>
         )}
@@ -119,24 +150,19 @@ export function CommandBar({ pane, runtimeOptions, counts, runState, progress, p
         ) : null}
       </div>
 
-      <div className="jc-counters" aria-label="Today">
-        <span className="jc-counter" title="Submitted today"><strong>{counts.applied}</strong> applied</span>
-        <span className="jc-counter ok" title="Verified with evidence today"><strong>{counts.verified}</strong> verified</span>
-        {counts.failed ? <span className="jc-counter bad" title="Failed today"><strong>{counts.failed}</strong> failed</span> : null}
-        {counts.needsUser ? <span className="jc-counter warn" title="Waiting for you"><strong>{counts.needsUser}</strong> need you</span> : null}
+      <div className="jc-counters" aria-label={scope === "today" ? "Today" : `Since ${scope.slice(6)}`}
+        title={stats ? `Today: ${stats.today.applied} applied, ${stats.today.verified} verified${stats.today.failed ? `, ${stats.today.failed} failed` : ""}` : undefined}>
+        <span className="jc-counter" title={`Submitted ${scope}`}><strong>{shown.applied}</strong> applied</span>
+        <span className="jc-counter ok" title={`Verified with evidence ${scope}`}><strong>{shown.verified}</strong> verified</span>
+        {shown.failed ? <span className="jc-counter bad" title={`Failed ${scope}`}><strong>{shown.failed}</strong> failed</span> : null}
+        {shown.needsUser ? <span className="jc-counter warn" title="Waiting for you"><strong>{shown.needsUser}</strong> need you</span> : null}
       </div>
 
       <div className="jc-bar-toggles">
         {layout === "stacked" ? (
-          <>
-            <SpaceToggle compact className="jc-toggle" label={<Pause aria-hidden="true" />} ariaLabel="Paused" title="Paused: the copilot opens no new posting" checked={paused} onChange={onTogglePaused} />
-            <SpaceToggle compact className="jc-toggle" label={<BellRing aria-hidden="true" />} ariaLabel="Handoff alerts" title="Alerts: chime and notification when the copilot needs you" checked={alerts} onChange={onToggleAlerts} />
-          </>
+          <SpaceToggle compact className="jc-toggle" label={<Pause aria-hidden="true" />} ariaLabel="Paused" title="Paused: the copilot opens no new posting" checked={paused} onChange={onTogglePaused} />
         ) : (
-          <>
-            <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={onTogglePaused} />
-            <SpaceToggle compact className="jc-toggle" label={<><BellRing aria-hidden="true" /> Alerts</>} ariaLabel="Handoff alerts" checked={alerts} onChange={onToggleAlerts} />
-          </>
+          <SpaceToggle compact className="jc-toggle" label="Paused" checked={paused} onChange={onTogglePaused} />
         )}
         {layout === "split" ? (
           <button type="button" className={`jc-icon-button${railOpen ? " selected" : ""}`} aria-pressed={railOpen} aria-label={railOpen ? "Collapse the copilot rail" : "Expand the copilot rail"} title={railOpen ? "Collapse rail" : "Expand rail"} onClick={onToggleRail}>

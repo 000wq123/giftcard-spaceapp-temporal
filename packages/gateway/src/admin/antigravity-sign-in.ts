@@ -45,10 +45,12 @@ export function registerAntigravitySignInRoutes(app: FastifyInstance, options: {
         planType: info.planType, credentialsEncrypted: cipher.encrypt(JSON.stringify(credentials), boundId),
         credentialsExpiresAt: new Date(expiresAtMs).toISOString(), source: "PROFILE_ADOPTION", sourceRef, lastRefreshAt: new Date(now()).toISOString()
       });
+      options.pool.signedIn(saved.id);
       await fetchQuotaSummary(accessToken, info.project, { fetchImpl: options.fetchImpl })
         .then((groups) => storeAntigravityUsage(options.repository, saved.id, groups)).catch(() => undefined);
       options.pool.invalidate();
-      const account = (await options.repository.listAccounts()).find((item) => item.id === saved.id) ?? saved;
+      // Read back through the pool, which pauses a free-plan account before anyone sees it active.
+      const account = (await options.pool.accounts()).find((item) => item.id === saved.id) ?? saved;
       return { status: "CONNECTED", account: publicAccountSummary(account) };
     } catch (error) {
       if (error instanceof AntigravityAuthError) {

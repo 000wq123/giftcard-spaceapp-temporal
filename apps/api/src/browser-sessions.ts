@@ -54,6 +54,7 @@ import {
   type GoogleBrowserCheck,
   type GoogleBrowserEvidence
 } from "./google-browser-session-check.js";
+import { childProcessEnv } from "./child-process-env.js";
 
 interface ViewportSize {
   width: number;
@@ -1674,6 +1675,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
   const googleCheckTimers = new Map<string, { timer: NodeJS.Timeout; forced: boolean }>();
   const googleProbeTargets = new Set<string>();
   const googleMainFrameUrls = new Map<string, string>();
+  // Popup page -> the page that opened it, so a popup that closes itself hands the pane back to its opener.
+  const pageOpeners = new Map<string, string>();
   const googleCheckStaleMs = 10 * 60_000;
   const redactedCheck = ({ status, reason, checkedAt, connectedAt }: GoogleBrowserCheck): GoogleAccountBrowserCheckResult => ({ status, reason, checkedAt, connectedAt });
 
@@ -2160,7 +2163,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
         "about:blank"
       ],
-      { env: { ...process.env, HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
+      { env: { ...childProcessEnv(), HOME: session.profilePath, ...audioEnv, ...(xvfb ? { DISPLAY: `:${display}` } : {}) } }
     );
     let client: CdpClient | undefined;
     try {
@@ -2176,6 +2179,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
           const info = event.params?.targetInfo as { targetId?: string; type?: string; openerId?: string } | undefined;
           if (typeof sid !== "string" || info?.type !== "page" || !info.targetId) return;
           profile.attachments.set(info.targetId, sid);
+          if (info.openerId) pageOpeners.set(info.targetId, info.openerId);
           const owner = profile.owners.get(info.targetId) ?? (info.openerId ? profile.owners.get(info.openerId) : undefined);
           if (owner) {
             void claimPage(owner, info.targetId, sid).catch(() => profile.client.send("Target.closeTarget", { targetId: info.targetId }).catch(() => undefined));
@@ -2193,6 +2197,10 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
             owner?.ownedPages.delete(id);
             owner?.pageSessions.delete(id);
             profile.owners.delete(id);
+            const opener = pageOpeners.get(id);
+            pageOpeners.delete(id);
+            // A page that closes itself (a sign-in popup) must not leave its pane on a dead target.
+            if (owner && owner.targetId === id && !owner.closing) void reactivateOwnedPage(owner, opener).catch(() => undefined);
           }
         }
       });
@@ -2229,6 +2237,15 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     await enablePageSecurity(profile.client, sid);
     await profile.client.send("Runtime.runIfWaitingForDebugger", {}, sid);
     return sid;
+  }
+
+  async function reactivateOwnedPage(runtime: BrowserRuntime, openerId: string | undefined): Promise<void> {
+    const sessionId = [...runtimes].find(([, candidate]) => candidate === runtime)?.[0];
+    const session = sessionId ? await store.getPaneBrowserSession(sessionId) : undefined;
+    if (!session?.isActive || closingAll || closingSessions.has(session.sessionId)) return;
+    const next = openerId && runtime.ownedPages.has(openerId) ? openerId : [...runtime.ownedPages][0] ?? await createOwnedPage(runtime, "about:blank");
+    await activateRuntimePage(session, runtime, next);
+    await refreshPages(session, runtime);
   }
 
   async function createOwnedPage(runtime: BrowserRuntime, url: string, background = false): Promise<string> {
@@ -2473,7 +2490,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       ],
       {
         env: {
-          ...process.env,
+          ...childProcessEnv(),
           PULSE_SERVER: config.browserSessionsPulseServer
         }
       }
@@ -3382,12 +3399,12 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       const pages = await refreshPages(session, runtime);
       if (!pages.pages.some((page) => page.pageId === pageId)) throw new SpaceNotFoundError(`Browser page ${pageId} was not found.`);
       if (pages.pages.length === 1) throw new SpaceConflictError("The last browser page cannot be closed.");
-      const closingActive = runtime.targetId === pageId;
-      await runtime.client.send("Target.closeTarget", { targetId: pageId });
-      if (closingActive) {
+      // Move off the page before closing it, so its detach never finds it active.
+      if (runtime.targetId === pageId) {
         const replacement = pages.pages.find((page) => page.pageId !== pageId);
         if (replacement) await activateRuntimePage(session, runtime, replacement.pageId);
       }
+      await runtime.client.send("Target.closeTarget", { targetId: pageId });
       return refreshPages(session, runtime);
     },
     acquireControl: (pane, input, _traceId, context) => acquireControl(pane, input, context),

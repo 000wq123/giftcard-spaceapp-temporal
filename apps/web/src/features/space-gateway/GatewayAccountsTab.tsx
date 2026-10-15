@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GatewayAccount, GatewayAccountDetail, GatewaySettings } from "@space/contracts";
+import { matchesAvailabilityFilter, type AccountAvailabilityFilter } from "../toolbar-metrics/account-availability.js";
+import { AvailabilityFilterBar, countAvailability } from "../toolbar-metrics/AccountQuotaCards.js";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { AddAccount, CopyButton } from "./gateway-add-account.js";
+import { AddAccount, CopyButton, SignInAgain } from "./gateway-add-account.js";
 import { RemainingBar, TrendChart } from "./gateway-charts.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import {
   accountName, accountStatusLabel, accountStatusTone, formatAgo, formatCostPrecise, formatCountdown, formatDateTime, formatPercent, formatTokens,
-  planLabel, providerLabel
+  gatewayAccountAvailability, planLabel, providerLabel
 } from "./space-gateway-model.js";
 
 const quotaGroupLabels: Record<string, string> = { gemini: "Gemini", claude: "Claude and GPT" };
@@ -48,18 +50,23 @@ function UsageWindows({ account, windows, now, compact = false }: {
   );
 }
 
-function tokenExpiry(expiresAt: string | null, now: number) {
+/** Accounts Space Gateway stopped using until they sign in again. */
+const needsSignIn = (account: Pick<GatewayAccount, "status">) => account.status === "REAUTH_REQUIRED" || account.status === "DEACTIVATED";
+
+function tokenExpiry(expiresAt: string | null, now: number, status: GatewayAccount["status"]) {
   if (!expiresAt) return "Unknown";
   const ms = Date.parse(expiresAt) - now;
   if (!Number.isFinite(ms)) return "Unknown";
-  if (ms <= 0) return "Expired (refreshed on next use)";
+  if (ms <= 0) return status === "REAUTH_REQUIRED" ? "Rejected or expired: sign in again" : "Expired (refreshed on next use)";
   return `Valid, ${formatCountdown(expiresAt, now).replace(/^Resets in/, "expires in")}`;
 }
 
 const yesNo = (value: boolean | null, yes: string, no: string) => (value === null ? "Unknown" : value ? yes : no);
 
-function AccountDetail({ account, client, settings, hideEmails, now, onChanged }: {
+function AccountDetail({ account, client, settings, hideEmails, now, openSignIn, onChanged }: {
   account: GatewayAccount; client: SpaceGatewayClient; settings: GatewaySettings | null; hideEmails: boolean; now: number;
+  /** Changes when the list's "Sign in again" label was clicked: opens the sign-in. */
+  openSignIn: number;
   onChanged: (message?: string) => void;
 }) {
   const [detail, setDetail] = useState<GatewayAccountDetail | null>(null);
@@ -69,7 +76,10 @@ function AccountDetail({ account, client, settings, hideEmails, now, onChanged }
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const [confirm, setConfirm] = useState<"remove" | "reset" | "export" | null>(null);
   const [exported, setExported] = useState<string | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
   const timeFormat = settings?.displayTimeFormat ?? "24H";
+  const signInNeeded = needsSignIn(account);
+  useEffect(() => { if (openSignIn && signInNeeded) setSigningIn(true); }, [openSignIn, signInNeeded]);
 
   const loadDetail = useCallback(async () => {
     try { setDetail(await client.accountDetail(account.id)); setDetailError(null); }
@@ -115,10 +125,39 @@ function AccountDetail({ account, client, settings, hideEmails, now, onChanged }
         <div className="gw-chips">
           <span className="space-gateway-chip">{providerLabel(account.provider)}</span>
           <span className="space-gateway-chip">{planLabel(account.planType)}</span>
-          <span className={`space-gateway-chip tone-${accountStatusTone(account.status)}`}>{accountStatusLabel(account.status)}</span>
+          {needsSignIn(account)
+            ? <button type="button" className={`space-gateway-chip tone-${accountStatusTone(account.status)} is-action`} aria-expanded={signingIn}
+              title="Sign this account in again" onClick={() => setSigningIn(true)}>{accountStatusLabel(account.status)}</button>
+            : <span className={`space-gateway-chip tone-${accountStatusTone(account.status)}`}>{accountStatusLabel(account.status)}</span>}
         </div>
       </header>
       {account.statusReason ? <p className="space-gateway-account-reason">{account.statusReason}</p> : null}
+      {needsSignIn(account) ? (
+        <div className="gw-signin-needed" role="status">
+          <span>Space Gateway no longer sends requests to this account. Sign it in again to bring it back.</span>
+          <button type="button" className="space-gateway-button primary" aria-expanded={signingIn} onClick={() => setSigningIn(!signingIn)}>
+            {signingIn ? "Close sign-in" : "Sign in again"}</button>
+        </div>
+      ) : null}
+      {signingIn && needsSignIn(account) ? (
+        <SignInAgain client={client} account={account} onConnected={(label, accountId) => {
+          setSigningIn(false);
+          onChanged(accountId && accountId !== account.id
+            ? `${label} was added as a different account. Sign in with ${name} to bring this one back.`
+            : `${name} is signed in again.`);
+        }} />
+      ) : null}
+      {account.provider === "CLAUDE" && account.planType === "api" ? (
+        <p className="space-gateway-note" data-testid="claude-api-key-role">
+          {settings?.claudeApiKeyFallback
+            ? "Fallback: serves Claude requests only while every pooled Claude account is out of quota; the accounts take over again at their next reset."
+            : "Not used: Claude API key fallback is off (Settings › Routing). Turn it on to serve requests while every pooled Claude account is out of quota."}
+          {" "}
+          <strong>{detail
+            ? detail.lifetime.requests === 0 && !account.lastUsedAt ? "Never used." : `Served ${formatTokens(detail.lifetime.requests)} requests · last used ${formatAgo(account.lastUsedAt, now, timeFormat)}.`
+            : account.lastUsedAt ? `Last used ${formatAgo(account.lastUsedAt, now, timeFormat)}.` : "Never used."}</strong>
+        </p>
+      ) : null}
 
       <form className="gw-inline-form" onSubmit={(event) => {
         event.preventDefault();
@@ -155,7 +194,7 @@ function AccountDetail({ account, client, settings, hideEmails, now, onChanged }
             <span className="space-gateway-note">Weekly plan: what would be left if the week were used evenly until its reset.</span>
           </div>
           <dl className="gw-facts" aria-label="Sign-in status">
-            <dt>Access token</dt><dd>{tokenExpiry(detail.tokenStatus.accessExpiresAt, now)}</dd>
+            <dt>Access token</dt><dd>{tokenExpiry(detail.tokenStatus.accessExpiresAt, now, account.status)}</dd>
             <dt>Refresh token</dt><dd>{yesNo(detail.tokenStatus.refreshStored, "Stored", "Missing")}</dd>
             <dt>ID token</dt><dd>{yesNo(detail.tokenStatus.idTokenParsed, "Parsed", "Not readable")}</dd>
             <dt>Last sign-in refresh</dt><dd>{formatDateTime(detail.tokenStatus.lastRefreshAt, timeFormat)}</dd>
@@ -218,17 +257,23 @@ function AccountDetail({ account, client, settings, hideEmails, now, onChanged }
   );
 }
 
-export function GatewayAccountsTab({ client, settings, initialAccountId, onChanged }: {
-  client: SpaceGatewayClient; settings: GatewaySettings | null; initialAccountId?: string | null; onChanged: () => void;
+export function GatewayAccountsTab({ client, settings, initialAccountId, initialAdd = null, onChanged }: {
+  client: SpaceGatewayClient; settings: GatewaySettings | null; initialAccountId?: string | null;
+  /** Open with the add-account form on Claude › API key (the Routing tab's shortcut). */
+  initialAdd?: "claude-api-key" | null; onChanged: () => void;
 }) {
   const [accounts, setAccounts] = useState<GatewayAccount[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [providerFilter, setProviderFilter] = useState("ALL");
+  const [planFilter, setPlanFilter] = useState("ALL");
+  const [availability, setAvailability] = useState<AccountAvailabilityFilter>("all");
   const [hideEmails, setHideEmails] = useState(true);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState(initialAdd !== null);
   const [selectedId, setSelectedId] = useState<string | null>(initialAccountId ?? null);
+  const [signInRequest, setSignInRequest] = useState<{ id: string; at: number } | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const windows = settings?.displayAccountWindows ?? "BOTH";
 
@@ -242,12 +287,21 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, onChang
     return () => window.clearInterval(timer);
   }, []);
 
-  const visible = useMemo(() => {
+  // Provider, plan and status narrow the list; the availability tiles count what is left (as Resources does per provider).
+  const providers = useMemo(() => [...new Set((accounts ?? []).map((account) => account.provider))].sort(), [accounts]);
+  const plans = useMemo(() => [...new Set((accounts ?? []).map((account) => account.planType ?? "unknown"))].sort(), [accounts]);
+  const narrowed = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return (accounts ?? []).filter((account) => (statusFilter === "ALL" || account.status === statusFilter) && (!needle
-      || [account.label, account.alias, account.email, account.id, account.planType, providerLabel(account.provider)]
-        .some((value) => value?.toLowerCase().includes(needle))));
-  }, [accounts, query, statusFilter]);
+    return (accounts ?? []).filter((account) => (statusFilter === "ALL" || account.status === statusFilter)
+      && (providerFilter === "ALL" || account.provider === providerFilter)
+      && (planFilter === "ALL" || (account.planType ?? "unknown") === planFilter)
+      && (!needle || [account.label, account.alias, account.email, account.id, account.planType, providerLabel(account.provider)]
+        .some((value) => value?.toLowerCase().includes(needle))))
+      .map((account) => ({ account, availability: gatewayAccountAvailability(account, now) }));
+  }, [accounts, query, statusFilter, providerFilter, planFilter, now]);
+  const counts = useMemo(() => countAvailability(narrowed), [narrowed]);
+  const visible = useMemo(() => narrowed.filter((entry) => matchesAvailabilityFilter(entry.availability.state, availability)).map((entry) => entry.account),
+    [narrowed, availability]);
   const selected = visible.find((account) => account.id === selectedId) ?? visible[0] ?? null;
 
   if (error && !accounts) return <p className="space-gateway-alert" role="alert">{error}</p>;
@@ -255,16 +309,26 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, onChang
   const showAdd = adding || accounts.length === 0;
   return (
     <div className="space-gateway-panel">
+      {accounts.length > 0 ? <AvailabilityFilterBar counts={counts} value={availability} onChange={setAvailability} /> : null}
       <div className="space-gateway-toolbar">
         <input className="gw-search" type="search" value={query} aria-label="Search accounts" placeholder="Search name, email, plan or id"
           onChange={(event) => setQuery(event.target.value)} />
+        <select className="gw-select" aria-label="Provider" value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}>
+          <option value="ALL">All providers</option>
+          {providers.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
+        </select>
+        <select className="gw-select" aria-label="Plan" value={planFilter} onChange={(event) => setPlanFilter(event.target.value)}>
+          <option value="ALL">All plans</option>
+          {plans.map((plan) => <option key={plan} value={plan}>{plan === "unknown" ? "Unknown plan" : planLabel(plan)}</option>)}
+        </select>
         <select className="gw-select" aria-label="Status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
           {statusFilters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
         <SpaceToggle checked={hideEmails} label="Hide emails" onChange={setHideEmails} />
         {accounts.length > 0 ? <button type="button" className="space-gateway-button" aria-expanded={showAdd} onClick={() => setAdding(!adding)}>{adding ? "Close" : "Add account"}</button> : null}
       </div>
-      {showAdd ? <AddAccount client={client} onConnected={() => { void load(); onChanged(); }} /> : null}
+      {showAdd ? <AddAccount client={client} onConnected={() => { void load(); onChanged(); }}
+        initialProvider={initialAdd === "claude-api-key" ? "CLAUDE" : undefined} initialClaudeMethod={initialAdd === "claude-api-key" ? "api-key" : undefined} /> : null}
       {settings ? <p className="space-gateway-note">Imports {settings.importWithoutOverwrite ? "never replace" : "may replace"} an account with the same email but a different upstream account (Settings).</p> : null}
       {error ? <p className="space-gateway-alert" role="alert">{error}</p> : null}
       {notice ? <p className="space-gateway-success" role="status">{notice}</p> : null}
@@ -274,9 +338,15 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, onChang
             {visible.length === 0 ? <li className="space-gateway-empty">No account matches.</li> : visible.map((account) => (
               <li key={account.id}>
                 <button type="button" className={`gw-list-item${selected?.id === account.id ? " is-selected" : ""} status-${account.status.toLowerCase()}`}
-                  aria-pressed={selected?.id === account.id} onClick={() => setSelectedId(account.id)}>
+                  aria-pressed={selected?.id === account.id} onClick={(event) => {
+                    setSelectedId(account.id);
+                    // The "Sign in again" label opens the account's sign-in.
+                    if ((event.target as HTMLElement).closest("[data-sign-in]")) setSignInRequest({ id: account.id, at: Date.now() });
+                  }}>
                   <span className="gw-list-title"><strong>{accountName(account)}</strong>
-                    <span className={`space-gateway-chip tone-${accountStatusTone(account.status)}`}>{accountStatusLabel(account.status)}</span></span>
+                    <span className={`space-gateway-chip tone-${accountStatusTone(account.status)}${needsSignIn(account) ? " is-action" : ""}`}
+                      data-sign-in={needsSignIn(account) ? "" : undefined} title={needsSignIn(account) ? "Sign this account in again" : undefined}>
+                      {accountStatusLabel(account.status)}</span></span>
                   <span className="space-gateway-note">{providerLabel(account.provider)} · {planLabel(account.planType)}{account.email ? ` · ${hideEmails ? "Email hidden" : account.email}` : ""}</span>
                   <UsageWindows account={account} windows={windows} now={now} compact />
                 </button>
@@ -284,7 +354,7 @@ export function GatewayAccountsTab({ client, settings, initialAccountId, onChang
             ))}
           </ul>
           {selected ? <AccountDetail key={selected.id} account={selected} client={client} settings={settings} hideEmails={hideEmails} now={now}
-            onChanged={(message) => { if (message) setNotice(message); void load(); onChanged(); }} /> : null}
+            openSignIn={signInRequest?.id === selected.id ? signInRequest.at : 0} onChanged={(message) => { if (message) setNotice(message); void load(); onChanged(); }} /> : null}
         </div>
       )}
     </div>

@@ -28,6 +28,8 @@ import {
   configureFilesHostMode
 } from "./files-service.js";
 import type {} from "./request-context.js";
+import type { SpaceStore } from "@space/runtime";
+import { recordAudit } from "./request-audit.js";
 import { applyFileResponsePolicy } from "./file-response-policy.js";
 import { acquireFileUpload, stageFileUpload, fileUploadLimits, type StagedUpload } from "./file-upload.js";
 import { initFilesCache, getDiskUsageAndCache } from "./files-cache.js";
@@ -60,8 +62,17 @@ function handleFileError(error: unknown, reply: FastifyReply) {
   });
 }
 
-export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEnabled?: boolean } = {}) {
+export function registerFilesRoutes(app: FastifyInstance, options: {
+  hostModeEnabled?: boolean;
+  store?: Pick<SpaceStore, "upsertUser" | "recordAuditEvent">;
+} = {}) {
   configureFilesHostMode(options.hostModeEnabled ?? true);
+  // Every Admin Mode change is audited: it can reach any host path the API user can write.
+  const auditAdminChange = async (request: FastifyRequest, mode: string | undefined, action: string, target: string) => {
+    if (mode === "admin" && options.store) {
+      await recordAudit(options.store, request, { action: `files.${action}`, targetType: "path", targetId: target });
+    }
+  };
   // Initialize background 24h disk & folder size cache
   initFilesCache();
 
@@ -139,6 +150,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         mode: body.mode,
         user: request.user
       });
+      await auditAdminChange(request, body.mode, "write", body.path);
       return reply.send(result);
     } catch (error) {
       return handleFileError(error, reply);
@@ -155,6 +167,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         mode: body.mode,
         user: request.user
       });
+      await auditAdminChange(request, body.mode, "create", body.path);
       return reply.send(result);
     } catch (error) {
       return handleFileError(error, reply);
@@ -171,6 +184,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         mode: body.mode,
         user: request.user
       });
+      await auditAdminChange(request, body.mode, "rename", `${body.oldPath} -> ${body.newPath}`);
       return reply.send(result);
     } catch (error) {
       return handleFileError(error, reply);
@@ -187,6 +201,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         mode: body.mode,
         user: request.user
       });
+      await auditAdminChange(request, body.mode, "chmod", body.path);
       return reply.send(result);
     } catch (error) {
       return handleFileError(error, reply);
@@ -203,6 +218,7 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         mode: body.mode,
         user: request.user
       });
+      await auditAdminChange(request, body.mode, body.recursive ? "delete-recursive" : "delete", result.path);
       return reply.send(result);
     } catch (error) {
       return handleFileError(error, reply);
@@ -252,9 +268,30 @@ export function registerFilesRoutes(app: FastifyInstance, options: { hostModeEna
         const { resolvedPath: directory } = assertAccessAllowed(targetDir, mode, request.user, WORKSPACE_ROOT);
         staged.push(await stageFileUpload({ directory, filename: part.filename, source: part.file, budget, signal: abort.signal }));
       }
-      // Validation and parsing failures never publish partial or truncated data.
-      for (const file of staged) await file.commit();
-      return reply.send({ ok: true, uploadedCount: staged.length, files: staged.map((file) => file.destination) });
+      // Validation and parsing failures never publish partial or truncated data. Files are then
+      // published one by one, so a later failure says which ones were already saved.
+      const saved: string[] = [];
+      let failed: string | null = null;
+      for (const file of staged) {
+        try {
+          await file.commit();
+          saved.push(file.destination);
+        } catch (error) {
+          if (!saved.length) throw error;
+          request.log.error({ err: error }, "file upload commit failed after earlier files were saved");
+          failed = file.destination;
+          break;
+        }
+      }
+      if (saved.length) await auditAdminChange(request, mode, "upload", saved.join(", "));
+      if (failed) {
+        throw new FilesystemError(
+          `${saved.length} of ${staged.length} files were saved (${saved.map((name) => path.basename(name)).join(", ")}); ${path.basename(failed)} and the files after it were not.`,
+          500,
+          "UPLOAD_PARTIALLY_SAVED"
+        );
+      }
+      return reply.send({ ok: true, uploadedCount: staged.length, files: saved });
     } catch (error) {
       return handleFileError(error, reply);
     } finally {

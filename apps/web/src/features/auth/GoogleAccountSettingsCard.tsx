@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { AuthMe } from "@space/contracts";
 import { CheckCircle2, Shield, Link2, Eye, EyeOff } from "../ui-theme/app-icons.js";
+import { api } from "../../api.js";
 import { GoogleAccountsManager } from "./GoogleAccountsManager.js";
 
 export function maskEmail(email: string): string {
@@ -57,13 +58,7 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
     setError(null);
     setSuccess(null);
     try {
-      const res = await fetch("/api/auth/google/configure", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId: configClientId.trim(), clientSecret: configClientSecret.trim() })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || data.error || "Failed to configure Google OAuth");
+      await api.configureGoogleOAuth({ clientId: configClientId.trim(), clientSecret: configClientSecret.trim() });
       await onAuthRefresh();
       setSuccess("Google OAuth configured successfully! You can now link your Google account.");
       setShowConfig(false);
@@ -96,14 +91,14 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
           />
         </svg>
         <span>
-          <strong>Google Account Single Sign-On</strong>
+          <strong>Sign in with Google</strong>
           <small>{isLinked ? "Connected to Google" : "Not connected"}</small>
         </span>
       </div>
 
       <div className="settings-flat-row" style={{ alignItems: "center", gridTemplateColumns: "1fr auto" }}>
         <span className="settings-flat-row-copy">
-          <strong>Space User</strong>
+          <strong>Signed in as</strong>
           <small style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
             <span data-sensitive-masked="manual">
               {user?.email
@@ -152,8 +147,9 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
         </span>
       </div>
 
-      <div className="settings-flat-row" style={{ alignItems: "center", gridTemplateColumns: "1fr auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0, flex: 1 }}>
+      {/* Wraps: in a narrow dock the button moves under the text instead of squeezing it. */}
+      <div className="settings-flat-row" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0, flex: "1 1 12rem" }}>
           {user?.avatarUrl ? (
             <img
               src={user.avatarUrl}
@@ -185,22 +181,22 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
             </div>
           )}
           <span className="settings-flat-row-copy" style={{ minWidth: 0 }}>
-            <strong>{isLinked ? "Google Account Linked" : "Google Account Link"}</strong>
-            <small style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <strong>{isLinked ? "Google account linked" : "Link a Google account"}</strong>
+            <small>
               {isLinked
                 ? (
                   <span data-sensitive-masked="manual">
-                    Active Google ID: {user?.googleId ? `${user.googleId.slice(0, 4)}••••${user.googleId.slice(-4)}` : ""}
+                    Google ID {user?.googleId ? `${user.googleId.slice(0, 4)}••••${user.googleId.slice(-4)}` : ""}
                   </span>
                 )
                 : googleAuthEnabled
-                  ? "Connect a Google account to sign in directly with Google SSO."
-                  : "Google OAuth is not configured on this server."}
+                  ? "Then you can sign in with Google in one click."
+                  : "Google sign-in is not turned on for this Space yet."}
             </small>
           </span>
         </div>
 
-        <div style={{ flexShrink: 0, justifySelf: "end" }}>
+        <div style={{ flexShrink: 0, marginLeft: "auto" }}>
           {isLinked ? (
             <span className="settings-flat-note">Manage linked accounts below</span>
           ) : (
@@ -337,20 +333,20 @@ export function GoogleAccountSettingsCard({ auth, onAuthRefresh }: GoogleAccount
 
       {error ? (
         <div className="validation-result bad" role="alert" style={{ marginTop: "0.5rem" }}>
-          <strong>GOOGLE_ACCOUNT_ERROR</strong>
+          <strong>Couldn't save</strong>
           <small>{error}</small>
         </div>
       ) : null}
 
       {success ? (
         <div className="validation-result ok" role="status" style={{ marginTop: "0.5rem" }}>
-          <strong>SUCCESS</strong>
+          <strong>Saved</strong>
           <small>{success}</small>
         </div>
       ) : null}
 
       <p className="settings-flat-note" style={{ marginTop: "0.75rem" }}>
-        Linking your Google account maps your Google identity directly to this existing Space user. All your existing rooms, terminal sessions, panes, and permissions remain completely intact.
+        Linking adds Google sign-in to this Space user. Your rooms, sessions, panes and permissions stay exactly as they are.
       </p>
     </section>
   );

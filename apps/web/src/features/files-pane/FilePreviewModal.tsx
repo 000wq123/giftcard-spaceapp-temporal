@@ -6,7 +6,7 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
-  Edit,
+  Pencil,
   Copy,
   Check,
   Code2,
@@ -478,7 +478,7 @@ export function FilePreviewModal({ entry, mode, onClose, onDownload, onEdit }: F
                     aria-label="Edit"
                     style={{ padding: "0 10px", height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}
                   >
-                    <Edit size={15} />
+                    <Pencil size={15} />
                   </button>
                 )}
               </>

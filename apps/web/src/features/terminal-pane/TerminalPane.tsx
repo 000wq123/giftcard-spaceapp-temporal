@@ -9,7 +9,8 @@ import {
 } from "./terminal-control-recovery.js";
 import { formatPlanAttachment } from "./plan-attachment.js";
 import { loadCliPhotoHistory, type TerminalUploadPreview } from "./cli-photo-history.js";
-import { cliBuildModeState, returnCliToBuildMode } from "./cli-build-mode.js";
+import { claudeFooterLines, claudeFooterModeLabel, cliBuildModeState, returnCliToBuildMode, type ClaudeFooterModeLabel } from "./cli-build-mode.js";
+import { claudeBackgroundAgentRunning } from "./claude-agent-panel.js";
 import type { TerminalActionAvailability } from "./terminal-action-availability.js";
 import { submitCliShortcut } from "./submit-cli-shortcut.js";
 import { CliShortcutsMenu, cliTranscriptCommand } from "./CliShortcutsMenu.js";
@@ -39,7 +40,9 @@ import type { PromptVariable } from "@space/contracts";
 import { GoogleGIcon } from "../ui-theme/GoogleGIcon.js";
 import { ClaudeIcon } from "../ui-theme/ClaudeIcon.js";
 import { CliAccountPicker } from "../cli-accounts/CliAccountPicker.js";
+import { CodexAccountPicker } from "../cli-accounts/CodexAccountPicker.js";
 import { cliAccountProfileForPane, isNewCliPane, NEW_PANE_WINDOW_MS } from "../cli-accounts/cli-account-default.js";
+import { hasCliAccountProfiles, readLastCliAccountProfileId, takeNewPaneAccount, writeLastCliAccountProfileId } from "../cli-accounts/cli-account-memory.js";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import type { IDisposable, Terminal as XtermTerminal } from "@xterm/xterm";
@@ -373,11 +376,15 @@ type NativePlanRuntimeId = "cli:gemini" | "cli:qwen" | "cli:omp";
 const TERMINAL_PANE_ACTION_EVENT = "space:terminal-pane-action";
 const CLI_DEBUG_MODE_STORAGE_KEY = "space.cliDebugMode";
 const TERMINAL_CONTROL_REPLAY_NOTICE = "Terminal control lease expired. Re-sending your last input.";
-const GEMINI_ACCOUNT_PROFILE_STORAGE_KEY = "space.gemini.lastAccountProfileId";
 const NEW_PANE_ACCOUNT_WAIT_MS = 3_000;
 const HIDDEN_INPUT_ECHO_TTL_MS = 5_000;
 const PASTE_INPUT_GUARD_MS = 2_500;
 const TURN_STOP_SETTLE_MS = 1_000;
+// Claude Code's chat:killAgents chord (Ctrl+X Ctrl+K). The first press only asks for a second
+// within 3 s, so one click never stops agents, and a double click must not confirm it either.
+const CLAUDE_STOP_BACKGROUND_AGENTS_SEQUENCE = "\u0018\u000b";
+const BACKGROUND_AGENT_STOP_CONFIRM_GAP_MS = 500;
+const BACKGROUND_AGENT_STOP_LABEL = "Stop background agents (click twice)";
 const CLIPBOARD_FAILURE_OUTPUT_PATTERN =
   /Failed to paste image:|clipboard unavailable: Unknown error while interacting with the clipboard:|X11 server connection timed out because it was unreachable/i;
 const CLIPBOARD_FAILURE_REPORT_WINDOW_MS = 20_000;
@@ -410,53 +417,11 @@ const HIDDEN_UPLOAD_NOTICE_DISMISS_MS = 1_600;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
 
-function readLastGeminiAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem(GEMINI_ACCOUNT_PROFILE_STORAGE_KEY) || "main";
-  } catch {
-    return "main";
-  }
-}
 
-function writeLastGeminiAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem(GEMINI_ACCOUNT_PROFILE_STORAGE_KEY, profileId);
-  } catch {
-    void 0;
-  }
-}
 
-function readLastCopilotAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem("space.cli.copilot.account-profile") || "main";
-  } catch {
-    return "main";
-  }
-}
 
-function writeLastCopilotAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem("space.cli.copilot.account-profile", profileId);
-  } catch {
-    void 0;
-  }
-}
 
-function readLastCursorAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem("space.cli.cursor.account-profile") || "main";
-  } catch {
-    return "main";
-  }
-}
 
-function writeLastCursorAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem("space.cli.cursor.account-profile", profileId);
-  } catch {
-    void 0;
-  }
-}
 
 /** Copilot, Cursor and Kimi panes may run on Auto (Space picks and moves the account); new panes follow the last choice. */
 function readLastAutoAccountMode(runtimeId: string): boolean {
@@ -475,37 +440,9 @@ function writeLastAutoAccountMode(runtimeId: string, auto: boolean): void {
   }
 }
 
-function readLastKimiAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem("space.cli.kimi.account-profile") || "main";
-  } catch {
-    return "main";
-  }
-}
 
-function writeLastKimiAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem("space.cli.kimi.account-profile", profileId);
-  } catch {
-    void 0;
-  }
-}
 
-function readLastClaudeAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem("space.cli.claude.account-profile") || "main";
-  } catch {
-    return "main";
-  }
-}
 
-function writeLastClaudeAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem("space.cli.claude.account-profile", profileId);
-  } catch {
-    void 0;
-  }
-}
 
 type TerminalModules = {
   Terminal: typeof import("@xterm/xterm").Terminal;
@@ -1570,8 +1507,9 @@ const CLAUDE_FOOTER_INTERRUPT_PATTERN = /esc to (?:interrupt|…)/i;
 
 function claudeScreenRunningState(screenText: string): boolean | null {
   if (CLAUDE_SPINNER_LINE_PATTERN.test(screenText)) return true;
-  const footer = screenText.split(/\r?\n/).filter((line) => line.trim()).slice(-4);
-  if (!footer.some((line) => CLAUDE_FOOTER_LINE_PATTERN.test(line))) return null;
+  // The background agent panel sits below the footer and can push it out of the last lines.
+  const footer = claudeFooterLines(screenText).slice(-4);
+  if (!footer.some((line) => CLAUDE_FOOTER_LINE_PATTERN.test(line) || claudeFooterModeLabel(line))) return null;
   return footer.some((line) => CLAUDE_FOOTER_INTERRUPT_PATTERN.test(line));
 }
 
@@ -1641,15 +1579,24 @@ const CLAUDE_PLAN_MODE_SHIFT_TABS: Record<ClaudePermissionMode, number> = {
   "auto mode on": 3
 };
 
+const CLAUDE_FOOTER_MODES: Record<ClaudeFooterModeLabel, ClaudePermissionMode> = {
+  "accept edits": "accept edits on",
+  "plan mode": "plan mode on",
+  "bypass permissions": "bypass permissions on",
+  "auto mode": "auto mode on",
+  "manual mode": "default mode"
+};
+
 function claudePermissionMode(screenText: string): ClaudePermissionMode | null {
-  const footerLines = screenText
-    .split(/\r?\n/)
-    .map((line) => line.toLowerCase().replace(/\s+/g, " ").trim())
-    .filter(Boolean)
+  const footerLines = claudeFooterLines(screenText)
+    .map((line) => line.toLowerCase())
     .slice(-4);
   const modes: ClaudePermissionMode[] = ["accept edits on", "plan mode on", "bypass permissions on", "auto mode on"];
   const candidates: Array<{ mode: ClaudePermissionMode; lineIndex: number; columnIndex: number }> = [];
   footerLines.forEach((line, lineIndex) => {
+    // The mode label is enough while background shells or a narrow pane drop the footer hints.
+    const label = claudeFooterModeLabel(line);
+    if (label) candidates.push({ mode: CLAUDE_FOOTER_MODES[label], lineIndex, columnIndex: line.indexOf(label) });
     const nearbyFooter = footerLines
       .slice(Math.max(0, lineIndex - 1), Math.min(footerLines.length, lineIndex + 2))
       .join(" ");
@@ -1697,7 +1644,8 @@ export function nextTerminalPromptDraft(
       }
       const sequence = /^\u001b(?:O[@-~]|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/.exec(data.slice(index));
       if (!sequence) return null;
-      if (isNonMutatingTerminalProtocolResponse(sequence[0])) {
+      // SGR mouse reports: Claude Code tracks every pointer move, and a move is not a prompt edit.
+      if (isNonMutatingTerminalProtocolResponse(sequence[0]) || /^\u001b\[<\d+;\d+;\d+[Mm]$/.test(sequence[0])) {
         index += sequence[0].length - 1;
         continue;
       }
@@ -1884,7 +1832,7 @@ export const TerminalPane = memo(function TerminalPane({
   const [registry, setRegistry] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [selectedRuntimeId, setSelectedRuntimeId] = useState(pane.terminalRuntimeId ?? DEFAULT_CLI_RUNTIME_ID);
   const [geminiAccountProfiles, setGeminiAccountProfiles] = useState<CliAccountProfile[]>([]);
-  const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(readLastGeminiAccountProfileId);
+  const [selectedGeminiAccountProfileId, setSelectedGeminiAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:gemini"));
   const [uploadPreviewsOpen, setUploadPreviewsOpen] = useState(false);
   const [uploadPreviewPage, setUploadPreviewPage] = useState(0);
   const [photoHistoryError, setPhotoHistoryError] = useState(false);
@@ -2125,6 +2073,9 @@ export const TerminalPane = memo(function TerminalPane({
   const [fallbackRunActive, setFallbackRunActive] = useState(false);
   const fallbackRunIdleTimerRef = useRef<number | null>(null);
   const [terminalScreenRunning, setTerminalScreenRunning] = useState(false);
+  // Claude Code keeps working in background agents after its main turn ends and its prompt takes new
+  // input. The pane is working, but there is no turn to interrupt and the composer stays usable.
+  const [backgroundAgentsRunning, setBackgroundAgentsRunning] = useState(false);
   const [terminalScreenWorkingMs, setTerminalScreenWorkingMs] = useState<number | null>(null);
   const [terminalPlanMode, setTerminalPlanMode] = useState<TerminalActionAvailability["planMode"]>(null);
   const [promptSeenSessionId, setPromptSeenSessionId] = useState<string | null>(null);
@@ -2148,6 +2099,7 @@ export const TerminalPane = memo(function TerminalPane({
     const screenText = terminalCurrentScreenText(terminal);
     const runtimeId = sessionResponseRef.current?.session.runtimeId ?? null;
     const isRunning = isTerminalScreenRunningText(screenText, runtimeId);
+    setBackgroundAgentsRunning(runtimeId === CLAUDE_CLI_RUNTIME_ID && claudeBackgroundAgentRunning(terminal));
     const screenWorkingMs = extractTerminalScreenWorkingTimeMs(screenText, runtimeId);
     if (lastScannedScreenTextRef.current !== null && screenText !== lastScannedScreenTextRef.current) {
       setTerminalScreenActive(true);
@@ -2398,18 +2350,19 @@ export const TerminalPane = memo(function TerminalPane({
   const isCursorRuntime = selectedRuntimeId === "cli:cursor";
   const isKimiRuntime = selectedRuntimeId === "cli:kimi";
   const isClaudeRuntime = selectedRuntimeId === "cli:claude";
+  const isCodexRuntime = selectedRuntimeId === DEFAULT_CLI_RUNTIME_ID;
   const [copilotAccountProfiles, setCopilotAccountProfiles] = useState<CliAccountProfile[]>([]);
-  const [selectedCopilotAccountProfileId, setSelectedCopilotAccountProfileId] = useState(readLastCopilotAccountProfileId);
+  const [selectedCopilotAccountProfileId, setSelectedCopilotAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:copilot"));
   const [cursorAccountProfiles, setCursorAccountProfiles] = useState<CliAccountProfile[]>([]);
-  const [selectedCursorAccountProfileId, setSelectedCursorAccountProfileId] = useState(readLastCursorAccountProfileId);
+  const [selectedCursorAccountProfileId, setSelectedCursorAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:cursor"));
   const [kimiAccountProfiles, setKimiAccountProfiles] = useState<CliAccountProfile[]>([]);
-  const [selectedKimiAccountProfileId, setSelectedKimiAccountProfileId] = useState(readLastKimiAccountProfileId);
+  const [selectedKimiAccountProfileId, setSelectedKimiAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:kimi"));
   // Copilot and Cursor panes on Auto: Space picks the account with the most room and moves the pane when it runs out.
   const [autoAccountMode, setAutoAccountMode] = useState(false);
   const autoAccountModeRef = useRef(false);
   autoAccountModeRef.current = autoAccountMode;
   const [claudeAccountProfiles, setClaudeAccountProfiles] = useState<CliAccountProfile[]>([]);
-  const [selectedClaudeAccountProfileId, setSelectedClaudeAccountProfileId] = useState(readLastClaudeAccountProfileId);
+  const [selectedClaudeAccountProfileId, setSelectedClaudeAccountProfileId] = useState(() => readLastCliAccountProfileId("cli:claude"));
   // The latest account profile list of this pane's CLI; a new pane waits for it before it starts its CLI.
   const accountProfilesLoadRef = useRef<{ runtimeId: string; result: Promise<ListCliAccountProfilesResponse> } | null>(null);
   const selectedUploadPreviewIndex = useMemo(
@@ -2489,13 +2442,14 @@ export const TerminalPane = memo(function TerminalPane({
       sessionResponse.websocket
   );
   const isTurnRunning = Boolean(activeCliTurn || modelSettings?.isTurnActive || fallbackRunActive || terminalScreenRunning);
+  const isPaneWorking = isTurnRunning || backgroundAgentsRunning;
 
   useEffect(() => {
     onWorkingStateChange?.({
-      isWorking: isTurnRunning,
+      isWorking: isPaneWorking,
       screenWorkingMs: terminalScreenWorkingMs
     });
-  }, [isTurnRunning, terminalScreenWorkingMs, onWorkingStateChange]);
+  }, [isPaneWorking, terminalScreenWorkingMs, onWorkingStateChange]);
   const turnControlState = isTurnRunning
     ? "running"
     : terminalPromptDraft.trim() &&
@@ -2505,11 +2459,15 @@ export const TerminalPane = memo(function TerminalPane({
       ? "ready"
       : "idle";
   const canSendTurn = turnControlState === "ready";
+  // With an empty prompt the button stops Claude's background agents; a typed prompt keeps Send.
+  const stopsBackgroundAgents = backgroundAgentsRunning && turnControlState === "idle";
+  const showsTurnStop = isTurnRunning || stopsBackgroundAgents;
   // After Stop the button would turn into Send under the pointer; hold it briefly so a double
   // click neither submits the draft nor sends a second interrupt (Ctrl+C twice exits some CLIs).
   const [turnStopPending, setTurnStopPending] = useState(false);
   const turnControlStopping = turnStopPending || (stopCooldown && isTurnRunning);
   const turnStopPendingTimerRef = useRef<number | null>(null);
+  const lastBackgroundAgentStopAtRef = useRef(0);
   useEffect(() => () => {
     if (turnStopPendingTimerRef.current !== null) window.clearTimeout(turnStopPendingTimerRef.current);
   }, []);
@@ -3573,7 +3531,7 @@ export const TerminalPane = memo(function TerminalPane({
         setGeminiAccountProfiles(result.profiles);
         setSelectedGeminiAccountProfileId((current) => {
           const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastGeminiAccountProfileId(profileId);
+          writeLastCliAccountProfileId("cli:gemini", profileId);
           return profileId;
         });
       }).catch(() => {
@@ -3599,7 +3557,7 @@ export const TerminalPane = memo(function TerminalPane({
         setCopilotAccountProfiles(result.profiles);
         setSelectedCopilotAccountProfileId((current) => {
           const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCopilotAccountProfileId(profileId);
+          writeLastCliAccountProfileId("cli:copilot", profileId);
           return profileId;
         });
       }).catch(() => {
@@ -3625,7 +3583,7 @@ export const TerminalPane = memo(function TerminalPane({
         setCursorAccountProfiles(result.profiles);
         setSelectedCursorAccountProfileId((current) => {
           const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastCursorAccountProfileId(profileId);
+          writeLastCliAccountProfileId("cli:cursor", profileId);
           return profileId;
         });
       }).catch(() => {
@@ -3651,7 +3609,7 @@ export const TerminalPane = memo(function TerminalPane({
         setKimiAccountProfiles(result.profiles);
         setSelectedKimiAccountProfileId((current) => {
           const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastKimiAccountProfileId(profileId);
+          writeLastCliAccountProfileId("cli:kimi", profileId);
           return profileId;
         });
       }).catch(() => {
@@ -3677,7 +3635,7 @@ export const TerminalPane = memo(function TerminalPane({
         setClaudeAccountProfiles(result.profiles);
         setSelectedClaudeAccountProfileId((current) => {
           const profileId = cliAccountProfileForPane(result, current, isNewCliPane(pane.createdAt, Boolean(sessionResponseRef.current)));
-          writeLastClaudeAccountProfileId(profileId);
+          writeLastCliAccountProfileId("cli:claude", profileId);
           return profileId;
         });
       }).catch(() => {
@@ -3729,23 +3687,23 @@ export const TerminalPane = memo(function TerminalPane({
     if (session?.runtimeId === "cli:gemini") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedGeminiAccountProfileId(profileId);
-      writeLastGeminiAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:gemini", profileId);
     } else if (session?.runtimeId === "cli:copilot") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedCopilotAccountProfileId(profileId);
-      writeLastCopilotAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:copilot", profileId);
     } else if (session?.runtimeId === "cli:cursor") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedCursorAccountProfileId(profileId);
-      writeLastCursorAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:cursor", profileId);
     } else if (session?.runtimeId === "cli:kimi") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedKimiAccountProfileId(profileId);
-      writeLastKimiAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:kimi", profileId);
     } else if (session?.runtimeId === "cli:claude") {
       const profileId = session.accountProfileId ?? "main";
       setSelectedClaudeAccountProfileId(profileId);
-      writeLastClaudeAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:claude", profileId);
     }
   }, [sessionResponse?.session.accountProfileId, sessionResponse?.session.runtimeId]);
 
@@ -5794,19 +5752,19 @@ export const TerminalPane = memo(function TerminalPane({
     }
     if (runtimeId === "cli:gemini") {
       setSelectedGeminiAccountProfileId(profileId);
-      writeLastGeminiAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:gemini", profileId);
     } else if (runtimeId === "cli:copilot") {
       setSelectedCopilotAccountProfileId(profileId);
-      writeLastCopilotAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:copilot", profileId);
     } else if (runtimeId === "cli:cursor") {
       setSelectedCursorAccountProfileId(profileId);
-      writeLastCursorAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:cursor", profileId);
     } else if (runtimeId === "cli:kimi") {
       setSelectedKimiAccountProfileId(profileId);
-      writeLastKimiAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:kimi", profileId);
     } else {
       setSelectedClaudeAccountProfileId(profileId);
-      writeLastClaudeAccountProfileId(profileId);
+      writeLastCliAccountProfileId("cli:claude", profileId);
     }
     if (!sessionResponseRef.current || profileId === currentProfileId) return;
     if (runtimeId === "cli:gemini" || runtimeId === "cli:claude") {
@@ -5999,20 +5957,27 @@ export const TerminalPane = memo(function TerminalPane({
   async function newPaneAccountProfileId(): Promise<string | undefined> {
     const runtimeId = selectedRuntime?.id;
     const load = accountProfilesLoadRef.current;
-    if (!load || load.runtimeId !== runtimeId) return undefined;
-    const remembered = runtimeId === "cli:gemini" ? readLastGeminiAccountProfileId()
-      : runtimeId === "cli:copilot" ? readLastCopilotAccountProfileId()
-        : runtimeId === "cli:cursor" ? readLastCursorAccountProfileId()
-        : runtimeId === "cli:kimi" ? readLastKimiAccountProfileId()
-          : runtimeId === "cli:claude" ? readLastClaudeAccountProfileId() : null;
-    if (remembered === null) return undefined;
+    if (!runtimeId || !hasCliAccountProfiles(runtimeId) || !load || load.runtimeId !== runtimeId) return undefined;
     let timer: number | undefined;
     const result = await Promise.race([
       load.result.catch(() => null),
       new Promise<null>((resolve) => { timer = window.setTimeout(() => resolve(null), NEW_PANE_ACCOUNT_WAIT_MS); })
     ]);
     window.clearTimeout(timer);
-    return result ? cliAccountProfileForPane(result, remembered, true) : undefined;
+    if (!result) return undefined;
+    // A copilot pane (Job, Mail) starts on the account chosen for it (launch dialog, Settings → Job/Mail Copilot).
+    const jobCopilotAccount = await jobCopilotPaneAccount(runtimeId);
+    if (jobCopilotAccount && result.profiles.some((profile) => profile.profileId === jobCopilotAccount)) return jobCopilotAccount;
+    return cliAccountProfileForPane(result, readLastCliAccountProfileId(runtimeId), true);
+  }
+
+  /** The account a pane was opened for on this device, else the user's Job/Mail/Marketing Copilot default for this CLI; null for other panes. */
+  async function jobCopilotPaneAccount(runtimeId: string): Promise<string | null> {
+    const opened = takeNewPaneAccount(pane.id, runtimeId);
+    if (opened || (pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT")) return opened;
+    const settings = await api.userSettings().catch(() => null);
+    const saved = pane.mode === "JOB_APPLY" ? settings?.jobCopilot : pane.mode === "MAIL_COPILOT" ? settings?.mailCopilot : settings?.marketingCopilot;
+    return saved?.runtimeId === runtimeId ? saved.accountProfileId ?? null : null;
   }
 
   function triggerTerminalSocketRecovery(source: string): void {
@@ -6117,7 +6082,7 @@ export const TerminalPane = memo(function TerminalPane({
       } else {
         if (paneAgeMs <= NEW_PANE_WINDOW_MS) {
           const runtimeId = selectedRuntime?.id ?? "";
-          if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId)) {
+          if ((runtimeId === "cli:copilot" || runtimeId === "cli:cursor" || runtimeId === "cli:kimi") && readLastAutoAccountMode(runtimeId) && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") {
             setAutoAccountMode(true);
             await requestCliSession({ accountMode: "AUTO" });
           } else {
@@ -6842,6 +6807,11 @@ export const TerminalPane = memo(function TerminalPane({
     const identity = sessionResponseRef.current?.session;
     const socket = socketRef.current;
     if (!identity || identity.purpose !== "NORMAL" || !socket) return;
+    // Claude reaches Plan with Shift+Tab, which keeps the draft; "/plan" would be typed into it.
+    if (command.action === "plan" && identity.runtimeId === CLAUDE_CLI_RUNTIME_ID) {
+      window.dispatchEvent(new CustomEvent(TERMINAL_PANE_ACTION_EVENT, { detail: { paneId: pane.id, action: "ensure_plan_mode" } }));
+      return;
+    }
     const isCurrent = () => shortcutLiveRef.current && isVisibleRef.current && !paneMinimizedRef.current &&
       sessionResponseRef.current?.session.sessionId === identity.sessionId && socketRef.current === socket &&
       readySocketRef.current?.socket === socket && socket.readyState === WebSocket.OPEN;
@@ -6876,11 +6846,13 @@ export const TerminalPane = memo(function TerminalPane({
         setNotice(null);
         setError(null);
         if (!isCurrent()) throw new Error("CLI connection or room changed. Shortcut cancelled.");
-        if (isTurnRunning) throw new Error("Wait for the current CLI turn to finish before changing modes.");
+        // Claude leaves Plan with Shift+Tab, which works mid-turn and keeps the draft.
+        const claudeModeCycle = command.action === "build" && identity.runtimeId === CLAUDE_CLI_RUNTIME_ID;
+        if (isTurnRunning && !claudeModeCycle) throw new Error("Wait for the current CLI turn to finish before changing modes.");
         if (command.action === "build" && identity.runtimeId === "cli:hermes" && terminalPromptDraftRef.current.text.trim() === "/plan") {
           if (!sendTerminalInput("\u0015", "Clear Hermes planning prefix")) throw new Error("Planning prefix could not be cleared.");
         }
-        if (terminalPromptDraftRef.current.text.trim()) throw new Error("Send or clear the current CLI draft before changing modes.");
+        if (terminalPromptDraftRef.current.text.trim() && !claudeModeCycle) throw new Error("Send or clear the current CLI draft before changing modes.");
         if (command.action === "build") {
           await returnCliToBuildMode(identity.runtimeId, {
             screen: () => terminalRef.current ? terminalCurrentScreenText(terminalRef.current) : "",
@@ -7308,6 +7280,14 @@ export const TerminalPane = memo(function TerminalPane({
       }, TURN_STOP_SETTLE_MS);
       stopRunningCliTurn("floating turn pause");
       startStopCooldown();
+      return;
+    }
+    if (stopsBackgroundAgents) {
+      const now = Date.now();
+      if (now - lastBackgroundAgentStopAtRef.current < BACKGROUND_AGENT_STOP_CONFIRM_GAP_MS) return;
+      if (sendTerminalInput(CLAUDE_STOP_BACKGROUND_AGENTS_SEQUENCE, "floating stop background agents", "visible", true, { trackDraft: false })) {
+        lastBackgroundAgentStopAtRef.current = now;
+      }
       return;
     }
     if (!canSendTurn) return;
@@ -8936,6 +8916,7 @@ export const TerminalPane = memo(function TerminalPane({
             onSelect={(profileId) => switchCliAccountProfile("cli:claude", profileId)}
           />
         ) : null}
+        {isCodexRuntime ? <CodexAccountPicker paneTitle={pane.title} disabled={pending || observerOnly} /> : null}
 
         <div
           ref={transcriptRef}
@@ -9120,13 +9101,13 @@ export const TerminalPane = memo(function TerminalPane({
                 <button
                   type="button"
                   className="terminal-turn-control"
-                  data-state={turnControlStopping ? "stopping" : turnControlState}
-                  aria-label={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
-                  title={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : "Send prompt"}
-                  disabled={turnControlStopping || (isTurnRunning ? terminalStatus !== "attached" : !canSendTurn)}
+                  data-state={turnControlStopping ? "stopping" : showsTurnStop ? "running" : turnControlState}
+                  aria-label={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : stopsBackgroundAgents ? BACKGROUND_AGENT_STOP_LABEL : "Send prompt"}
+                  title={turnControlStopping ? "Stopping…" : isTurnRunning ? floatingTurnControlStopLabel(sessionResponse?.session.runtimeId ?? null) : stopsBackgroundAgents ? BACKGROUND_AGENT_STOP_LABEL : "Send prompt"}
+                  disabled={turnControlStopping || (showsTurnStop ? terminalStatus !== "attached" : !canSendTurn)}
                   onClick={handleTurnControlClick}
                 >
-                  {turnControlStopping || isTurnRunning ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
+                  {turnControlStopping || showsTurnStop ? <Square aria-hidden="true" fill="currentColor" /> : <ArrowUp aria-hidden="true" />}
                 </button>
               ) : null}
             </div>

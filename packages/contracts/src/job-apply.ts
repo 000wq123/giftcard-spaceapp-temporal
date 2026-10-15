@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { connectorCapabilitySchema } from "./dot-connectors.js";
+import { copilotAccountProfileIdSchema } from "./copilot.js";
 
 // Job Applications pane: one pane owns a managed browser session (live view,
 // operator handoff) and a CLI agent session. Pane metadata holds only pane-level
@@ -40,6 +42,12 @@ export const jobApplyPaneSettingsSchema = z.object({
 }).strict().refine(value => value.minDelayMs <= value.maxDelayMs, "Minimum delay must not exceed the maximum delay.");
 export type JobApplyPaneSettings = z.infer<typeof jobApplyPaneSettingsSchema>;
 
+/** A CLI account profile id ("main", a named profile or "space-gateway"); shared with every copilot pane. */
+export const jobCopilotAccountProfileIdSchema = copilotAccountProfileIdSchema;
+
+// Part of the pane row: the Browser Host parses pane rows with the contracts it loaded at start
+// (ADR-011 item 13), so a new key here breaks its browser starts until a guarded host restart.
+// The pane's CLI account lives in its CLI session, never here.
 export const jobApplyPaneMetadataSchema = z.object({
   version: z.literal(1),
   settings: jobApplyPaneSettingsSchema
@@ -80,15 +88,61 @@ export const jobApplicationSchema = z.object({
   appliedAt: isoDateTime.nullable().default(null),
   /** Order inside the pane queue while QUEUED; null once taken or never queued through the copilot. */
   queuePosition: z.number().int().min(0).nullable().default(null),
+  /** A QUEUED posting deferred until an employer-side limit expires; space_job_next serves it from this time on. */
+  notBefore: isoDateTime.nullable().optional(),
   createdAt: isoDateTime,
   updatedAt: isoDateTime
 }).strict();
 export type JobApplication = z.infer<typeof jobApplicationSchema>;
 
+/** Deferred: QUEUED with a notBefore still in the future (an employer limit has not expired yet). */
+export function isDeferredJobApplication(application: Pick<JobApplication, "status" | "notBefore">, nowIso: string = new Date().toISOString()): boolean {
+  return application.status === "QUEUED" && Boolean(application.notBefore) && Date.parse(application.notBefore!) > Date.parse(nowIso);
+}
+/**
+ * The queue the copilot may take from now: deferred rows wait for their date, and a deferred row holds every other
+ * queued posting of its company (case-insensitive), so a limit is not spent again on another posting.
+ */
+export function jobApplicationQueueHolds<T extends Pick<JobApplication, "status" | "notBefore" | "company">>(queue: T[], nowIso: string = new Date().toISOString()) {
+  const holds = new Map<string, string>();
+  for (const row of queue) {
+    if (!isDeferredJobApplication(row, nowIso)) continue;
+    const key = row.company.trim().toLowerCase();
+    const until = holds.get(key);
+    if (!until || row.notBefore! > until) holds.set(key, row.notBefore!);
+  }
+  return { holds, eligible: queue.filter((row) => !holds.has(row.company.trim().toLowerCase())) };
+}
+
+/** Rows imported from an earlier campaign tracker carry a synthetic URL and their original id in the notes. */
+export const JOB_APPLY_IMPORTED_URL_PREFIX = "https://space.local/imported/";
+export const JOB_APPLY_UNRECORDED_ROLE = "Title not recorded";
+/** Note a sent application gets when Check with Gmail found no confirmation email for it. */
+export const JOB_APPLY_NO_CONFIRMATION_NOTE = "no confirmation email found";
+export function isImportedJobApplication(application: Pick<JobApplication, "url">): boolean {
+  return application.url.startsWith(JOB_APPLY_IMPORTED_URL_PREFIX);
+}
+/**
+ * The real posting of an imported row, rebuilt from the earlier tracker's id: LinkedIn "linkedin_<job id>",
+ * Greenhouse "<board token>_<job id>", Ashby "<organization>_<posting uuid>". Null when the id says nothing.
+ */
+export function importedJobPostingUrl(application: Pick<JobApplication, "url" | "notes" | "ats">): string | null {
+  if (!isImportedJobApplication(application)) return null;
+  const id = /imported id: ([^\s|]+)/.exec(application.notes ?? "")?.[1] ?? decodeURIComponent(application.url.split("/").pop() ?? "");
+  const linkedin = /^linkedin_(\d{6,})$/.exec(id);
+  if (linkedin) return `https://www.linkedin.com/jobs/view/${linkedin[1]}/`;
+  const greenhouse = /^([a-z0-9][a-z0-9-]{0,80})_(\d{5,})$/i.exec(id);
+  if (greenhouse && application.ats === "greenhouse") return `https://job-boards.greenhouse.io/${greenhouse[1]}/jobs/${greenhouse[2]}`;
+  const ashby = /^([a-z0-9][a-z0-9.-]{0,80})_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(id);
+  if (ashby && application.ats === "ashby") return `https://jobs.ashbyhq.com/${ashby[1]}/${ashby[2]}`;
+  return null;
+}
+
 export const jobApplicationTransitions: Readonly<Record<JobApplicationStatus, ReadonlyArray<JobApplicationStatus>>> = Object.freeze({
   QUEUED: ["FILLING", "FAILED"],
-  FILLING: ["NEEDS_USER", "SUBMITTED", "FAILED"],
-  NEEDS_USER: ["FILLING", "SUBMITTED", "FAILED"],
+  // Back to QUEUED (with notBefore) when an employer-side limit stops the application until a later date.
+  FILLING: ["NEEDS_USER", "SUBMITTED", "FAILED", "QUEUED"],
+  NEEDS_USER: ["FILLING", "SUBMITTED", "FAILED", "QUEUED"],
   SUBMITTED: ["VERIFIED", "FAILED"],
   VERIFIED: [],
   FAILED: ["QUEUED"]
@@ -169,6 +223,27 @@ export const jobApplyMailboxInputSchema = jobApplyMailboxConfigSchema.extend({
 }).strict();
 export type JobApplyMailboxInput = z.infer<typeof jobApplyMailboxInputSchema>;
 
+/**
+ * The Google account Job Copilot works with: the pane browser opens it, and the copilot reads mail
+ * (codes, links, recruiter replies), drafts replies and keeps the calendar through the owner's
+ * Google connector. `capabilities` is what the owner allowed Space for that account (empty until
+ * Google access is allowed); `available` is false when this server has no Google sign-in.
+ */
+export const jobApplyGoogleAccountSchema = z.object({
+  email: z.string().trim().min(3).max(320),
+  capabilities: z.array(connectorCapabilitySchema).max(4),
+  available: z.boolean()
+}).strict();
+export type JobApplyGoogleAccount = z.infer<typeof jobApplyGoogleAccountSchema>;
+/** A Google account allowed for Space and what it allowed; Job Copilot reads mail from every one with MAIL_READ. */
+export const jobApplyGoogleMailAccountSchema = z.object({
+  email: z.string().trim().min(3).max(320),
+  capabilities: z.array(connectorCapabilitySchema).max(4)
+}).strict();
+export type JobApplyGoogleMailAccount = z.infer<typeof jobApplyGoogleMailAccountSchema>;
+export const jobApplyGoogleAccountInputSchema = z.object({ email: z.string().trim().toLowerCase().email().max(320).nullable() }).strict();
+export type JobApplyGoogleAccountInput = z.infer<typeof jobApplyGoogleAccountInputSchema>;
+
 export const jobApplyProfileSchema = z.object({
   ownerUserId: z.string().min(1).max(200),
   candidate: jobApplyCandidateSchema,
@@ -178,9 +253,22 @@ export const jobApplyProfileSchema = z.object({
   cvTextChars: z.number().int().min(0),
   mailbox: jobApplyMailboxConfigSchema.nullable(),
   mailboxVerifiedAt: isoDateTime.nullable(),
+  google: jobApplyGoogleAccountSchema.nullable().default(null),
+  /** Every Google account allowed for Space; the copilot reads codes, links and mail from all with MAIL_READ. */
+  googleAccounts: z.array(jobApplyGoogleMailAccountSchema).max(20).default([]),
+  /** Whether this server can ask Google for access (Google sign-in configured). */
+  googleAvailable: z.boolean().default(false),
+  /** The last "Reset and start over": totals count from here; earlier applications are archived history. */
+  campaignStartedAt: isoDateTime.nullable().default(null),
   updatedAt: isoDateTime
 }).strict();
 export type JobApplyProfile = z.infer<typeof jobApplyProfileSchema>;
+
+/** Whether the copilot can read verification mail: Gmail of a Google account allowed for Space, or an IMAP mailbox. */
+export function jobApplyMailboxConnected(profile: Pick<JobApplyProfile, "mailbox" | "google"> & { googleAccounts?: JobApplyProfile["googleAccounts"] }): boolean {
+  return profile.mailbox !== null || Boolean(profile.google?.capabilities.includes("MAIL_READ"))
+    || Boolean(profile.googleAccounts?.some((account) => account.capabilities.includes("MAIL_READ")));
+}
 
 export const jobApplyProfileUpdateSchema = z.object({
   candidate: jobApplyCandidateSchema.optional(),
@@ -207,6 +295,8 @@ export const jobApplicationUpdateSchema = z.object({
   evidenceArtifactIds: z.array(artifactIdSchema).max(20).optional(),
   externalConfirmation: z.string().trim().max(500).nullable().optional(),
   appliedAt: isoDateTime.nullable().optional(),
+  /** With status QUEUED: defer the posting until this time (an employer limit); null clears a deferral. */
+  notBefore: isoDateTime.nullable().optional(),
   company: z.string().trim().min(1).max(200).optional(),
   role: z.string().trim().min(1).max(300).optional()
 }).strict();
@@ -214,13 +304,90 @@ export type JobApplicationUpdate = z.infer<typeof jobApplicationUpdateSchema>;
 
 export const jobApplicationListQuerySchema = z.object({
   status: jobApplicationStatusSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(500).default(200)
+  limit: z.coerce.number().int().min(1).max(2000).default(200)
 }).strict();
+
+/** The browser's IANA zone: the per-day history is counted in the operator's own days. */
+export const jobApplyStatsQuerySchema = z.object({
+  tz: z.string().min(1).max(64).refine((zone) => {
+    try { new Intl.DateTimeFormat("en", { timeZone: zone }); return true; } catch { return false; }
+  }, "Unknown time zone").default("UTC")
+}).strict();
+const jobApplyDayCountsSchema = z.object({
+  applied: z.number().int().min(0),
+  verified: z.number().int().min(0),
+  failed: z.number().int().min(0)
+}).strict();
+const jobApplyEarlierCountsSchema = z.object({ sent: z.number().int().min(0), failed: z.number().int().min(0) }).strict();
+/** Applications since the first day (or the last reset), per day, and the earlier history kept apart. */
+export const jobApplyStatsSchema = z.object({
+  campaignStartedAt: z.string().nullable(),
+  /** YYYY-MM-DD in the requested zone: the reset day, else the first day with an application. */
+  firstDay: z.string().nullable(),
+  today: jobApplyDayCountsSchema,
+  totals: jobApplyDayCountsSchema.extend({ needsUser: z.number().int().min(0) }),
+  /** Newest first. */
+  days: z.array(jobApplyDayCountsSchema.extend({ day: z.string() })),
+  earlier: z.object({ imported: jobApplyEarlierCountsSchema, archived: jobApplyEarlierCountsSchema }).strict()
+}).strict();
+export type JobApplyStats = z.infer<typeof jobApplyStatsSchema>;
+
+/** "Reset and start over": the expected campaign start makes a repeated click a no-op (409), never a second reset. */
+export const jobApplyResetRequestSchema = z.object({
+  confirm: z.literal("RESET"),
+  expectedCampaignStartedAt: isoDateTime.nullable()
+}).strict();
+export const jobApplyResetResultSchema = z.object({
+  campaignStartedAt: isoDateTime,
+  /** Queued, in-progress and waiting postings closed as FAILED (kept, and can be queued again). */
+  closed: z.number().int().min(0),
+  runsStopped: z.number().int().min(0)
+}).strict();
+export type JobApplyResetResult = z.infer<typeof jobApplyResetResultSchema>;
 
 export const jobApplyCsvImportRequestSchema = z.object({
   csv: z.string().min(1).max(5_000_000),
   paneId: z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/).nullable().optional()
 }).strict();
+export const jobApplyMailCheckResultSchema = z.object({
+  checked: z.number().int().min(0),
+  confirmed: z.number().int().min(0),
+  unconfirmed: z.number().int().min(0),
+  accounts: z.array(z.string()).max(20)
+}).strict();
+export type JobApplyMailCheckResult = z.infer<typeof jobApplyMailCheckResultSchema>;
+
+/**
+ * Mail triage: application emails are filed under Gmail labels. Confirmations and rejections are archived;
+ * anything that asks for something (interview, assessment, information, unknown) stays in the inbox.
+ */
+export const JOB_APPLY_MAIL_CATEGORIES = ["CONFIRMATION", "REJECTION", "ACTION_NEEDED"] as const;
+export const jobApplyMailCategorySchema = z.enum(JOB_APPLY_MAIL_CATEGORIES);
+export type JobApplyMailCategory = z.infer<typeof jobApplyMailCategorySchema>;
+export const JOB_APPLY_MAIL_ROOT_LABEL = "Job Applications";
+export const JOB_APPLY_MAIL_LABELS: Record<JobApplyMailCategory, string> = {
+  CONFIRMATION: "Job Applications/Confirmations",
+  REJECTION: "Job Applications/Rejections",
+  ACTION_NEEDED: "Job Applications/Action needed"
+};
+export const jobApplyMailOrganizeSchema = z.object({
+  messageIds: z.array(z.string().trim().min(1).max(300)).min(1).max(50),
+  category: jobApplyMailCategorySchema,
+  /** Defaults to true for confirmations and rejections; action-needed mail is never archived. */
+  archive: z.boolean().optional(),
+  account: z.string().trim().toLowerCase().email().max(320).optional()
+}).strict();
+export type JobApplyMailOrganizeInput = z.infer<typeof jobApplyMailOrganizeSchema>;
+export const jobApplyMailTriageResultSchema = z.object({
+  accounts: z.array(z.string()).max(20),
+  scanned: z.number().int().min(0),
+  confirmations: z.number().int().min(0),
+  rejections: z.number().int().min(0),
+  actionNeeded: z.number().int().min(0),
+  skipped: z.number().int().min(0)
+}).strict();
+export type JobApplyMailTriageResult = z.infer<typeof jobApplyMailTriageResultSchema>;
+
 export const jobApplyCsvImportResultSchema = z.object({
   imported: z.number().int().min(0),
   skipped: z.number().int().min(0),
@@ -255,7 +422,7 @@ function titleCase(token: string): string {
 
 /**
  * Company and role placeholders from the URL alone (board slug, posting id). The agent replaces
- * them with the real posting title and company when it opens the page (`application_update`).
+ * them with the real posting title and company when it opens the page (`space_job_application_update`).
  * Returns null for anything that is not an http(s) URL.
  */
 export function jobPostingFromUrl(raw: string): JobPostingFromUrl | null {
@@ -443,7 +610,7 @@ export function fieldBecomesAnswerMemory(field: Pick<JobApplicationFieldInput, "
 export const JOB_APPLY_EVENT_TYPES = [
   "STARTED", "STEP", "FIELD_FILLED", "UPLOAD", "SUBMITTED", "VERIFIED", "FAILED", "HANDOFF_REQUESTED", "HANDOFF_RESOLVED",
   "QUESTION", "ANSWERED", "REVIEW_REQUESTED", "REVIEW_DECIDED", "NOTE", "SCREENSHOT",
-  "RUN_STARTED", "RUN_PAUSED", "RUN_RESUMED", "RUN_STOPPED", "RUN_FINISHED"
+  "RUN_STARTED", "RUN_PAUSED", "RUN_RESUMED", "RUN_STOPPED", "RUN_FINISHED", "MAIL"
 ] as const;
 export const jobApplyEventTypeSchema = z.enum(JOB_APPLY_EVENT_TYPES);
 export type JobApplyEventType = z.infer<typeof jobApplyEventTypeSchema>;
@@ -518,7 +685,7 @@ export const jobApplyQueueAddSchema = z.object({
   urls: z.array(z.string().trim().min(1).max(2000)).min(1).max(100)
 }).strict();
 
-// Run loop tools: the agent pulls work with job_next and closes it with job_report.
+// Run loop tools: the agent pulls work with space_job_next and closes it with space_job_report.
 export const JOB_APPLY_REPORT_OUTCOMES = ["submitted", "verified", "failed", "needs_user", "skipped"] as const;
 export const jobApplyReportOutcomeSchema = z.enum(JOB_APPLY_REPORT_OUTCOMES);
 export type JobApplyReportOutcome = z.infer<typeof jobApplyReportOutcomeSchema>;

@@ -2,8 +2,7 @@ import type { DeployQueueBatch, DeployQueueReport, DeployQueueTicket } from "@sp
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { Check, ChevronRight, Rocket } from "../ui-theme/app-icons.js";
-import type { DeployQueueClient } from "./DeployQueueSettingsCard.js";
-import { elapsed, relative, statusLabel, statusTone, submitterView, type SubmitterView } from "./deploy-queue-format.js";
+import { elapsed, relative, statusLabel, statusTone, submitterView, type DeployQueueClient, type SubmitterView } from "./deploy-queue-format.js";
 import "./deploy-activity.css";
 
 const POLL_MS = 5_000;

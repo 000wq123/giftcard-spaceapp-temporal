@@ -13,7 +13,7 @@ import { hashKey, header } from "../../proxy-util.js";
 import { USAGE_LIMIT_REACHED } from "../../router/balancer.js";
 import type { GatewayRouteHelpers } from "../../server.js";
 import { ChatRequestError, normalizeResponsesRequest } from "./chat.js";
-import type { CodexProxyOptions, UpstreamFailure } from "./codex-proxy.js";
+import type { CodexProxyOptions, CodexRequestKey, UpstreamFailure } from "./codex-proxy.js";
 import { buildCodexUpstreamHeaders } from "./headers.js";
 import { isTerminalEvent, readCodexRateLimitEvent, ResponseStreamInspector } from "./stream.js";
 import { handshakeHeaders, type openUpstreamWebSocket, responseCreateFrame, UpstreamHandshakeError, upstreamWebSocketHeaders, upstreamWebSocketUrl,
@@ -80,12 +80,13 @@ export interface CodexWebSocketShared {
   registry: CodexWebSocketRegistry;
   pickAccount(settings: GatewaySettings, scope: Set<string> | null, tried: Set<string>, stickyHash: string | null, ownerAccountId: string | null,
     model: string | null): Promise<{ account?: GatewayAccountRecord; none?: { errorCode: string | null; errorMessage: string | null } }>;
-  recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure): Promise<void>;
+  /** The account to retry on when its rejected access token was refreshed. */
+  recordFailure(account: GatewayAccountRecord, failure: UpstreamFailure): Promise<GatewayAccountRecord | null>;
   parseUpstreamError(text: string, status: number): UpstreamFailure;
   recordPassiveUsage(accountId: string, headers: Headers): void;
   withSpeedDefault(body: Json): Promise<Json>;
-  compressRequest(body: Json, mode: GatewaySettings["compressionMode"], settings: GatewaySettings, startedAt: number): Promise<{ outgoing: Json; saved: number | null;
-    measured: { before: number; after: number } | null; detail: GatewayRequestLogInsert["compressionDetail"] }>;
+  compressRequest(body: Json, request: FastifyRequest, key: CodexRequestKey, settings: GatewaySettings, startedAt: number, sessionKey?: string | null): Promise<{
+    outgoing: Json; saved: number | null; measured: { before: number; after: number } | null; detail: GatewayRequestLogInsert["compressionDetail"] }>;
   finishRequest(input: { key: { id: string }; account: GatewayAccountRecord; inspector: ResponseStreamInspector; firstTokenAt: number | null; forcedError: string | null;
     policy: PolicyResult; startedAt: number; baseLog: Omit<GatewayRequestLogInsert, "status" | "errorCode" | "errorMessage">; compressionSaved: number | null }): void;
   responseOwners: StickyStore;
@@ -268,8 +269,11 @@ class CodexWebSocketSession {
       throw error;
     }
     const settings = await options.settings();
-    const compressionMode = header(this.request, "x-space-gateway-compression")?.toLowerCase() === "off" ? "OFF" : this.key.compressionOverride ?? settings.compressionMode;
-    const compressed = await this.shared.compressRequest(policy.body, compressionMode, settings, startedAt);
+    const session = this.route === "codex" ? header(this.request, "session_id") ?? header(this.request, "x-codex-session-id") ?? header(this.request, "x-codex-conversation-id") : null;
+    const promptCacheKey = typeof policy.body.prompt_cache_key === "string" ? policy.body.prompt_cache_key : null;
+    // The raw-block registry needs the conversation, not the turn: the session or the prompt cache key.
+    const conversationKey = session ? hashKey(`codex:${session}`) : promptCacheKey ? hashKey(`codex:${promptCacheKey}`) : null;
+    const compressed = await this.shared.compressRequest(policy.body, this.request, this.key, settings, startedAt, conversationKey);
     const frame = responseCreateFrame(compressed.outgoing);
     const previousResponseId = typeof policy.body.previous_response_id === "string" ? policy.body.previous_response_id : null;
     const ownerAccountId = previousResponseId ? await this.shared.responseOwners.get(hashKey(`codex-response:${previousResponseId}`)) ?? null : null;
@@ -277,8 +281,6 @@ class CodexWebSocketSession {
     // Affinity, as codex-lb: the client's turn state, then its session (Codex route), then the prompt cache key,
     // then this socket's own turn state.
     const clientTurnState = header(this.request, "x-codex-turn-state");
-    const session = this.route === "codex" ? header(this.request, "session_id") ?? header(this.request, "x-codex-session-id") ?? header(this.request, "x-codex-conversation-id") : null;
-    const promptCacheKey = typeof policy.body.prompt_cache_key === "string" ? policy.body.prompt_cache_key : null;
     const [stickySource, stickyHash] = clientTurnState ? ["x-codex-turn-state", hashKey(`codex-turn:${clientTurnState}`)]
       : session ? ["session_id", hashKey(`codex:${session}`)]
         : promptCacheKey ? ["prompt_cache_key", hashKey(`codex:${promptCacheKey}`)]
@@ -297,8 +299,11 @@ class CodexWebSocketSession {
     const tried = new Set<string>();
     let lastFailure: UpstreamFailure | null = null;
     let transportDown = false;
+    let retryWith: GatewayAccountRecord | null = null;
     for (let attempt = 0; attempt < this.shared.maxAttempts && !this.closed; attempt += 1) {
-      const { account, none } = await this.shared.pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+      const { account, none } = retryWith ? { account: retryWith, none: undefined }
+        : await this.shared.pickAccount(settings, scope, tried, stickyHash, ownerAccountId, policy.model);
+      retryWith = null;
       if (!account) {
         if (attempt === 0 && none) {
           const status = none.errorCode === USAGE_LIMIT_REACHED ? 429 : 503;
@@ -318,7 +323,9 @@ class CodexWebSocketSession {
           lastFailure = opened.failure;
           if (opened.transport) { transportDown = true; break; }
           if (opened.failure.kind === "surface") break;
-          await this.shared.recordFailure(account, opened.failure);
+          retryWith = await this.shared.recordFailure(account, opened.failure);
+          // The same account once more, with its refreshed token: it does not count as another attempt.
+          if (retryWith) { attempt -= 1; continue; }
           if (ownerAccountId) break;
           continue;
         }

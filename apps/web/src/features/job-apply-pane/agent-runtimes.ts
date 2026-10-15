@@ -1,55 +1,48 @@
-import { CLI_PANE_TYPES, type AgentRuntime, type AgentRuntimeRegistry, type Pane } from "@space/contracts";
-import { getSpaceRuntime } from "../../runtime/SpaceRuntime.js";
-import { isCliRuntimeTerminalLaunchable } from "../../cli-runtime-presentation.js";
+import { type AgentRuntimeRegistry, type JobCopilotLaunchSettings } from "@space/contracts";
+import { JOB_COPILOT_KIND } from "../copilot-kit/copilot-kind.js";
+import {
+  copilotAccountFor, copilotAgentLabel, copilotLaunchDecision, copilotRuntimeOptions, defaultCopilotRuntimeId, resolveCopilotLaunch, saveCopilotLaunch,
+  type CopilotAgentChoice, type CopilotLaunchDecision, type CopilotRuntimeOption
+} from "../copilot-kit/copilot-runtimes.js";
+
+// Job Copilot's agent helpers are the copilot kit's, bound to the Job Copilot kind (Claude Code first, settings.jobCopilot).
+export { loadPaneAccountProfileId, paneModelLabel } from "../copilot-kit/copilot-runtimes.js";
 
 /** Claude Code first: long, tool-heavy application loops (native MCP, skills, account profiles). */
-export const JOB_COPILOT_PREFERRED_RUNTIME_ID = "cli:claude";
+export const JOB_COPILOT_PREFERRED_RUNTIME_ID = JOB_COPILOT_KIND.preferredRuntimeId;
 
-// Same key as the terminal pane's Claude account picker, so the copilot's choice is the pane's choice.
-const CLAUDE_ACCOUNT_PROFILE_KEY = "space.cli.claude.account-profile";
-
-export interface JobCopilotRuntimeOption {
-  runtime: AgentRuntime;
-  ready: boolean;
-  recommended: boolean;
-}
+export type JobCopilotRuntimeOption = CopilotRuntimeOption;
+export type JobCopilotAgentChoice = CopilotAgentChoice;
+export type JobCopilotLaunchDecision = CopilotLaunchDecision;
 
 /** CLI runtimes in catalog order, Claude Code flagged as the recommended copilot agent. */
 export function jobCopilotRuntimeOptions(registry: AgentRuntimeRegistry | null): JobCopilotRuntimeOption[] {
-  if (!registry) return [];
-  const byId = new Map(registry.data.map((runtime) => [runtime.id, runtime]));
-  return CLI_PANE_TYPES.flatMap((type) => {
-    const runtime = byId.get(type.id);
-    if (!runtime || !runtime.capabilities.includes("CLI")) return [];
-    return [{ runtime, ready: isCliRuntimeTerminalLaunchable(runtime), recommended: runtime.id === JOB_COPILOT_PREFERRED_RUNTIME_ID }];
-  });
+  return copilotRuntimeOptions(registry, JOB_COPILOT_KIND);
 }
 
 /** The runtime a new copilot should start on: Claude Code when ready, else the first ready CLI. */
-export function defaultJobCopilotRuntimeId(options: JobCopilotRuntimeOption[]): string | null {
-  const preferred = options.find((option) => option.recommended && option.ready);
-  return (preferred ?? options.find((option) => option.ready))?.runtime.id ?? null;
+export const defaultJobCopilotRuntimeId = defaultCopilotRuntimeId;
+
+/** The catalog's short name of a CLI ("Claude Code"), for buttons and notices. */
+export const jobCopilotAgentLabel = copilotAgentLabel;
+
+/** Only CLIs with account profiles carry an account; every other CLI starts on its own sign-in (Codex: Space Gateway). */
+export const jobCopilotAccountFor = copilotAccountFor;
+
+/**
+ * Whether a new Job Copilot pane opens at once on the remembered agent, or the launch dialog asks first:
+ * never chosen, "ask every time", or the remembered CLI is not ready (the dialog says why).
+ */
+export function jobCopilotLaunchDecision(remembered: JobCopilotLaunchSettings | null | undefined, options: JobCopilotRuntimeOption[]): JobCopilotLaunchDecision {
+  return copilotLaunchDecision(remembered, options);
 }
 
-export function readLastClaudeAccountProfileId(): string {
-  try {
-    return getSpaceRuntime().platform.localStorage.getItem(CLAUDE_ACCOUNT_PROFILE_KEY) || "main";
-  } catch {
-    return "main";
-  }
+/** The launch decision from the user's saved default (server-side, so every device agrees) and the current CLIs. */
+export function resolveJobCopilotLaunch(): Promise<JobCopilotLaunchDecision> {
+  return resolveCopilotLaunch(JOB_COPILOT_KIND);
 }
 
-export function writeLastClaudeAccountProfileId(profileId: string): void {
-  try {
-    getSpaceRuntime().platform.localStorage.setItem(CLAUDE_ACCOUNT_PROFILE_KEY, profileId);
-  } catch {
-    // Preference storage is optional.
-  }
-}
-
-/** Short model label for the agent chip; a pane without its own pick shows nothing. */
-export function paneModelLabel(pane: Pick<Pane, "modelId">): string | null {
-  if (!pane.modelId) return null;
-  const tail = pane.modelId.split(":").at(-1) ?? pane.modelId;
-  return tail.length > 28 ? `${tail.slice(0, 27)}…` : tail;
+/** Saves the default agent for new Job Copilot panes; null forgets it, so the next pane asks. */
+export function saveJobCopilotLaunch(launch: JobCopilotLaunchSettings | null): Promise<void> {
+  return saveCopilotLaunch(JOB_COPILOT_KIND, launch);
 }

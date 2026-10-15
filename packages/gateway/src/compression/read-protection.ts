@@ -10,8 +10,8 @@ const SHELL_WRAPPERS = new Set(["rtk", "sudo", "env", "time", "nice", "ionice", 
 const LOCKFILE = new RegExp("(^|[\\s/])(bun\\.lock|bun\\.lockb|package-lock\\.json|npm-shrinkwrap\\.json|yarn\\.lock|pnpm-lock\\.yaml|uv\\.lock|poetry\\.lock|"
   + "Pipfile\\.lock|requirements\\.txt\\.lock|Cargo\\.lock|go\\.sum|Gemfile\\.lock|composer\\.lock|flake\\.lock|Package\\.resolved|gradle\\.lockfile|"
   + "packages\\.lock\\.json)(\\s|$)", "i");
-/** Tools whose result is a file read by name (Claude Code's Read). */
-export const READ_TOOL_NAMES = new Set(["Read", "read"]);
+/** Tools whose result is a file read by name (Claude Code's Read, Antigravity's view_file, Gemini CLI's read_file). */
+export const READ_TOOL_NAMES = new Set(["Read", "read", "view_file", "read_file"]);
 
 /** Peels `cd <dir> && ` / `cd <dir>; ` prefixes. */
 function stripCdPrefix(command: string): string {
@@ -58,7 +58,10 @@ export function isReadCommand(command: string): boolean {
   return read && !LOCKFILE.test(stripped);
 }
 
-/** The shell command of a tool call's arguments: Anthropic `input` objects, OpenAI JSON strings, Codex `command` lists. */
+/**
+ * The shell command of a tool call's arguments: Anthropic `input` objects, OpenAI JSON strings, Codex `command` lists,
+ * Antigravity `run_command` (`CommandLine`).
+ */
 export function toolCallCommand(raw: unknown): string {
   let value = raw;
   if (typeof value === "string") {
@@ -66,7 +69,20 @@ export function toolCallCommand(raw: unknown): string {
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const record = value as Record<string, unknown>;
-  const command = record.command ?? record.cmd ?? "";
+  const command = record.command ?? record.cmd ?? record.CommandLine ?? "";
   if (Array.isArray(command)) return command.map(String).join(" ");
   return typeof command === "string" ? command : "";
+}
+
+/** `cmd:` string literals (double, single or backtick quoted) in code-mode source. */
+const CODE_MODE_CMD = /\bcmd\s*:\s*(?:"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/g;
+const JS_ESCAPES: Record<string, string> = { n: "\n", t: "\t", r: "\r" };
+
+/**
+ * The shell commands of a Codex code-mode `exec` call: its input is JavaScript, not JSON, and runs commands as
+ * `exec_command({ cmd: "…" })`. Escapes are decoded so `sed -n '1,80p' file` reads as written.
+ */
+export function codeModeCommands(source: string): string[] {
+  return [...source.matchAll(CODE_MODE_CMD)].map((match) =>
+    (match[1] ?? match[2] ?? match[3] ?? "").replace(/\\(.)/g, (_, char: string) => JS_ESCAPES[char] ?? char));
 }

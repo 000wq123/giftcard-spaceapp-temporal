@@ -8,6 +8,8 @@ import {
   jobApplyCsvImportResultSchema,
   jobApplyDiscoverRequestSchema,
   jobApplyEventListQuerySchema,
+  jobApplyGoogleAccountInputSchema,
+  jobApplyMailCheckResultSchema,
   jobApplyMailboxInputSchema,
   jobApplyMemoryCreateSchema,
   jobApplyMemoryQuerySchema,
@@ -17,7 +19,11 @@ import {
   jobApplyQuestionAnswerSchema,
   jobApplyQueueAddSchema,
   jobApplyQueueReorderSchema,
+  jobApplyResetRequestSchema,
+  jobApplyResetResultSchema,
   jobApplyReviewDecideSchema,
+  jobApplyStatsQuerySchema,
+  jobApplyStatsSchema,
   resolveJobApplyPaneMetadata,
   type JobApplyRun,
   type Pane
@@ -91,10 +97,33 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
     return { profile };
   });
 
+  // The copilot's Google account: mail and calendar go through the owner's Google connector for that email.
+  app.put("/api/job-apply/google", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(jobApplyGoogleAccountInputSchema, request.body ?? {});
+    const profile = await service.setGoogleAccount(owner, input.email);
+    await deps.audit(request, "job_apply.google_account.set", owner, { email: input.email });
+    return { profile };
+  });
+
   app.get("/api/job-apply/applications", routeOptions, async (request) => {
     const owner = await deps.authenticatedOwner(request);
     const query = parseQuery(jobApplicationListQuerySchema, request.query ?? {});
     return { applications: await service.listApplications(owner, query) };
+  });
+
+  app.get("/api/job-apply/stats", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const query = parseQuery(jobApplyStatsQuerySchema, request.query ?? {});
+    return { stats: jobApplyStatsSchema.parse(await service.stats(owner, query.tz)) };
+  });
+
+  app.post("/api/job-apply/reset", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(jobApplyResetRequestSchema, request.body);
+    const reset = jobApplyResetResultSchema.parse(await service.resetCampaign(owner, { expectedCampaignStartedAt: input.expectedCampaignStartedAt }));
+    await deps.audit(request, "job_apply.campaign.reset", null, { campaignStartedAt: reset.campaignStartedAt, closed: reset.closed, runsStopped: reset.runsStopped });
+    return { reset };
   });
 
   app.post("/api/job-apply/applications", routeOptions, async (request, reply) => {
@@ -122,6 +151,15 @@ export function registerJobApplyRoutes(app: FastifyInstance, service: JobApplySe
     const input = parseBody(jobApplyCsvImportRequestSchema, request.body ?? {});
     const result = jobApplyCsvImportResultSchema.parse(await service.importCsv(owner, input.csv, input.paneId ?? null));
     await deps.audit(request, "job_apply.application.import_csv", owner, result);
+    return result;
+  });
+
+  // Check with Gmail: sent applications are confirmed by their confirmation emails, or marked as having none.
+  app.post("/api/job-apply/applications/check-mail", routeOptions, async (request) => {
+    const owner = await deps.authenticatedOwner(request);
+    const input = parseBody(z.object({ paneId: paneParamsSchema.shape.id.optional() }).strict(), request.body ?? {});
+    const result = jobApplyMailCheckResultSchema.parse(await service.checkWithMail(owner, { paneId: input.paneId ?? null }));
+    await deps.audit(request, "job_apply.application.check_mail", owner, result);
     return result;
   });
 

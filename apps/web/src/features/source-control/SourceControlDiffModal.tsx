@@ -11,7 +11,7 @@ import {
   Plus,
   Minus,
   Undo2,
-  AlertCircle
+  CircleAlert
 } from "../ui-theme/app-icons.js";
 import type { GitFileDiff } from "@space/contracts";
 import { DiffViewer } from "./DiffViewer.js";
@@ -320,7 +320,7 @@ export function SourceControlDiffModal({
         <div className="source-control-diff-body">
           {diffError ? (
             <div className="diff-alert-box bad" role="alert">
-              <AlertCircle size={18} />
+              <CircleAlert size={18} />
               <span>{diffError}</span>
             </div>
           ) : !diff ? (

@@ -13,6 +13,7 @@ import { makeSpaceId, type SpaceStore } from "@space/runtime";
 import { z } from "zod";
 import type { SpaceApiConfig } from "./config.js";
 import { recordUploadedArtifact, UploadRecordUncertainError } from "./upload-record.js";
+import { childProcessEnv } from "./child-process-env.js";
 
 export const cliAgentFilesTokenHeader = "x-space-cli-agent-files-token";
 export const agentFileMaxBytes = 100 * 1024 * 1024;
@@ -251,7 +252,7 @@ export async function normalizeAgentFileDocx(
           timeout: options.timeoutMs ?? agentFileDocxNormalizationTimeoutMs,
           maxBuffer: 256 * 1024,
           env: {
-            ...process.env,
+            ...childProcessEnv(),
             HOME: homeDirectory,
             XDG_CACHE_HOME: cacheDirectory,
             TMPDIR: temporaryDirectory,

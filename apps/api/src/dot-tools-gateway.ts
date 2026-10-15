@@ -483,7 +483,7 @@ export async function executeDotGatewayCall(deps: DotToolGatewayDeps, request: F
       return parkForApproval(deps, resolved, entry.id, input.invocationId, { kind: "schedule", scheduleId: proposed.schedule.scheduleId, summary: proposed.summary });
     }
     case "INSTALLED_MCP":
-      return blocked(entry.id, "Installed MCP servers are called through mcp_dispatcher (mcp_server_info, then call_mcp_tool).");
+      return blocked(entry.id, "Installed MCP servers are called through space_dispatcher (space_mcp_server_info, then space_call_mcp_tool).");
     default:
       return blocked(entry.id, "This tool runs inside the Dot runtime.");
   }

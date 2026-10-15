@@ -48,14 +48,14 @@ export interface ToolRoutingPolicyV1 {
   capability?: CapabilityName;
 }
 export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
-  { toolId: "mcp:vision", category: "FALLBACK_ONLY", capability: "vision" },
+  { toolId: "mcp:space_vision", category: "FALLBACK_ONLY", capability: "vision" },
   { toolId: "mcp:devtools", category: "NATIVE_PREFERRED", capability: "browser" },
   { toolId: "mcp:playwright", category: "NATIVE_PREFERRED", capability: "browser" },
   { toolId: "mcp:scrapling", category: "NATIVE_PREFERRED", capability: "web" },
-  { toolId: "mcp:summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
-  { toolId: "mcp:capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
+  { toolId: "mcp:space_summary_tools", category: "OPERATOR_OPT_IN", capability: "summary" },
+  { toolId: "mcp:space_capturelab", category: "NATIVE_PREFERRED", capability: "capture" },
   { toolId: "mcp:context7", category: "EXTERNAL_SERVICE" },
-  ...["space-control", "space_ops", "space_browser", "playwright_pane", "space_jobapply", "space_services", "olla", "mission_control"].map((id) => ({
+  ...["space-control", "space_ops", "space_browser", "space_playwright_pane", "space_jobapply", "space_mailcopilot", "space_marketingcopilot", "space_services", "olla", "mission_control"].map((id) => ({
     toolId: `mcp:${id}`, category: "SPACE_EXCLUSIVE" as const
   }))
 ];
@@ -65,13 +65,30 @@ export const spaceToolPolicies: readonly ToolRoutingPolicyV1[] = [
  * Native agents; Space Control and the managed browser go through the
  * attributed Dot gateway; production business systems stay operator tools.
  */
-export const nativeAgentAllowedMcpServers: ReadonlySet<string> = new Set(["devtools", "playwright", "scrapling", "summary_tools", "capturelab", "vision"]);
+export const nativeAgentAllowedMcpServers: ReadonlySet<string> = new Set(["devtools", "playwright", "scrapling", "space_summary_tools", "space_capturelab", "space_vision"]);
+/**
+ * Space server ids before the space prefix (operator rule 2026-10-13). The old ids stay
+ * accepted for running sessions and stored overrides.
+ */
+export const legacyMcpServerIds: Readonly<Record<string, string>> = {
+  vision: "space_vision", summary_tools: "space_summary_tools", playwright_pane: "space_playwright_pane",
+  capturelab: "space_capturelab"
+};
+export function canonicalMcpServerId(serverId: string): string {
+  return Object.hasOwn(legacyMcpServerIds, serverId) ? legacyMcpServerIds[serverId]! : serverId;
+}
+/** `mcp:<old id>` routing ids (stored overrides) name the renamed server. */
+export function canonicalToolRoutingId(toolId: string): string {
+  return toolId.startsWith("mcp:") ? `mcp:${canonicalMcpServerId(toolId.slice(4))}` : toolId;
+}
 const nativeAgentDenialReasons: Readonly<Record<string, string>> = {
   space_ops: "Tests and deploys are never available to Native agents.",
   "space-control": "Space Control is available through the Dot gateway with Dot attribution.",
   space_browser: "The managed browser is available through the Dot gateway with Dot attribution.",
-  playwright_pane: "Pane browser automation belongs to the CLI session that owns the pane.",
+  space_playwright_pane: "Pane browser automation belongs to the CLI session that owns the pane.",
   space_jobapply: "Job Applications tools belong to the CLI session of a Job Applications pane.",
+  space_mailcopilot: "Mail Copilot tools belong to the CLI session of a Mail Copilot pane.",
+  space_marketingcopilot: "Marketing Copilot tools belong to the CLI session of a Marketing Copilot pane.",
   space_services: "Service restarts are operator operations.",
   olla: "Storefront administration is an operator tool.",
   mission_control: "Mission Control changes are operator operations."
@@ -81,8 +98,9 @@ export function isNativeAgentRuntime(runtimeId: string | null | undefined): bool
 }
 /** Reason a Native agent may not use this server, or null when it is allowlisted. */
 export function nativeAgentServerDenial(serverId: string, runtimeId: string | null | undefined): string | null {
-  if (!isNativeAgentRuntime(runtimeId) || nativeAgentAllowedMcpServers.has(serverId)) return null;
-  return nativeAgentDenialReasons[serverId] ?? "This server is not available to Native agents.";
+  const id = canonicalMcpServerId(serverId);
+  if (!isNativeAgentRuntime(runtimeId) || nativeAgentAllowedMcpServers.has(id)) return null;
+  return nativeAgentDenialReasons[id] ?? "This server is not available to Native agents.";
 }
 
 export const defaultToolRoutingState = (): ToolRoutingStateV1 => ({
@@ -117,7 +135,7 @@ export function resolveToolRoute(
   policy: ToolRoutingPolicyV1, profile: ModelCapabilityProfileV1,
   overrides: ToolRoutingOverride[], options: { taskNeedsTool?: boolean; explicitRequest?: boolean } = {}
 ): EffectiveToolRoute {
-  const matches = overrides.filter((entry) => (entry.toolId === policy.toolId || entry.toolId === "*" ||
+  const matches = overrides.filter((entry) => (canonicalToolRoutingId(entry.toolId) === policy.toolId || entry.toolId === "*" ||
     (entry.toolId === "mcp:*" && policy.toolId.startsWith("mcp:"))) &&
     (entry.runtimeId === "*" || entry.runtimeId === profile.runtimeId) &&
     (entry.modelId === "*" || entry.modelId === profile.modelId));

@@ -5,9 +5,10 @@ import type { TokenCounter } from "./engine.js";
 /**
  * Token counting as in Headroom's tokenizer registry (Apache-2.0, Headroom Contributors): OpenAI models count
  * with tiktoken `o200k_base`; Claude has no public tokenizer, so it uses Headroom's character estimate
- * (3.5 characters per token, dense scripts at 1.5).
+ * (3.5 characters per token, dense scripts at 1.5). Gemini's tokenizer is not public either: the same estimate at
+ * 3.8 characters per token, between Google's 4 for English and the denser rate of code.
  */
-export type TokenizerKind = "o200k" | "claude";
+export type TokenizerKind = "o200k" | "claude" | "gemini";
 
 const CHARS_PER_TOKEN_CJK = 1.5;
 /** Above this size an exact count would cost more than the compression; slices of the text are counted instead. */
@@ -56,5 +57,7 @@ export function countO200kBounded(text: string): number {
 }
 
 export function createTokenCounter(kind: TokenizerKind): TokenCounter {
-  return kind === "claude" ? { count: (text) => estimateTokens(text, 3.5) } : { count: countO200kBounded };
+  if (kind === "claude") return { count: (text) => estimateTokens(text, 3.5) };
+  if (kind === "gemini") return { count: (text) => estimateTokens(text, 3.8) };
+  return { count: countO200kBounded };
 }

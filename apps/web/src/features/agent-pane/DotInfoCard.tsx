@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { buildDotToolCatalog, type ChannelsStatus, type DotComputer as DotComputerState, type DotDeliverable, type DotProfile,
   type DotToolInvocation } from "@space/contracts";
 import { api } from "../../api.js";
-import { ChevronDown, ChevronUp, FileText, Monitor, Phone, Slack, X } from "../ui-theme/app-icons.js";
+import { ChevronRight, FileText, Monitor, Phone, Slack, X } from "../ui-theme/app-icons.js";
 import { DotComputer } from "./DotComputer.js";
+import { DotOutputVersions } from "./DotDeliverables.js";
 import { dotArtwork } from "./DotHeader.js";
 import { openDotSettings } from "./dot-home-events.js";
 
 const REFRESH_MS = 30_000;
+/** The computer's picture is a full browser frame: read at most once a minute while the card shows. */
+const PICTURE_REFRESH_MS = 60_000;
 const toolTitles = new Map(buildDotToolCatalog({ role: "USER", browserSessionsEnabled: true, browserPaneIds: [], mcpTools: [], installedMcpServers: [] })
   .map((tool) => [tool.id, tool.title]));
 
@@ -22,6 +25,12 @@ export function dotActiveLabel(lastActiveAt: string | null, working: boolean, no
   if (hours < 24) return `Active ${hours} hour${hours === 1 ? "" : "s"} ago`;
   const days = Math.floor(hours / 24);
   return `Active ${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/** The direct conversation with the Space app in the linked workspace when the server knows its app, else Slack itself. */
+export function slackDirectUrl(appUrl: string | null, teamId: string | null): string {
+  if (!appUrl?.startsWith("https://slack.com/app_redirect?app=")) return "https://app.slack.com/client";
+  return teamId && /^[TE][A-Z0-9]{6,30}$/.test(teamId) && !appUrl.includes("&team=") ? `${appUrl}&team=${teamId}` : appUrl;
 }
 
 function useVisibleRead<T>(key: string | null, visible: boolean, read: () => Promise<T>, refreshMs = REFRESH_MS) {
@@ -50,7 +59,7 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
   roomScoped?: boolean;
 }) {
   const [computerOpen, setComputerOpen] = useState(false);
-  const [allOutputs, setAllOutputs] = useState(false);
+  const [outputsOpen, setOutputsOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!visible) return;
@@ -62,9 +71,15 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
   const activity = useVisibleRead<{ dotId: string; items: DotToolInvocation[] }>(roomScoped ? null : dot.dotId, visible, () => api.dotToolInvocations(dot.dotId));
   const outputs = useVisibleRead<{ dotId: string; items: DotDeliverable[] }>(roomScoped ? null : dot.dotId, visible, () => api.dotDeliverables(dot.dotId));
   const slack = channels.value?.providers.find((provider) => provider.provider === "SLACK");
-  const slackLinked = Boolean(channels.value?.identities.some((identity) => identity.provider === "SLACK"));
+  const slackIdentity = channels.value?.identities.find((identity) => identity.provider === "SLACK");
+  const slackLinked = Boolean(slackIdentity);
   const computerStatus = computer.failed && !computer.value ? "Unavailable" : !computer.value ? "Checking…"
     : computer.value.runs.length ? "Working" : "Ready";
+  // The Dot's running browser (in an Agent Proof room only its own room's): its latest picture, else the mascot.
+  const browser = computer.value?.browsers.find((item) => item.ready && item.sessionId && (!roomScoped || item.roomId === roomId)) ?? null;
+  const picture = useVisibleRead<string | null>(browser ? `${browser.paneId}|${browser.sessionId}` : null, visible,
+    () => api.browserFrame(browser!.paneId, browser!.sessionId!).then((frame) => frame.screenshotDataUrl), PICTURE_REFRESH_MS);
+  const browserPicture = browser ? picture.value : null;
   const recent = (activity.value?.items ?? []).filter((item) => item.dotId === dot.dotId && item.status === "COMPLETED" && item.risk !== "READ").slice(0, 3);
   const latestOutputs = useMemo(() => {
     const latest = new Map<string, DotDeliverable & { artifactId: string }>();
@@ -75,7 +90,9 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
     }
     return [...latest.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }, [outputs.value, dot.dotId]);
-  const shownOutputs = allOutputs ? latestOutputs : latestOutputs.slice(0, 3);
+  const shownOutputs = latestOutputs.slice(0, 3);
+  // Show more lists every version of every file, including older versions of the ones shown here.
+  const moreOutputs = (outputs.value?.items ?? []).filter((item) => item.dotId === dot.dotId).length > shownOutputs.length;
   return <aside className="dots-info-card" data-overlay={overlay ? "true" : "false"} aria-label={`${dot.name} details`}
     onKeyDown={(event) => { if (event.key === "Escape" && overlay) { event.stopPropagation(); onClose(); } }}>
     {overlay ? <button type="button" className="dots-icon-button dots-info-close" aria-label="Close details" onClick={onClose}><X aria-hidden="true" /></button> : null}
@@ -86,7 +103,7 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
     <div className="dots-info-actions">
       <button type="button" onClick={onCall} disabled={Boolean(callDisabledReason)} title={callDisabledReason ?? `Call ${dot.name}`}><Phone aria-hidden="true" />Call</button>
       {slack?.configured ? <button type="button" title={slackLinked ? "Open Slack" : "Link Slack in Settings → Dots"} onClick={() => {
-        if (slackLinked) window.open("https://app.slack.com/client", "_blank", "noopener,noreferrer");
+        if (slackLinked) window.open(slackDirectUrl(slack.appUrl ?? null, slackIdentity?.tenantId ?? null), "_blank", "noopener,noreferrer");
         else openDotSettings({ dotId: dot.dotId, section: "channels" });
       }}><Slack aria-hidden="true" />Slack</button> : null}
     </div>
@@ -95,7 +112,8 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
       <button type="button" className="dots-info-computer" onClick={() => setComputerOpen(true)} aria-label={`Your dot's computer, ${computerStatus}`}>
         <Monitor aria-hidden="true" />
         <span><strong>Your dot's computer</strong><small data-status={computerStatus.toLowerCase()}>{computerStatus}</small></span>
-        <img src={dotArtwork(dot)} alt="" width="40" height="28" className="dots-info-computer-thumb" />
+        <img src={browserPicture ?? dotArtwork(dot)} alt="" width="40" height="28" className="dots-info-computer-thumb"
+          data-source={browserPicture ? "browser" : "mascot"} title={browserPicture ? browser?.title ?? "Browser" : undefined} />
       </button>
     </section>
     {roomScoped ? null : <><section aria-label="Recent activity">
@@ -115,8 +133,8 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
           <a href={api.agentFileDownloadUrl(item.artifactId)} download title={`${item.name} (version ${item.version})`}>
             <FileText aria-hidden="true" /><span>{item.name}</span></a>
         </li>)}</ul>}
-      {latestOutputs.length > 3 ? <button type="button" className="dots-info-more" aria-expanded={allOutputs} onClick={() => setAllOutputs((value) => !value)}>
-        {allOutputs ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}{allOutputs ? "Show less" : "Show more"}</button> : null}
+      {moreOutputs ? <button type="button" className="dots-info-more" aria-haspopup="dialog" onClick={() => setOutputsOpen(true)}>
+        <ChevronRight aria-hidden="true" />Show more</button> : null}
     </section></>}
     {computerOpen ? <div className="attachment-modal codex-resume-modal" onClick={() => setComputerOpen(false)}>
       <section className="attachment-modal-body codex-resume-modal-body dots-computer-dialog" role="dialog" aria-modal="true" aria-label={`${dot.name}'s computer`}
@@ -124,6 +142,16 @@ export function DotInfoCard({ dot, roomId, visible, working, lastActiveAt, sessi
         <button type="button" className="terminal-upload-modal-close codex-resume-modal-close" aria-label="Close computer" onClick={() => setComputerOpen(false)}>
           <X aria-hidden="true" /></button>
         <DotComputer dot={dot} roomId={roomId} visible={visible} sessionId={sessionId} />
+      </section>
+    </div> : null}
+    {outputsOpen && !roomScoped ? <div className="attachment-modal codex-resume-modal" onClick={() => setOutputsOpen(false)}>
+      <section className="attachment-modal-body codex-resume-modal-body dots-outputs-dialog" role="dialog" aria-modal="true" aria-label={`${dot.name}'s outputs`}
+        onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOutputsOpen(false); } }}>
+        <button type="button" className="terminal-upload-modal-close codex-resume-modal-close" aria-label="Close outputs" autoFocus onClick={() => setOutputsOpen(false)}>
+          <X aria-hidden="true" /></button>
+        <h3>Outputs</h3>
+        <p className="dots-panel-hint">Every version {dot.name} published to Agent Files.</p>
+        <DotOutputVersions dot={dot} items={outputs.value?.items ?? []} />
       </section>
     </div> : null}
   </aside>;

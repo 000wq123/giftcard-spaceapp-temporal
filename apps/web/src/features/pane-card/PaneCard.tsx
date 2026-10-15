@@ -36,7 +36,7 @@ import {
   terminalActionDisabledReason,
   type TerminalActionAvailability
 } from "../terminal-pane/terminal-action-availability.js";
-import { ArrowRightLeft, Boxes, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, CodeXml, Columns2, Copy, Cpu, Crosshair, Database, Eye, EyeOff, FileInput, FolderOpen, FolderPlus, GitCompare, Grid2X2, GripVertical, History, Maximize2, MessageSquare, Mic, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Network, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Save, Send, Shrink, Sparkles, Terminal, Undo2, X, Youtube } from "../ui-theme/app-icons.js";
+import { ArrowRightLeft, Boxes, Camera, ChevronLeft, ChevronRight, CircleStop, Clipboard, ClipboardList, CodeXml, Columns2, Copy, Cpu, Crosshair, Database, Eye, EyeOff, FileInput, FolderOpen, FolderPlus, GitCompare, Grid2X2, GripVertical, History, Mail, Maximize2, MessageSquare, Mic, Minimize2, Minus, Monitor, MoreHorizontal, MoveHorizontal, Network, Paperclip, Pencil, PictureInPicture2, Plus, RefreshCw, Rocket, Save, Send, Shrink, Sparkles, Terminal, Undo2, X, Youtube } from "../ui-theme/app-icons.js";
 import { modernPanePrimaryActionCapacity, modernPanePrimaryActionCount } from "../ui-theme/modern-toolbar.js";
 import { useTouchContextMenu } from "../ui-theme/use-touch-context-menu.js";
 import { WorktreeBadge } from "../worktrees/WorktreeBadge.js";
@@ -59,7 +59,9 @@ export const modeIcons: Record<Pane["mode"], typeof MessageSquare> = {
   DATABASES: Database,
   DEMOS: Boxes,
   T3CODE: Cpu,
-  JOB_APPLY: ClipboardList
+  JOB_APPLY: ClipboardList,
+  MAIL_COPILOT: Mail,
+  MARKETING_COPILOT: Rocket
 };
 
 export function PaneModeIcon({ pane }: { pane: Pick<Pane, "mode" | "terminalRuntimeId"> }) {
@@ -127,6 +129,12 @@ export const LazyT3CodePane = lazy(() =>
 );
 export const LazyJobApplyPane = lazy(() =>
   import("../job-apply-pane/JobCopilotPane.js").then((module) => ({ default: module.JobCopilotPane }))
+);
+const LazyMailCopilotPane = lazy(() =>
+  import("../mail-copilot-pane/MailCopilotPane.js").then((module) => ({ default: module.MailCopilotPane }))
+);
+const LazyMarketingCopilotPane = lazy(() =>
+  import("../marketing-copilot-pane/MarketingCopilotPane.js").then((module) => ({ default: module.MarketingCopilotPane }))
 );
 
 export const agentPaneLoadingFallback = <div className="pane-copy" role="status">Loading chat pane…</div>;
@@ -320,6 +328,7 @@ export const PaneCard = memo(function PaneCard({
   isTarget,
   isMoveDialogOpen,
   isVisibleInShell,
+  isPresentationInteractive = true,
   isFloatingYouTube = false,
   onToggleYouTubeFloating,
   isTerminalOutputVisible,
@@ -395,6 +404,8 @@ export const PaneCard = memo(function PaneCard({
   isTarget: boolean;
   isMoveDialogOpen: boolean;
   isVisibleInShell: boolean;
+  /** The containing room layer is exposed to assistive technology. */
+  isPresentationInteractive?: boolean;
   isFloatingYouTube?: boolean;
   onToggleYouTubeFloating?: () => void;
   isTerminalOutputVisible: boolean;
@@ -1729,7 +1740,7 @@ export const PaneCard = memo(function PaneCard({
       }
     ];
   }
-  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY") {
+  if (pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT") {
     rawPaneActions = [
       ...(!isTerminalLoginSession ? [{
         id: "add",
@@ -1854,7 +1865,7 @@ export const PaneCard = memo(function PaneCard({
     hiddenStorageKey: paneToolbarStorageKeys.hidden,
     orderStorageKey: paneToolbarStorageKeys.order,
     nonPersistentActionIds: pane.mode === "CHAT" ? ["chat-target"] : [],
-    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY",
+    preserveUnknownActionIds: pane.mode === "CHAT" || pane.mode === "TERMINAL" || pane.mode === "BROWSER" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "YOUTUBE" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT",
     closeOverflowOnDragStart: shellMode === "mobile"
   });
   const modernPrimaryActionLimit = modernPanePrimaryActionCount(shellMode);
@@ -1862,7 +1873,7 @@ export const PaneCard = memo(function PaneCard({
   const paneToolbarPrimaryActionCount = uiTheme !== "classic" || pane.mode === "YOUTUBE"
     ? Math.min(modernPrimaryActionLimit, modernPrimaryActionCapacity ?? modernPrimaryActionLimit)
     : paneToolbarMenuActions.length;
-  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"
+  const paneToolbarRenderedActions = usesCompactPaneActions || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT"
     ? []
     : (uiTheme !== "classic" || pane.mode === "YOUTUBE"
         ? paneToolbarMenuActions.slice(0, paneToolbarPrimaryActionCount)
@@ -2136,7 +2147,7 @@ export const PaneCard = memo(function PaneCard({
       data-completion-state={completionState}
       data-minimized={pane.isMinimized ? "true" : "false"}
       data-shell-visible={isVisibleInShell ? "true" : "false"}
-      aria-hidden={isVisibleInShell ? undefined : true}
+      aria-hidden={isPresentationInteractive && !isVisibleInShell ? true : undefined}
       aria-label={`${title} agent ${agentNumber}`}
       style={isFloatingYouTube ? {
         position: "fixed",
@@ -2540,7 +2551,7 @@ export const PaneCard = memo(function PaneCard({
                     paneToolbar.setIsOverflowOpen(false);
                     action.onClick();
                   }}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MAIL_COPILOT" || pane.mode === "MARKETING_COPILOT"}
                   popupId={paneActionsPopupId}
                   triggerRef={paneOverflowTriggerRef}
                 />
@@ -2572,7 +2583,7 @@ export const PaneCard = memo(function PaneCard({
                   }}
                   onResetOrder={paneToolbar.resetOrder}
                   isOrderCustomized={paneToolbar.isOrderCustomized}
-                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY"}
+                  plainActions={usesCompactPaneActions || pane.mode === "YOUTUBE" || pane.mode === "DEMOS" || pane.mode === "FILES" || pane.mode === "DATABASES" || pane.mode === "T3CODE" || pane.mode === "JOB_APPLY" || pane.mode === "MARKETING_COPILOT"}
                   preferPaneInside={pane.mode === "CHAT"}
                   primaryActionIds={uiTheme !== "classic" ? paneToolbarRenderedActions.map((action) => action.id) : undefined}
                   popupId={paneActionsPopupId}
@@ -2773,6 +2784,84 @@ export const PaneCard = memo(function PaneCard({
                     uiTheme={uiTheme}
                   />
                 </RecoverableSurface>
+              )}
+            />
+          </RecoverableSurface>
+        ) : pane.mode === "MARKETING_COPILOT" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazyMarketingCopilotPane
+              pane={pane}
+              isVisible={isVisibleInShell}
+              terminal={(
+                <TerminalPane
+                  pane={pane}
+                  terminalFontSize={terminalFontSize}
+                  bootstrapBarrier={terminalBootstrapBarrier}
+                  shouldBootstrap={shouldBootstrapTerminal && !pane.id.startsWith("pane:optimistic-")}
+                  prefillInitialReplay={prefillInitialReplay}
+                  revealGeneration={revealGeneration}
+                  hideFloatingControls={hideCliFloats}
+                  isTarget={isTarget}
+                  isVisible={isTerminalOutputVisible}
+                  fullscreenLayout={isFullscreenLayout}
+                  cliDebugModeEnabled={cliDebugModeEnabled}
+                  observerOnly={terminalObserverOnly}
+                  maxImagePreviews={cliImagePreviewLimit}
+                  onCliDebugModeChange={onCliDebugModeChange}
+                  onSessionMetadataChange={setTerminalSessionMetadata}
+                  onActionAvailabilityChange={handleTerminalActionAvailabilityChange}
+                  onBootstrapped={handleTerminalBootstrapped}
+                  onPrefillReadyChange={handleTerminalPrefillReadyChange}
+                  onRevealReady={handleTerminalRevealReady}
+                  onWorkingStateChange={handleWorkingStateChange}
+                  oskOpen={oskOpen}
+                  mobile={shellMode === "mobile" || isCoarsePointer}
+                />
+              )}
+              browser={(
+                <RecoverableSurface fallback={browserPaneLoadingFallback}>
+                  <LazyBrowserPane
+                    mobile={shellMode === "mobile" || isCoarsePointer}
+                    isVisible={isVisibleInShell}
+                    pane={pane}
+                    agentNumber={agentNumber}
+                    observerOnly={browserObserverOnly}
+                    uiTheme={uiTheme}
+                  />
+                </RecoverableSurface>
+              )}
+            />
+          </RecoverableSurface>
+        ) : pane.mode === "MAIL_COPILOT" ? (
+          <RecoverableSurface fallback={browserPaneLoadingFallback} resetKey={pane.id}>
+            <LazyMailCopilotPane
+              pane={pane}
+              isVisible={isVisibleInShell}
+              terminal={(
+                <TerminalPane
+                  pane={pane}
+                  terminalFontSize={terminalFontSize}
+                  bootstrapBarrier={terminalBootstrapBarrier}
+                  shouldBootstrap={shouldBootstrapTerminal && !pane.id.startsWith("pane:optimistic-")}
+                  prefillInitialReplay={prefillInitialReplay}
+                  revealGeneration={revealGeneration}
+                  hideFloatingControls={hideCliFloats}
+                  isTarget={isTarget}
+                  isVisible={isTerminalOutputVisible}
+                  fullscreenLayout={isFullscreenLayout}
+                  cliDebugModeEnabled={cliDebugModeEnabled}
+                  observerOnly={terminalObserverOnly}
+                  maxImagePreviews={cliImagePreviewLimit}
+                  onCliDebugModeChange={onCliDebugModeChange}
+                  onSessionMetadataChange={setTerminalSessionMetadata}
+                  onActionAvailabilityChange={handleTerminalActionAvailabilityChange}
+                  onBootstrapped={handleTerminalBootstrapped}
+                  onPrefillReadyChange={handleTerminalPrefillReadyChange}
+                  onRevealReady={handleTerminalRevealReady}
+                  onWorkingStateChange={handleWorkingStateChange}
+                  oskOpen={oskOpen}
+                  mobile={shellMode === "mobile" || isCoarsePointer}
+                />
               )}
             />
           </RecoverableSurface>

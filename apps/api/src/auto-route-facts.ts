@@ -10,9 +10,9 @@ import type { AutoRouteFacts } from "./space-agent.js";
  * (SPACE_MODEL_PRICE_CATALOG). Each file is reread when it changes; a missing
  * or invalid file means the facts are unknown, never guessed.
  */
-export function createAutoRouteFactsLoader(options: { codexHome: string; priceCatalogPath: string | null }) {
+function fileCache() {
   const cache = new Map<string, { mtimeMs: number; value: unknown }>();
-  async function cached<T>(path: string, parse: (raw: string) => T): Promise<T | null> {
+  return async function cached<T>(path: string, parse: (raw: string) => T): Promise<T | null> {
     let mtimeMs: number;
     try { mtimeMs = (await stat(path)).mtimeMs; } catch { return null; }
     const hit = cache.get(path);
@@ -21,7 +21,18 @@ export function createAutoRouteFactsLoader(options: { codexHome: string; priceCa
     try { value = parse(await readFile(path, "utf8")); } catch { value = null; }
     cache.set(path, { mtimeMs, value });
     return value;
-  }
+  };
+}
+
+/** The operator's price list alone, for model calls outside Chat runs (the Dot's own messages). */
+export function createPriceCatalogLoader(priceCatalogPath: string | null) {
+  const cached = fileCache();
+  return async (): Promise<ModelPriceCatalog | null> => priceCatalogPath
+    ? await cached(priceCatalogPath, (raw) => modelPriceCatalogSchema.parse(JSON.parse(raw))) : null;
+}
+
+export function createAutoRouteFactsLoader(options: { codexHome: string; priceCatalogPath: string | null }) {
+  const cached = fileCache();
   return async function loadAutoRouteFacts(): Promise<AutoRouteFacts> {
     const models = await cached(join(options.codexHome, "models_cache.json"), (raw) => {
       const parsed = JSON.parse(raw) as { models?: Array<{ slug?: unknown; input_modalities?: unknown; context_window?: unknown }> };

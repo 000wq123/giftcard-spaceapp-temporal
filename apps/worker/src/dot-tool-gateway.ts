@@ -12,7 +12,9 @@ import {
 } from "@space/contracts";
 import type { CodexAppServerDynamicToolSpec, CodexAppServerJsonRpcMessage } from "@space/codex-app-server";
 import type { DotsRepository } from "@space/db";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { CodexAppServerTurnActivityConfig } from "./activities.js";
 import { executeChatActionBridge } from "./chat-action-bridge.js";
@@ -62,22 +64,41 @@ export function dotGatewayDynamicTools(): CodexAppServerDynamicToolSpec[] {
  * full-access permission mode the agent still has the owner's shell.
  */
 export function nativeChatThreadConfig(dispatcherPath: string | null = existsSync(defaultDispatcherPath) ? defaultDispatcherPath : null,
-  options: { writableRoots?: readonly string[]; proactive?: boolean } = {}): Record<string, unknown> {
-  return {
+  options: { writableRoots?: readonly string[]; proactive?: boolean; codexConfigToml?: string } = {}): Record<string, unknown> {
+  const dispatcherOverrides = (key: string) => ({
     // A complete definition: valid whether or not the user's Codex config declares the dispatcher.
-    ...(dispatcherPath ? {
-      "mcp_servers.mcp_dispatcher.command": "/usr/bin/node",
-      "mcp_servers.mcp_dispatcher.args": [dispatcherPath],
-      "mcp_servers.mcp_dispatcher.env.SPACE_AGENT_RUNTIME_ID": DOT_NATIVE_RUNTIME_ID,
-      // Proactive work may discover servers and skills, but not call installed MCP tools.
-      ...(options.proactive ? { "mcp_servers.mcp_dispatcher.enabled_tools": [...dispatcherReadTools] } : {})
-    } : {}),
+    [`mcp_servers.${key}.command`]: "/usr/bin/node",
+    [`mcp_servers.${key}.args`]: [dispatcherPath],
+    [`mcp_servers.${key}.env.SPACE_AGENT_RUNTIME_ID`]: DOT_NATIVE_RUNTIME_ID,
+    // Proactive work may discover servers and skills, but not call installed MCP tools.
+    ...(options.proactive ? { [`mcp_servers.${key}.enabled_tools`]: [...dispatcherReadTools] } : {})
+  });
+  return {
+    ...(dispatcherPath ? Object.assign({}, ...codexDispatcherKeys(options.codexConfigToml).map(dispatcherOverrides)) : {}),
     // The Dot's private workspace stays writable even when the project is the working directory.
     ...(options.writableRoots?.length ? { "sandbox_workspace_write.writable_roots": [...options.writableRoots] } : {}),
     "shell_environment_policy.set.SPACE_AGENT_RUNTIME_ID": DOT_NATIVE_RUNTIME_ID
   };
 }
-const dispatcherReadTools = ["list_mcp_servers", "mcp_server_info", "list_skills", "get_skill"] as const;
+// Space tools start with "space" (2026-10-13); a dispatcher from before the rename lists the old names.
+/**
+ * The dispatcher keys the user's Codex config declares (space_dispatcher, or mcp_dispatcher from
+ * before the 2026-10-13 rename). The thread overrides must restrict every declared one: an
+ * unrestricted second dispatcher would bypass the Native agent checks.
+ */
+function codexDispatcherKeys(configToml = readCodexConfig()): string[] {
+  const declared = ["space_dispatcher", "mcp_dispatcher"].filter((key) =>
+    new RegExp(`^\\[mcp_servers\\.${key}(?:\\.|\\])`, "m").test(configToml));
+  return declared.length ? declared : ["space_dispatcher"];
+}
+function readCodexConfig(): string {
+  try { return readFileSync(join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml"), "utf8"); }
+  catch { return ""; }
+}
+const dispatcherReadTools = [
+  "space_list_mcp_servers", "space_mcp_server_info", "space_list_skills", "space_get_skill",
+  "list_mcp_servers", "mcp_server_info", "list_skills", "get_skill"
+] as const;
 export const DOT_PROACTIVE_BLOCK_REASON = "This is proactive work you proposed, so it is read-only. Report what you found and ask the user before changing anything.";
 const defaultDispatcherPath = "/opt/spaceapp/bin/space-mcp-dispatcher.mjs";
 
@@ -253,7 +274,7 @@ export function dotGatewayDeveloperInstructions(developerContext: string | undef
     developerContext?.trim(),
     "Space tools: use space_search_tools to find tools, space_describe_tool to load a schema, and space_call_tool to run one.",
     "Common ids: space.inspect (room state and content), space.execute (open/close/minimize/restore/rename/prompt panes, layouts, playback, configure models), space.pane_types, resource.panes.open, memory.search, memory.save, tasks.list, clipboard.list, computer.browser (your own browser), browser.navigate, goal.update, schedule.create, dot_memory.recall, dot_memory.remember, mail.search, calendar.list.",
-    "Prefer your own shell and file abilities for local work. Use Space tools for Space state. Installed MCP servers are reachable through mcp_dispatcher.",
+    "Prefer your own shell and file abilities for local work. Use Space tools for Space state. Installed MCP servers are reachable through space_dispatcher.",
     "Never claim an action happened unless its result says COMPLETED. PENDING means still running. APPROVAL_REQUIRED means the user must approve it in Space: say what you are waiting for and stop.",
     "Destructive operations need the user's explicit request and confirm=true. Ask before acting when the request is ambiguous.",
     "For research, cite sources with links and dates. For code and data analysis, run the code or calculation and show the checks you ran.",

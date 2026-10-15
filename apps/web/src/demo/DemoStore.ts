@@ -1,6 +1,6 @@
 import { taskTitleSettingsSchema, shortTaskTitle, roomSchema, paneSchema, userSettingsSchema, userLinkSchema, clipboardItemSchema, taskItemSchema, artifactSchema, MAX_ROOMS, pickNextAvailableRoomName } from "@space/contracts";
 import { demoHealthSnapshot } from "./demo-health.js";
-import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom } from "@space/contracts";
+import { defaultUserSettings, canonicalizeUserLinkUrl, cliToggleRuntimeIds, streamingMetricDefinitions, defaultToolRoutingState, buildEffectiveToolPlan, updateToolRoutingSchema, buildDotToolCatalog, dotWorkspacePath, dotUserSettingsFrom, summarizeDotProactiveUsage } from "@space/contracts";
 import type { DotUserSettings, UpdateDotUserSettings } from "@space/contracts";
 import type {
   MaintenanceAutopilotStatus,
@@ -15,7 +15,6 @@ import type {
   ClipboardItem,
   CliToggleRuntimeId,
   CodexResetCreditRedemptionResponse,
-  UpdateCodexCliModeDefaultsInput,
   CreateClipboardItemRequest,
   CreateRoomPanesRequest,
   CreateTaskItemRequest,
@@ -492,7 +491,7 @@ export class DemoStore {
       statusReason: "Demo Room Agent is ready and local-only.",
       modelId: "gpt-5.6-sol",
       reasoningEffort: "high",
-      messages: [{ id: `room_agent_message:${roomId}`, role: "assistant", content: DEMO_LOCAL_REPLY, status: "COMPLETED", createdAt: DEMO_FIXED_AT }],
+      messages: [{ id: `room_agent_message:${roomId}`, role: "assistant", kind: "CHAT", content: DEMO_LOCAL_REPLY, status: "COMPLETED", createdAt: DEMO_FIXED_AT }],
       activeMission: null,
       queuedMissionCount: 0,
       currentPaneId: null,
@@ -836,6 +835,7 @@ export class DemoStore {
       case "exportConfiguration":
       case "inspectConfiguration":
       case "importConfiguration":
+      case "configurationCliLogins":
         throw new SpaceApiError("Configuration migration is unavailable in this demo. No installation was accessed or changed.", { status: 400, code: "DEMO_UNSUPPORTED" });
       case "modelCapabilities": return { profiles: [], state: structuredClone(this.toolRoutingState) };
       case "effectiveToolRouting": return buildEffectiveToolPlan(this.toolRoutingState, {
@@ -995,16 +995,6 @@ export class DemoStore {
         Object.assign(this.fixture.providerSettings, input, { updatedAt: DEMO_FIXED_AT });
         return Promise.resolve(structuredClone(this.fixture.providerSettings));
       }
-      case "codexCliModeDefaults": return Promise.resolve(structuredClone(this.fixture.codexCliModeDefaults));
-      case "updateCodexCliModeDefaults": {
-        const input = args[0] as UpdateCodexCliModeDefaultsInput;
-        this.fixture.codexCliModeDefaults.defaults[input.mode] = {
-          modelId: input.modelId,
-          reasoningEffort: input.reasoningEffort
-        };
-        this.fixture.codexCliModeDefaults.defaults.updatedAt = DEMO_FIXED_AT;
-        return Promise.resolve(structuredClone(this.fixture.codexCliModeDefaults));
-      }
       case "telegramIntegration": return Promise.resolve(structuredClone(this.fixture.telegramIntegration));
       case "createTelegramPairing": {
         const pairingId = "telegram_pairing:demo-local";
@@ -1150,6 +1140,9 @@ export class DemoStore {
         ...this.fixture.systemAnalyticsCliSessions,
         range: args[0] ?? "10m"
       }));
+      // The demo has no install pings: the Installs tab stays hidden and nothing is reported.
+      case "systemAnalyticsInstalls": return Promise.resolve({ available: false, updatedAt: null, summary: { installs: 0, completed: 0, failed: 0, setupCompleted: 0, firstCli: 0, firstAnswer: 0, active7d: 0, internal: 0 }, installs: [] });
+      case "reportInstallActivity": return Promise.resolve(null);
       case "reapToolbarCliSessions": return Promise.resolve(structuredClone(this.fixture.cliSessionReap));
       case "toolbarHostMemory": return Promise.resolve(structuredClone(this.fixture.hostMemoryDetails));
       case "reclaimToolbarMemory": return Promise.resolve(structuredClone(this.fixture.memoryReclaim));
@@ -1637,6 +1630,7 @@ export class DemoStore {
         return Promise.resolve({ settings: structuredClone(this.demoDotSettings) });
       }
       case "dotModels": return Promise.resolve({ providers: [] });
+      case "dotProactiveUsage": return Promise.resolve(summarizeDotProactiveUsage([], Number(args[0] ?? 7)));
       case "dotToolInvocations": return Promise.resolve({ dotId: String(args[0]), items: [], limit: 20, offset: 0 });
       case "dotApprovals": return Promise.resolve({ dotId: String(args[0]), items: [] });
       case "dotGoals": return Promise.resolve({ dotId: String(args[0]), items: [] });
@@ -2543,10 +2537,10 @@ export class DemoStore {
   }
   private demoGatewaySettings = {
     routingStrategy: "CAPACITY_WEIGHTED" as const, stickyThreadsEnabled: true, preferEarlierReset: false, planPriority: ["plus", "prolite", "pro"],
-    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "SHADOW" as const,
-    compressionTimeBudgetMs: 250, requestLogRetentionDays: 30, displayTimeFormat: "24H" as const, displayAccountWindows: "BOTH" as const,
+    stickyReallocationBudgetThresholdPercent: 95, exhaustionFloorPercent: 3, compressionMode: "OFF" as const, compressionProfile: "TOKEN" as const, compressionCodeText: "ON" as const,
+    compressionTimeBudgetMs: 250, compressionProviders: {}, requestLogRetentionDays: 30, displayTimeFormat: "24H" as const, displayAccountWindows: "BOTH" as const,
     displayBurnProjection: true, upstreamStreamTransport: "DEFAULT" as const, promptCacheTtlSeconds: 1800, importWithoutOverwrite: true, warmupEnabled: false,
-    warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100,
+    warmupWindows: "BOTH" as const, warmupModel: "auto", warmupPrompt: "Say OK.", warmupCooldownSeconds: 3600, warmupMinAvailablePercent: 100, claudeApiKeyFallback: false,
     lanMode: "ENV" as const, lanHost: null, lanPort: null, lanAllowedSources: [] as string[], updatedAt: DEMO_FIXED_AT
   };
 

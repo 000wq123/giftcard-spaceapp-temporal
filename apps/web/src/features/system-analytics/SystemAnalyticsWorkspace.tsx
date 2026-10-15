@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import type {
   OpencodeBenchResponse,
   SystemAnalyticsCliSessionsResponse,
+  SystemAnalyticsInstallsResponse,
   SystemAnalyticsModelsResponse,
   SystemAnalyticsOverviewResponse,
   SystemAnalyticsProcessesResponse,
@@ -31,7 +32,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { groupModelTokens, recordedTotal, sumTokenCounts } from "./token-totals.js";
 
-export type SystemAnalyticsTab = "overview" | "models" | "resources" | "sessions" | "bench";
+export type SystemAnalyticsTab = "overview" | "models" | "resources" | "sessions" | "bench" | "installs";
 
 const ranges: Array<{ value: SystemAnalyticsRange; label: string }> = [
   { value: "10m", label: "10 min" },
@@ -46,7 +47,8 @@ const tabs: Array<{ value: SystemAnalyticsTab; label: string }> = [
   { value: "models", label: "Models" },
   { value: "resources", label: "CPU & RAM" },
   { value: "sessions", label: "CLI Sessions" },
-  { value: "bench", label: "OpenCode Bench" }
+  { value: "bench", label: "OpenCode Bench" },
+  { value: "installs", label: "Installs" }
 ];
 
 function formatMs(value: number | null): string {
@@ -167,6 +169,8 @@ export function SystemAnalyticsWorkspace({
   const [sessions, setSessions] = useState<SystemAnalyticsCliSessionsResponse | null>(null);
   const [processes, setProcesses] = useState<SystemAnalyticsProcessesResponse | null>(null);
   const [bench, setBench] = useState<OpencodeBenchResponse | null>(null);
+  const [installs, setInstalls] = useState<SystemAnalyticsInstallsResponse | null>(null);
+  const [showTestInstalls, setShowTestInstalls] = useState(false);
   const [processQuery, setProcessQuery] = useState("");
   const [processSort, setProcessSort] = useState<"rss" | "cpu" | "pid" | "uptime" | "name">("rss");
   const [processPage, setProcessPage] = useState(1);
@@ -183,6 +187,10 @@ export function SystemAnalyticsWorkspace({
   const [refreshToken, setRefreshToken] = useState(0);
 
   useEffect(() => setTab(initialTab), [initialTab]);
+  // The Installs tab exists only on the server that receives the spaceapp.dev install pings.
+  useEffect(() => {
+    if (!modelsOnly) void api.systemAnalyticsInstalls().then(setInstalls).catch(() => undefined);
+  }, [modelsOnly]);
   const refresh = useCallback(() => setRefreshToken((value) => value + 1), []);
 
   const refreshBench = useCallback(async () => {
@@ -241,7 +249,9 @@ export function SystemAnalyticsWorkspace({
             })
           : tab === "bench"
             ? api.opencodeBench(range, false).then((payload) => { if (active) setBench(payload as OpencodeBenchResponse); })
-            : api.systemAnalyticsCliSessions(range).then((payload) => { if (active) setSessions(payload); });
+            : tab === "installs"
+              ? api.systemAnalyticsInstalls().then((payload) => { if (active) setInstalls(payload); })
+              : api.systemAnalyticsCliSessions(range).then((payload) => { if (active) setSessions(payload); });
     void request.catch((caught: unknown) => {
       if (active) setError(errorMessage(caught));
     }).finally(() => {
@@ -322,7 +332,7 @@ export function SystemAnalyticsWorkspace({
 
     <div className="system-analytics-controls">
       {!modelsOnly && <div className="system-analytics-tabs" role="tablist" aria-label="Analytics sections">
-        {tabs.map((item) => <button key={item.value} type="button" role="tab"
+        {tabs.filter((item) => item.value !== "installs" || installs?.available).map((item) => <button key={item.value} type="button" role="tab"
           aria-selected={tab === item.value} onClick={() => setTab(item.value)}
           style={{ position: "relative" }}>
           {tab === item.value && (
@@ -579,6 +589,28 @@ export function SystemAnalyticsWorkspace({
           {sessions.sessions.map((session) => <tr key={session.sessionId}><td><strong>{session.paneTitle}</strong><small>{session.roomName}</small></td><td><strong>{session.runtimeName}</strong><small>{session.runtimeId} · {session.reasoningEffort}</small></td><td><strong>{session.modelId ?? "model unavailable"}</strong><small>{session.providerId}</small></td><td><span className={`system-analytics-status is-${session.status.toLocaleLowerCase()}`}>{session.status}</span><small>{session.attachmentCount} attachments{session.cleanupEligible ? " · cleanup eligible" : ""}</small></td><td>{session.pid ?? "—"} / {session.processCount}</td><td>{session.cpuOneCorePercent.toFixed(1)}% · {session.avgCpuOneCorePercent.toFixed(1)}% / {session.maxCpuOneCorePercent.toFixed(1)}%</td><td>{formatBytes(session.rssBytes)} · {formatBytes(session.avgRssBytes)} / {formatBytes(session.maxRssBytes)}</td><td>{formatDuration(session.durationSeconds)}<small>{formatDate(session.startedAt)}</small></td></tr>)}
         </tbody></table></div></article>
         <BackfillNote data={sessions.backfill} />
+      </> : null}
+
+      {tab === "installs" && installs ? <>
+        <div className="system-analytics-stats">
+          <StatCard label="Installs" value={String(installs.summary.installs)} detail={`${installs.summary.completed} completed · ${installs.summary.failed} failed · ${installs.summary.internal} test installs not counted`} />
+          <StatCard label="Owner created" value={String(installs.summary.setupCompleted)} />
+          <StatCard label="First CLI" value={String(installs.summary.firstCli)} />
+          <StatCard label="First answer" value={String(installs.summary.firstAnswer)} />
+          <StatCard label="Active 7 days" value={String(installs.summary.active7d)} />
+        </div>
+        <article className="system-analytics-panel system-analytics-table-panel"><header><Database aria-hidden="true" /><div><strong>Installations with telemetry on</strong><small>anonymous spaceapp.dev pings · copied {formatDate(installs.updatedAt)}</small></div><SpaceToggle label="Show test installs" checked={showTestInstalls} onChange={setShowTestInstalls} /></header><div className="system-analytics-table-scroll"><table><thead><tr><th>First seen</th><th>Status</th><th>Country</th><th>System</th><th>Hardware</th><th>Screen / browser</th><th>Progress</th><th>Active</th></tr></thead><tbody>
+          {installs.installs.filter((row) => showTestInstalls || !row.internal).map((row) => <tr key={row.installId}>
+            <td>{formatDate(row.firstSeenAt)}<small>{row.version ?? "—"}{row.linked ? "" : " · install ping only"}{row.internal ? " · test (our lab)" : ""}</small></td>
+            <td><span className={`system-analytics-status is-${row.status.toLocaleLowerCase()}`}>{row.status}</span><small>{row.failedStage ? `at ${row.failedStage}` : row.durationSeconds !== null ? formatDuration(row.durationSeconds) : ""}</small></td>
+            <td>{row.country ?? "—"}</td>
+            <td><strong>{row.os ?? "—"}</strong><small>{[row.osVersion, row.arch].filter(Boolean).join(" · ")}</small></td>
+            <td>{row.cpus ? `${row.cpus} CPUs` : "—"}<small>{[row.ramGb ? `${row.ramGb} GB RAM` : null, row.profile, row.access].filter(Boolean).join(" · ")}</small></td>
+            <td>{row.screen ?? "—"}<small>{[row.dpr ? `×${row.dpr}` : null, row.browser, row.lang].filter(Boolean).join(" · ")}</small></td>
+            <td>{[row.setupCompletedAt ? "Owner" : null, row.firstCli ? `CLI ${row.firstCli}` : null, row.firstAnswerAt ? "Answer" : null].filter(Boolean).join(" → ") || "—"}</td>
+            <td>{row.activeDays ? `${row.activeDays} ${row.activeDays === 1 ? "day" : "days"}` : "—"}<small>{row.lastActiveAt ? `last ${formatDate(row.lastActiveAt)}` : ""}</small></td>
+          </tr>)}
+        </tbody></table></div></article>
       </> : null}
     </div>
   </section>;

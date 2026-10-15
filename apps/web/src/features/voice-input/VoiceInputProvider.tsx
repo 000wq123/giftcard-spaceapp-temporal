@@ -8,9 +8,10 @@ import {
   useState,
   type ReactNode
 } from "react";
-import type { VoiceTranscriptionSettings } from "@space/contracts";
+import { inferProviderFromModel, type LiveAudioProviderId, type VoiceTranscriptionSettings } from "@space/contracts";
 import { api } from "../../api.js";
 import { openVoiceRealtimeSession, supportsDeferredVoiceCapture, type VoiceRealtimeSessionHandle } from "../../voice-realtime.js";
+import { resolveVoiceProvider, voiceProviderLabel, voiceProviderUnavailable, type VoiceProviderChoice } from "../../voice-relay-close.js";
 import {
   VOICE_SETTINGS_UPDATED_EVENT,
   readVoiceComposerSettings,
@@ -81,6 +82,33 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
   const warmTimerRef = useRef<number | null>(null);
   const warmClaimRef = useRef<{ target: VoiceInputTarget; generation: number } | null>(null);
   const prewarmCooldownRef = useRef(0);
+  // Which provider the warm and the active session use, so a failure can be traced to that provider.
+  const warmProviderRef = useRef<LiveAudioProviderId | null>(null);
+  const sessionProviderRef = useRef<LiveAudioProviderId | null>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const serverSettingsRef = useRef(serverSettings);
+  serverSettingsRef.current = serverSettings;
+  const startRef = useRef<((target: VoiceInputTarget) => Promise<void>) | null>(null);
+
+  /** The operator's provider, or another configured one while it has no credits (see resolveVoiceProvider). */
+  const sessionChoice = useCallback((): VoiceProviderChoice | null => {
+    const server = serverSettingsRef.current;
+    if (!server) return null;
+    const current = settingsRef.current;
+    const model = current.model || server.defaultModel;
+    return resolveVoiceProvider({ provider: current.provider ?? inferProviderFromModel(model), model, voice: current.voice || server.defaultVoice },
+      server.providerOptions);
+  }, []);
+
+  /** A session failed because its provider has no credits: start again for the same target on the fallback. */
+  const startOnFallback = useCallback((target: VoiceInputTarget, failedProvider: LiveAudioProviderId | null): boolean => {
+    if (!failedProvider || !voiceProviderUnavailable(failedProvider)) return false;
+    const choice = sessionChoice();
+    if (!choice || choice.provider === failedProvider || !startRef.current) return false;
+    void startRef.current(target);
+    return true;
+  }, [sessionChoice]);
 
   const clearStopTimer = useCallback(() => {
     if (stopTimerRef.current === null) return;
@@ -135,10 +163,11 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     }
     if (claim.generation !== generationRef.current || ownerRef.current !== claim.target.id) return;
     closeActiveSession();
+    if (startOnFallback(claim.target, sessionProviderRef.current)) return;
     setStatus("idle");
     setError(message);
     claim.target.onError?.(message);
-  }, [closeActiveSession, closeWarmSession]);
+  }, [closeActiveSession, closeWarmSession, startOnFallback]);
 
   const warmCallbacks = useMemo(() => ({
     onTranscriptDelta: (text: string) => {
@@ -172,15 +201,16 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     if (!settings.prewarm || !serverSettings?.enabled) return;
     if (sessionRef.current || warmSessionRef.current || warmPromiseRef.current) return;
     if (Date.now() < prewarmCooldownRef.current) return;
-    const model = settings.model || serverSettings.defaultModel;
-    if (!supportsDeferredVoiceCapture({ provider: settings.provider, model })) return;
+    const choice = sessionChoice();
+    if (!choice || !supportsDeferredVoiceCapture({ provider: choice.provider, model: choice.model })) return;
     // No recording is active here, so any earlier claim is stale and must not adopt this connection's errors.
     warmClaimRef.current = null;
+    warmProviderRef.current = choice.provider;
     const promise = openVoiceRealtimeSession(
       {
-        provider: settings.provider,
-        model,
-        voice: settings.voice || serverSettings.defaultVoice,
+        provider: choice.provider,
+        model: choice.model,
+        voice: choice.voice,
         language: settings.language,
         delay: serverSettings.defaultDelay,
         opening: settings.opening,
@@ -204,7 +234,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
       return null;
     });
     warmPromiseRef.current = promise;
-  }, [closeWarmSession, serverSettings, settings, warmCallbacks]);
+  }, [closeWarmSession, serverSettings, sessionChoice, settings, warmCallbacks]);
 
   const claimWarmSession = useCallback(async (
     handle: VoiceRealtimeSessionHandle,
@@ -218,6 +248,7 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     warmSessionRef.current = null;
     warmClaimRef.current = { target, generation };
     sessionRef.current = handle;
+    sessionProviderRef.current = warmProviderRef.current;
     try {
       await handle.startCapture();
     } catch (captureError) {
@@ -312,35 +343,47 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     setPreview("");
     setError(null);
 
+    const choice = sessionChoice()!;
+    if (choice.fallbackFrom) setPreview(`${voiceProviderLabel(choice.fallbackFrom)} has no voice credits; using ${voiceProviderLabel(choice.provider)}.`);
     const fail = (message: string) => {
       if (generationRef.current !== generation || ownerRef.current !== target.id) return;
       closeActiveSession();
+      if (startOnFallback(target, choice.provider)) return;
       setStatus("idle");
       setError(message);
       target.onError?.(message);
     };
 
+    // A warm connection to a provider that has since run out of credits is dropped, not claimed.
+    const warmUsable = () => !warmProviderRef.current || warmProviderRef.current === choice.provider;
     const warmPromise = warmPromiseRef.current;
     if (warmPromise) {
       const handle = await warmPromise;
       warmPromiseRef.current = null;
-      if (handle) {
+      if (handle && warmUsable()) {
         await claimWarmSession(handle, target, generation);
         return;
       }
+      handle?.close();
+      warmSessionRef.current = null;
     } else if (warmSessionRef.current) {
       const handle = warmSessionRef.current;
       warmSessionRef.current = null;
-      await claimWarmSession(handle, target, generation);
-      return;
+      if (warmUsable()) {
+        await claimWarmSession(handle, target, generation);
+        return;
+      }
+      handle.close();
     }
+    if (generationRef.current !== generation || ownerRef.current !== target.id) return;
 
+    sessionProviderRef.current = choice.provider;
     try {
       const handle = await openVoiceRealtimeSession(
         {
-          provider: settings.provider,
-          model: settings.model || serverSettings.defaultModel,
-          voice: settings.voice || serverSettings.defaultVoice,
+          provider: choice.provider,
+          model: choice.model,
+          voice: choice.voice,
           language: settings.language,
           delay: serverSettings.defaultDelay,
           opening: settings.opening,
@@ -392,7 +435,8 @@ export function VoiceInputProvider({ children }: { children: ReactNode }) {
     } catch (startError) {
       fail(errorMessage(startError, "Microphone permission was not granted."));
     }
-  }, [cancel, claimWarmSession, clearStopTimer, closeActiveSession, reset, serverSettings, settings, settingsError]);
+  }, [cancel, claimWarmSession, clearStopTimer, closeActiveSession, reset, serverSettings, sessionChoice, settings, settingsError, startOnFallback]);
+  startRef.current = start;
 
   const stop = useCallback((requestedOwnerId: string) => {
     if (ownerRef.current !== requestedOwnerId || !sessionRef.current) return;

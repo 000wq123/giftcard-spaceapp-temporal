@@ -9,6 +9,7 @@ import {
   type JobApplicationFieldUpsert,
   type JobApplicationPatch,
   type JobApplicationRecord,
+  type JobApplicationStatsRow,
   type JobApplyEventCreateRecord,
   type JobApplyEventFilter,
   type JobApplyEventRecord,
@@ -55,15 +56,26 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     const profile = this.profiles.get(owner);
     return profile ? structuredClone(profile) : null;
   }
+  async listGoogleProfileOwners() {
+    return [...this.profiles.values()].filter((profile) => profile.googleEmail).map((profile) => profile.ownerUserId).sort();
+  }
   async upsertProfile(owner: string, patch: JobApplyProfilePatch) {
     const timestamp = this.now();
     const current = this.profiles.get(owner) ?? {
       ownerUserId: owner, candidate: {}, qaBank: [], cvArtifactId: null, coverLetterArtifactId: null, cvText: null,
-      mailbox: null, mailboxPasswordEncrypted: null, mailboxVerifiedAt: null, createdAt: timestamp, updatedAt: timestamp
+      mailbox: null, mailboxPasswordEncrypted: null, mailboxVerifiedAt: null, googleEmail: null, campaignStartedAt: null, createdAt: timestamp, updatedAt: timestamp
     };
     const next: JobApplyProfileRecord = { ...current, ...structuredClone(defined(patch)), updatedAt: timestamp } as JobApplyProfileRecord;
     this.profiles.set(owner, next);
     return structuredClone(next);
+  }
+  async resetCampaign(owner: string, expected: string | null) {
+    const current = this.profiles.get(owner);
+    if ((current?.campaignStartedAt ?? null) !== expected) return null;
+    const startedAt = this.now();
+    await this.upsertProfile(owner, {});
+    this.profiles.set(owner, { ...this.profiles.get(owner)!, campaignStartedAt: startedAt });
+    return startedAt;
   }
   async listApplications(owner: string, filter: { status?: string; limit: number }) {
     return [...this.applications.values()]
@@ -85,7 +97,7 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     const timestamp = this.now();
     const { queuePosition, ...rest } = input;
     const row: JobApplicationRecord = { id: newJobApplicationId(), ...rest, evidenceArtifactIds: [], externalConfirmation: null,
-      appliedAt: null, queuePosition: queuePosition ?? null, createdAt: timestamp, updatedAt: timestamp };
+      appliedAt: null, queuePosition: queuePosition ?? null, notBefore: null, createdAt: timestamp, updatedAt: timestamp };
     this.applications.set(row.id, row);
     return structuredClone(row);
   }
@@ -109,11 +121,26 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
       && (row.appliedAt ?? row.updatedAt) >= sinceIso).length;
   }
   async listQueue(owner: string, paneId: string | null) {
+    // shortcut: the twin knows no panes, so a closed pane still holds its postings here; the Postgres test covers the release.
     return [...this.applications.values()]
       .filter((row) => row.ownerUserId === owner && row.status === "QUEUED" && (paneId === null || row.paneId === null || row.paneId === paneId))
       .sort((left, right) => (left.queuePosition ?? Number.MAX_SAFE_INTEGER) - (right.queuePosition ?? Number.MAX_SAFE_INTEGER)
         || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
       .map((row) => structuredClone(row));
+  }
+  async applicationStats(owner: string, input: { tz: string; since: string | null; importedUrlPrefix: string }) {
+    const dayOf = new Intl.DateTimeFormat("en-CA", { timeZone: input.tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    const counts = new Map<string, JobApplicationStatsRow>();
+    for (const row of this.applications.values()) {
+      if (row.ownerUserId !== owner) continue;
+      const scope = row.url.startsWith(input.importedUrlPrefix) ? "IMPORTED" : input.since && row.createdAt < input.since ? "ARCHIVED" : "CURRENT";
+      const day = dayOf.format(new Date(row.appliedAt ?? row.updatedAt));
+      const key = `${day}|${row.status}|${scope}`;
+      const entry = counts.get(key) ?? { day, status: row.status, scope, count: 0 };
+      entry.count += 1;
+      counts.set(key, entry);
+    }
+    return [...counts.values()];
   }
   async nextQueuePosition(owner: string) {
     let max = -1;
@@ -225,14 +252,20 @@ export class InMemoryJobApplyRepository implements JobApplyRepository {
     return structuredClone(event);
   }
   async listEvents(owner: string, filter: JobApplyEventFilter) {
+    // Newest first; events of the same millisecond keep the order they were recorded in (ids are random).
     return this.events
       .filter((event) => event.ownerUserId === owner && (!filter.applicationId || event.applicationId === filter.applicationId)
         && (!filter.runId || event.runId === filter.runId) && (!filter.paneId || event.paneId === filter.paneId) && (!filter.since || event.createdAt > filter.since))
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .reverse()
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, filter.limit)
       .map((event) => structuredClone(event));
   }
 
+  async listActiveRuns(owner: string) {
+    return [...this.runs.values()].filter((entry) => entry.ownerUserId === owner && (entry.status === "RUNNING" || entry.status === "PAUSED"))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt)).map((run) => structuredClone(run));
+  }
   async getActiveRun(paneId: string) {
     const run = [...this.runs.values()].filter((entry) => entry.paneId === paneId && (entry.status === "RUNNING" || entry.status === "PAUSED"))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];

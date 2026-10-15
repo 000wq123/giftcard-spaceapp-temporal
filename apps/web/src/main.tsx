@@ -21,33 +21,43 @@ async function mount() {
     }
   }
   const route = resolveEntryRoute(window.location.pathname, window.location.hostname);
-  if (route === "app" && await appDiagnosticsSessionIsAuthenticated()) {
-    const diagnosticsStartup = startAppDiagnosticsBootstrap();
-    await diagnosticsStartup.beforeMount;
-  }
+  // Diagnostics auth is still awaited before the first app render, but its
+  // request can overlap the entry chunk and stylesheet work below.
+  const diagnosticsAuth = route === "app"
+    ? appDiagnosticsSessionIsAuthenticated()
+    : Promise.resolve(false);
   if (route === "public-site") {
     // The old in-app homepage was retired; the public site is spaceapp.dev.
     window.location.replace(PUBLIC_SITE_URL);
     return route;
   }
   const root = createRoot(document.getElementById("root")!);
-
-
-  await import("./styles.css");
+  // Start the base stylesheet and the app entry chunks together. The shell
+  // still renders only after CSS is ready, but the stylesheet no longer holds
+  // the large LiveSpaceApp/App imports behind a serial dynamic import.
+  const stylesReady = import("./styles.css");
   if (route === "demo") {
+    await stylesReady;
     await import("./features/ui-theme/modern-theme.css");
     await import("./features/ui-theme/codex-theme.css");
     await import("./features/ui-theme/motion-theme.css");
+    await import("./features/ui-theme/aurora-theme.css");
     const { DemoSpaceApp } = await import("./demo/DemoSpaceApp.js");
     root.render(<StrictMode><SurfaceErrorBoundary><DemoSpaceApp /></SurfaceErrorBoundary></StrictMode>);
     return route;
   }
-  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }, { InstanceBadge }] = await Promise.all([
+  const appModules = Promise.all([
     import("./live/LiveSpaceApp.js"),
     import("./ui-theme.js"),
-    import("./features/ui-theme/icon-pack-registry.js"),
+    import("@space/icons"),
     import("./features/instance-badge/InstanceBadge.js")
   ]);
+  await stylesReady;
+  const [{ LiveSpaceApp }, { readUiTheme, readUiBackground, readModernIconPack }, { loadAppIconPack }, { InstanceBadge }] = await appModules;
+  if (await diagnosticsAuth) {
+    const diagnosticsStartup = startAppDiagnosticsBootstrap();
+    await diagnosticsStartup.beforeMount;
+  }
   document.documentElement.dataset.uiBackground = readUiBackground(window.localStorage);
   // Non-default icon packs load on demand; await the stored one like the theme CSS.
   const iconPackReady = loadAppIconPack(readModernIconPack(window.localStorage)).catch(() => undefined);
@@ -55,6 +65,7 @@ async function mount() {
     await import("./features/ui-theme/modern-theme.css");
     await import("./features/ui-theme/codex-theme.css");
     await import("./features/ui-theme/motion-theme.css");
+    await import("./features/ui-theme/aurora-theme.css");
   }
   await iconPackReady;
   if (route === "app") {

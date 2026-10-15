@@ -2,10 +2,20 @@ import { useEffect, useState } from "react";
 import type { ConnectorCapability, ConnectorsStatus } from "@space/contracts";
 import { api } from "../../api.js";
 
-const capabilityLabels: Record<ConnectorCapability, string> = { MAIL_READ: "Read email", MAIL_COMPOSE: "Draft and send email", CALENDAR: "Calendar" };
+/** What a Dot can ask Google for; organizing mail belongs to Job Copilot, so Dots do not offer it. */
+const dotCapabilities: ConnectorCapability[] = ["MAIL_READ", "MAIL_COMPOSE", "CALENDAR"];
+const capabilityLabels: Record<ConnectorCapability, string> = { MAIL_READ: "Read email", MAIL_COMPOSE: "Draft and send email", CALENDAR: "Calendar", MAIL_ORGANIZE: "Label and archive email" };
 const providerLabels = { GOOGLE: "Google", MICROSOFT: "Microsoft" } as const;
 export function connectorStartUrl(provider: "GOOGLE" | "MICROSOFT", capabilities: ConnectorCapability[]): string {
   return `/api/connectors/${provider.toLowerCase()}/start?capabilities=${encodeURIComponent(capabilities.join(","))}`;
+}
+
+/** A service the server is not set up for: a plain sentence, the admin's setup steps folded below. */
+export function UnavailableProvider({ label, reason }: { label: string; reason: string | null }) {
+  return <div className="dots-connect-unavailable">
+    <span>{label}: not set up on this server yet.</span>
+    {reason ? <details className="dots-setup-details"><summary>How to set it up</summary><p>{reason}</p></details> : null}
+  </div>;
 }
 
 /** Email and calendar accounts connected to Space, shared by the user's Dots. */
@@ -45,15 +55,17 @@ export function DotConnections({ read = api.connectors, disconnect = api.disconn
         <button type="button" onClick={() => setConfirming(null)}>Keep</button>
       </div> : <div className="dots-memory-actions"><button type="button" onClick={() => setConfirming(account.accountId)}>Disconnect</button></div>}
     </li>)}</ul> : <p>No accounts connected.</p>}
+    <div className="dots-permissions-label">Permissions to ask for</div>
     <div className="dots-memory-scopes" role="group" aria-label="Permissions to request">
-      {(Object.keys(capabilityLabels) as ConnectorCapability[]).map((capability) => <button key={capability} type="button" aria-pressed={chosen.includes(capability)}
+      {dotCapabilities.map((capability) => <button key={capability} type="button" aria-pressed={chosen.includes(capability)}
         onClick={() => toggle(capability)}>{capabilityLabels[capability]}</button>)}
     </div>
     <div className="dots-connection-providers">
       {status.providers.map((provider) => provider.configured && chosen.length
         ? <a key={provider.provider} className="dots-connect-link" href={connectorStartUrl(provider.provider, chosen)}>Connect {providerLabels[provider.provider]}</a>
-        : <span key={provider.provider} className="dots-connect-unavailable" title={provider.reason ?? undefined}>
-          {providerLabels[provider.provider]}: {provider.configured ? "choose at least one permission" : provider.reason}</span>)}
+        : provider.configured
+          ? <span key={provider.provider} className="dots-connect-unavailable">{providerLabels[provider.provider]}: choose at least one permission</span>
+          : <UnavailableProvider key={provider.provider} label={providerLabels[provider.provider]} reason={provider.reason} />)}
     </div>
     {status.providers.some((provider) => provider.provider === "GOOGLE" && provider.configured) ? <details className="dots-connect-help">
       <summary>Google says “Access blocked”?</summary>

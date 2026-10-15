@@ -12,7 +12,7 @@ import {
   UserCheck,
   Search,
   Folder,
-  Edit2,
+  Pencil,
   PanelLeftClose,
   PanelLeft
 } from "../ui-theme/app-icons.js";
@@ -158,7 +158,7 @@ export function FileManagerToolbar({
           onClick={() => setIsEditingPath(true)}
           title="Edit Path (Ctrl+L)"
         >
-          <Edit2 size={13} />
+          <Pencil size={13} />
         </button>
       </div>
     );

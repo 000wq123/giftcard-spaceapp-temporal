@@ -21,6 +21,7 @@ import {
   redactCliMaintenanceDiagnostics,
   type SpaceStore
 } from "@space/runtime";
+import { childProcessEnv } from "./child-process-env.js";
 
 const dispatcherCommand = "/usr/bin/sudo";
 const dispatcherExecutable = "/opt/spaceapp/bin/space-cli-maintenance-dispatcher";
@@ -198,7 +199,7 @@ function executeBounded(args: string[], timeoutMs = 1_800_000): Promise<{ code: 
   return new Promise((resolve, reject) => {
     const child = spawn("/usr/bin/node", args, {
       env: {
-        ...process.env,
+        ...childProcessEnv(),
         PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         LANG: "C.UTF-8"
       },

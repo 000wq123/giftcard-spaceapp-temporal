@@ -28,6 +28,11 @@ export function registerDotHomeRoutes(app: FastifyInstance, options: {
     const settings = await repository.updateSettings(owner, updateDotUserSettingsSchema.parse(request.body));
     return settings ? { settings } : null;
   }));
+  // The model calls of the user's proactive checks (the Dot's own messages): usage and estimated cost, never content.
+  app.get("/api/dots/proactive/usage", options.routeOptions, handler(async (request, owner, repository) => {
+    const { days } = z.object({ days: z.coerce.number().int().min(1).max(30).default(7) }).strict().parse(request.query);
+    return repository.proactiveUsage(owner, days);
+  }));
   app.get("/api/dots/models", options.routeOptions, handler(async (request) => {
     z.object({}).strict().parse(request.query);
     return options.modelChoices ? await options.modelChoices() : { providers: [] };

@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useState } from "react";
 import type {
-  GatewayCompressionMode, GatewayCompressionProfile, GatewayCompressionStats, GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession,
-  GatewayHistorySeries, GatewaySettings
+  GatewayCompressionMode, GatewayCompressionProfile, GatewayCompressionProviderId, GatewayCompressionProviders, GatewayCompressionProviderSettings,
+  GatewayCompressionStats, GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession, GatewayHistorySeries, GatewayOutputPolicy, GatewaySettings
 } from "@space/contracts";
 import { RemainingBar, TrendChart } from "./gateway-charts.js";
 import { errorText, type SpaceGatewayClient } from "./gateway-client.js";
 import { SaveMessage, useSettingsSaver } from "./GatewaySettingsTab.js";
 import {
-  compressionModeOptions, formatCostPrecise, formatCountdown, formatDateTime, formatMs, formatPercent, formatTokens, planLabel, providerLabel
+  compressionModeOptions, compressionProviderIds, formatCostPrecise, formatCountdown, formatDateTime, formatMs, formatPercent, formatTokens, outputPolicyOptions,
+  planLabel, providerLabel
 } from "./space-gateway-model.js";
 
 /**
@@ -26,17 +27,19 @@ const stageLabels: Record<string, string> = {
   content_router: "Content router", waste_signals: "Waste detection", token_count: "Token count", pipeline_total: "Pipeline total",
   "compressor:smart_crusher": "JSON (SmartCrusher)", "compressor:log_compressor": "Logs", "compressor:search_compressor": "Search results",
   "compressor:diff_compressor": "Diffs", "compressor:lossless_fold": "Lossless folds", "compressor:code_aware": "Source code (CodeAware)",
-  "compressor:text_crusher": "Prose (TextCrusher)", "compressor:mixed": "Mixed content", compressor: "Compressor (unchanged)"
+  "compressor:text_crusher": "Prose (TextCrusher)", "compressor:mixed": "Mixed content", "compressor:json_fields": "JSON fields",
+  json_check: "JSON check", compressor: "Compressor (unchanged)"
 };
 const strategyLabels: Record<string, string> = {
   smart_crusher: "JSON (SmartCrusher)", log_compressor: "Logs", search_compressor: "Search results", diff_compressor: "Diffs",
-  lossless_fold: "Lossless folds", code_aware: "Source code (CodeAware)", text_crusher: "Prose (TextCrusher)", mixed: "Mixed content"
+  lossless_fold: "Lossless folds", code_aware: "Source code (CodeAware)", text_crusher: "Prose (TextCrusher)", mixed: "Mixed content",
+  html_extractor: "Web pages (HTML)", json_fields: "JSON fields"
 };
 const codeTextOptions: { value: GatewayCompressionMode; label: string; description: string }[] = [
   { value: "OFF", label: "Off", description: "Source code and prose pass through unchanged." },
-  { value: "SHADOW", label: "Shadow", description: "Measure code and prose compression; requests keep their original text." },
   { value: "ON", label: "On", description: "Compress code and prose too when compression is on. File reads keep their exact text." }
 ];
+const outputPolicyLabel = (policy: GatewayOutputPolicy | undefined) => outputPolicyOptions.find((option) => option.value === policy)?.label ?? "None";
 const tps = (value: number | null) => (value === null ? "—" : `${Math.round(value).toLocaleString("en-US")} tok/s`);
 
 function Stat({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -108,15 +111,13 @@ function SessionView({ session, timeFormat }: { session: GatewayHeadroomSession;
         <header><h3>Tokens saved</h3></header>
         <dl className="space-gateway-stats gw-compact-stats">
           <Stat label="Saved" value={formatTokens(session.tokens.saved)} detail={`${formatPercent(session.tokens.savingsPercent)} of all input · ${formatPercent(session.tokens.activeSavingsPercent)} of compressed tool output`} />
-          <Stat label="Would save (Shadow)" value={formatTokens(session.tokens.shadowSaved)} />
           <Stat label="Before" value={formatTokens(session.tokens.input + session.tokens.saved)} />
           <Stat label="Removed" value={formatTokens(session.tokens.saved)} />
           <Stat label="After" value={formatTokens(session.tokens.input)} />
           <Stat label="Output" value={formatTokens(session.tokens.output)} />
         </dl>
         <TrendChart label="Tokens saved per hour" timeFormat={timeFormat} legendValue="sum" formatValue={(value) => formatTokens(Math.round(value))}
-          series={[{ id: "saved", label: "Saved", points: session.savingsOverTime.map((row) => ({ t: row.t, value: row.saved })) },
-            { id: "shadow", label: "Would save (Shadow)", points: session.savingsOverTime.map((row) => ({ t: row.t, value: row.shadowSaved })) }]} />
+          series={[{ id: "saved", label: "Saved", points: session.savingsOverTime.map((row) => ({ t: row.t, value: row.saved })) }]} />
       </section>
       <section className="gw-card" aria-label="Performance">
         <header><h3>Performance</h3></header>
@@ -213,6 +214,7 @@ function SessionView({ session, timeFormat }: { session: GatewayHeadroomSession;
                       <dt>Compressors</dt><dd>{row.compressionDetail?.strategies.length ? row.compressionDetail.strategies.map((name) => strategyLabels[name] ?? name).join(", ") : "None changed it"}</dd>
                       <dt>Waste found</dt><dd>{row.compressionDetail && Object.keys(row.compressionDetail.waste).length
                         ? Object.entries(row.compressionDetail.waste).map(([name, tokens]) => `${wasteLabels[name] ?? name} ${formatTokens(tokens)}`).join(" · ") : "None"}</dd>
+                      <dt>Output policy</dt><dd>{row.compressionDetail?.outputPolicy ? outputPolicyLabel(row.compressionDetail.outputPolicy) : "None"}</dd>
                       <dt>Input · cached · output</dt><dd>{formatTokens(row.inputTokens ?? 0)} · {formatTokens(row.cachedInputTokens ?? 0)} · {formatTokens(row.outputTokens ?? 0)}</dd>
                       <dt>Status</dt><dd>{row.errorCode ?? row.status}</dd>
                     </dl>
@@ -251,7 +253,7 @@ function LifetimeView({ lifetime }: { lifetime: GatewayHeadroomLifetime }) {
         <Stat label="Cached requests" value={formatTokens(lifetime.requests.cached)} />
         <Stat label="Input tokens" value={formatTokens(lifetime.tokens.input)} detail={`${formatTokens(lifetime.tokens.attemptedInput)} before compression`} />
         <Stat label="Output tokens" value={formatTokens(lifetime.tokens.output)} />
-        <Stat label="Tokens saved" value={formatTokens(lifetime.tokens.saved)} detail={lifetime.tokens.savingsPercent === null ? undefined : `${formatPercent(lifetime.tokens.savingsPercent)} of input · ${formatTokens(lifetime.tokens.shadowSaved)} more in Shadow`} />
+        <Stat label="Tokens saved" value={formatTokens(lifetime.tokens.saved)} detail={lifetime.tokens.savingsPercent === null ? undefined : `${formatPercent(lifetime.tokens.savingsPercent)} of input`} />
       </dl>
       <dl className="space-gateway-stats gw-compact-stats" aria-label="Lifetime cost">
         <Stat label="API cost" value={formatCostPrecise(lifetime.cost.apiCostUsd)} detail="What the same requests cost on the API" />
@@ -382,6 +384,8 @@ function StrategiesView({ client }: { client: SpaceGatewayClient }) {
       .catch((reason) => { if (!cancelled) setError(errorText(reason, "Could not load compression statistics.")); });
     return () => { cancelled = true; };
   }, [client, hours]);
+  // Shadow rows are history from before Shadow was removed; only what was applied is shown.
+  const appliedStrategies = stats?.byStrategy.filter((row) => row.mode === "ON") ?? [];
   return (
     <section className="space-gateway-panel" aria-label="Compression statistics">
       <div className="space-gateway-toolbar">
@@ -393,27 +397,94 @@ function StrategiesView({ client }: { client: SpaceGatewayClient }) {
         </div>
       </div>
       {error ? <p className="space-gateway-alert" role="alert">{error}</p> : null}
-      {!stats ? (error ? null : <p className="space-gateway-empty">Loading statistics…</p>) : stats.applied.requests + stats.shadow.requests === 0
-        ? <p className="space-gateway-empty">No requests were compressed or measured in this period.</p>
+      {!stats ? (error ? null : <p className="space-gateway-empty">Loading statistics…</p>) : stats.applied.requests === 0
+        ? <p className="space-gateway-empty">No requests were compressed in this period.</p>
         : <>
           <dl className="space-gateway-stats">
             <Stat label="Tokens saved" value={formatTokens(stats.applied.tokensSaved)} detail={`${formatPercent(stats.applied.savingsPercent)} of compressed tool output`} />
-            <Stat label="Would save (Shadow)" value={formatTokens(stats.shadow.tokensSaved)} detail={`${formatPercent(stats.shadow.savingsPercent)} of measured tool output`} />
-            <Stat label="Requests compressed" value={`${formatTokens(stats.applied.modifiedRequests)} / ${formatTokens(stats.applied.requests)}`}
-              detail={`${formatTokens(stats.shadow.modifiedRequests)} / ${formatTokens(stats.shadow.requests)} in Shadow`} />
-            <Stat label="Overhead per request" value={`${(stats.applied.requests ? stats.applied.averageOverheadMs : stats.shadow.averageOverheadMs).toFixed(1)} ms`}
-              detail={`max ${Math.max(stats.applied.maxOverheadMs, stats.shadow.maxOverheadMs).toFixed(1)} ms · ${stats.applied.timedOut + stats.shadow.timedOut} over budget`} />
+            <Stat label="Requests compressed" value={`${formatTokens(stats.applied.modifiedRequests)} / ${formatTokens(stats.applied.requests)}`} />
+            <Stat label="Overhead per request" value={`${stats.applied.averageOverheadMs.toFixed(1)} ms`}
+              detail={`max ${stats.applied.maxOverheadMs.toFixed(1)} ms · ${stats.applied.timedOut} over budget`} />
           </dl>
-          {stats.byStrategy.length ? <div className="space-gateway-table-wrap"><table className="space-gateway-table" aria-label="Savings by strategy">
-            <thead><tr><th>Strategy</th><th>Mode</th><th>Blocks</th><th>Tokens saved</th><th>Savings</th><th>Not smaller</th><th>Errors</th></tr></thead>
-            <tbody>{stats.byStrategy.map((row) => (
-              <tr key={`${row.mode}:${row.strategy}`}><td>{strategyLabels[row.strategy] ?? row.strategy}</td><td>{row.mode === "ON" ? "On" : "Shadow"}</td>
+          {stats.byProvider.length ? <div className="space-gateway-table-wrap"><table className="space-gateway-table" aria-label="Savings by provider">
+            <thead><tr><th>Provider</th><th>Requests compressed</th><th>Before</th><th>After</th><th>Tokens saved</th><th>Savings</th></tr></thead>
+            <tbody>{stats.byProvider.map((row) => (
+              <tr key={row.provider}><td>{providerLabel(row.provider)}</td><td>{formatTokens(row.modifiedRequests)} / {formatTokens(row.requests)}</td>
+                <td>{formatTokens(row.originalTokens)}</td><td>{formatTokens(row.compressedTokens)}</td><td>{formatTokens(row.tokensSaved)}</td>
+                <td>{formatPercent(row.savingsPercent)}</td></tr>
+            ))}</tbody>
+          </table></div> : null}
+          {appliedStrategies.length ? <div className="space-gateway-table-wrap"><table className="space-gateway-table" aria-label="Savings by strategy">
+            <thead><tr><th>Strategy</th><th>Blocks</th><th>Tokens saved</th><th>Savings</th><th>Not smaller</th><th>Errors</th></tr></thead>
+            <tbody>{appliedStrategies.map((row) => (
+              <tr key={row.strategy}><td>{strategyLabels[row.strategy] ?? row.strategy}</td>
                 <td>{formatTokens(row.blocks)}</td><td>{formatTokens(row.tokensSaved)}</td><td>{formatPercent(row.savingsPercent)}</td>
                 <td>{row.rejectedBlocks}</td><td>{row.errorBlocks}</td></tr>
             ))}</tbody>
           </table></div> : null}
         </>}
     </section>
+  );
+}
+
+type ProviderField = keyof GatewayCompressionProviderSettings;
+
+/**
+ * Compression by provider: each provider follows the global settings unless it has its own value; the output policy
+ * (rules added to the agent's system prompt) exists per provider only. Saving replaces the whole per-provider object.
+ */
+function ProviderCompressionForm({ settings, client, onSaved }: { settings: GatewaySettings; client: SpaceGatewayClient; onSaved: (settings: GatewaySettings) => void }) {
+  const [draft, setDraft] = useState<GatewayCompressionProviders>(settings.compressionProviders ?? {});
+  const { saving, message, save } = useSettingsSaver(client, onSaved);
+  const set = <F extends ProviderField>(provider: GatewayCompressionProviderId, field: F, value: GatewayCompressionProviderSettings[F] | undefined) =>
+    setDraft((current) => {
+      const entry: GatewayCompressionProviderSettings = { ...(current[provider] ?? {}) };
+      if (value === undefined) delete entry[field]; else entry[field] = value;
+      const next: GatewayCompressionProviders = { ...current };
+      if (Object.keys(entry).length > 0) next[provider] = entry; else delete next[provider];
+      return next;
+    });
+  const choice = <F extends ProviderField>(provider: GatewayCompressionProviderId, field: F) => (value: string) =>
+    set(provider, field, (value === "" ? undefined : value) as GatewayCompressionProviderSettings[F]);
+  const onOff = (value: GatewayCompressionMode) => (value === "ON" ? "On" : "Off");
+  const cell = (provider: GatewayCompressionProviderId, label: string, field: "mode" | "codeText", global: GatewayCompressionMode) => (
+    <td key={provider}><select aria-label={`${providerLabel(provider)}: ${label}`} value={draft[provider]?.[field] ?? ""} onChange={(event) => choice(provider, field)(event.target.value)}>
+      <option value="">Global ({onOff(global)})</option><option value="OFF">Off</option><option value="ON">On</option>
+    </select></td>
+  );
+  return (
+    <form className="gw-card" aria-label="Compression by provider" onSubmit={(event) => { event.preventDefault(); void save({ compressionProviders: draft }); }}>
+      <header><h3>By provider</h3><span className="space-gateway-note">A provider follows the settings above unless it has its own value.</span></header>
+      <div className="space-gateway-table-wrap"><table className="space-gateway-table gw-provider-settings" aria-label="Compression settings by provider">
+        <thead><tr><th>Setting</th>{compressionProviderIds.map((provider) => <th key={provider} scope="col">{providerLabel(provider)}</th>)}</tr></thead>
+        <tbody>
+          <tr><th scope="row">Context compression</th>{compressionProviderIds.map((provider) => cell(provider, "Context compression", "mode", settings.compressionMode))}</tr>
+          <tr><th scope="row">Profile</th>{compressionProviderIds.map((provider) => (
+            <td key={provider}><select aria-label={`${providerLabel(provider)}: Profile`} value={draft[provider]?.profile ?? ""} onChange={(event) => choice(provider, "profile")(event.target.value)}>
+              <option value="">Global ({settings.compressionProfile === "CACHE" ? "Cache-safe" : "Token"})</option><option value="CACHE">Cache-safe</option><option value="TOKEN">Token</option>
+            </select></td>
+          ))}</tr>
+          <tr><th scope="row">Code and prose</th>{compressionProviderIds.map((provider) => cell(provider, "Code and prose", "codeText", settings.compressionCodeText))}</tr>
+          <tr><th scope="row">Time budget (ms)</th>{compressionProviderIds.map((provider) => (
+            <td key={provider}><input type="number" min={10} max={5000} aria-label={`${providerLabel(provider)}: Time budget`} placeholder={`Global (${settings.compressionTimeBudgetMs})`}
+              value={draft[provider]?.timeBudgetMs ?? ""} onChange={(event) => set(provider, "timeBudgetMs", event.target.value === "" ? undefined : Number(event.target.value))} /></td>
+          ))}</tr>
+          <tr><th scope="row">Output policy</th>{compressionProviderIds.map((provider) => (
+            <td key={provider}><select aria-label={`${providerLabel(provider)}: Output policy`} value={draft[provider]?.outputPolicy ?? "OFF"}
+              onChange={(event) => set(provider, "outputPolicy", event.target.value === "OFF" ? undefined : event.target.value as GatewayOutputPolicy)}>
+              {outputPolicyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select></td>
+          ))}</tr>
+        </tbody>
+      </table></div>
+      <dl className="gw-facts">
+        {outputPolicyOptions.filter((option) => option.value !== "OFF").map((option) => <Fragment key={option.value}><dt>{option.label}</dt><dd>{option.description}</dd></Fragment>)}
+      </dl>
+      <p className="space-gateway-note">The output policy is added only for Claude Code, Codex CLI and Antigravity. Space&apos;s own jobs, a key set to Off and requests
+        with <code>x-space-gateway-output-policy: off</code> keep their prompt as sent.</p>
+      <SaveMessage message={message} />
+      <button type="submit" className="space-gateway-button primary" disabled={saving}>Save provider settings</button>
+    </form>
   );
 }
 
@@ -479,6 +550,7 @@ export function GatewayCompressionTab({ settings, client, onSaved }: { settings:
         <SaveMessage message={message} />
         <button type="submit" className="space-gateway-button primary" disabled={saving}>Save compression</button>
       </form>
+      <ProviderCompressionForm settings={settings} client={client} onSaved={onSaved} />
       <div className="filter-tabs" role="tablist" aria-label="Compression view">
         {views.map((item) => <button key={item.id} type="button" role="tab" aria-selected={view === item.id} className={`filter-tab${view === item.id ? " active" : ""}`}
           onClick={() => setView(item.id)}>{item.label}</button>)}

@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { readActiveFreeOpenCodeModel } from "./room-mini-router.js";
+import { readActiveFreeOpenCodeModel } from "./opencode-free-model.js";
+import { childProcessEnv } from "./child-process-env.js";
 
 export interface AdvancedMissionModelSelection {
   providerId: string | null;
@@ -106,4 +108,56 @@ export async function resolveAdvancedMissionModel(
     modelName: freeModel,
     tier: "OPENCODE"
   };
+}
+
+/**
+ * The Room Agent's tier, checked at most once a minute: the check calls the quota service, and dock polls and chat
+ * turns would otherwise repeat it every few seconds.
+ */
+export function createCachedModelSelection(options: ResolveAdvancedMissionModelOptions, ttlMs = 60_000): () => Promise<AdvancedMissionModelSelection> {
+  let cache: { expires: number; value: Promise<AdvancedMissionModelSelection> } | null = null;
+  return () => {
+    if (cache && cache.expires > Date.now()) return cache.value;
+    const value = resolveAdvancedMissionModel(options);
+    const entry = { expires: Date.now() + ttlMs, value };
+    cache = entry;
+    value.catch(() => { if (cache === entry) cache = null; });
+    return value;
+  };
+}
+
+/** One answer from `opencode run` (text only, no tools). Null when it fails or does not answer in time. */
+export function runOpenCodeText(modelId: string, prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    let stdout = "";
+    let settled = false;
+    const child = spawn("opencode", ["run", "--format", "json", "--model", modelId, prompt], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...childProcessEnv(), LANG: "C.UTF-8" }
+    });
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    const onAbort = () => { try { child.kill("SIGKILL"); } catch {} finish(null); };
+    const timer = setTimeout(onAbort, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.on("error", () => finish(null));
+    child.on("close", (code) => {
+      if (code !== 0 && !stdout.trim()) return finish(null);
+      let extracted = "";
+      for (const line of stdout.split("\n")) {
+        try {
+          const parsed = JSON.parse(line.trim());
+          if (parsed.type === "text" && typeof parsed.part?.text === "string") extracted += parsed.part.text;
+        } catch {}
+      }
+      const text = (extracted.trim() ? extracted : stdout).trim();
+      finish(text || null);
+    });
+  });
 }

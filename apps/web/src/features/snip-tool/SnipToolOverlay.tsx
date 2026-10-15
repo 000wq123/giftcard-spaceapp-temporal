@@ -9,6 +9,9 @@ import {
   Check, ChevronDown, CircleAlert, Clipboard, Crop, GripVertical, ImagePlus, Loader2, Lock, Monitor, Pencil, Unlock, X
 } from "../ui-theme/app-icons.js";
 import { SPACE_CLIPBOARD_NOTICE_EVENT } from "../clipboard-dock/clipboard-events.js";
+import {
+  DOCK_MARGIN_RIGHT, getRailTopBoundary, loadSnipRailDock, placeSnipOnRail, saveSnipRailDock, SNIP_RAIL_CHANGED_EVENT, type SnipRailDock
+} from "../desktop-widgets/widget-storage.js";
 import "./snip-tool.css";
 
 export interface SnipTargetPane { id: string; title: string; mode: string; paneName?: string | null }
@@ -65,6 +68,12 @@ function clampToViewport(pos: Point, size: { width: number; height: number }): P
 /** Top-right, clear of the right-hand rail, where the eye expects floating tools. */
 function defaultFloat(size: { width: number; height: number }): Point {
   return clampToViewport({ x: (window.innerWidth || 800) - size.width - 64, y: 72 }, size);
+}
+
+/** The desktop widgets' docking rule: the pointer, or the dragged item's right edge, reaches the right rail. */
+function nearRail(clientX: number, clientY: number, right: number): boolean {
+  const vw = window.innerWidth || 800;
+  return (clientX >= vw - 100 || right >= vw - 20) && clientY >= getRailTopBoundary() - 20;
 }
 
 async function copyBlobToClipboard(blobOrPromise: Blob | Promise<Blob>, signal?: AbortSignal): Promise<void> {
@@ -185,10 +194,16 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const editorFrame = useRef<SnipFrame | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const floatDrag = useRef<{ pointerId: number; startX: number; startY: number; origin: Point; moved: boolean } | null>(null);
+  const floatDragCleanup = useRef<(() => void) | null>(null);
   const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
   const phaseRef = useRef(phase); phaseRef.current = phase;
   const floating = !embedded;
+  const canDock = floating && !props.isMobile;
+  const [railDock, setRailDock] = useState<SnipRailDock | null>(() => canDock ? loadSnipRailDock() : null);
+  const [railDrag, setRailDrag] = useState<{ x: number | null; y: number } | null>(null);
+  const [dockPreview, setDockPreview] = useState(false);
+  const railDragMoved = useRef(false);
+  const docked = canDock && Boolean(railDock);
 
   const panes = availablePanes ?? (activePaneId ? [{ id: activePaneId, title: activePaneName || activePaneTitle || activePaneId, mode: activePaneMode || "", paneName: activePaneName ?? null }] : []);
   const isCliPane = useCallback((paneId: string | null | undefined, paneMode?: string | null) => {
@@ -552,7 +567,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
 
   // ---- floating position
   useLayoutEffect(() => {
-    if (!floating || phase !== "idle") return;
+    if (!floating || docked || phase !== "idle") return;
     const el = capsuleRef.current;
     if (!el) return;
     const fit = () => {
@@ -562,31 +577,114 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
-  }, [floating, phase, snipLabel]);
+  }, [floating, docked, phase, snipLabel]);
 
+  /**
+   * The drag follows the pointer on the window, like the desktop widgets: the capsule is only ~40px tall,
+   * so an ordinary flick leaves it before any move lands on it, and the drag must not depend on that.
+   */
   const onCapsulePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!floating || event.button !== 0 || (event.target as HTMLElement).closest("button, input, .snip-menu, .snip-toast")) return;
     event.preventDefault();
-    floatDrag.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origin: pos, moved: false };
+    floatDragCleanup.current?.();
+    const el = event.currentTarget, pointerId = event.pointerId;
+    const drag = { startX: event.clientX, startY: event.clientY, origin: pos, latest: pos, moved: false, toRail: false };
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) > 4) {
+        drag.moved = true;
+        // Captured only once it is a drag, so a click or double-click on the grip keeps its own target.
+        try { el.setPointerCapture(pointerId); } catch {}
+      }
+      if (!drag.moved) return;
+      drag.latest = clampToViewport({ x: drag.origin.x + dx, y: drag.origin.y + dy }, { width: el.offsetWidth || 300, height: el.offsetHeight || 44 });
+      drag.toRail = canDock && nearRail(e.clientX, e.clientY, drag.latest.x + (el.offsetWidth || 300));
+      setPos(drag.latest);
+      setDockPreview(drag.toRail);
+    };
+    const end = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      cleanup();
+      setDockPreview(false);
+      if (!drag.moved) return;
+      if (drag.toRail) dockToRail(drag.latest.y); else saveFloat(drag.latest);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch {}
+      if (floatDragCleanup.current === cleanup) floatDragCleanup.current = null;
+    };
+    floatDragCleanup.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   };
-  const onCapsulePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = floatDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) > 4) {
-      drag.moved = true;
-      try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
-    }
-    if (!drag.moved) return;
-    const el = capsuleRef.current;
-    setPos(clampToViewport({ x: drag.origin.x + dx, y: drag.origin.y + dy }, { width: el?.offsetWidth || 300, height: el?.offsetHeight || 44 }));
+  useEffect(() => () => floatDragCleanup.current?.(), []);
+
+  // ---- right rail dock: the rail column is shared with the docked desktop widgets
+  useEffect(() => {
+    if (!canDock) return;
+    const sync = () => setRailDock(loadSnipRailDock());
+    sync();
+    window.addEventListener(SNIP_RAIL_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(SNIP_RAIL_CHANGED_EVENT, sync);
+  }, [canDock]);
+  /** On the rail a snip goes to the clipboard by default; the editor can still pick another destination. */
+  const dockToRail = (y: number) => {
+    setRailDock(placeSnipOnRail(y));
+    setCopyToClipboard(true); writeFlag(CLIPBOARD_MODE_STORAGE_KEY, true);
+    setMenuOpen(false);
   };
-  const onCapsulePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = floatDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    floatDrag.current = null;
-    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch {}
-    if (drag.moved) saveFloat(pos);
+  const undock = (at: Point) => {
+    saveSnipRailDock(null);
+    setRailDock(null);
+    const next = clampToViewport(at, { width: 300, height: 44 });
+    setPos(next); saveFloat(next);
+  };
+  /** Drag along the rail to move the card, or pull it off the rail to float the capsule again. */
+  const onRailCardPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !railDock || (event.target as HTMLElement).closest(".snip-toast")) return;
+    floatDragCleanup.current?.();
+    railDragMoved.current = false;
+    const el = event.currentTarget, pointerId = event.pointerId;
+    const drag = { startX: event.clientX, startY: event.clientY, origin: railDock.y, moved: false, onRail: true, y: railDock.y, at: { x: 0, y: 0 } };
+    const move = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) > 4) {
+        drag.moved = true;
+        try { el.setPointerCapture(pointerId); } catch {}
+      }
+      if (!drag.moved) return;
+      drag.onRail = nearRail(e.clientX, e.clientY, (window.innerWidth || 800) - DOCK_MARGIN_RIGHT + dx);
+      drag.y = clamp(drag.origin + dy, getRailTopBoundary(), (window.innerHeight || 600) - 70);
+      drag.at = { x: e.clientX - 24, y: e.clientY - 20 };
+      setRailDrag(drag.onRail ? { x: null, y: drag.y } : drag.at);
+    };
+    const end = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      cleanup();
+      setRailDrag(null);
+      if (!drag.moved) return;
+      // Swallows only the click this release produces, never a later one.
+      railDragMoved.current = true;
+      window.setTimeout(() => { railDragMoved.current = false; }, 0);
+      if (drag.onRail) setRailDock(placeSnipOnRail(drag.y)); else undock(drag.at);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      try { if (el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId); } catch {}
+      if (floatDragCleanup.current === cleanup) floatDragCleanup.current = null;
+    };
+    floatDragCleanup.current = cleanup;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
   };
   const resetPosition = () => {
     const el = capsuleRef.current;
@@ -627,12 +725,40 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
   const busyAny = Boolean(busy);
   const menuUp = floating && pos.y > (window.innerHeight || 600) - 300;
 
+  const toastNode = toast && (
+    <div key={toast.id} className={`snip-toast is-${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"}>
+      {toast.tone === "error" ? <CircleAlert aria-hidden="true" /> : <Check aria-hidden="true" />}
+      <span className="snip-toast-text">{toast.text}</span>
+      {toast.editable && lastShot.current && <button type="button" className="snip-toast-action" onClick={editLast} title="Annotate or re-crop this snip"><Pencil aria-hidden="true" />Edit</button>}
+    </div>
+  );
+
+  const railCard = docked && railDock && (
+    <div ref={capsuleRef}
+      className={`snip-rail-card snip-ui${railDrag ? " is-dragging" : ""}${railDrag && railDrag.x !== null ? " is-undocking" : ""}${busyAny ? " is-busy" : ""}`}
+      data-snip-tool="true" role="region" aria-label="Snip Tool"
+      style={railDrag && railDrag.x !== null ? { left: `${railDrag.x}px`, top: `${railDrag.y}px`, right: "auto" } : { top: `${railDrag?.y ?? railDock.y}px` }}
+      onPointerDown={onRailCardPointerDown}
+      // Like the capsule, the card never pulls keyboard focus away from the pane the user is typing in.
+      onMouseDown={e => e.preventDefault()}
+      onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
+      <button type="button" className="snip-rail-snip" disabled={busyAny} aria-label={snipLabel}
+        onClick={() => { if (!railDragMoved.current) startSelecting(); }}
+        title={`${copyToClipboard ? "Snip an area to the clipboard" : `Snip an area for ${targetDisplay}`} (PrtScn). Drag along the rail to move, pull left to undock.`}>
+        {busyAny ? <Loader2 className="snip-spin" aria-hidden="true" /> : <Crop aria-hidden="true" />}
+        <span className="snip-rail-verb">Snip</span>
+        <span className="snip-rail-target">{destinationLabel}</span>
+      </button>
+      {toastNode}
+    </div>
+  );
+
   const capsule = (
     <div ref={capsuleRef}
-      className={`snip-tool-float-icon snip-capsule snip-ui${embedded ? " is-inline" : ""}${menuUp ? " is-near-bottom" : ""}${busyAny ? " is-busy" : ""}`}
+      className={`snip-tool-float-icon snip-capsule snip-ui${embedded ? " is-inline" : ""}${menuUp ? " is-near-bottom" : ""}${busyAny ? " is-busy" : ""}${dockPreview ? " is-dock-preview" : ""}`}
       data-snip-tool="true" role="region" aria-label="Snip Tool"
       style={floating ? { left: `${pos.x}px`, top: `${pos.y}px` } : undefined}
-      onPointerDown={onCapsulePointerDown} onPointerMove={onCapsulePointerMove} onPointerUp={onCapsulePointerUp} onPointerCancel={onCapsulePointerUp}
+      onPointerDown={onCapsulePointerDown}
       // Clicking the capsule must not pull keyboard focus away from the pane the user is typing in.
       onMouseDown={e => { if ((e.target as HTMLElement).closest("button")) e.preventDefault(); }}
       onKeyDown={e => { if (e.key === "Escape" && !menuOpen) { e.preventDefault(); e.stopPropagation(); close(); } }}
@@ -640,7 +766,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
       onDrop={e => { const file = e.dataTransfer?.files?.[0]; if (file) { e.preventDefault(); void openImageFile(file); } }}>
       {floating && <span key={pulse} className="snip-capsule-ring" aria-hidden="true" />}
       {floating && (
-        <span className="snip-capsule-grip" title="Drag to move · Double-click to reset position" onDoubleClick={resetPosition}>
+        <span className="snip-capsule-grip" title={canDock ? "Drag to move or onto the right rail to dock · Double-click to reset position" : "Drag to move · Double-click to reset position"} onDoubleClick={resetPosition}>
           <GripVertical aria-hidden="true" />
         </span>
       )}
@@ -709,13 +835,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
           </button>
         </div>
       )}
-      {toast && (
-        <div key={toast.id} className={`snip-toast is-${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"}>
-          {toast.tone === "error" ? <CircleAlert aria-hidden="true" /> : <Check aria-hidden="true" />}
-          <span className="snip-toast-text">{toast.text}</span>
-          {toast.editable && lastShot.current && <button type="button" className="snip-toast-action" onClick={editLast} title="Annotate or re-crop this snip"><Pencil aria-hidden="true" />Edit</button>}
-        </div>
-      )}
+      {toastNode}
     </div>
   );
 
@@ -724,7 +844,7 @@ export function SnipToolOverlay(props: SnipToolOverlayProps) {
 
   return (
     <>
-      {(phase === "idle" || embedded) && capsule}
+      {(phase === "idle" || embedded) && (railCard || capsule)}
       {embedded && <p className="snip-inline-hint">Drag to snip any area, or capture the full screen. Turn on <strong>Edit before send</strong> to annotate first. PrtScn works anywhere.</p>}
       {phase === "selecting" && portalTarget && createPortal(
         <CaptureLayer layerRef={layerRef} busy={busyAny} destinationLabel={destinationLabel} status={layerStatus}

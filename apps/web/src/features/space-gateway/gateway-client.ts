@@ -5,6 +5,7 @@ import type {
   GatewayHeadroomHistory, GatewayHeadroomLifetime, GatewayHeadroomSession
 } from "@space/contracts";
 import { api } from "../../api.js";
+import { announceGatewaySettings } from "./gateway-settings-events.js";
 
 type Connected = { status: "CONNECTED"; account: { id: string; label: string } };
 
@@ -37,7 +38,7 @@ export interface SpaceGatewayClient {
   importAuthJson(authJson: string): Promise<Connected>;
   startClaudeSignIn(): Promise<{ flowId: string; authorizationUrl: string }>;
   antigravityProfiles(): Promise<{ data: Array<{ profileId: string; email: string | null; inGateway: boolean }> }>;
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
   importAntigravityProfile(profileId: string): Promise<Connected>;
   completeClaudeSignIn(flowId: string, code: string): Promise<Connected>;
   refreshUsage(accountId: string): Promise<{ status: string }>;
@@ -69,7 +70,7 @@ export const defaultGatewayClient: SpaceGatewayClient = {
   logs: (query) => api.gatewayRequestLogs(query),
   logDetail: (logId) => api.gatewayRequestLog(logId),
   logFacets: (range) => api.gatewayRequestLogFacets(range),
-  updateSettings: (patch) => api.updateGatewaySettings(patch),
+  updateSettings: (patch) => api.updateGatewaySettings(patch).then((settings) => { announceGatewaySettings(settings); return settings; }),
   reload: () => api.reloadGateway(),
   startDeviceSignIn: () => api.startGatewayCodexDeviceSignIn(),
   pollDeviceSignIn: (flowId) => api.pollGatewayCodexDeviceSignIn(flowId),

@@ -5,7 +5,6 @@ import {
   Eraser,
   Gauge,
   Link as LinkIcon,
-  Network,
   RefreshCw,
   Rocket,
   ServerCog,
@@ -297,13 +296,6 @@ export function useManageController({ role, onReadiness, onEnvironment }: Manage
               adminOperationToolTriggerRef.current = serverActionsButtonRef.current;
               openManage("space-cli-maintenance");
             }
-          },
-          {
-            id: "space-gateway",
-            label: "Space Gateway",
-            description: "Pool provider accounts, issue gateway API keys, and control routing and context compression.",
-            icon: Network,
-            onSelect: () => openManage("space-gateway")
           },
           {
             id: "codex-lb-speed-control",

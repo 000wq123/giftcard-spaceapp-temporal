@@ -1,5 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, type JobApplyPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
 import { managedPlanExecutionSchema } from "@space/contracts";
@@ -134,6 +134,8 @@ import {
   spaceAgentSessionRecordSchema,
   sourceControlConnectionSchema,
   spaceConfigBundleSchema,
+  sanitizeConfigBundleData,
+  configBundleVersion,
   sourceControlProviderSchema,
   updatePaneCliSessionInputSchema,
   updatePaneCliTerminalControlLeaseInputSchema,
@@ -472,9 +474,13 @@ import {
   type UpsertSourceControlConnectionInput,
   type StaticCatalogOptions,
   collectExportableApiKeys,
-  collectExportableCredentials,
+  openConfigBundleSecrets,
+  prepareConfigImport,
+  remapRoomKeyedSettings,
+  sealConfigBundle,
   writeImportedApiKeys,
-  writeImportedCredentials
+  type CliAuthCapture,
+  type ConfigImportHooks
 } from "@space/runtime";
 import type { SetupOnboarding, AdminUserItem } from "@space/contracts";
 import type { TelegramOutboxPersistence, TelegramPersistence } from "@space/runtime";
@@ -734,6 +740,8 @@ type PaneRow = {
   taskMetadata?: Pane["taskMetadata"];
   t3CodeMetadata?: Pane["t3CodeMetadata"];
   jobApplyMetadata?: Pane["jobApplyMetadata"];
+  mailCopilotMetadata?: Pane["mailCopilotMetadata"];
+  marketingCopilotMetadata?: Pane["marketingCopilotMetadata"];
   paneName?: string | null;
   mode: Pane["mode"];
   status: Pane["status"];
@@ -1689,6 +1697,8 @@ const paneSelect = `
     task_metadata AS "taskMetadata",
     t3code_metadata AS "t3CodeMetadata",
     job_apply_metadata AS "jobApplyMetadata",
+    mail_copilot_metadata AS "mailCopilotMetadata",
+    marketing_copilot_metadata AS "marketingCopilotMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -2843,6 +2853,8 @@ function mapPane(row: PaneRow): Pane {
     taskMetadata: row.taskMetadata ?? null,
     t3CodeMetadata: row.t3CodeMetadata ?? null,
     jobApplyMetadata: row.jobApplyMetadata ?? null,
+    mailCopilotMetadata: row.mailCopilotMetadata ?? null,
+    marketingCopilotMetadata: row.marketingCopilotMetadata ?? null,
     paneName: row.paneName ?? null,
     mode: row.mode,
     status: row.status,
@@ -3889,6 +3901,58 @@ function waitBeforeDeadlockRetry(attempt: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function parseStoredUserSettings(stored: unknown): UserSettings {
+  if (!stored) return defaultUserSettings;
+  try {
+    return userSettingsSchema.parse(stored);
+  } catch {
+    return defaultUserSettings;
+  }
+}
+
+/** A PATCH merged onto the stored settings: nested groups and maps keep the keys the PATCH does not name. */
+function mergeUserSettings(current: UserSettings, input: UpdateUserSettingsInput): UserSettings {
+  return userSettingsSchema.parse({
+    ...current,
+    ...input,
+    dateTime: {
+      ...current.dateTime,
+      ...(input.dateTime ?? {})
+    },
+    voice: {
+      ...current.voice,
+      ...(input.voice ?? {})
+    },
+    keyboardAutocorrect: {
+      ...current.keyboardAutocorrect,
+      ...(input.keyboardAutocorrect ?? {})
+    },
+    livePane: {
+      ...current.livePane,
+      ...(input.livePane ?? {})
+    },
+    desktopWidgets: input.desktopWidgets !== undefined
+      ? { ...(current.desktopWidgets ?? {}), ...input.desktopWidgets }
+      : current.desktopWidgets,
+    roomExtraEmptySlots: input.roomExtraEmptySlots !== undefined
+      ? { ...(current.roomExtraEmptySlots ?? {}), ...input.roomExtraEmptySlots }
+      : current.roomExtraEmptySlots,
+    roomWorktreeOverrides: input.roomWorktreeOverrides !== undefined
+      ? { ...(current.roomWorktreeOverrides ?? {}), ...input.roomWorktreeOverrides }
+      : current.roomWorktreeOverrides,
+    osk: input.osk !== undefined
+      ? { ...(current.osk ?? {}), ...input.osk }
+      : current.osk,
+    accountFilters: input.accountFilters !== undefined
+      ? { ...(current.accountFilters ?? {}), ...input.accountFilters }
+      : current.accountFilters,
+    railVisibility: input.railVisibility !== undefined
+      ? { ...(current.railVisibility ?? {}), ...input.railVisibility }
+      : current.railVisibility,
+    updatedAt: nowIso()
+  });
+}
+
 export class PostgresSpaceStore implements SpaceStore {
   readonly planExecutions: PostgresPlanExecutionRepository;
   private providers: Provider[];
@@ -3975,69 +4039,27 @@ export class PostgresSpaceStore implements SpaceStore {
       'SELECT settings FROM user_settings WHERE user_id = $1 LIMIT 1',
       [userId]
     );
-    if (!result.rows[0]?.settings) {
-      return defaultUserSettings;
-    }
-    try {
-      return userSettingsSchema.parse(result.rows[0].settings);
-    } catch {
-      return defaultUserSettings;
-    }
+    return parseStoredUserSettings(result.rows[0]?.settings);
   }
 
   async updateUserSettings(userId: string, input: UpdateUserSettingsInput): Promise<UserSettings> {
-    const current = await this.getUserSettings(userId);
-    const updated: UserSettings = userSettingsSchema.parse({
-      ...current,
-      ...input,
-      dateTime: {
-        ...current.dateTime,
-        ...(input.dateTime ?? {})
-      },
-      voice: {
-        ...current.voice,
-        ...(input.voice ?? {})
-      },
-      keyboardAutocorrect: {
-        ...current.keyboardAutocorrect,
-        ...(input.keyboardAutocorrect ?? {})
-      },
-      livePane: {
-        ...current.livePane,
-        ...(input.livePane ?? {})
-      },
-      desktopWidgets: input.desktopWidgets !== undefined
-        ? { ...(current.desktopWidgets ?? {}), ...input.desktopWidgets }
-        : current.desktopWidgets,
-      roomExtraEmptySlots: input.roomExtraEmptySlots !== undefined
-        ? { ...(current.roomExtraEmptySlots ?? {}), ...input.roomExtraEmptySlots }
-        : current.roomExtraEmptySlots,
-      roomWorktreeOverrides: input.roomWorktreeOverrides !== undefined
-        ? { ...(current.roomWorktreeOverrides ?? {}), ...input.roomWorktreeOverrides }
-        : current.roomWorktreeOverrides,
-      osk: input.osk !== undefined
-        ? { ...(current.osk ?? {}), ...input.osk }
-        : current.osk,
-      accountFilters: input.accountFilters !== undefined
-        ? { ...(current.accountFilters ?? {}), ...input.accountFilters }
-        : current.accountFilters,
-      railVisibility: input.railVisibility !== undefined
-        ? { ...(current.railVisibility ?? {}), ...input.railVisibility }
-        : current.railVisibility,
-      updatedAt: nowIso()
+    // One user's writes merge one after another under a row lock: a plain read-merge-write lost one of two
+    // overlapping PATCHes (2026-10-13: the app's start-up settings write put back a jobCopilot just cleared).
+    return this.withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO user_settings (user_id, settings, updated_at)
+         VALUES ($1, $2::jsonb, clock_timestamp())
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId, JSON.stringify(defaultUserSettings)]
+      );
+      const locked = await client.query<{ settings: unknown }>('SELECT settings FROM user_settings WHERE user_id = $1 FOR UPDATE', [userId]);
+      const updated = mergeUserSettings(parseStoredUserSettings(locked.rows[0]?.settings), input);
+      await client.query(
+        'UPDATE user_settings SET settings = $2::jsonb, updated_at = clock_timestamp() WHERE user_id = $1',
+        [userId, JSON.stringify(updated)]
+      );
+      return updated;
     });
-
-    await this.pool.query(
-      `INSERT INTO user_settings (user_id, settings, updated_at)
-       VALUES ($1, $2::jsonb, clock_timestamp())
-       ON CONFLICT (user_id)
-       DO UPDATE SET
-         settings = EXCLUDED.settings,
-         updated_at = clock_timestamp()`,
-      [userId, JSON.stringify(updated)]
-    );
-
-    return updated;
   }
 
   async initializeOwnerSetup(input: InitializeOwnerSetupInput): Promise<OwnerSetupStatus> {
@@ -6655,6 +6677,21 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async interruptRoomAgentChatTurns(note: string): Promise<number> {
+    const result = await this.pool.query(
+      `
+        UPDATE space_agent_messages AS message
+        SET status = 'INTERRUPTED', content = left(message.content || $1, 50000), updated_at = now()
+        FROM room_agent_requests AS request
+        WHERE request.response_message_id = message.message_id
+          AND request.direct_action->>'type' = 'CHAT'
+          AND message.status = 'RUNNING'
+      `,
+      [note]
+    );
+    return result.rowCount ?? 0;
+  }
+
   async getRoomAgentRequest(roomId: string, clientRequestId: string): Promise<RoomAgentRequestRecord | null> {
     const result = await this.pool.query<RoomAgentRequestRow>(
       `
@@ -7598,6 +7635,28 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async updateMailCopilotMetadata(paneId: string, metadata: MailCopilotPaneMetadata): Promise<Pane> {
+    const parsed = mailCopilotPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "MAIL_COPILOT" || pane.isClosed) throw new SpaceConflictError("An open Mail Copilot pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET mail_copilot_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, mailCopilotMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
+  async updateMarketingCopilotMetadata(paneId: string, metadata: MarketingCopilotPaneMetadata): Promise<Pane> {
+    const parsed = marketingCopilotPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "MARKETING_COPILOT" || pane.isClosed) throw new SpaceConflictError("An open Marketing Copilot pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET marketing_copilot_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, marketingCopilotMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
     return this.withTransaction(async (client) => {
       const current = await this.getPaneForUpdate(client, paneId);
@@ -7643,7 +7702,7 @@ export class PostgresSpaceStore implements SpaceStore {
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
         terminalRuntimeId:
-          ["TERMINAL", "JOB_APPLY"].includes(input.mode ?? current.mode)
+          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId
               : input.terminalRuntimeId
@@ -7689,6 +7748,8 @@ export class PostgresSpaceStore implements SpaceStore {
     task_metadata AS "taskMetadata",
     t3code_metadata AS "t3CodeMetadata",
     job_apply_metadata AS "jobApplyMetadata",
+    mail_copilot_metadata AS "mailCopilotMetadata",
+    marketing_copilot_metadata AS "marketingCopilotMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -10058,8 +10119,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL or JOB_APPLY panes.`);
+      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT or MARKETING_COPILOT panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -10960,8 +11021,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE or JOB_APPLY panes.`);
+      if (pane.mode !== "BROWSER" && pane.mode !== "YOUTUBE" && pane.mode !== "JOB_APPLY" && pane.mode !== "MARKETING_COPILOT") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; browser sessions require BROWSER, YOUTUBE, JOB_APPLY or MARKETING_COPILOT panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -14662,6 +14723,12 @@ export class PostgresSpaceStore implements SpaceStore {
             AND p.updated_at < NOW() - ($1::text || ' hours')::interval
             AND ($2::text IS NULL OR p.room_id = $2)
             AND p.id NOT IN (SELECT pane_id FROM room_agent_bindings)
+            -- The newest closed Job and Marketing Copilot pane of each room stays: a new one continues its browser tabs and account.
+            AND ((p.mode IS DISTINCT FROM 'JOB_APPLY' AND p.mode IS DISTINCT FROM 'MARKETING_COPILOT') OR EXISTS (
+              SELECT 1 FROM panes q
+              WHERE q.room_id = p.room_id AND q.mode = p.mode AND q.is_closed = true
+                AND (q.updated_at, q.id) > (p.updated_at, p.id)
+            ))
           ORDER BY p.updated_at ASC
           LIMIT $3
         `,
@@ -15973,7 +16040,7 @@ export class PostgresSpaceStore implements SpaceStore {
     }
   }
 
-  async exportConfigurationBundle(options: ExportConfigOptions): Promise<SpaceConfigBundle> {
+  async exportConfigurationBundle(options: ExportConfigOptions, secrets: { cliAuth?: Record<string, CliAuthCapture> } = {}): Promise<SpaceConfigBundle> {
     const userId = options.userId;
     const rooms = await this.listRooms(userId ?? null);
     const configRooms: SpaceConfigRoom[] = [];
@@ -16042,22 +16109,24 @@ export class PostgresSpaceStore implements SpaceStore {
       providerSettings = await this.getProviderSettings();
     } catch {}
 
-    let apiKeys: Record<string, string> | undefined;
-    if (options.includeApiKeys) {
-      apiKeys = collectExportableApiKeys();
-    }
-
-    let credentials: Record<string, string> | undefined;
-    if (options.includeCredentials) {
-      credentials = collectExportableCredentials();
-    }
-
-    return {
+    const instance = process.env.SPACE_INSTANCE_NAME || "vm207";
+    const data = sanitizeConfigBundleData({
+      userSettings,
+      rooms: configRooms,
+      userLinks,
+      clipboardItems,
+      taskItems,
+      cliRuntimeSettings,
+      codexCliModeDefaults,
+      providerSettings,
+      providers
+    }, instance);
+    return sealConfigBundle({
       format: "spaceapp-configuration-bundle",
-      version: "1.0.0",
+      version: configBundleVersion,
       exportedAt: nowIso(),
       source: {
-        instance: process.env.SPACE_INSTANCE_NAME || "vm207",
+        instance,
         exportedBy: userId ?? "operator",
         appVersion: process.env.SPACE_APP_VERSION || "v1.0.35"
       },
@@ -16068,34 +16137,29 @@ export class PostgresSpaceStore implements SpaceStore {
         clipboardItemsCount: clipboardItems.length,
         taskItemsCount: taskItems.length,
         cliRuntimesCount: cliRuntimeSettings.length,
-        providersCount: providers.length,
-        apiKeysCount: apiKeys ? Object.keys(apiKeys).length : undefined,
-        credentialsCount: credentials ? Object.keys(credentials).length : undefined
+        providersCount: data.providers.length
       },
-      data: {
-        userSettings,
-        rooms: configRooms,
-        userLinks,
-        clipboardItems,
-        taskItems,
-        cliRuntimeSettings,
-        codexCliModeDefaults,
-        providerSettings,
-        providers,
-        apiKeys,
-        credentials
-      }
-    };
+      data
+    }, { apiKeys: options.includeApiKeys ? collectExportableApiKeys() : undefined, cliAuth: secrets.cliAuth }, options.passphrase);
   }
 
   async importConfigurationBundle(
     bundle: SpaceConfigBundle,
-    options: ImportConfigOptions
+    options: ImportConfigOptions,
+    hooks: ConfigImportHooks = {}
   ): Promise<ImportConfigResult> {
     const parsedBundle = spaceConfigBundleSchema.parse(bundle);
     const targetUserId = options.targetUserId || parsedBundle.source.exportedBy || "user:operator";
     const mode = options.mode || "replace";
-    const warnings: string[] = [];
+    // Decrypt and fit to this host before the transaction: a wrong passphrase writes nothing.
+    const { secrets, warnings } = await openConfigBundleSecrets(parsedBundle, options.passphrase);
+    const prepared = await prepareConfigImport(parsedBundle, { pathRewrite: options.pathRewrite }, {
+      profileExists: async (runtimeId, profileId) => {
+        try { return Boolean(await this.getCliAccountProfile(runtimeId as CliToggleRuntimeId, profileId)); } catch { return false; }
+      }
+    });
+    warnings.push(...prepared.warnings);
+    const data = prepared.data;
 
     const client = await this.pool.connect();
     try {
@@ -16131,8 +16195,8 @@ export class PostgresSpaceStore implements SpaceStore {
         baseOrder = (maxOrderRes.rows[0]?.max ?? -1) + 1;
       }
 
-      for (let rIdx = 0; rIdx < parsedBundle.data.rooms.length; rIdx++) {
-        const room = parsedBundle.data.rooms[rIdx]!;
+      for (let rIdx = 0; rIdx < data.rooms.length; rIdx++) {
+        const room = data.rooms[rIdx]!;
         const newRoomId = mode === "merge" ? makeSpaceId("room") : room.id;
         roomIdMap.set(room.id, newRoomId);
         const assignedOrder = mode === "merge" ? baseOrder + rIdx : room.order;
@@ -16161,7 +16225,7 @@ export class PostgresSpaceStore implements SpaceStore {
             room.name,
             room.description ?? null,
             room.paneCap,
-            room.traceId || makeSpaceId("trace"),
+            makeSpaceId("trace"),
             assignedOrder,
             room.paneLayoutColumns ?? null,
             room.kind,
@@ -16176,10 +16240,7 @@ export class PostgresSpaceStore implements SpaceStore {
           const newPaneId = mode === "merge" ? makeSpaceId("pane") : pane.id;
           paneIdMap.set(pane.id, newPaneId);
 
-          let cwd = pane.cwd;
-          if (options.pathRewrite && cwd) {
-            cwd = cwd.replace(options.pathRewrite.from, options.pathRewrite.to);
-          }
+          const cwd = pane.cwd;
 
           let paneName = pane.paneName || null;
           if (!paneName && !pane.isClosed) {
@@ -16228,7 +16289,7 @@ export class PostgresSpaceStore implements SpaceStore {
               pane.title,
               paneName,
               pane.mode,
-              pane.status === "CLOSED" ? "CLOSED" : "IDLE",
+              pane.status,
               pane.providerId ?? null,
               pane.modelId ?? null,
               pane.reasoningEffort,
@@ -16251,7 +16312,7 @@ export class PostgresSpaceStore implements SpaceStore {
       }
 
       let settingsUpdated = false;
-      if (parsedBundle.data.userSettings) {
+      if (data.userSettings) {
         await client.query(
           `
           INSERT INTO user_settings (user_id, settings, created_at, updated_at)
@@ -16260,13 +16321,13 @@ export class PostgresSpaceStore implements SpaceStore {
             settings = EXCLUDED.settings,
             updated_at = now()
           `,
-          [effectiveUserId, JSON.stringify(parsedBundle.data.userSettings)]
+          [effectiveUserId, JSON.stringify(remapRoomKeyedSettings(data.userSettings, roomIdMap))]
         );
         settingsUpdated = true;
       }
 
       let linksImported = 0;
-      for (const link of parsedBundle.data.userLinks ?? []) {
+      for (const link of data.userLinks ?? []) {
         const linkId = mode === "merge" ? makeSpaceId("link") : link.id;
         await client.query(
           `
@@ -16299,7 +16360,7 @@ export class PostgresSpaceStore implements SpaceStore {
       }
 
       let clipboardImported = 0;
-      for (const item of parsedBundle.data.clipboardItems ?? []) {
+      for (const item of data.clipboardItems ?? []) {
         const clipId = mode === "merge" ? makeSpaceId("clipboard") : item.id;
         const remappedRoomId = item.roomId ? roomIdMap.get(item.roomId) ?? null : null;
         const remappedPaneId = item.paneId ? paneIdMap.get(item.paneId) ?? null : null;
@@ -16349,7 +16410,7 @@ export class PostgresSpaceStore implements SpaceStore {
       }
 
       let tasksImported = 0;
-      for (const task of parsedBundle.data.taskItems ?? []) {
+      for (const task of data.taskItems ?? []) {
         const taskId = mode === "merge" ? makeSpaceId("task") : task.id;
         const remappedRoomId = task.roomId ? roomIdMap.get(task.roomId) ?? null : null;
         const remappedPaneId = task.paneId ? paneIdMap.get(task.paneId) ?? null : null;
@@ -16385,7 +16446,7 @@ export class PostgresSpaceStore implements SpaceStore {
       }
 
       let cliRuntimesImported = 0;
-      for (const setting of parsedBundle.data.cliRuntimeSettings ?? []) {
+      for (const setting of data.cliRuntimeSettings ?? []) {
         await client.query(
           `
           INSERT INTO cli_runtime_settings (runtime_id, enabled, vpn_enabled, updated_at, updated_by)
@@ -16401,8 +16462,8 @@ export class PostgresSpaceStore implements SpaceStore {
         cliRuntimesImported++;
       }
 
-      if (parsedBundle.data.codexCliModeDefaults) {
-        const def = parsedBundle.data.codexCliModeDefaults;
+      if (data.codexCliModeDefaults) {
+        const def = data.codexCliModeDefaults;
         await client.query(
           `
           INSERT INTO codex_cli_mode_defaults (
@@ -16429,19 +16490,27 @@ export class PostgresSpaceStore implements SpaceStore {
       }
 
       let providersImported = 0;
-      for (const prov of parsedBundle.data.providers ?? []) {
-        if (!prov.isBuiltIn) {
+      // A custom provider must never take a built-in's id on this host: the row would shadow the built-in.
+      const builtInIds = new Set(this.providers.filter((provider) => provider.isBuiltIn).map((provider) => provider.id));
+      for (const prov of data.providers ?? []) {
+        if (!prov.isBuiltIn && !builtInIds.has(prov.id)) {
           await client.query(
             `
             INSERT INTO providers (
               id, display_name, provider_type, status, base_url,
-              route_profile, backing_provider_id, is_builtin, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+              route_profile, backing_provider_id, is_builtin, status_reason, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
             ON CONFLICT (id) DO UPDATE SET
               display_name = EXCLUDED.display_name,
+              -- Same endpoint as the provider already here: keep its validation result.
+              status = CASE WHEN providers.base_url IS NOT DISTINCT FROM EXCLUDED.base_url THEN providers.status ELSE EXCLUDED.status END,
+              status_reason = CASE WHEN providers.base_url IS NOT DISTINCT FROM EXCLUDED.base_url THEN providers.status_reason ELSE EXCLUDED.status_reason END,
+              health_checked_at = CASE WHEN providers.base_url IS NOT DISTINCT FROM EXCLUDED.base_url THEN providers.health_checked_at ELSE NULL END,
+              masked_key_prefix = CASE WHEN providers.base_url IS NOT DISTINCT FROM EXCLUDED.base_url THEN providers.masked_key_prefix ELSE NULL END,
               base_url = EXCLUDED.base_url,
               route_profile = EXCLUDED.route_profile,
               updated_at = now()
+            WHERE providers.is_builtin = false
             `,
             [
               prov.id,
@@ -16451,15 +16520,16 @@ export class PostgresSpaceStore implements SpaceStore {
               prov.baseUrl ?? null,
               prov.routeProfile ?? null,
               prov.backingProviderId ?? null,
-              false
+              false,
+              prov.statusReason ?? null
             ]
           );
           providersImported++;
         }
       }
 
-      if (parsedBundle.data.providerSettings) {
-        const ps = parsedBundle.data.providerSettings;
+      if (data.providerSettings) {
+        const ps = data.providerSettings;
         await client.query(
           `
           INSERT INTO provider_settings (
@@ -16467,30 +16537,28 @@ export class PostgresSpaceStore implements SpaceStore {
             title_generation_reasoning_effort, updated_at
           ) VALUES ('global', $1, $2, $3, now())
           ON CONFLICT (id) DO UPDATE SET
-            default_provider_id = EXCLUDED.default_provider_id,
+            default_provider_id = CASE WHEN $4 THEN provider_settings.default_provider_id ELSE EXCLUDED.default_provider_id END,
             title_generation_model_id = EXCLUDED.title_generation_model_id,
             title_generation_reasoning_effort = EXCLUDED.title_generation_reasoning_effort,
             updated_at = now()
           `,
-          [ps.defaultProviderId, ps.titleGenerationModelId ?? null, ps.titleGenerationReasoningEffort ?? "low"]
+          [ps.defaultProviderId, ps.titleGenerationModelId ?? null, ps.titleGenerationReasoningEffort ?? "low", prepared.keepTargetDefaultProvider]
         );
       }
 
       await client.query("COMMIT");
 
       let apiKeysImported = 0;
-      if (options.importApiKeys !== false && parsedBundle.data.apiKeys && Object.keys(parsedBundle.data.apiKeys).length > 0) {
-        const res = writeImportedApiKeys(parsedBundle.data.apiKeys, { secretsDir: options.secretsDir });
+      if (options.importApiKeys !== false && secrets.apiKeys && Object.keys(secrets.apiKeys).length > 0) {
+        const res = writeImportedApiKeys(secrets.apiKeys, { secretsDir: options.secretsDir });
         apiKeysImported = res.imported;
         warnings.push(`Imported ${apiKeysImported} provider API key(s) to ${res.targetDir}`);
       }
 
-      let credentialsImported = 0;
-      if (options.importCredentials !== false && parsedBundle.data.credentials && Object.keys(parsedBundle.data.credentials).length > 0) {
-        const res = writeImportedCredentials(parsedBundle.data.credentials, { credentialsDir: options.credentialsDir });
-        credentialsImported = res.imported;
-        warnings.push(`Imported ${credentialsImported} login credential(s) to ${res.targetDir}`);
-      }
+      const cliAuth = options.importCredentials !== false && secrets.cliAuth && hooks.applyCliAuth
+        ? await hooks.applyCliAuth(secrets.cliAuth)
+        : undefined;
+      const credentialsImported = cliAuth?.filter((entry) => entry.result === "imported").length ?? 0;
 
       return {
         success: true,
@@ -16508,7 +16576,8 @@ export class PostgresSpaceStore implements SpaceStore {
           apiKeysImported,
           credentialsImported
         },
-        warnings
+        warnings,
+        cliAuth
       };
     } catch (error) {
       await client.query("ROLLBACK");

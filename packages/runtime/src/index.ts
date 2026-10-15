@@ -9,6 +9,7 @@ export * from "./memory-rollout-config.js";
 export * from "./telegram.js";
 export * from "./telegram-notifications.js";
 export * from "./configuration-secrets.js";
+export * from "./configuration-import.js";
 
 export * from "./plan-execution-repository.js";
 

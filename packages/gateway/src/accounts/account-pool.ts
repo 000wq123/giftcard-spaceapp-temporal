@@ -1,9 +1,14 @@
-import type { GatewayProvider } from "@space/contracts";
-import type { GatewayAccountRecord, GatewayRepository } from "@space/db";
+import { GATEWAY_FREE_PLAN_PAUSE_REASON, isGatewayFreePlan, type GatewayProvider } from "@space/contracts";
+import type { GatewayAccountRecord, GatewayCredentialUpdate, GatewayRepository } from "@space/db";
 import {
   handlePermanentFailure, handleQuotaExceeded, handleRateLimit, permanentFailureCodes, type AccountState, type UpstreamError
 } from "../router/balancer.js";
 import type { CredentialCipher } from "../credential-cipher.js";
+
+/** Upstream answers that reject the access token itself, not only the refresh token. */
+const accessTokenRejections = new Set(["token_expired", "token_invalidated", "app_session_terminated", "account_session_expired", "account_auth_invalidated"]);
+
+const freePlanError = () => Object.assign(new Error(GATEWAY_FREE_PLAN_PAUSE_REASON), { code: "free_plan_paused" });
 
 /** What the gateway stores (encrypted) for an OAuth account. */
 export interface StoredCredentials {
@@ -41,6 +46,8 @@ interface RuntimeState {
 }
 
 const ACCOUNT_CACHE_MS = 5_000;
+/** A token refreshed this recently that the provider still rejects is not refreshed again. */
+const FORCED_REFRESH_MIN_AGE_MS = 5 * 60_000;
 const toSeconds = (iso: string | null | undefined) => (iso ? Date.parse(iso) / 1000 : null);
 const toIso = (seconds: number | null | undefined) => (seconds ? new Date(seconds * 1000).toISOString() : null);
 
@@ -73,13 +80,54 @@ export class AccountPool {
 
   invalidate() { this.cache = null; }
 
+  /** A new sign-in replaced the account's credentials: what this process learned about the old ones no longer holds. */
+  signedIn(accountId: string) {
+    this.runtime.delete(accountId);
+    this.invalidate();
+  }
+
+  /** Signed out: the provider rejected the account's credentials and they expired, so routing skips it until a new sign-in. */
+  isSignedOut(account: GatewayAccountRecord): boolean {
+    const state = this.toBalancerState(account);
+    return state.status === "REAUTH_REQUIRED" && state.accessTokenExpiresAt !== null && state.accessTokenExpiresAt !== undefined
+      && state.accessTokenExpiresAt <= this.nowMs() / 1000;
+  }
+
+  /**
+   * A rate limit or used-up quota whose time is over: stored as active again, so the views stop showing a limit the
+   * account no longer has even when no request went to it since. True when it changed.
+   */
+  async liftExpiredBlock(account: GatewayAccountRecord): Promise<boolean> {
+    const status = this.state(account.id).status ?? account.status;
+    if (status !== "RATE_LIMITED" && status !== "QUOTA_EXCEEDED") return false;
+    const until = toSeconds(account.blockedUntil) ?? this.state(account.id).resetAt;
+    if (until === null || until > this.nowMs() / 1000) return false;
+    const runtime = this.state(account.id);
+    runtime.status = "ACTIVE";
+    runtime.resetAt = null;
+    runtime.cooldownUntil = null;
+    await this.options.repository.recordAccountState(account.id, { status: "ACTIVE", statusReason: null, blockedUntil: null });
+    this.invalidate();
+    return true;
+  }
+
   async accounts(): Promise<GatewayAccountRecord[]> {
     const now = this.nowMs();
     if (!this.cache || now - this.cache.at > ACCOUNT_CACHE_MS) {
       const all = await this.options.repository.listAccounts();
-      this.cache = { at: now, accounts: all.filter((account) => account.provider === this.options.provider) };
+      const own = all.filter((account) => account.provider === this.options.provider);
+      this.cache = { at: now, accounts: await Promise.all(own.map((account) => this.pauseIfFree(account))) };
     }
     return this.cache.accounts;
+  }
+
+  /** A free-plan account is paused for good (operator rule 2026-10-13), whatever its plan was when it was added. */
+  private async pauseIfFree(account: GatewayAccountRecord): Promise<GatewayAccountRecord> {
+    if (account.status === "PAUSED" || !isGatewayFreePlan(account.planType)) return account;
+    const paused = await this.options.repository.setAccountStatus(account.id, "PAUSED", GATEWAY_FREE_PLAN_PAUSE_REASON).catch(() => null);
+    if (paused) process.stdout.write(`space-gateway paused ${account.id}: its plan is free\n`);
+    // A failed write still keeps it out of this process; the next load stores the pause.
+    return paused ?? { ...account, status: "PAUSED", statusReason: GATEWAY_FREE_PLAN_PAUSE_REASON };
   }
 
   /**
@@ -94,7 +142,8 @@ export class AccountPool {
     const secondary = quotaKey ? group?.secondaryWindow ?? { usedPercent: null, resetAt: null, windowMinutes: null } : account.secondaryWindow;
     return {
       accountId: account.id,
-      status: runtime.status ?? account.status,
+      // A pause is the operator's (or the free-plan rule's): no limit or recovery learned upstream lifts it.
+      status: account.status === "PAUSED" ? "PAUSED" : runtime.status ?? account.status,
       usedPercent: (quotaKey ? null : runtime.usedPercent) ?? primary.usedPercent,
       secondaryUsedPercent: (quotaKey ? null : runtime.secondaryUsedPercent) ?? secondary.usedPercent,
       resetAt: runtime.resetAt ?? blockedUntil,
@@ -189,12 +238,21 @@ export class AccountPool {
     runtime.lastErrorAt = this.nowMs() / 1000;
   }
 
-  async markPermanentFailure(account: GatewayAccountRecord, code: string) {
+  async markPermanentFailure(account: GatewayAccountRecord, code: string, accessTokenRejected = accessTokenRejections.has(code)) {
     const state = this.toBalancerState(account);
     handlePermanentFailure(state, code);
     const runtime = this.state(account.id);
     runtime.status = state.status;
     await this.options.repository.recordAccountState(account.id, { status: state.status, statusReason: state.deactivationReason ?? null, blockedUntil: null });
+    // codex-lb keeps a re-login account selectable while its access token is unexpired, which helps when only the
+    // refresh token died. When the provider rejected the access token (or API key) itself, it does not work: mark it
+    // expired so the account stays out of rotation (also after a restart) until it signs in again.
+    if (accessTokenRejected) {
+      const expiredAt = new Date(this.nowMs()).toISOString();
+      await this.options.repository.withAccountCredentialLock(account.id, async (current) => (
+        current.credentialsExpiresAt && Date.parse(current.credentialsExpiresAt) <= this.nowMs() ? null : { credentialsExpiresAt: expiredAt }
+      )).catch(() => undefined);
+    }
     this.invalidate();
   }
 
@@ -229,6 +287,7 @@ export class AccountPool {
   async credentials(account: GatewayAccountRecord): Promise<StoredCredentials> {
     const cipher = this.options.cipher();
     if (!cipher) throw Object.assign(new Error("The gateway encryption key is missing."), { code: "credential_key_missing" });
+    if (isGatewayFreePlan(account.planType)) { await this.pauseIfFree(account); this.invalidate(); throw freePlanError(); }
     const current = JSON.parse(cipher.decrypt(account.credentialsEncrypted, account.id)) as StoredCredentials;
     if (!this.options.refresher.needsRefresh(account, current, this.nowMs())) return current;
     let result: StoredCredentials = current;
@@ -237,16 +296,9 @@ export class AccountPool {
       const latest = JSON.parse(cipher.decrypt(fresh.credentialsEncrypted, fresh.id)) as StoredCredentials;
       if (!this.options.refresher.needsRefresh(fresh, latest, this.nowMs())) { result = latest; return null; }
       try {
-        const refreshed = await this.options.refresher.refresh(latest);
-        const { planType, email, ...stored } = refreshed;
+        const { stored, update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest));
         result = stored;
-        return {
-          credentialsEncrypted: cipher.encrypt(JSON.stringify(stored), fresh.id),
-          credentialsExpiresAt: stored.accessExpiresAtMs ? new Date(stored.accessExpiresAtMs).toISOString() : null,
-          lastRefreshAt: new Date(this.nowMs()).toISOString(),
-          ...(planType ? { planType } : {}),
-          ...(email ? { email } : {})
-        };
+        return update;
       } catch (error) {
         const code = (error as { code?: unknown }).code;
         if (typeof code === "string" && code in permanentFailureCodes) {
@@ -265,6 +317,69 @@ export class AccountPool {
       }
     }
     this.invalidate();
+    // The refresh showed the plan is now free: the request goes to another account.
+    if (updated && isGatewayFreePlan(updated.planType)) { await this.pauseIfFree(updated); throw freePlanError(); }
     return result;
+  }
+
+  /**
+   * The provider rejected the account's access token (HTTP 401). Like codex-lb, refresh it once before giving up on
+   * the account: the refreshed account to retry the request with, or null. A refresh the provider refuses marks the
+   * account for re-login; one that could not reach it only cools the account down, so the next request tries again.
+   */
+  async refreshRejectedToken(account: GatewayAccountRecord, code: string): Promise<GatewayAccountRecord | null> {
+    const cipher = this.options.cipher();
+    const refreshedAt = account.lastRefreshAt ? Date.parse(account.lastRefreshAt) : 0;
+    if (!cipher || !accessTokenRejections.has(code) || this.nowMs() - refreshedAt < FORCED_REFRESH_MIN_AGE_MS) {
+      await this.markPermanentFailure(account, code);
+      return null;
+    }
+    let outcome = "refused" as "renewed" | "refused" | "unreachable";
+    let refusal = code;
+    const updated = await this.options.repository.withAccountCredentialLock(account.id, async (fresh) => {
+      // Another holder refreshed it while this one waited: retry with that token.
+      if (fresh.lastRefreshAt !== account.lastRefreshAt) { outcome = "renewed"; return null; }
+      const latest = JSON.parse(cipher.decrypt(fresh.credentialsEncrypted, fresh.id)) as StoredCredentials;
+      if (!latest.refreshToken) return null;
+      try {
+        const { update } = this.refreshedUpdate(cipher, fresh.id, await this.options.refresher.refresh(latest));
+        outcome = "renewed";
+        return fresh.status === "REAUTH_REQUIRED" ? { ...update, status: "ACTIVE", statusReason: null } : update;
+      } catch (error) {
+        const errorCode = (error as { code?: unknown }).code;
+        if (typeof errorCode === "string" && errorCode in permanentFailureCodes) refusal = errorCode;
+        else outcome = "unreachable";
+        return null;
+      }
+    }).catch(() => { outcome = "unreachable"; return null; });
+    if (outcome === "renewed" && updated && isGatewayFreePlan(updated.planType)) {
+      await this.pauseIfFree(updated);
+      this.invalidate();
+      return null;
+    }
+    if (outcome === "renewed" && updated) {
+      const runtime = this.state(account.id);
+      if (runtime.status === "REAUTH_REQUIRED") runtime.status = "ACTIVE";
+      this.invalidate();
+      return updated;
+    }
+    if (outcome === "unreachable") this.markTransientError(account.id);
+    else await this.markPermanentFailure(updated ?? account, refusal, true);
+    return null;
+  }
+
+  /** What storage keeps after a refresh: the new credentials (encrypted), their expiry and the refresh time. */
+  private refreshedUpdate(cipher: CredentialCipher, accountId: string, refreshed: RefreshedCredentials): { stored: StoredCredentials; update: GatewayCredentialUpdate } {
+    const { planType, email, ...stored } = refreshed;
+    return {
+      stored,
+      update: {
+        credentialsEncrypted: cipher.encrypt(JSON.stringify(stored), accountId),
+        credentialsExpiresAt: stored.accessExpiresAtMs ? new Date(stored.accessExpiresAtMs).toISOString() : null,
+        lastRefreshAt: new Date(this.nowMs()).toISOString(),
+        ...(planType ? { planType } : {}),
+        ...(email ? { email } : {})
+      }
+    };
   }
 }

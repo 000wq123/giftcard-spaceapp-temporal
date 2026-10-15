@@ -3,7 +3,7 @@ import type { AccountPool } from "../../accounts/account-pool.js";
 
 /**
  * Codex account quotas for tools on this host (`GET /__space-gateway/codex/account-usage`), in the schema
- * `space-codex-account-usage` printed when it read codex-lb on public-host: one row per paid, unpaused account with the
+ * `space-codex-account-usage` printed when it read codex-lb on public-host: one row per paid account the gateway uses, with the
  * remaining share of its 5-hour and weekly windows. The LAN listener serves proxy routes only, so this stays local.
  */
 const remaining = (used: number | null) => (used === null ? null : Math.max(0, Math.min(100, Math.round((100 - used) * 10) / 10)));
@@ -12,7 +12,8 @@ export function registerCodexAccountUsageRoute(app: FastifyInstance, options: { 
   app.get("/__space-gateway/codex/account-usage", async (_request, reply) => {
     try {
       const accounts = (await options.pool.accounts())
-        .filter((account) => account.status !== "PAUSED" && (account.planType ?? "").trim().toLowerCase() !== "free");
+        .filter((account) => account.status !== "PAUSED" && account.status !== "DEACTIVATED" && !options.pool.isSignedOut(account)
+          && (account.planType ?? "").trim().toLowerCase() !== "free");
       return {
         schemaVersion: 1,
         source: "space-gateway",

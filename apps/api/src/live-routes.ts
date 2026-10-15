@@ -241,4 +241,6 @@ export function registerLiveRoutes(app: FastifyInstance, options: {
       await appendFile(join(directory, `${key}.jsonl`), JSON.stringify({ ...event, ownerId: owner, roomId: room, recordedAt: nowIso() }) + "\n", { mode: 0o600 });
     }
   });
+  // The Research Council reads the owner's personal memory as context for its coordinator.
+  return { livePersonalMemory };
 }

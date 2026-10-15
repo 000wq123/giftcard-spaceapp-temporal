@@ -26,6 +26,7 @@ import {
 } from "@space/codex-app-server";
 import { redactMemoryText } from "@space/runtime";
 import { createStaleWhileRevalidateCache } from "./stale-while-revalidate.js";
+import { childProcessEnv } from "./child-process-env.js";
 
 const execFileAsync = promisify(execFile);
 const defaultCodexHome = "/var/lib/spaceapp-user/.codex";
@@ -278,7 +279,7 @@ async function runThreadRenameCommand(command: string, threadId: string, title: 
     const child = spawn(command, ["rename-thread", threadId], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...childProcessEnv(),
         CODEX_STATE_DB_PATH: stateDbPath
       }
     });
@@ -1214,6 +1215,10 @@ export function createCodexParityService(options: CreateCodexParityServiceOption
     } catch (error) {
       if (environmentInspectorCommand && isConfigReadFallbackError(error)) {
         environment = await inspectEnvironment(environmentInspectorCommand);
+      } else if (environmentInspectorCommand === null && isConfigReadFallbackError(error)) {
+        // No sudo wrapper here (the dev instance runs with no new privileges): the environment reads as unknown.
+        environment = codexEnvironmentSchema.parse({ codexHome, stateDbPath, config: { modelProvider: null, model: null, reasoningEffort: null }, mcpServers: [],
+          skillCount: 0, pluginCount: 0, memories: { generateMemories: null, useMemories: null }, features: { plugins: null, memories: null }, checkedAt: new Date().toISOString() });
       } else {
         throw error;
       }

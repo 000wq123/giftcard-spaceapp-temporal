@@ -66,7 +66,7 @@ export function SpaceAppPromoWidget({
         <div className="widget-promo-badge-row">
           <span className="widget-promo-badge">
             <Sparkles aria-hidden="true" className="widget-promo-badge-svg" />
-            FREE &amp; OPEN SOURCE
+            FREE &amp; SOURCE-AVAILABLE
           </span>
         </div>
 

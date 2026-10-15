@@ -26,6 +26,8 @@ import type { TeamsClient } from "./channel-teams.js";
 const providerLabel: Record<ChannelProvider, string> = { SLACK: "Slack", TEAMS: "Teams" };
 const finished = new Set(["COMPLETED", "FAILED", "INTERRUPTED"]);
 const sha = (value: string, length = 40) => createHash("sha256").update(value).digest("hex").slice(0, length);
+/** Plain text for Slack: its control characters are escaped, so text quoted from email never becomes a mention or a link. */
+const slackText = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export interface DotChannelDeps {
   repo: ChannelsRepository;
@@ -215,6 +217,14 @@ export function createDotChannelService(deps: DotChannelDeps) {
       : await deps.teams.openDirect({ serviceUrl: thread.serviceUrl, tenantId: thread.tenantId, userAddress: identity.replyAddress });
     await deps.teams.post({ serviceUrl: thread.serviceUrl, conversationId, text });
   }
+  /** A direct message to a linked account, which may never have started a thread (Teams needs one to reach the user). */
+  async function deliverDirect(identity: ChannelIdentityRecord, text: string) {
+    const via = await deps.repo.latestThreadForIdentity(identity.identityId);
+    const thread: ChannelThreadRecord = via ?? { threadId: "", provider: identity.provider, tenantId: identity.tenantId, conversationId: "", threadKey: "direct",
+      conversationKind: "DIRECT", identityId: identity.identityId, ownerUserId: identity.ownerUserId, dotId: "", sessionId: null, paneId: null, serviceUrl: null,
+      replyInThread: false, lastDeliveredRunId: null, createdAt: identity.createdAt, updatedAt: identity.createdAt };
+    await deliver(thread, identity, "DIRECT", text);
+  }
 
   let sweeping = false;
   let lastPrune = 0;
@@ -274,6 +284,14 @@ export function createDotChannelService(deps: DotChannelDeps) {
     const threads = new Map<string, ChannelThreadRecord>();
     for (const item of await deps.repo.due(50)) {
       try {
+        if (!item.threadId) {
+          const identity = item.identityId ? await deps.repo.identityById(item.identityId) : null;
+          if (!identity) { await deps.repo.retry(item.outboxId, "The account was unlinked.", 1); continue; }
+          await deliverDirect(identity, item.body);
+          await deps.repo.delivered(item.outboxId);
+          delivered += 1;
+          continue;
+        }
         const thread = threads.get(item.threadId) ?? await deps.repo.threadById(item.threadId);
         if (!thread) { await deps.repo.retry(item.outboxId, "The thread no longer exists.", 1); continue; }
         threads.set(thread.threadId, thread);
@@ -318,15 +336,26 @@ export function createDotChannelService(deps: DotChannelDeps) {
     }
     const identity = identities[0];
     if (!identity) return { status: "BLOCKED", statusReason: `No ${providerLabel[provider]} account is linked.` };
-    const via = await deps.repo.latestThreadForIdentity(identity.identityId);
-    if (provider === "TEAMS" && !via?.serviceUrl) return { status: "BLOCKED", statusReason: "Message the Space app in Teams once so it can reach you." };
-    const thread: ChannelThreadRecord = via ?? { threadId: "", provider, tenantId: identity.tenantId, conversationId: "", threadKey: "direct", conversationKind: "DIRECT",
-      identityId: identity.identityId, ownerUserId: owner, dotId: "", sessionId: null, paneId: null, serviceUrl: null, replyInThread: false,
-      lastDeliveredRunId: null, createdAt: identity.createdAt, updatedAt: identity.createdAt };
-    await deliver(thread, identity, "DIRECT", parsed.data.text);
+    if (provider === "TEAMS" && !(await deps.repo.latestThreadForIdentity(identity.identityId))?.serviceUrl) {
+      return { status: "BLOCKED", statusReason: "Message the Space app in Teams once so it can reach you." };
+    }
+    await deliverDirect(identity, parsed.data.text);
     return { status: "COMPLETED", result: { sent: true, provider, where: "direct" } };
   }
-  return { linkCode, handleInbound, sweep, status, available, toolSend, unlink: (owner: string, identityId: string) => deps.repo.unlink(owner, identityId) };
+  /**
+   * A message the Dot wrote on its own, also sent to its owner in Slack (Settings → Dots → Also send to Slack): the same
+   * plain text and Space's link to its source, as a direct message from the Space app, once per notice. False when Space
+   * has no Slack app or the owner linked no Slack account.
+   */
+  async function notifyOwner(owner: string, notice: { sourceKey: string; dotName: string; content: string; link: { label: string; url: string } | null }) {
+    if (!deps.slack) return false;
+    const identity = (await deps.repo.identities(owner)).find((item) => item.provider === "SLACK");
+    if (!identity) return false;
+    const link = notice.link && /^https:\/\/[^\s<>|]+$/.test(notice.link.url) ? `\n<${notice.link.url}|${slackText(notice.link.label)}>` : "";
+    return deps.repo.enqueue({ threadId: null, identityId: identity.identityId, sourceKey: notice.sourceKey, kind: "NOTICE", target: "DIRECT",
+      body: `${slackText(notice.dotName)}: ${slackText(notice.content)}${link}` });
+  }
+  return { linkCode, handleInbound, sweep, status, available, toolSend, notifyOwner, unlink: (owner: string, identityId: string) => deps.repo.unlink(owner, identityId) };
 }
 export type DotChannelService = ReturnType<typeof createDotChannelService>;
 

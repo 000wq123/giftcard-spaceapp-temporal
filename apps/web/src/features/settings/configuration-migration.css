@@ -37,12 +37,12 @@
   align-items: center;
   gap: 0.5rem;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--text-normal, #f0f0f0);
 }
 
 .config-migration-desc {
-  font-size: 0.825rem;
+  font-size: 0.76rem;
   color: var(--text-muted, #999);
   line-height: 1.4;
   margin: 0;
@@ -417,5 +417,66 @@
 .config-migration-badge.sensitive {
   background: rgba(245, 158, 11, 0.2);
   border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+}
+
+.config-migration-alert.warn {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.config-migration-fields,
+.config-migration-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.config-migration-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  min-width: 0;
+}
+
+.config-migration-field input,
+.config-migration-field select {
+  font: inherit;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  background: var(--surface-field, rgba(0, 0, 0, 0.2));
+  color: inherit;
+  min-width: 0;
+}
+
+.config-migration-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.config-migration-check-row small {
+  color: var(--text-muted, #888);
+}
+
+.config-migration-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  word-break: break-word;
+}
+
+.config-migration-list.warn {
   color: #fcd34d;
 }

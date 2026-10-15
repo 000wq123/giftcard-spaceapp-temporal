@@ -15,6 +15,14 @@ export interface WasteSignals {
 export const wasteSignalNames = ["json_bloat", "html_noise", "base64", "whitespace", "reread"] as const;
 export type WasteSignalName = (typeof wasteSignalNames)[number];
 
+/**
+ * Every category of Headroom 0.37's `WasteSignals.to_dict()`, in its order, as `/stats` reports them. Its detector never
+ * sets dynamic_date or repetition, and reread_compressed needs CCR retrieval markers (CCR is off), so like Headroom
+ * these three stay 0.
+ */
+export const headroomWasteSignalNames = ["json_bloat", "html_noise", "base64", "whitespace", "dynamic_date", "repetition", "reread",
+  "reread_compressed"] as const;
+
 const HTML_TAG = /<[^>]+>/g;
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 const BASE64 = /[A-Za-z0-9+/]{50,}={0,2}/g;

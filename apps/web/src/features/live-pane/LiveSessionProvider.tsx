@@ -40,6 +40,9 @@ export async function acquireLiveMicrophone(ownerId: string): Promise<() => void
   });
 }
 
+/** Room Agent questions already spoken in this tab. */
+const announcedRoomAgentEvents = new Set<string>();
+
 export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }: {
   ownerId: string; roomId: string | null; roomName?: string; children: ReactNode;
 }) {
@@ -51,6 +54,13 @@ export function LiveSessionProvider({ ownerId, roomId, roomName = "", children }
       onError: message => window.dispatchEvent(new CustomEvent("space-live-debug", { detail: { message, type: "error" } })) }),
     acquireMicrophone: acquireLiveMicrophone,
     notifications: { list: () => api.getPendingWatches(), ack: (room, id) => api.ackWatch(room, id), visible: () => document.visibilityState === "visible" },
+    // The Room Agent's questions for the operator are spoken once; they stay in the Room Agent until answered.
+    announcements: {
+      list: async () => (await api.roomAgentPending()).latest
+        .filter(event => event.status === "ESCALATED" && !announcedRoomAgentEvents.has(event.eventId))
+        .map(event => ({ id: event.eventId, roomId: event.roomId, text: `Room Agent: ${event.title}. ${event.decision ?? ""}`.trim() })),
+      ack: id => { announcedRoomAgentEvents.add(id); }
+    },
     storage: typeof window === "undefined" ? undefined : window.localStorage,
     context: (id, signal) => api.getLiveRoomContext(id, signal),
     open: async (options, callbacks, isCurrent) => {

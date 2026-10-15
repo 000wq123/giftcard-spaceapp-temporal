@@ -349,6 +349,13 @@
   min-width: 0;
 }
 
+/* Space Gateway served Claude through the paid API key: red, and it stays until dismissed. */
+.toolbar-metric-action-status.is-alert {
+  border-color: #b8403a;
+  background: #2a1716;
+  color: #f6ddd9;
+}
+
 .mobile-action-sheet .mobile-system-metrics {
   display: none;
 }

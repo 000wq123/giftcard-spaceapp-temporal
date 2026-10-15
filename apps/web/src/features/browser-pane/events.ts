@@ -1,12 +1,19 @@
 export const BROWSER_PANE_ACTION_EVENT = "space:browser-pane-action";
 
-export type BrowserPaneAction = "bookmarks" | "import" | "handoff" | "release" | "reload";
+export type BrowserPaneAction = "bookmarks" | "import" | "handoff" | "release" | "reload" | "account";
 
 export interface BrowserPaneActionDetail {
   paneId: string;
   action: BrowserPaneAction;
   roomId?: string;
+  /** "account": the Google account profile to open (Job Copilot Setup chooses it outside the toolbar). */
+  profileId?: string;
+  /** "account": open Google sign-in for that account. */
+  signIn?: boolean;
 }
+
+/** A pane browser switched Google accounts (toolbar menu or Setup); the detail names the pane. */
+export const BROWSER_PANE_ACCOUNT_SELECTED_EVENT = "space:browser-pane-account-selected";
 
 const activeBrowserPaneTargets = new Map<string, number>();
 const pendingBrowserPaneActions = new Map<string, BrowserPaneActionDetail[]>();
@@ -38,15 +45,18 @@ export function registerBrowserPaneEventTarget(paneId: string): () => void {
 
 export function parseBrowserPaneActionDetail(detail: unknown): BrowserPaneActionDetail | null {
   if (typeof detail !== "object" || detail === null) return null;
-  const maybeDetail = detail as { paneId?: unknown; action?: unknown; roomId?: unknown };
+  const maybeDetail = detail as { paneId?: unknown; action?: unknown; roomId?: unknown; profileId?: unknown; signIn?: unknown };
   if (
     typeof maybeDetail.paneId !== "string" ||
-    (maybeDetail.action !== "bookmarks" && maybeDetail.action !== "import" && maybeDetail.action !== "handoff" && maybeDetail.action !== "release" && maybeDetail.action !== "reload")
+    (maybeDetail.action !== "bookmarks" && maybeDetail.action !== "import" && maybeDetail.action !== "handoff" && maybeDetail.action !== "release" && maybeDetail.action !== "reload"
+      && maybeDetail.action !== "account")
   ) return null;
   if (maybeDetail.roomId !== undefined && typeof maybeDetail.roomId !== "string") return null;
+  if (maybeDetail.action === "account" && typeof maybeDetail.profileId !== "string") return null;
   return {
     paneId: maybeDetail.paneId,
     action: maybeDetail.action,
-    ...(maybeDetail.roomId ? { roomId: maybeDetail.roomId } : {})
+    ...(maybeDetail.roomId ? { roomId: maybeDetail.roomId } : {}),
+    ...(maybeDetail.action === "account" ? { profileId: maybeDetail.profileId as string, signIn: maybeDetail.signIn === true } : {})
   };
 }

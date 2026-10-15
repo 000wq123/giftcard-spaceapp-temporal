@@ -8,6 +8,7 @@ import {
 import {
   DOCKS_HIDDEN_STORAGE_KEY,
   DOCKS_VISIBILITY_EVENT,
+  writeDockOrder,
   writeHiddenDockIds
 } from "../docks/use-docks-visibility.js";
 import { applyServerDateTimeSettings } from "../date-time-settings/date-time-settings.js";
@@ -129,6 +130,9 @@ export function syncFromServer(
   }
   if (Array.isArray(settings.docksHidden)) {
     writeHiddenDockIds(settings.docksHidden, storage);
+  }
+  if (Array.isArray(settings.docksOrder)) {
+    writeDockOrder(settings.docksOrder, storage);
   }
 
   // 2b. Environment Preset & Custom Snapshots

@@ -36,7 +36,8 @@ const toolActionIds = new Set([
   "memory-workspace",
   "quick-links",
   "clip-tool",
-  "debug-mode"
+  "debug-mode",
+  "gateway-compression"
 ]);
 
 export function modernRoomActionGroup(actionId: string): ModernRoomActionGroup {

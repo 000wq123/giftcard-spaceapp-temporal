@@ -13,7 +13,7 @@ import {
 } from "@space/contracts";
 import { nowIso, SpaceConflictError, type SpaceStore } from "@space/runtime";
 import type { ActivityLogService } from "./activity-log.js";
-import { type DashboardActivityDetail, type DashboardStatus, readDashboardActivity } from "./agents-dashboard.js";
+import type { DashboardActivityDetail, DashboardStatus } from "./agents-dashboard.js";
 import { operatorBrowserActor } from "./browser-actors.js";
 import type { BrowserSessionManagerWithHostHealth } from "./browser-host-proxy.js";
 import {
@@ -31,6 +31,13 @@ import type { YouTubePlaybackStore } from "./youtube-playback-state.js";
 
 const execFileAsync = promisify(execFile);
 
+export interface DashboardAgentsSample {
+  data: Pane[];
+  activity: Record<string, DashboardStatus>;
+  details: Record<string, DashboardActivityDetail>;
+  sampledAt: string;
+}
+
 /**
  * Room list, dashboard agents, CLI activity and room creation; the parent retains authentication, CSRF, errors and
  * rate limits.
@@ -39,19 +46,14 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
   store: SpaceStore;
   activityLogService: ActivityLogService;
   cliRuntimeVisibility: CliRuntimeVisibilityPolicy;
-  dashboardAgentsCache: Map<string, {
-    expires: number;
-    data: { data: Pane[]; activity: Record<string, DashboardStatus>; details: Record<string, DashboardActivityDetail>; sampledAt: string };
-  }>;
-  readCliDashboardActivity: (session: PaneCliSession) => Promise<DashboardActivityDetail>;
-  /** Called when the dashboard sees an agent that finished an answer (activation telemetry). */
-  onAgentAnswered?: () => void;
+  /** Open panes and their live activity, cached briefly and shared with the Room Agent. */
+  readDashboardAgents: (roomId: string) => Promise<DashboardAgentsSample>;
   visibleCliRuntimeIds: () => Promise<string[]>;
   routeOptions: Pick<RouteShorthandOptions, "config">;
   assertRoomAccess: (roomId: string, user: AuthUser | null | undefined) => Promise<Room>;
 }) {
-  const { store, activityLogService, cliRuntimeVisibility, dashboardAgentsCache, readCliDashboardActivity,
-    onAgentAnswered, visibleCliRuntimeIds, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess } = options;
+  const { store, activityLogService, cliRuntimeVisibility, readDashboardAgents,
+    visibleCliRuntimeIds, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess } = options;
   app.get("/api/rooms", defaultRouteRateLimitOptions, async (request) => {
     const page = parseQuery(paginationRequestSchema, request.query);
     const query = request.query as { all?: string; ownerUserId?: string } | undefined;
@@ -84,16 +86,7 @@ export function registerRoomListRoutes(app: FastifyInstance, options: {
   app.get("/api/rooms/:id/dashboard-agents", defaultRouteRateLimitOptions, async (request) => {
     const params = parseQuery(idParamSchema, request.params);
     await assertRoomAccess(params.id, request.user);
-    const cached = dashboardAgentsCache.get(params.id);
-    if (cached && cached.expires > Date.now()) {
-      return cached.data;
-    }
-    const data = (await store.listPanes(params.id)).filter(pane => !pane.isClosed);
-    const { activity, details } = await readDashboardActivity(data, store, readCliDashboardActivity);
-    if (onAgentAnswered && Object.values(details).some((detail) => detail?.status === "done")) onAgentAnswered();
-    const result = { data, activity, details, sampledAt: nowIso() };
-    dashboardAgentsCache.set(params.id, { expires: Date.now() + 2500, data: result });
-    return result;
+    return readDashboardAgents(params.id);
   });
   app.get("/api/rooms/cli-activity", defaultRouteRateLimitOptions, async (request) => {
     const runtimeIds = await visibleCliRuntimeIds();

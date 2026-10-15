@@ -1,17 +1,12 @@
 import type { CopilotRailTab } from "./CopilotRail.js";
+import { layoutForWidth, STACKED_LAYOUT_MAX_WIDTH, type CopilotLayout } from "../copilot-kit/copilot-layout.js";
 
 /**
  * Split: live browser beside (or, under 900px, above) the rail. Stacked: one surface at a time
  * with the browser as a rail tab and the tab strip at the bottom, for phones and narrow panes.
  */
-export type JobCopilotLayout = "split" | "stacked";
-
-/** Panes at most this wide (CSS px) stack; a 390–430px phone always does, a half-screen desktop pane does not. */
-export const STACKED_LAYOUT_MAX_WIDTH = 640;
-
-export function layoutForWidth(width: number): JobCopilotLayout {
-  return width > 0 && width <= STACKED_LAYOUT_MAX_WIDTH ? "stacked" : "split";
-}
+export type JobCopilotLayout = CopilotLayout;
+export { layoutForWidth, STACKED_LAYOUT_MAX_WIDTH };
 
 export const RAIL_TABS: readonly CopilotRailTab[] = ["activity", "queue", "fields", "memory", "setup", "terminal"];
 

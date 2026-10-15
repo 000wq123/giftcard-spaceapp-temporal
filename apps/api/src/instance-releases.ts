@@ -8,6 +8,7 @@ import {
   type ReleaseActionResponse, type ReleasePendingChange, type ReleasesReport
 } from "@space/contracts";
 import { readDeployQueue } from "./deploy-queue.js";
+import { childProcessEnv } from "./child-process-env.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -40,7 +41,7 @@ const PROMOTION_PREFIX = "Promote dev ";
 const BACKMERGE_SUMMARY = "Back-merge stable main into dev";
 const MAX_PENDING = 200;
 // The API user reads checkouts owned by the operator account.
-const gitEnv = { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "*" };
+const gitEnv = { ...childProcessEnv(), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "*" };
 
 export class ReleaseActionError extends Error {
   constructor(message: string, readonly statusCode: number) { super(message); }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { X, Check, AlertCircle, RefreshCw } from "../ui-theme/app-icons.js";
+import { X, Check, CircleAlert, RefreshCw } from "../ui-theme/app-icons.js";
 import type { CreateDatabaseConnectionInput, DatabaseConnection, DatabaseEngine } from "@space/contracts";
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 
@@ -228,7 +228,7 @@ export function ConnectionModal({
                 color: testResult.ok ? "var(--modern-success, #10b981)" : "var(--modern-danger, #ef4444)"
               }}
             >
-              {testResult.ok ? <Check size={14} /> : <AlertCircle size={14} />}
+              {testResult.ok ? <Check size={14} /> : <CircleAlert size={14} />}
               <span>{testResult.ok ? `Connection verified! (${testResult.version || "OK"})` : `Connection failed: ${testResult.error}`}</span>
             </div>
           )}

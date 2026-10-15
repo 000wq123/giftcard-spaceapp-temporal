@@ -88,6 +88,10 @@ export * from "./dot-memory-repository.js";
 export * from "./dot-deliverables-repository.js";
 export * from "./connector-accounts-repository.js";
 export * from "./job-apply-repository.js";
+export * from "./space-notifications-repository.js";
+export * from "./council-repository.js";
+export * from "./mail-copilot-repository.js";
+export * from "./marketing-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";
 export * from "./session-revocation-repository.js";
@@ -95,3 +99,10 @@ export * from "./dot-evals-repository.js";
 export * from "./channels-repository.js";
 export * from "./gateway-repository.js";
 export * from "./gateway-log-aggregates.js";
+export {
+  InMemoryRoomAgentMonitorRepository,
+  PostgresRoomAgentMonitorRepository,
+  type AddRoomAgentEventInput,
+  type RoomAgentMonitorRepository,
+  type RoomPaneActivityRecord
+} from "./room-agent-monitor-repository.js";

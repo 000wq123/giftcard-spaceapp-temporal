@@ -16,6 +16,8 @@ export interface RoomPaneObservation {
   checkedAt: string; tasks: NativeTaskExecution[];
   models?: Array<{ id: string; supportedReasoningEfforts: string[]; defaultReasoningEffort?: string }>;
   modes?: string[]; commands?: string[]; text?: string;
+  /** Identifies the question on screen; pass it back as expectedPromptFingerprint when answering. */
+  promptFingerprint?: string;
   configuredModelId?: string | null;
   effectiveModelId?: string | null;
   modelVerificationStatus?: "VERIFIED" | "UNVERIFIED" | "UNKNOWN";

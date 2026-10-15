@@ -30,6 +30,13 @@ export interface TextCrusherResult {
   totalSegments: number;
 }
 
+export interface CrushTextOptions {
+  /** Lines kept whole and always selected (Space Gateway: test failures, assertions and counts). */
+  pin?: (line: string) => boolean;
+}
+
+interface Segmented { segments: string[]; pinned: Set<number> }
+
 const KEYWORDS = new Set(["error", "exception", "failed", "failure", "fail", "warning", "traceback", "assert", "todo", "fixme"]);
 /** Rust `char::is_whitespace` (Unicode White_Space). */
 const WS = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
@@ -57,12 +64,14 @@ function countTokens(text: string): number {
   return hasCjk(text) ? tokens(text).length : words(text).length;
 }
 
-/** Segments on newlines and after `.`, `!` or `?` followed by whitespace. */
-function splitAscii(text: string): string[] {
+/** Segments on newlines and after `.`, `!` or `?` followed by whitespace; a pinned line stays one segment. */
+function splitAscii(text: string, pin?: (line: string) => boolean): Segmented {
   const segments: string[] = [];
+  const pinned = new Set<number>();
   for (const line of text.split("\n")) {
     const trimmed = trim(line);
     if (!trimmed) continue;
+    if (pin?.(trimmed)) { pinned.add(segments.length); segments.push(trimmed); continue; }
     let current = "";
     let previousTerminator = false;
     for (const char of trimmed) {
@@ -79,25 +88,28 @@ function splitAscii(text: string): string[] {
     const segment = trim(current);
     if (segment) segments.push(segment);
   }
-  return segments;
+  return { segments, pinned };
 }
 
 const sentenceSegmenter = new Intl.Segmenter(undefined, { granularity: "sentence" });
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
 
 /** CJK: Unicode sentence boundaries per line, then long segments split at soft breaks (20+ chars) or 40 chars. */
-function splitCjk(text: string): string[] {
-  const segments: string[] = [];
+function splitCjk(text: string, pin?: (line: string) => boolean): Segmented {
+  const segments: Array<{ text: string; pinned: boolean }> = [];
   for (const line of text.split("\n")) {
     const trimmed = trim(line);
     if (!trimmed) continue;
+    if (pin?.(trimmed)) { segments.push({ text: trimmed, pinned: true }); continue; }
     for (const { segment } of sentenceSegmenter.segment(trimmed)) {
       const piece = trim(segment);
-      if (piece) segments.push(piece);
+      if (piece) segments.push({ text: piece, pinned: false });
     }
   }
   const out: string[] = [];
-  for (const segment of segments) {
+  const pinned = new Set<number>();
+  for (const { text: segment, pinned: isPinned } of segments) {
+    if (isPinned) { pinned.add(out.length); out.push(segment); continue; }
     const chars = [...segment];
     if (chars.length <= 60 || !hasCjk(segment)) { out.push(segment); continue; }
     let piece: string[] = [];
@@ -113,10 +125,10 @@ function splitCjk(text: string): string[] {
     const rest = trim(piece.join(""));
     if (rest) out.push(rest);
   }
-  return out;
+  return { segments: out, pinned };
 }
 
-const splitSegments = (text: string) => (hasCjk(text) ? splitCjk(text) : splitAscii(text));
+const splitSegments = (text: string, pin?: (line: string) => boolean): Segmented => (hasCjk(text) ? splitCjk(text, pin) : splitAscii(text, pin));
 
 /** Lowercased alphanumeric/underscore runs; CJK uses Unicode word segmentation with full-width folding. */
 function tokens(text: string): string[] {
@@ -197,13 +209,14 @@ function isSalient(word: string): boolean {
   return false;
 }
 
-export function crushText(content: string, context = "", targetRatio: number | null = null, config: TextCrusherConfig = defaultTextCrusherConfig): TextCrusherResult {
+export function crushText(content: string, context = "", targetRatio: number | null = null, config: TextCrusherConfig = defaultTextCrusherConfig,
+  options: CrushTextOptions = {}): TextCrusherResult {
   const passthrough = (segments: number): TextCrusherResult => {
     const count = countTokens(content);
     return { compressed: content, originalTokens: count, compressedTokens: count, compressionRatio: 1, keptSegments: segments, totalSegments: segments };
   };
   const ratio = Math.min(1, Math.max(0.05, targetRatio ?? config.targetRatio));
-  const segments = splitSegments(content);
+  const { segments, pinned } = splitSegments(content, options.pin);
   if (segments.length < config.minSegmentsForCrush) return passthrough(segments.length);
   const n = segments.length;
   const totalChars = segments.reduce((sum, segment) => sum + byteLength(segment), 0);
@@ -233,7 +246,15 @@ export function crushText(content: string, context = "", targetRatio: number | n
   const seen = new Set<string>();
   let keptChars = 0;
   let keptCount = 0;
+  // Pinned segments come first, whatever their score, and count toward the budget.
+  for (const index of pinned) {
+    kept[index] = true;
+    keptCount += 1;
+    for (const shingle of shingles(segmentTokens[index]!, 3)) seen.add(shingle);
+    keptChars += byteLength(segments[index]!);
+  }
   for (const index of order) {
+    if (kept[index]) continue;
     if (keptChars >= targetChars) break;
     const set = shingles(segmentTokens[index]!, 3);
     if (set.size > 0) {

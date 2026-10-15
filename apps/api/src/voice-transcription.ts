@@ -18,6 +18,9 @@ import {
 } from "@space/contracts";
 import type { SpaceApiConfig } from "./config.js";
 import { configuredDelegateModel, estimateLiveCost } from "./live-model-policy.js";
+import { isGptLiveModel, resolveDelegatedModel, voiceForModel, voiceModelCandidates, voiceModelUnavailable, type LiveModelFallback } from "./live-openai-model-fallback.js";
+
+export { delegatedReasoningEffort } from "./live-openai-model-fallback.js";
 
 export const voiceTranscriptionModelOptions: VoiceTranscriptionModel[] = [
   "gemini-3.8-live",
@@ -680,174 +683,194 @@ export async function createVoiceRealtimeCall(
     throw new Error("OpenAI Live session requires an SDP offer for WebRTC negotiation.");
   }
   const apiKey = cred.apiKey;
+  const baseUrl = normalizedBaseUrl(config.voiceTranscriptionBaseUrl);
+  const normalizedModel = normalizeVoiceTranscriptionModel(input.model);
+  const sanitizedSdp = sanitizeOfferSdp(input.offerSdp!);
+  const requestedModel = input.model?.trim() || config.voiceTranscriptionModel || "gpt-live-1";
+  const requestedIsRealtime = /^gpt-(?:realtime(?:-|$)|4o(?:-mini)?-realtime)/.test(requestedModel) && requestedModel !== "gpt-realtime-whisper";
+  const isTranscription = ["gpt-transcribe", "gpt-live-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"].includes(requestedModel);
+  if (!isGptLiveModel(requestedModel) && !requestedIsRealtime && !isTranscription) {
+    throw new Error(`Model ${requestedModel} is not a conversational Live/Realtime model. Select a voice conversation model; no automatic paid substitution was made.`);
+  }
+  const requestedVoice = input.voice ?? config.voiceTranscriptionVoice ?? "alloy";
+  const delegatedTools: Array<Record<string, unknown>> = [];
+  if (input.delegatedWebSearch) {
+    delegatedTools.push({ type: "web_search" });
+  }
+  if (input.tools && input.tools.length > 0) {
+    delegatedTools.push(...input.tools);
+  }
+  const fallbacks: LiveModelFallback[] = [];
+  const delegated = isGptLiveModel(requestedModel) && input.delegatedType !== "client" && input.delegatedModel
+    ? await resolveDelegatedModel({ baseUrl, apiKey, model: input.delegatedModel, effort: input.delegatedReasoningEffort,
+      webSearch: delegatedTools.some(tool => tool.type === "web_search") })
+    : null;
+  if (delegated?.fallback) fallbacks.push(delegated.fallback);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.voiceTranscriptionTimeoutMs);
-  const normalizedModel = normalizeVoiceTranscriptionModel(input.model);
-  const sanitizedSdp = sanitizeOfferSdp(input.offerSdp!);
 
   try {
-    const upstreamModel = input.model?.trim() || config.voiceTranscriptionModel || "gpt-live-1";
-    const isLive = upstreamModel.startsWith("gpt-live-") && upstreamModel !== "gpt-live-transcribe";
-    const isRealtime = /^gpt-(?:realtime(?:-|$)|4o(?:-mini)?-realtime)/.test(upstreamModel) && upstreamModel !== "gpt-realtime-whisper";
-    const isTranscription = ["gpt-transcribe", "gpt-live-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"].includes(upstreamModel);
-    if (!isLive && !isRealtime && !isTranscription) {
-      throw new Error(`Model ${upstreamModel} is not a conversational Live/Realtime model. Select a voice conversation model; no automatic paid substitution was made.`);
-    }
-    const chosenVoice = input.voice ?? config.voiceTranscriptionVoice ?? "alloy";
-    const turnDetectionConfig = isTranscription ? null : {
-      type: "server_vad",
-      threshold: 0.5,
-      prefix_padding_ms: 300,
-      silence_duration_ms: 300,
-      create_response: true
-    };
+    // A transcription session has no conversational substitute.
+    const candidates = isTranscription ? [requestedModel] : voiceModelCandidates(requestedModel);
+    let firstFailure: { model: string; message: string } | null = null;
+    for (const upstreamModel of candidates) {
+      const isLive = isGptLiveModel(upstreamModel);
+      const chosenVoice = voiceForModel(upstreamModel, requestedVoice);
+      const turnDetectionConfig = isTranscription ? null : {
+        type: "server_vad",
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 300,
+        create_response: true
+      };
 
-    let sessionPayload: Record<string, unknown> = {
-      model: upstreamModel,
-      audio: {
-        output: {
-          voice: chosenVoice
+      let sessionPayload: Record<string, unknown> = {
+        model: upstreamModel,
+        audio: {
+          output: {
+            voice: chosenVoice
+          }
         }
-      }
-    };
-
-    if (!isLive) {
-      sessionPayload.voice = chosenVoice;
-      sessionPayload.input_audio_transcription = {
-        model: "whisper-1"
       };
-      if (turnDetectionConfig) {
-        sessionPayload.turn_detection = turnDetectionConfig;
+
+      if (!isLive) {
+        // GA Realtime rejects the beta top-level voice/input_audio_transcription/turn_detection.
+        sessionPayload.audio = {
+          input: { transcription: { model: "whisper-1" }, ...(turnDetectionConfig ? { turn_detection: turnDetectionConfig } : {}) },
+          output: { voice: chosenVoice }
+        };
       }
-    }
-    const instructionParts: string[] = [];
-    if (input.opening?.trim()) {
-      instructionParts.push(
-        `On the first assistant response, say exactly: "${input.opening.trim()}". This is a one-time opening. Never repeat this greeting, or any greeting, on later turns; answer the user's next message directly.`
-      );
-    }
+      const instructionParts: string[] = [];
+      if (input.opening?.trim()) {
+        instructionParts.push(
+          `On the first assistant response, say exactly: "${input.opening.trim()}". This is a one-time opening. Never repeat this greeting, or any greeting, on later turns; answer the user's next message directly.`
+        );
+      }
 
-    if (normalizedModel.includes("transcribe") || (upstreamModel === "gpt-live-1" && !input.opening?.trim() && !input.prompt?.trim() && !input.delegatedModel)) {
-      instructionParts.push("You are a real-time speech-to-text transcriber. Transcribe the user's speech accurately and verbatim. Do not engage in conversation or generate audio responses.");
-    } else {
-      const languageInstruction =
-        input.language === "el"
-          ? "You are a helpful, fluent AI assistant speaking Greek (Ελληνικά). You understand spoken Greek perfectly and always reply directly and naturally in fluent Greek."
-          : input.language === "en"
-            ? "You are a helpful AI assistant speaking English. Always converse in English."
-            : "You are a helpful bilingual AI assistant fluent in Greek (Ελληνικά) and English. You understand spoken Greek and English. When the user speaks Greek, always converse and reply in natural, fluent Greek. When the user speaks English, reply in English.";
-      instructionParts.push(languageInstruction);
-    }
+      if (normalizedModel.includes("transcribe") || (upstreamModel === "gpt-live-1" && !input.opening?.trim() && !input.prompt?.trim() && !input.delegatedModel)) {
+        instructionParts.push("You are a real-time speech-to-text transcriber. Transcribe the user's speech accurately and verbatim. Do not engage in conversation or generate audio responses.");
+      } else {
+        const languageInstruction =
+          input.language === "el"
+            ? "You are a helpful, fluent AI assistant speaking Greek (Ελληνικά). You understand spoken Greek perfectly and always reply directly and naturally in fluent Greek."
+            : input.language === "en"
+              ? "You are a helpful AI assistant speaking English. Always converse in English."
+              : "You are a helpful bilingual AI assistant fluent in Greek (Ελληνικά) and English. You understand spoken Greek and English. When the user speaks Greek, always converse and reply in natural, fluent Greek. When the user speaks English, reply in English.";
+        instructionParts.push(languageInstruction);
+      }
 
-    if (input.prompt?.trim()) {
-      instructionParts.push(input.prompt.trim());
-    }
-    if (instructionParts.length > 0) {
-      sessionPayload.instructions = instructionParts.join("\n\n");
-    }
+      if (input.prompt?.trim()) {
+        instructionParts.push(input.prompt.trim());
+      }
+      if (instructionParts.length > 0) {
+        sessionPayload.instructions = instructionParts.join("\n\n");
+      }
 
-    if (isTranscription) {
-      const streaming = upstreamModel === "gpt-live-transcribe" || upstreamModel === "gpt-transcribe";
-      sessionPayload = {
-        type: "transcription",
-        audio: { input: {
-          transcription: {
-            model: upstreamModel,
-            ...(input.language && input.language !== "auto" ? (streaming ? { languages: [input.language] } : { language: input.language }) : {}),
-            ...(input.prompt?.trim() ? { prompt: input.prompt.trim() } : {}),
-            ...(streaming && input.delay ? { delay: input.delay } : {})
-          },
-          turn_detection: null
-        } }
+      if (isTranscription) {
+        const streaming = upstreamModel === "gpt-live-transcribe" || upstreamModel === "gpt-transcribe";
+        sessionPayload = {
+          type: "transcription",
+          audio: { input: {
+            transcription: {
+              model: upstreamModel,
+              ...(input.language && input.language !== "auto" ? (streaming ? { languages: [input.language] } : { language: input.language }) : {}),
+              ...(input.prompt?.trim() ? { prompt: input.prompt.trim() } : {}),
+              ...(streaming && input.delay ? { delay: input.delay } : {})
+            },
+            turn_detection: null
+          } }
+        };
+      } else if (!isLive) {
+        sessionPayload.type = "realtime";
+        sessionPayload.output_modalities = ["audio"];
+        sessionPayload.tools = input.tools || [];
+        sessionPayload.tool_choice = "auto";
+      } else if (input.delegatedType === "client") {
+        sessionPayload.delegation = { type: "client" };
+      } else if (delegated) {
+        const responsesConfig: Record<string, unknown> = {
+          model: delegated.model
+        };
+        if (input.delegatedPrompt?.trim()) {
+          responsesConfig.instructions = input.delegatedPrompt.trim();
+        } else if (sessionPayload.instructions) {
+          responsesConfig.instructions = sessionPayload.instructions;
+        }
+        responsesConfig.reasoning = {
+          effort: delegated.effort
+        };
+        if (delegatedTools.length > 0) {
+          responsesConfig.tools = delegatedTools;
+          responsesConfig.tool_choice = "auto";
+        }
+        sessionPayload.delegation = {
+          type: "responses",
+          responses: responsesConfig
+        };
+      }
+
+      const livePayload = {
+        transport: {
+          type: "webrtc",
+          sdp: sanitizedSdp
+        },
+        session: sessionPayload
       };
-    } else if (!isLive) {
-      sessionPayload.type = "realtime";
-      sessionPayload.output_modalities = ["audio"];
-      sessionPayload.tools = input.tools || [];
-      sessionPayload.tool_choice = "auto";
-    } else if (input.delegatedType === "client") {
-      sessionPayload.delegation = { type: "client" };
-    } else if (input.delegatedModel) {
-      const responsesConfig: Record<string, unknown> = {
-        model: input.delegatedModel
-      };
-      if (input.delegatedPrompt?.trim()) {
-        responsesConfig.instructions = input.delegatedPrompt.trim();
-      } else if (sessionPayload.instructions) {
-        responsesConfig.instructions = sessionPayload.instructions;
-      }
-      responsesConfig.reasoning = {
-        effort: input.delegatedReasoningEffort || "minimal"
-      };
-      const delegatedTools: Array<Record<string, unknown>> = [];
-      if (input.delegatedWebSearch) {
-        delegatedTools.push({ type: "web_search" });
-      }
-      if (input.tools && input.tools.length > 0) {
-        delegatedTools.push(...input.tools);
-      }
-      if (delegatedTools.length > 0) {
-        responsesConfig.tools = delegatedTools;
-        responsesConfig.tool_choice = "auto";
-      }
-      sessionPayload.delegation = {
-        type: "responses",
-        responses: responsesConfig
-      };
-    }
 
-    const livePayload = {
-      transport: {
-        type: "webrtc",
-        sdp: sanitizedSdp
-      },
-      session: sessionPayload
-    };
+      const realtimeForm = new FormData();
+      if (!isLive) {
+        realtimeForm.set("sdp", sanitizedSdp);
+        realtimeForm.set("session", JSON.stringify(sessionPayload));
+      }
+      const response = await fetch(`${baseUrl}/${isLive ? "live/sessions" : "realtime/calls"}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...(isLive ? { "Content-Type": "application/json" } : {}),
+          ...(input.safetyIdentifier ? { "OpenAI-Safety-Identifier": input.safetyIdentifier } : {})
+        },
+        body: isLive ? JSON.stringify(livePayload) : realtimeForm,
+        signal: controller.signal
+      });
 
-    const realtimeForm = new FormData();
-    if (!isLive) {
-      realtimeForm.set("sdp", sanitizedSdp);
-      realtimeForm.set("session", JSON.stringify(sessionPayload));
-    }
-    const response = await fetch(`${normalizedBaseUrl(config.voiceTranscriptionBaseUrl)}/${isLive ? "live/sessions" : "realtime/calls"}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        ...(isLive ? { "Content-Type": "application/json" } : {}),
-        ...(input.safetyIdentifier ? { "OpenAI-Safety-Identifier": input.safetyIdentifier } : {})
-      },
-      body: isLive ? JSON.stringify(livePayload) : realtimeForm,
-      signal: controller.signal
-    });
+      const rawBody = await response.text();
+      if (!response.ok) {
+        let message = rawBody || `OpenAI Live session failed with HTTP ${response.status}.`;
+        try {
+          message = parseOpenAiError(JSON.parse(rawBody) as unknown, message);
+        } catch {
+          // Keep raw body fallback.
+        }
+        const unavailable = voiceModelUnavailable(response.status, message);
+        if (response.status === 429 || message.includes("credit_balance_exhausted") || message.includes("insufficient_quota")) {
+          message = "OpenAI API quota or credit balance exhausted. Please verify API key credits in the active organization.";
+        } else if (response.status === 500 && isLive) {
+          message = "OpenAI Live session failed with HTTP 500 (Internal Server Error). gpt-live-1 requires an active credit balance for the upfront WebRTC initialization charge (15s). Please verify your API key organization credits, or switch to gpt-transcribe in Settings.";
+        }
+        firstFailure ??= { model: upstreamModel, message };
+        if (unavailable && upstreamModel !== candidates[candidates.length - 1]) continue;
+        throw new Error(firstFailure.message);
+      }
 
-    const rawBody = await response.text();
-    if (!response.ok) {
-      let message = rawBody || `OpenAI Live session failed with HTTP ${response.status}.`;
+      let answerSdp = "";
       try {
-        message = parseOpenAiError(JSON.parse(rawBody) as unknown, message);
+        const parsed = JSON.parse(rawBody) as { transport?: { sdp?: string } };
+        answerSdp = parsed.transport?.sdp || "";
       } catch {
-        // Keep raw body fallback.
+        answerSdp = rawBody;
       }
-      if (response.status === 429 || message.includes("credit_balance_exhausted") || message.includes("insufficient_quota")) {
-        message = "OpenAI API quota or credit balance exhausted. Please verify API key credits in the active organization.";
-      } else if (response.status === 500 && isLive) {
-        message = "OpenAI Live session failed with HTTP 500 (Internal Server Error). gpt-live-1 requires an active credit balance for the upfront WebRTC initialization charge (15s). Please verify your API key organization credits, or switch to gpt-transcribe in Settings.";
+      if (!answerSdp.trim()) {
+        throw new Error("OpenAI Live session returned empty SDP.");
       }
-      throw new Error(message);
+      if (firstFailure) fallbacks.unshift({ kind: "voice", requested: requestedModel, used: upstreamModel, reason: firstFailure.message });
+      return voiceRealtimeSessionResponseSchema.parse({
+        answerSdp, provider: "openai", model: upstreamModel, protocol: isLive ? "gpt-live" : isTranscription ? "openai-transcription" : "openai-realtime",
+        ...(isLive && delegated ? { delegatedModel: delegated.model } : {}),
+        ...(fallbacks.length ? { fallbacks: fallbacks.filter(fallback => isLive || fallback.kind === "voice") } : {})
+      });
     }
-
-    let answerSdp = "";
-    try {
-      const parsed = JSON.parse(rawBody) as { transport?: { sdp?: string } };
-      answerSdp = parsed.transport?.sdp || "";
-    } catch {
-      answerSdp = rawBody;
-    }
-    if (!answerSdp.trim()) {
-      throw new Error("OpenAI Live session returned empty SDP.");
-    }
-    return voiceRealtimeSessionResponseSchema.parse({ answerSdp, provider: "openai", model: upstreamModel, protocol: isLive ? "gpt-live" : isTranscription ? "openai-transcription" : "openai-realtime" });
+    throw new Error(firstFailure?.message ?? "OpenAI Live session failed.");
   } finally {
     clearTimeout(timeout);
   }

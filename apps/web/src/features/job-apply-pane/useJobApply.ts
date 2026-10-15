@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentRuntimeRegistry, BrowserHandoffRequest, JobApplication, JobApplyEvent, JobApplyPaneMetadata, JobApplyProfile, JobApplyRunView, Pane, PaneBrowserSession } from "@space/contracts";
+import { jobApplicationQueueHolds, type AgentRuntimeRegistry, type BrowserHandoffRequest, type JobApplication, type JobApplyEvent, type JobApplyPaneMetadata, type JobApplyProfile, type JobApplyRunView, type JobApplyStats, type Pane, type PaneBrowserSession } from "@space/contracts";
 import { api } from "../../api.js";
 import { usePanePolling } from "../../use-pane-polling.js";
 import { subscribeJobApplyLiveEvents } from "./live-events.js";
@@ -12,6 +12,8 @@ export interface JobApplyData {
   browser: PaneBrowserSession | null;
   runtimes: AgentRuntimeRegistry | null;
   run: JobApplyRunView | null;
+  /** Totals since the first day and the per-day history; null until loaded or when the request failed. */
+  stats: JobApplyStats | null;
   events: JobApplyEvent[];
   loading: boolean;
   error: string | null;
@@ -22,7 +24,8 @@ export interface JobApplyData {
   setRun(run: JobApplyRunView): void;
 }
 
-export interface JobApplyTodayCounts { applied: number; verified: number; failed: number; needsUser: number; queued: number }
+/** `queued` counts what Start can take now; `deferred` waits for an employer limit until `nextFreeAt` (the server's rule). */
+export interface JobApplyTodayCounts { applied: number; verified: number; failed: number; needsUser: number; queued: number; deferred: number; nextFreeAt: string | null }
 
 function startOfTodayIso(): string {
   const now = new Date();
@@ -30,13 +33,15 @@ function startOfTodayIso(): string {
   return now.toISOString();
 }
 
-export function todayCounts(applications: JobApplication[]): JobApplyTodayCounts {
+/** `paneQueue` is the server's queue for this pane (its own postings and unassigned ones); without it every queued posting counts. */
+export function todayCounts(applications: JobApplication[], paneQueue?: JobApplication[]): JobApplyTodayCounts {
   const since = startOfTodayIso();
-  const counts = { applied: 0, verified: 0, failed: 0, needsUser: 0, queued: 0 };
+  const queue = paneQueue ?? applications.filter((application) => application.status === "QUEUED");
+  const { eligible, holds } = jobApplicationQueueHolds(queue);
+  const counts = { applied: 0, verified: 0, failed: 0, needsUser: 0, queued: eligible.length, deferred: queue.length - eligible.length, nextFreeAt: [...holds.values()].sort()[0] ?? null };
   for (const application of applications) {
     const stamp = application.appliedAt ?? application.updatedAt;
     if (application.status === "NEEDS_USER") counts.needsUser += 1;
-    if (application.status === "QUEUED") counts.queued += 1;
     if (stamp < since) continue;
     if (application.status === "SUBMITTED" || application.status === "VERIFIED") counts.applied += 1;
     if (application.status === "VERIFIED") counts.verified += 1;
@@ -56,6 +61,16 @@ export function runProgress(view: JobApplyRunView | null): { done: number; total
 /** The browser pane starts its own session on mount; the copilot restarts it only once it has stopped. */
 const BROWSER_RESTART_DELAY_MS = 6_000;
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
+const REFRESH_TIMEOUT_MS = 20_000;
+
+/** Polling waits for each refresh, so one hung request froze the pane (a stale "Take control" card stayed up). */
+function withRefreshTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = window.setTimeout(() => reject(new Error("Job Copilot data took too long to load; retrying.")), REFRESH_TIMEOUT_MS);
+  });
+  return Promise.race([work, timeout]).finally(() => window.clearTimeout(timer));
+}
 
 /** Profile, tracker, pane settings, browser session, handoff, CLI runtimes, run state and activity, refreshed while the pane is visible and on live events. */
 export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
@@ -67,6 +82,7 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
   const [runtimes, setRuntimes] = useState<AgentRuntimeRegistry | null>(() => api.cliRuntimesSnapshot());
   const [run, setRun] = useState<JobApplyRunView | null>(null);
   const [events, setEvents] = useState<JobApplyEvent[]>([]);
+  const [stats, setStats] = useState<JobApplyStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedAt = useRef(Date.now());
@@ -87,15 +103,16 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
     if (inFlight.current) return inFlight.current;
     inFlight.current = (async () => {
       try {
-        const [profileResponse, applicationsResponse, settingsResponse, handoffResponse, browserResponse, runResponse, eventsResponse] = await Promise.all([
+        const [profileResponse, applicationsResponse, settingsResponse, handoffResponse, browserResponse, runResponse, eventsResponse, statsResponse] = await withRefreshTimeout(Promise.all([
           api.jobApplyProfile(),
           api.jobApplications(),
           api.jobApplySettings(pane.id),
           api.browserHandoff(pane.id).catch(() => null),
           api.browserSession(pane.id).catch(() => null),
           api.jobApplyRun(pane.id).catch(() => null),
-          api.jobApplyEvents({ paneId: pane.id, limit: 150 }).catch(() => null)
-        ]);
+          api.jobApplyEvents({ paneId: pane.id, limit: 150 }).catch(() => null),
+          api.jobApplyStats(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null)
+        ]));
         setProfile(profileResponse.profile);
         setApplicationsState(applicationsResponse.applications);
         setSettings(settingsResponse.metadata);
@@ -103,6 +120,7 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
         setBrowser(browserResponse?.session ?? null);
         if (runResponse) setRun(runResponse);
         if (eventsResponse) setEvents(eventsResponse.events);
+        if (statsResponse) setStats(statsResponse.stats);
         setError(null);
         void ensureBrowser(browserResponse?.session ?? null);
       } catch (caught) {
@@ -137,6 +155,6 @@ export function useJobApplyData(pane: Pane, enabled: boolean): JobApplyData {
 
   const setApplications = useCallback((update: (current: JobApplication[]) => JobApplication[]) => setApplicationsState(update), []);
 
-  return useMemo(() => ({ profile, applications, settings, handoff, browser, runtimes, run, events, loading, error, refresh, setProfile, setSettings, setApplications, setRun }),
-    [profile, applications, settings, handoff, browser, runtimes, run, events, loading, error, refresh, setApplications]);
+  return useMemo(() => ({ profile, applications, settings, handoff, browser, runtimes, run, stats, events, loading, error, refresh, setProfile, setSettings, setApplications, setRun }),
+    [profile, applications, settings, handoff, browser, runtimes, run, stats, events, loading, error, refresh, setApplications]);
 }

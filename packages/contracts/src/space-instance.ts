@@ -47,7 +47,15 @@ export const instanceBackgroundJobs = [
   "cli-runtime-visibility-file",
   "plugin-skill-links",
   "telegram-bridge",
-  "streaming-bot"
+  "streaming-bot",
+  // Job Copilot files application emails in the owner's real Gmail; a dev copy must not do it twice.
+  "job-apply-mail-triage",
+  // Mail Copilot polls Gmail history for new mail (notifications, work items); one instance per mailbox.
+  "mail-copilot-sync",
+  // Marketing Copilot starts runs for approved posts that are due; a dev copy must not publish them twice.
+  "marketing-copilot-scheduler",
+  // Marketing Copilot records daily public metrics (GitHub, npm); one instance per owner's analytics.
+  "marketing-copilot-metrics"
 ] as const;
 export type InstanceBackgroundJob = (typeof instanceBackgroundJobs)[number];
 

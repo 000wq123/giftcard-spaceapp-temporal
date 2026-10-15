@@ -4,7 +4,10 @@ import type { JobApplyMailboxConfig } from "@space/contracts";
 // The agent never sees the mailbox credential: the API opens IMAP, reads the few
 // recent messages that match, and hands back codes, links or short snippets.
 export interface MailboxMessageSummary {
-  uid: number;
+  /** IMAP message UID. */
+  uid?: number;
+  /** Gmail message id, readable in full with the copilot's mail read tool. */
+  messageId?: string;
   from: string;
   subject: string;
   receivedAt: string | null;
@@ -76,7 +79,7 @@ export function extractLinks(source: string, urlContains?: string | null): strin
   return extractLinksFromText(decodeQuotedPrintable(decodeBase64Parts(source)), urlContains);
 }
 
-function matches(summary: { from: string; subject: string }, filter: MailboxSearchFilter): boolean {
+export function matches(summary: { from: string; subject: string }, filter: MailboxSearchFilter): boolean {
   if (filter.fromContains && !summary.from.toLowerCase().includes(filter.fromContains.toLowerCase())) return false;
   if (filter.subjectContains && !summary.subject.toLowerCase().includes(filter.subjectContains.toLowerCase())) return false;
   return true;

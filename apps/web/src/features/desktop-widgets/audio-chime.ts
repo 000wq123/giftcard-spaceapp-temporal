@@ -19,7 +19,7 @@ function getAudioContext(): AudioContext | null {
   }
 }
 
-export type ChimeToneType = "timer-done" | "pushup-alert" | "click" | "log-done";
+export type ChimeToneType = "timer-done" | "pushup-alert" | "click" | "log-done" | "notification";
 
 /**
  * Synthesizes clear, harmonic tones without external audio assets.
@@ -45,6 +45,24 @@ export function playChime(type: ChimeToneType): void {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.04);
+      return;
+    }
+
+    if (type === "notification") {
+      // Two soft notes: E5 (659.25 Hz) -> B5 (987.77 Hz), shorter and quieter than the timer bell.
+      for (const note of [{ freq: 659.25, start: 0, duration: 0.18 }, { freq: 987.77, start: 0.14, duration: 0.3 }]) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(note.freq, now + note.start);
+        gain.gain.setValueAtTime(0.001, now + note.start);
+        gain.gain.linearRampToValueAtTime(baseVolume * 0.2, now + note.start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + note.start + note.duration);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + note.start);
+        osc.stop(now + note.start + note.duration + 0.05);
+      }
       return;
     }
 

@@ -12,6 +12,10 @@ export interface JobApplyProfileRecord {
   mailbox: Record<string, unknown> | null;
   mailboxPasswordEncrypted: string | null;
   mailboxVerifiedAt: string | null;
+  /** The Google account (email) whose Gmail and Calendar the copilot uses through the owner's Google connector. */
+  googleEmail: string | null;
+  /** The last "Reset and start over"; null when counting from the first application. */
+  campaignStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -24,6 +28,7 @@ export interface JobApplyProfilePatch {
   mailbox?: Record<string, unknown> | null;
   mailboxPasswordEncrypted?: string | null;
   mailboxVerifiedAt?: string | null;
+  googleEmail?: string | null;
 }
 export interface JobApplicationRecord {
   id: string;
@@ -39,6 +44,7 @@ export interface JobApplicationRecord {
   notes: string | null;
   appliedAt: string | null;
   queuePosition: number | null;
+  notBefore: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +69,7 @@ export interface JobApplicationPatch {
   notes?: string | null;
   appliedAt?: string | null;
   queuePosition?: number | null;
+  notBefore?: string | null;
 }
 
 export interface JobApplyMemoryRecord {
@@ -199,8 +206,18 @@ export interface JobApplyRunPatch {
   lastActivityAt?: string;
 }
 
+/** Applications per day (in a zone), status and scope; IMPORTED is the earlier tracker, ARCHIVED predates `since`. */
+export interface JobApplicationStatsRow {
+  day: string;
+  status: string;
+  scope: "CURRENT" | "IMPORTED" | "ARCHIVED";
+  count: number;
+}
+
 export interface JobApplyRepository {
   getProfile(owner: string): Promise<JobApplyProfileRecord | null>;
+  /** Owners whose Job Copilot works with a Google account (mail triage runs for them). */
+  listGoogleProfileOwners(): Promise<string[]>;
   upsertProfile(owner: string, patch: JobApplyProfilePatch): Promise<JobApplyProfileRecord>;
   listApplications(owner: string, filter: { status?: string; limit: number }): Promise<JobApplicationRecord[]>;
   getApplication(owner: string, id: string): Promise<JobApplicationRecord | null>;
@@ -213,6 +230,12 @@ export interface JobApplyRepository {
   countApplications(owner: string, ats: string, statuses: string[], sinceIso: string): Promise<number>;
   /** QUEUED rows in queue order (then creation order); `paneId` narrows to one pane's rows plus unassigned ones. */
   listQueue(owner: string, paneId: string | null): Promise<JobApplicationRecord[]>;
+  /** Starts counting again when the campaign start is still `expected` (compare-and-set); null when it moved meanwhile. */
+  resetCampaign(owner: string, expected: string | null): Promise<string | null>;
+  /** RUNNING and PAUSED runs of every pane of the owner. */
+  listActiveRuns(owner: string): Promise<JobApplyRunRecord[]>;
+  /** Counts by day (YYYY-MM-DD of applied_at, else updated_at, in `tz`), status and scope. */
+  applicationStats(owner: string, input: { tz: string; since: string | null; importedUrlPrefix: string }): Promise<JobApplicationStatsRow[]>;
   nextQueuePosition(owner: string): Promise<number>;
   setQueueOrder(owner: string, applicationIds: string[]): Promise<void>;
 
@@ -260,10 +283,10 @@ export function newJobApplyRunId(): string {
 
 const profileColumns = `owner_user_id AS "ownerUserId", candidate, qa_bank AS "qaBank", cv_artifact_id AS "cvArtifactId",
   cover_letter_artifact_id AS "coverLetterArtifactId", cv_text AS "cvText", mailbox, mailbox_password_encrypted AS "mailboxPasswordEncrypted",
-  mailbox_verified_at AS "mailboxVerifiedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
+  mailbox_verified_at AS "mailboxVerifiedAt", google_email AS "googleEmail", campaign_started_at AS "campaignStartedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const applicationColumns = `id, owner_user_id AS "ownerUserId", pane_id AS "paneId", company, role, ats, url, status,
   evidence_artifact_ids AS "evidenceArtifactIds", external_confirmation AS "externalConfirmation", notes, applied_at AS "appliedAt",
-  queue_position AS "queuePosition", created_at AS "createdAt", updated_at AS "updatedAt"`;
+  queue_position AS "queuePosition", not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const memoryColumns = `id, owner_user_id AS "ownerUserId", kind, key, text, site, company, tags, source, confidence, uses, pinned,
   last_used_at AS "lastUsedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const fieldColumns = `id, application_id AS "applicationId", owner_user_id AS "ownerUserId", step_index AS "stepIndex", step_title AS "stepTitle",
@@ -277,12 +300,12 @@ const runColumns = `id, owner_user_id AS "ownerUserId", pane_id AS "paneId", sta
 const iso = (value: unknown) => value === null || value === undefined ? null : new Date(value as string).toISOString();
 
 function profileRecord(row: Record<string, unknown>): JobApplyProfileRecord {
-  return { ...(row as unknown as JobApplyProfileRecord), mailboxVerifiedAt: iso(row.mailboxVerifiedAt), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
+  return { ...(row as unknown as JobApplyProfileRecord), mailboxVerifiedAt: iso(row.mailboxVerifiedAt), campaignStartedAt: iso(row.campaignStartedAt), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
 }
 function applicationRecord(row: Record<string, unknown>): JobApplicationRecord {
   return { ...(row as unknown as JobApplicationRecord), evidenceArtifactIds: Array.isArray(row.evidenceArtifactIds) ? row.evidenceArtifactIds as string[] : [],
     queuePosition: typeof row.queuePosition === "number" ? row.queuePosition : null,
-    appliedAt: iso(row.appliedAt), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
+    appliedAt: iso(row.appliedAt), notBefore: iso(row.notBefore), createdAt: iso(row.createdAt)!, updatedAt: iso(row.updatedAt)! };
 }
 function memoryRecord(row: Record<string, unknown>): JobApplyMemoryRecord {
   return { ...(row as unknown as JobApplyMemoryRecord), tags: Array.isArray(row.tags) ? row.tags as string[] : [], confidence: Number(row.confidence),
@@ -314,12 +337,15 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
     const row = (await this.pool.query<Record<string, unknown>>(`SELECT ${profileColumns} FROM job_apply_profiles WHERE owner_user_id=$1`, [owner])).rows[0];
     return row ? profileRecord(row) : null;
   }
+  async listGoogleProfileOwners() {
+    return (await this.pool.query<{ owner_user_id: string }>(`SELECT owner_user_id FROM job_apply_profiles WHERE google_email IS NOT NULL ORDER BY owner_user_id`)).rows.map((row) => row.owner_user_id);
+  }
   async upsertProfile(owner: string, patch: JobApplyProfilePatch) {
     // COALESCE keeps untouched columns; explicit nulls clear the mailbox and artifacts.
     const has = (key: keyof JobApplyProfilePatch) => Object.hasOwn(patch, key);
     const row = (await this.pool.query<Record<string, unknown>>(`INSERT INTO job_apply_profiles(owner_user_id, candidate, qa_bank, cv_artifact_id,
-        cover_letter_artifact_id, cv_text, mailbox, mailbox_password_encrypted, mailbox_verified_at)
-      VALUES ($1, COALESCE($2::jsonb, '{}'::jsonb), COALESCE($3::jsonb, '[]'::jsonb), $4, $5, $6, $7::jsonb, $8, $9)
+        cover_letter_artifact_id, cv_text, mailbox, mailbox_password_encrypted, mailbox_verified_at, google_email)
+      VALUES ($1, COALESCE($2::jsonb, '{}'::jsonb), COALESCE($3::jsonb, '[]'::jsonb), $4, $5, $6, $7::jsonb, $8, $9, $18)
       ON CONFLICT (owner_user_id) DO UPDATE SET
         candidate = CASE WHEN $10 THEN COALESCE($2::jsonb, '{}'::jsonb) ELSE job_apply_profiles.candidate END,
         qa_bank = CASE WHEN $11 THEN COALESCE($3::jsonb, '[]'::jsonb) ELSE job_apply_profiles.qa_bank END,
@@ -329,13 +355,14 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         mailbox = CASE WHEN $15 THEN $7::jsonb ELSE job_apply_profiles.mailbox END,
         mailbox_password_encrypted = CASE WHEN $16 THEN $8 ELSE job_apply_profiles.mailbox_password_encrypted END,
         mailbox_verified_at = CASE WHEN $17 THEN $9 ELSE job_apply_profiles.mailbox_verified_at END,
+        google_email = CASE WHEN $19 THEN $18 ELSE job_apply_profiles.google_email END,
         updated_at = now()
       RETURNING ${profileColumns}`, [owner,
       patch.candidate ? JSON.stringify(patch.candidate) : null, patch.qaBank ? JSON.stringify(patch.qaBank) : null,
       patch.cvArtifactId ?? null, patch.coverLetterArtifactId ?? null, patch.cvText ?? null,
       patch.mailbox ? JSON.stringify(patch.mailbox) : null, patch.mailboxPasswordEncrypted ?? null, patch.mailboxVerifiedAt ?? null,
       has("candidate"), has("qaBank"), has("cvArtifactId"), has("coverLetterArtifactId"), has("cvText"), has("mailbox"),
-      has("mailboxPasswordEncrypted"), has("mailboxVerifiedAt")])).rows[0]!;
+      has("mailboxPasswordEncrypted"), has("mailboxVerifiedAt"), patch.googleEmail ?? null, has("googleEmail")])).rows[0]!;
     return profileRecord(row);
   }
   async listApplications(owner: string, filter: { status?: string; limit: number }) {
@@ -370,12 +397,13 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         notes = CASE WHEN $15 THEN $16 ELSE notes END,
         applied_at = CASE WHEN $17 THEN $18 ELSE applied_at END,
         queue_position = CASE WHEN $19 THEN $20 ELSE queue_position END,
+        not_before = CASE WHEN $21 THEN $22::timestamptz ELSE not_before END,
         updated_at = now()
       WHERE owner_user_id=$1 AND id=$2 RETURNING ${applicationColumns}`,
       [owner, id, has("paneId"), patch.paneId ?? null, has("company"), patch.company ?? null, has("role"), patch.role ?? null,
         has("status"), patch.status ?? null, has("evidenceArtifactIds"), JSON.stringify(patch.evidenceArtifactIds ?? []),
         has("externalConfirmation"), patch.externalConfirmation ?? null, has("notes"), patch.notes ?? null,
-        has("appliedAt"), patch.appliedAt ?? null, has("queuePosition"), patch.queuePosition ?? null])).rows[0];
+        has("appliedAt"), patch.appliedAt ?? null, has("queuePosition"), patch.queuePosition ?? null, has("notBefore"), patch.notBefore ?? null])).rows[0];
     return row ? applicationRecord(row) : null;
   }
   async deleteQueuedApplication(owner: string, id: string) {
@@ -388,10 +416,32 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
     return Number.parseInt(row?.count ?? "0", 10);
   }
   async listQueue(owner: string, paneId: string | null) {
-    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications
-      WHERE owner_user_id=$1 AND status='QUEUED' AND ($2::text IS NULL OR pane_id IS NULL OR pane_id=$2)
+    // A posting whose pane was closed or deleted belongs to no pane, so another Job Copilot pane can start it.
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${applicationColumns} FROM job_applications AS a
+      WHERE owner_user_id=$1 AND status='QUEUED' AND ($2::text IS NULL OR pane_id IS NULL OR pane_id=$2
+        OR NOT EXISTS (SELECT 1 FROM panes AS p WHERE p.id=a.pane_id AND NOT p.is_closed))
       ORDER BY queue_position NULLS LAST, created_at ASC, id ASC`, [owner, paneId])).rows;
     return rows.map(applicationRecord);
+  }
+  async resetCampaign(owner: string, expected: string | null) {
+    // Millisecond precision: the client sends back the ISO string it was given.
+    const updated = (await this.pool.query<{ campaignStartedAt: unknown }>(`UPDATE job_apply_profiles
+      SET campaign_started_at = date_trunc('milliseconds', now()), updated_at = now()
+      WHERE owner_user_id=$1 AND campaign_started_at IS NOT DISTINCT FROM $2::timestamptz
+      RETURNING campaign_started_at AS "campaignStartedAt"`, [owner, expected])).rows[0];
+    if (updated) return iso(updated.campaignStartedAt);
+    if (expected !== null) return null;
+    // No profile yet: the first reset creates it; a concurrent one wins the insert and this one reports the move.
+    const inserted = (await this.pool.query<{ campaignStartedAt: unknown }>(`INSERT INTO job_apply_profiles (owner_user_id, campaign_started_at)
+      VALUES ($1, date_trunc('milliseconds', now())) ON CONFLICT (owner_user_id) DO NOTHING
+      RETURNING campaign_started_at AS "campaignStartedAt"`, [owner])).rows[0];
+    return inserted ? iso(inserted.campaignStartedAt) : null;
+  }
+  async applicationStats(owner: string, input: { tz: string; since: string | null; importedUrlPrefix: string }) {
+    return (await this.pool.query<JobApplicationStatsRow>(`SELECT to_char(COALESCE(applied_at, updated_at) AT TIME ZONE $2, 'YYYY-MM-DD') AS day, status,
+        CASE WHEN starts_with(url, $3) THEN 'IMPORTED' WHEN $4::timestamptz IS NOT NULL AND created_at < $4::timestamptz THEN 'ARCHIVED' ELSE 'CURRENT' END AS scope,
+        count(*)::int AS count
+      FROM job_applications WHERE owner_user_id=$1 GROUP BY 1, 2, 3`, [owner, input.tz, input.importedUrlPrefix, input.since])).rows;
   }
   async nextQueuePosition(owner: string) {
     const row = (await this.pool.query<{ next: string }>(`SELECT (COALESCE(max(queue_position), -1) + 1)::text AS next FROM job_applications WHERE owner_user_id=$1 AND status='QUEUED'`, [owner])).rows[0];
@@ -419,7 +469,8 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         AND (($2::text IS NULL AND $3::text[] IS NULL) OR ($2::text IS NOT NULL AND search @@ websearch_to_tsquery('simple', $2)) OR ($3::text[] IS NOT NULL AND key = ANY($3::text[])))
       ORDER BY key_hit DESC, pinned DESC, rank DESC, (site IS NOT NULL) DESC, (company IS NOT NULL) DESC, uses DESC, updated_at DESC
       LIMIT $8`, [owner, text, keys, kinds, query.site ?? null, query.company ?? null, query.pinnedOnly === true, query.limit])).rows;
-    return rows.map(memoryRecord);
+    // rank and key_hit only order the rows; a memory carrying them fails the strict memory schema.
+    return rows.map(({ rank: _rank, key_hit: _keyHit, ...row }) => memoryRecord(row));
   }
   async getMemory(owner: string, id: string) {
     const row = (await this.pool.query<Record<string, unknown>>(`SELECT ${memoryColumns} FROM job_apply_memory WHERE owner_user_id=$1 AND id=$2`, [owner, id])).rows[0];
@@ -551,6 +602,10 @@ export class PostgresJobApplyRepository implements JobApplyRepository {
         has("kickoffSentAt"), patch.kickoffSentAt ?? null, has("pausedAt"), patch.pausedAt ?? null, has("stoppedAt"), patch.stoppedAt ?? null,
         has("lastActivityAt"), patch.lastActivityAt ?? null])).rows[0];
     return row ? runRecord(row) : null;
+  }
+  async listActiveRuns(owner: string) {
+    const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${runColumns} FROM job_apply_runs WHERE owner_user_id=$1 AND status IN ('RUNNING','PAUSED') ORDER BY created_at`, [owner])).rows;
+    return rows.map(runRecord);
   }
   async listRuns(owner: string, paneId: string, limit: number) {
     const rows = (await this.pool.query<Record<string, unknown>>(`SELECT ${runColumns} FROM job_apply_runs WHERE owner_user_id=$1 AND pane_id=$2 ORDER BY created_at DESC LIMIT $3`, [owner, paneId, limit])).rows;

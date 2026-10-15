@@ -41,7 +41,7 @@ export function workspaceActionCategory(id: string): WorkspaceCategory {
   if (["pane-layout", "pane-span-all", "font-down"].includes(id)) return "layout";
   if (id.startsWith("surface-") || id === "docks") return "docks";
   if (workspaceRoomActionIds.includes(id) || id === "workspace-room" || ["room-focus", "room-toolbar", "category-color-filter"].includes(id)) return "room";
-  if (["debug-mode", "sensitive-data", "browser-fullscreen"].includes(id)) return "toggles";
+  if (["debug-mode", "gateway-compression", "sensitive-data", "browser-fullscreen"].includes(id)) return "toggles";
   if (
     id === "sticky-note" ||
     id.startsWith("widget-")
@@ -55,6 +55,7 @@ export function workspaceActionCategory(id: string): WorkspaceCategory {
       "sign-out",
       "toggle-admin-mode",
       "memory-workspace",
+      "space-gateway",
       "system-resources",
       "resources",
       "benchmark",
@@ -82,18 +83,19 @@ export function workspaceActionColor(id: string): string | undefined {
 const labels: Record<string, string> = {
   "server-restart": "Manage",
   "surface-rooms": "Rooms",
-  "surface-room-agent": "Room Agent", "surface-shared-chat": "Shared chat", "surface-tasks": "Tasks",
+  "surface-room-agent": "Room Agent", "surface-shared-chat": "Council", "surface-tasks": "Tasks",
   "surface-agent-files": "Agent Files", "surface-agent-sessions": "Sessions", "surface-media": "Media",
   "surface-clipboard": "Clipboard", "surface-links": "Links", "surface-settings": "Settings",
   "surface-cli": "CLI tools",
   "surface-source-control": "Source Control",
-  "surface-health": "Health", "surface-streaming": "Streaming", "memory-workspace": "Memory",
-  "add-files": "File Manager", "add-demos": "Demo Projects", "add-jobs": "Job Copilot", "add-empty-slots": "Empty slots",
+  "surface-health": "Health", "surface-streaming": "Streaming", "memory-workspace": "Memory", "space-gateway": "Space Gateway",
+  "add-files": "File Manager", "add-demos": "Demo Projects", "add-jobs": "Job Copilot", "add-mail": "Mail Copilot", "add-marketing": "Marketing Copilot", "add-empty-slots": "Empty slots",
   "system-analytics": "System analytics", "system-services": "System services", "system-resources": "System resources",
   "pane-layout": "Pane layout", "font-down": "Text size", "resources": "Resources", "workspace-room": "Room",
   "desktop-displays": "Displays", "room-toolbar": "Room toolbar",
   "resource-indicators": "Resource indicators", "cli-floats": "CLI controls", "sensitive-data": "Hide sensitive data",
   "debug-mode": "Debug (App diagnostics)",
+  "gateway-compression": "Context compression",
   "demo-mode": "Demo mode",
   "browser-fullscreen": "Full screen browser",
   "vibe-music": "Music",
@@ -116,6 +118,6 @@ export function workspaceActionLabel(action: IconToolbarAction) { return labels[
 export function workspaceActionToggle(action: IconToolbarAction): boolean | undefined {
   if (action.id === "browser-fullscreen") return Boolean(action.ariaPressed);
   if (action.id === "cli-floats") return !action.ariaPressed;
-  if (action.id.startsWith("widget-") || ["resource-indicators", "sensitive-data", "debug-mode", "osk-keyboard", "vibe-music", "live-model", "minimized-bar"].includes(action.id)) return Boolean(action.ariaPressed);
+  if (action.id.startsWith("widget-") || ["resource-indicators", "sensitive-data", "debug-mode", "gateway-compression", "osk-keyboard", "vibe-music", "live-model", "minimized-bar"].includes(action.id)) return Boolean(action.ariaPressed);
   return undefined;
 }

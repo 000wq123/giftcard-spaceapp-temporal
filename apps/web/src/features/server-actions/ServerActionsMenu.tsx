@@ -16,7 +16,7 @@ const groups = [
   { id: "administration", label: "Administration", detail: "Users, permissions and releases", icon: Users }
 ] as const;
 export function managementGroup(id: string) {
-  if (["setup-connections", "space-gateway", "codex-lb-speed-control"].includes(id)) return "connections";
+  if (["setup-connections", "codex-lb-speed-control"].includes(id)) return "connections";
   if (["restart-server", "restart-all-cli-runtimes", "system-services"].includes(id)) return "services";
   if (["user-management", "publish-space-release"].includes(id)) return "administration";
   return "maintenance";

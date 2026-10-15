@@ -57,7 +57,7 @@ import {
   Minimize2,
   Network,
   ServerCog,
-  Settings2 as Settings,
+  Settings,
   ShieldCheck,
   Terminal,
   Gauge as Wallet,
@@ -2352,6 +2352,7 @@ export function SystemHealth({
               const ariaLabel = currentProvider
                 ? `Account remaining: ${currentProvider.label} ${currentProvider.value}, ${toneText}`
                 : `${m.label}: ${m.value}, ${toneLabels[m.tone]}`;
+              const level = value.endsWith("%") ? Math.min(100, Math.max(0, Number.parseFloat(value))) : Number.NaN;
 
               return (
                 <button
@@ -2372,6 +2373,11 @@ export function SystemHealth({
                     <span className="health-indicator-provider-tag">{currentProvider.tag}</span>
                   ) : null}
                   <strong>{m.tone === "unavailable" && !currentProvider ? "—" : value}</strong>
+                  {Number.isFinite(level) ? (
+                    <span className="health-indicator-gauge" aria-hidden="true">
+                      <span style={{ width: `${level}%` }} />
+                    </span>
+                  ) : null}
                   <i className="health-dot" aria-hidden="true" />
                 </button>
               );

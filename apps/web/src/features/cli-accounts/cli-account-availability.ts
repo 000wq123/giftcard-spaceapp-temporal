@@ -1,14 +1,26 @@
-import type { AntigravityUsageAccount, ClaudeUsageAccount, CliAccountBalance, CliAccountIdentity } from "@space/contracts";
+import type {
+  AntigravityUsageAccount,
+  ClaudeUsageAccount,
+  CliAccountBalance,
+  CliAccountIdentity,
+  CodexUsageAccount,
+  CodexUsageAccountList,
+} from "@space/contracts";
 import type { SharedQuotaCache } from "../desktop-widgets/shared-quota-cache.js";
-import { availabilityLabel, classifyQuota, quotaCapacity } from "../toolbar-metrics/account-availability.js";
+import { availabilityLabel, bestAvailability, classifyQuota, quotaCapacity, type AvailabilityState } from "../toolbar-metrics/account-availability.js";
 import {
   antigravityAccountEntries,
   antigravityStatusLabel,
   claudeAccountEntries,
   claudeStatusLabel,
+  codexAccountEntries,
 } from "../toolbar-metrics/account-entries.js";
 
 export type CliAccountRuntimeId = "cli:gemini" | "cli:claude" | "cli:copilot" | "cli:cursor" | "cli:kimi";
+// The pane account menu also serves Codex, which has no account profiles: its panes reach the ChatGPT accounts of
+// Space Gateway, which picks one for each thread.
+export type CliAccountMenuRuntimeId = CliAccountRuntimeId | "cli:codex";
+export const CODEX_GATEWAY_PROFILE_ID = "space-gateway";
 
 // Antigravity meters Gemini models and Claude/GPT models separately.
 export type AntigravityModelGroup = "gemini" | "claude";
@@ -39,7 +51,17 @@ export interface CliAccountAvailability {
   label: string;
   // Longer sentence for tooltips and screen readers.
   description: string;
+  // Short line under the name for accounts without an email or login; the description is too long for a narrow menu.
+  detail?: string;
   windows: CliAccountQuotaWindow[];
+}
+
+// An account Space Gateway routes the CLI's requests to; the menu lists them under the gateway row.
+export interface CliAccountPoolMember {
+  id: string;
+  name: string;
+  plan: string | null;
+  availability: CliAccountAvailability;
 }
 
 export const CLI_ACCOUNT_BLOCKED_COLOR = "hsl(0 82% 58%)";
@@ -78,6 +100,11 @@ function blocked(label: string, description: string, windows: CliAccountQuotaWin
 
 type QuotaEntry = Pick<ReturnType<typeof claudeAccountEntries>[number], "availability" | "capacity" | "offlineLabel" | "hint">;
 
+function poolDetail(states: AvailabilityState[], total: number): string {
+  const ready = states.filter((state) => state.state === "available").length;
+  return `${ready} of ${total} pooled ${total === 1 ? "account" : "accounts"} ready`;
+}
+
 function fromQuota(
   entry: QuotaEntry,
   windows: CliAccountQuotaWindow[],
@@ -114,14 +141,20 @@ function fromQuota(
 
 function claudeAvailability(account: ClaudeUsageAccount, clock: number): CliAccountAvailability {
   if (account.status === "API_KEY") {
-    return { tone: "off", percent: null, color: CLI_ACCOUNT_OFF_COLOR, label: "Paid · not used", description: "Paid per token · never chosen automatically", windows: [] };
+    const label = account.apiKeyVerified === false ? "Key rejected" : account.apiKeyVerified ? "Paid · ready" : "Paid · not used";
+    const fallback = account.gatewayFallback === "ON" ? " · Space Gateway fallback on" : account.gatewayFallback === "OFF" ? " · Space Gateway fallback off" : "";
+    return { tone: "off", percent: null, color: CLI_ACCOUNT_OFF_COLOR, label, description: `Paid per token · never chosen automatically${fallback}`,
+      detail: account.gatewayFallback === "ON" ? "Per token · Space Gateway fallback on" : "Per token · only when picked by hand", windows: [] };
   }
   if (account.status === "GATEWAY" && account.pool) {
     const entry = claudeAccountEntries([account], clock)[0]!;
-    return fromQuota(entry, [], clock, entry.hint?.replace(/\.$/, "") ?? "");
+    const usable = account.pool.filter((member) => !member.signInRequired);
+    const detail = account.pool.length ? poolDetail(usable.map((member) => classifyQuota(member, clock)), account.pool.length) : "No pooled accounts";
+    return { ...fromQuota(entry, [], clock, detail), detail };
   }
   if (account.status === "GATEWAY") {
-    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now · Space Gateway picks a pooled Claude account", windows: [] };
+    return { tone: "ready", percent: null, color: cliAccountAvailabilityColor(100), label: "Ready", description: "Available now · Space Gateway picks a pooled Claude account",
+      detail: "Picks a pooled Claude account", windows: [] };
   }
   if (account.status !== "CONNECTED") {
     const label = claudeStatusLabel(account);
@@ -133,6 +166,43 @@ function claudeAvailability(account: ClaudeUsageAccount, clock: number): CliAcco
     { label: "Week", percent: account.weeklyRemainingPercent ?? null },
   ];
   return fromQuota(entry, windows, clock);
+}
+
+function codexWindows(account: CodexUsageAccount): CliAccountQuotaWindow[] {
+  return [
+    { label: "5h", percent: account.fiveHourRemainingPercent ?? null },
+    { label: "Week", percent: account.weeklyRemainingPercent ?? null },
+  ];
+}
+
+// The gateway is as available as the best ChatGPT account in its pool.
+function codexGatewayAvailability(codex: CodexUsageAccountList | null, clock: number): CliAccountAvailability {
+  if (!codex) {
+    return { tone: "pending", percent: null, color: CLI_ACCOUNT_PENDING_COLOR, label: "Unknown", description: "Space Gateway did not report its ChatGPT accounts",
+      detail: "Picks a pooled ChatGPT account", windows: [] };
+  }
+  if (!codex.data.length) return { ...blocked("No accounts", "Not available now · Space Gateway has no ChatGPT accounts"), detail: "No pooled accounts" };
+  const entries = codexAccountEntries(codex.data, clock);
+  const states = entries.map((entry) => entry.availability);
+  const detail = poolDetail(states, entries.length);
+  const entry: QuotaEntry = { availability: bestAvailability(states), capacity: Math.max(-1, ...entries.map((candidate) => candidate.capacity)) };
+  return { ...fromQuota(entry, [], clock, detail), detail };
+}
+
+// The ChatGPT accounts behind a Codex pane, each judged like the toolbar's Codex cards; null without a sample.
+export function cliAccountPool(runtimeId: CliAccountMenuRuntimeId, quota: SharedQuotaCache | null, clock: number): CliAccountPoolMember[] | null {
+  if (runtimeId !== "cli:codex" || !quota?.codex) return null;
+  return quota.codex.data.map((account) => {
+    const entry = codexAccountEntries([account], clock)[0]!;
+    const windows = codexWindows(account);
+    const availability = fromQuota(entry, windows, clock);
+    return {
+      id: account.id,
+      name: account.label,
+      plan: account.planType ? `${account.planType[0]!.toUpperCase()}${account.planType.slice(1)}` : null,
+      availability: { ...availability, detail: windowsSummary(windows) || undefined },
+    };
+  });
 }
 
 // A pane on a known model group is judged by that group's quota; otherwise by the best group.
@@ -207,7 +277,7 @@ function balanceAvailability(entry: BalanceEntry, clock: number): CliAccountAvai
 }
 
 export function cliAccountAvailability(input: {
-  runtimeId: CliAccountRuntimeId;
+  runtimeId: CliAccountMenuRuntimeId;
   profileId: string;
   quota: SharedQuotaCache | null;
   identity: CliAccountIdentity | null;
@@ -219,8 +289,9 @@ export function cliAccountAvailability(input: {
 }): CliAccountAvailability {
   const { runtimeId, profileId, quota, identity, clock } = input;
   if (identity?.authStatus === "NOT_CONNECTED") return identityAvailability(identity);
-  // Claude and Antigravity report quota; until the first sample arrives the account is still being checked.
-  if (!quota && (runtimeId === "cli:claude" || runtimeId === "cli:gemini")) return identityAvailability(null);
+  // Claude, Antigravity and Codex report quota; until the first sample arrives the account is still being checked.
+  if (!quota && (runtimeId === "cli:claude" || runtimeId === "cli:gemini" || runtimeId === "cli:codex")) return identityAvailability(null);
+  if (runtimeId === "cli:codex") return codexGatewayAvailability(quota?.codex ?? null, clock);
   if (runtimeId === "cli:claude") {
     const account = quota?.claude?.data.find((candidate) => candidate.id === profileId);
     if (account) return claudeAvailability(account, clock);
@@ -234,11 +305,12 @@ export function cliAccountAvailability(input: {
 }
 
 // The plan each provider reports, shortened for a badge: "Google AI Pro" -> "AI Pro".
-export function cliAccountPlan(runtimeId: CliAccountRuntimeId, profileId: string, quota: SharedQuotaCache | null, balance: CliAccountBalance | null = null): string | null {
+export function cliAccountPlan(runtimeId: CliAccountMenuRuntimeId, profileId: string, quota: SharedQuotaCache | null, balance: CliAccountBalance | null = null): string | null {
   if (runtimeId === "cli:claude") {
     const account = quota?.claude?.data.find((candidate) => candidate.id === profileId);
     if (account?.status === "API_KEY") return "API key";
-    if (account?.status === "GATEWAY") return "Gateway";
+    // The account's name already says Space Gateway.
+    if (account?.status === "GATEWAY") return null;
     return account?.plan?.trim() || null;
   }
   if (runtimeId === "cli:gemini") {

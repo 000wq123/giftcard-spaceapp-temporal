@@ -19,6 +19,7 @@ import type {
   AntigravityUsageAccountList,
   ApiProviderAccountList,
   ClaudeUsageAccountList,
+  GatewayClaudeApiKeyUse,
   CliSessionReapResponse,
   CliSessionStats,
   CodexEnvironment,
@@ -38,6 +39,7 @@ import { api, SpaceApiError } from "../../api.js";
 import { measureHealthRtt } from "../system-health/measure-health-rtt.js";
 import { DEMO_LOCAL_REPLY, getSpaceRuntime, getSpaceRuntimeKind } from "../../runtime/SpaceRuntime.js";
 import { useAutoDismiss } from "../../use-auto-dismiss.js";
+import { claudeApiKeyAlertText, useClaudeApiKeyFallbackWatch } from "./claude-api-key-alert.js";
 import { Activity, X } from "../ui-theme/app-icons.js";
 import { ResourcesDrawer } from "./ResourcesDrawer.js";
 import {
@@ -119,6 +121,8 @@ export interface ToolbarMetricsClient {
   analyticsModels?(): Promise<SystemAnalyticsModelsResponse>;
   antigravityAccounts?(): Promise<AntigravityUsageAccountList>;
   claudeAccounts?(): Promise<ClaudeUsageAccountList>;
+  /** Space Gateway's Claude API key account and what went through it (ADMIN rail alert on first use). */
+  claudeApiKeyUse?(): Promise<GatewayClaudeApiKeyUse>;
   apiProviderAccounts?(): Promise<ApiProviderAccountList>;
   reopenPane?(roomId: string, paneId: string): Promise<void>;
   reopenAllDetached?(): Promise<void>;
@@ -132,6 +136,7 @@ const defaultClient: ToolbarMetricsClient = {
   usageAccounts: () => api.toolbarUsageAccounts(),
   antigravityAccounts: () => api.toolbarAntigravityUsageAccounts(),
   claudeAccounts: () => api.toolbarClaudeUsageAccounts(),
+  claudeApiKeyUse: () => api.gatewayClaudeApiKeyUse(),
   apiProviderAccounts: () => api.toolbarApiProviderAccounts(),
   resetCredits: () => api.toolbarResetCredits(),
   redeemResetCredit: (accountId, idempotencyKey) => api.redeemToolbarResetCredit(accountId, idempotencyKey),
@@ -511,6 +516,11 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
     accounts.data?.data.length &&
     !accounts.data.data.some((a) => isCodexAccountActive(a)),
   );
+  // The paid Claude API key must serve only when every Claude account is out of quota: the rail says when it did.
+  const claudeApiKeyWatch = useClaudeApiKeyFallbackWatch({
+    enabled: presentation === "strip" && canManage && Boolean(client.claudeApiKeyUse) && getSpaceRuntimeKind() !== "demo",
+    load: () => client.claudeApiKeyUse!()
+  });
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (!telemetryVisible || (!isExhausted && activePanel !== "accounts")) return;
@@ -1475,6 +1485,14 @@ export const ToolbarMetrics = forwardRef<ToolbarMetricsHandle, {
       <div className="toolbar-metric-action-status">
         <span role="status">{actionMessage}</span>
         <button type="button" className="notice-close" aria-label="Dismiss message" onClick={() => setActionMessage(null)}>
+          <X aria-hidden="true" />
+        </button>
+      </div>
+    ) : null}
+    {claudeApiKeyWatch.banner ? (
+      <div className="toolbar-metric-action-status is-alert" data-testid="claude-api-key-alert">
+        <span role="alert">{claudeApiKeyAlertText(claudeApiKeyWatch.banner, clock)}</span>
+        <button type="button" className="notice-close" aria-label="Dismiss Claude API key alert" onClick={claudeApiKeyWatch.dismiss}>
           <X aria-hidden="true" />
         </button>
       </div>

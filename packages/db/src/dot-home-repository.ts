@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { dotFeedCursor, dotUserSettingsFrom, parseDotFeedCursor, projectDotFeedRow, updateDotUserSettingsSchema,
-  type DotFeed, type DotFeedItem, type DotFeedMessageRow, type DotUserSettings, type UpdateDotUserSettings } from "@space/contracts";
+import { agentRunCostSchema, agentRunUsageSchema, dotFeedCursor, dotUserSettingsFrom, parseDotFeedCursor, projectDotFeedRow, summarizeDotProactiveUsage,
+  updateDotUserSettingsSchema, type DotFeed, type DotFeedItem, type DotFeedMessageRow, type DotProactiveUsage, type DotProactiveUsageEntry,
+  type DotUserSettings, type UpdateDotUserSettings } from "@space/contracts";
 import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 /** Space Dots Stage 8: the user's Dot settings and each Dot's continuous feed across rooms. */
@@ -34,6 +35,10 @@ export interface DotHomeRepository {
   claimProactive(owner: string, observed: string | null, next: string): Promise<boolean>;
   proactiveState(owner: string): Promise<DotProactiveState>;
   saveProactiveState(owner: string, state: Omit<DotProactiveState, "nextCheckAt">): Promise<void>;
+  /** Records one model call of a proactive check; calls older than 90 days are removed. */
+  addProactiveUsage(owner: string, entry: DotProactiveUsageEntry): Promise<void>;
+  /** Totals of the owner's proactive model calls in the last `days` days. */
+  proactiveUsage(owner: string, days: number, now?: string): Promise<DotProactiveUsage>;
   dispose(): Promise<void>;
 }
 export interface DotProactiveState {
@@ -242,6 +247,25 @@ export class PostgresDotHomeRepository implements DotHomeRepository {
       ON CONFLICT (owner_user_id) DO UPDATE SET cursors=EXCLUDED.cursors, notices_day=EXCLUDED.notices_day, notices_today=EXCLUDED.notices_today,
         last_checked_at=EXCLUDED.last_checked_at, last_error=EXCLUDED.last_error, updated_at=now()`,
       [owner, JSON.stringify(state.cursors), state.noticesDay, state.noticesToday, state.lastCheckedAt, state.lastError?.slice(0, 500) ?? null]);
+  }
+  async addProactiveUsage(owner: string, entry: DotProactiveUsageEntry) {
+    await this.pool.query(`INSERT INTO dot_proactive_usage(usage_id, owner_user_id, dot_id, called_at, model, status, candidates, notices, usage, cost)
+      VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9::jsonb, $10::jsonb)`, [`dot_proactive_usage:${randomUUID().replace(/-/g, "")}`, owner, entry.dotId,
+      entry.calledAt, entry.model.slice(0, 200), entry.status, entry.candidates, entry.notices, JSON.stringify(agentRunUsageSchema.parse(entry.usage)),
+      JSON.stringify(agentRunCostSchema.parse(entry.cost))]);
+    await this.pool.query(`DELETE FROM dot_proactive_usage WHERE owner_user_id=$1 AND called_at < now() - interval '90 days'`, [owner]);
+  }
+  async proactiveUsage(owner: string, days: number, now = new Date().toISOString()) {
+    const window = Math.max(1, Math.min(30, Math.floor(days)));
+    const rows = await this.pool.query<{ calledAt: string; dotId: string | null; model: string; status: "COMPLETED" | "FAILED"; candidates: number;
+      notices: number; usage: unknown; cost: unknown }>(`SELECT called_at AS "calledAt", dot_id AS "dotId", model, status, candidates, notices, usage, cost
+      FROM dot_proactive_usage WHERE owner_user_id=$1 AND called_at > $2::timestamptz - make_interval(days => $3) AND called_at <= $2::timestamptz
+      ORDER BY called_at DESC LIMIT 5000`, [owner, now, window]);
+    // A row this build cannot read counts as a call with unknown usage and cost, never as zero.
+    const unknownCost = { status: "UNKNOWN" as const, amountUsd: null, source: null, observedAt: null, priceCatalogVersion: null, reason: "The recorded cost could not be read." };
+    return summarizeDotProactiveUsage(rows.rows.map((row) => ({ ...row, calledAt: new Date(row.calledAt).toISOString(),
+      usage: agentRunUsageSchema.safeParse(row.usage).data ?? { status: "UNKNOWN" as const, reason: "The recorded usage could not be read." },
+      cost: agentRunCostSchema.safeParse(row.cost).data ?? unknownCost })), window);
   }
   async dispose() { await (this.pool as PgPoolLike & { end?: () => Promise<void> }).end?.(); }
 }

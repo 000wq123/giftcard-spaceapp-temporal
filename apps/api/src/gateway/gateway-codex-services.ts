@@ -5,6 +5,7 @@ import {
 import type { GatewayRepository } from "@space/db";
 import { SpaceConflictError } from "@space/runtime";
 import { CodexResetCreditsError, type CodexResetCreditsRedemptionResult, type CodexResetCreditsService } from "../codex-reset-credits.js";
+import { outOfRotation } from "./account-rotation.js";
 import type { GatewayAdminService } from "./gateway-service.js";
 
 /**
@@ -18,7 +19,8 @@ export function createGatewayCodexUsageProvider(options: { repository: GatewayRe
   return async () => {
     const checkedAt = now().toISOString();
     try {
-      const accounts = (await options.repository.listAccounts()).filter((account) => account.provider === "CODEX" && account.status !== "PAUSED");
+      const accounts = (await options.repository.listAccounts())
+        .filter((account) => account.provider === "CODEX" && !outOfRotation(account, Date.parse(checkedAt)));
       return codexUsageAccountListSchema.parse({
         data: accounts.slice(0, 100).map((account) => ({
           id: account.id, label: account.label, planType: account.planType,

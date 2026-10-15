@@ -69,7 +69,7 @@ function TelegramSetupGuide({
     <div className="telegram-setup-guide">
       <div className="telegram-setup-step">
         <span aria-hidden="true">1</span>
-        <p>Create a dedicated bot, then copy its HTTP API token.</p>
+        <p>In Telegram, open BotFather, create a bot and copy the token it gives you.</p>
         <a
           href={botFatherHref}
           target="_blank"
@@ -114,9 +114,10 @@ function TelegramSetupGuide({
             aria-label={hasPairedBot ? "Submit Telegram reconnect token" : "Connect Telegram bot"}
           >
             {pendingAction === "connect" ? <Loader2 className="telegram-spinner" aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
+            <span>{hasPairedBot ? "Reconnect" : "Connect"}</span>
           </button>
         </div>
-        <small>The token is validated server-side and is never shown again.</small>
+        <small>Space checks the token and never shows it again. Then pair your private chat in the next step.</small>
       </form>
     </div>
   );
@@ -318,7 +319,7 @@ export function TelegramIntegrationCard({
       <div className="settings-flat-row telegram-status-panel" role="status" aria-live="polite">
         <span className="settings-flat-row-copy">
           <strong data-sensitive-masked={status?.botUsername ? "manual" : undefined}>{status?.botUsername ? `@${status.botUsername}` : "Space bot"}</strong>
-          <small data-sensitive-masked={status?.chatDisplayName ? "manual" : undefined}>{status?.chatDisplayName ?? "One global private Telegram destination."}</small>
+          <small data-sensitive-masked={status?.chatDisplayName ? "manual" : undefined}>{status?.chatDisplayName ?? "Messages go to one private Telegram chat."}</small>
         </span>
         <span className="telegram-status-value">
           <span className={`status ${presentation?.tone ?? "muted"}`}>
