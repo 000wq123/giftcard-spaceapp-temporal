@@ -117,6 +117,9 @@ jobs:
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm audit --audit-level=high
 
+      - name: Install ripgrep (the file search tests run the real rg)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: Test candidate
         working-directory: ${{ runner.temp }}/spaceapp-public-export
         run: npm run test:public
