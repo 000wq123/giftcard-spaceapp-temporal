@@ -673,7 +673,7 @@ export function composeCommand(action, root, options = {}) {
       "/var/lib/spaceapp-cli/vendor/claude",
       "--no-audit",
       "--no-fund",
-      "@anthropic-ai/claude-code@2.1.206"
+      "@anthropic-ai/claude-code@2.1.301"
     ],
     backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
     stopForRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"],

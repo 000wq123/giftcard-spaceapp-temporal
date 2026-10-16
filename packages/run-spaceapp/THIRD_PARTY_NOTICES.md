@@ -12,7 +12,7 @@ CLI packages that retain their own licenses and service terms:
 - `run-deepseek-cli@0.1.1` — MIT; community/experimental and not an official
   DeepSeek CLI
 
-Claude Code (`@anthropic-ai/claude-code@2.1.206`) is governed by Anthropic's
+Claude Code (`@anthropic-ai/claude-code@2.1.301`) is governed by Anthropic's
 commercial terms and is not included in published SpaceApp images. It is
 available only through the explicit owner-initiated
 `spaceapp provider install claude` flow and remains subject to Anthropic's
