@@ -1967,31 +1967,45 @@ async function factoryResetCommand({
   stdout.write("\nWARNING: Factory reset will PERMANENTLY ERASE all local database records, persistent volumes, and configuration.\n");
   stdout.write("External workspaces outside the installation root are preserved.\n\n");
 
+  let backupCode;
   try {
     stdout.write("Creating safety backup before factory reset...\n");
-    await execute(
+    backupCode = await execute(
       composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
       { stdin, stdout, stderr }
     );
   } catch (err) {
-    stdout.write(`Safety backup notice: ${err.message}. Continuing with reset confirmation.\n`);
+    stdout.write(`Safety backup error: ${err.message}.\n`);
+    backupCode = 1;
+  }
+  // Without a backup, erasing the data needs its own confirmation.
+  const phrase = backupCode === 0 ? "FACTORY-RESET" : "FACTORY-RESET-WITHOUT-BACKUP";
+  if (backupCode !== 0) {
+    stdout.write(
+      `The safety backup FAILED (exit ${backupCode}), so no backup of your data exists. ` +
+      `The backup needs SpaceApp running: cancel, run "${UNIVERSAL_COMMAND} up", and try again.\n`
+    );
   }
 
   const confirm = await readSecret(
     stdin,
     stdout,
-    "Type FACTORY-RESET to remove all data and reset SpaceApp: ",
+    `Type ${phrase} to remove all data and reset SpaceApp: `,
     { mask: false }
   );
-  if (confirm.trim() !== "FACTORY-RESET") {
+  if (confirm.trim() !== phrase) {
     stdout.write("Factory reset cancelled. No data was erased.\n");
     return 0;
   }
 
-  await execute(
+  const purgeCode = await execute(
     composeCommand("purge", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
     { stdin, stdout, stderr }
   );
+  if (purgeCode !== 0) {
+    stderr.write(`Factory reset stopped: removing the data failed (exit ${purgeCode}). The configuration was kept; run "${UNIVERSAL_COMMAND} doctor".\n`);
+    return purgeCode;
+  }
 
   try {
     await rm(join(root, "config.json"), { force: true });

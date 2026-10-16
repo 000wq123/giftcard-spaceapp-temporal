@@ -477,11 +477,13 @@ export async function addWorkspace(config, hostPath, { readOnly = false } = {}) 
   }
   const name = normalizeWorkspaceName(basename(absolutePath));
   const suffix = createHash("sha256").update(absolutePath).digest("hex").slice(0, 8);
+  // Two folders with the same name must not share one container path; the second one gets the id suffix.
+  const taken = config.workspaces.some((workspace) => workspace.containerPath === `/workspaces/${name}`);
   const workspace = {
     id: `${name}-${suffix}`,
     name,
     hostPath: absolutePath,
-    containerPath: `/workspaces/${name}`,
+    containerPath: taken ? `/workspaces/${name}-${suffix}` : `/workspaces/${name}`,
     readOnly: Boolean(readOnly)
   };
   return { ...structuredClone(config), workspaces: [...config.workspaces, workspace] };

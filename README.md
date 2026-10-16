@@ -143,7 +143,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 | :--- | :--- | :--- |
 | `owner reset-password` | **Forgot your password?** Securely resets the operator account password from your terminal via masked input. | `npx --yes run-spaceapp@latest owner reset-password` |
 | `owner rotate-setup-token` | **Setup token expired?** Generates a fresh 15-minute token if the first-run owner setup was not completed in time. | `npx --yes run-spaceapp@latest owner rotate-setup-token` |
-| `factory-reset` | **Fresh start:** Creates a safety backup, purges all Docker volumes and database data, and resets to clean slate. | `npx --yes run-spaceapp@latest factory-reset` |
+| `factory-reset` | **Fresh start:** Creates a safety backup (SpaceApp must be running), purges all Docker volumes and database data, and resets to clean slate. If the backup fails, it erases only after you type `FACTORY-RESET-WITHOUT-BACKUP`. | `npx --yes run-spaceapp@latest factory-reset` |
 
 ### 📁 Host Workspace Management
 
