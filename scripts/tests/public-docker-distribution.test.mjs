@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -146,9 +148,10 @@ test("public Compose runs without host Docker access or development credentials"
   assert.match(compose, /SPACE_CODEX_ROUTE_COMMAND: \/usr\/local\/bin\/codex-vscode-parity/);
   assert.match(compose, /SPACE_CLI_WORKSPACE_ROOT: \/workspaces/);
   assert.match(compose, /SPACE_MEMORY_GRAPH_ROOT: \/var\/lib\/spaceapp\/memory-graph/);
-  assert.match(compose, /SPACE_GEMINI_MEMORY_INDEX_PATH: \/var\/lib\/spaceapp\/memory\/gemini_history\.md/);
-  assert.match(compose, /SPACE_GEMINI_MEMORY_MONTHLY_PATH: \/var\/lib\/spaceapp\/memory\/gemini_history_monthly\.md/);
-  assert.match(compose, /SPACE_GEMINI_MEMORY_LOCK_PATH: \/var\/lib\/spaceapp\/memory\/\.memory\.lock/);
+  assert.match(compose, /SPACE_MEMORY_INDEX_PATH: \/var\/lib\/spaceapp\/memory\/space_memory\.md/);
+  assert.match(compose, /SPACE_MEMORY_MONTHLY_PATH: \/var\/lib\/spaceapp\/memory\/space_memory_monthly\.md/);
+  assert.match(compose, /SPACE_MEMORY_LOCK_PATH: \/var\/lib\/spaceapp\/memory\/\.memory\.lock/);
+  assert.doesNotMatch(compose, /gemini_history|SPACE_GEMINI_MEMORY/);
   assert.match(compose, /SPACE_TELEGRAM_SECRET_ROOT: \/var\/lib\/spaceapp\/telegram/);
   assert.match(
     compose,
@@ -258,16 +261,40 @@ test("public CLI wrapper isolates provider state and supports protected DeepSeek
   assert.doesNotMatch(wrapper, /Legacy|\/home\/spaceapp-user|\/srv\/space/i);
 });
 
+test("memory-names moves legacy gemini_history memory once and keeps the old names as links (pilot F13)", async () => {
+  const memory = await mkdtemp(join(tmpdir(), "spaceapp-memory-names-"));
+  try {
+    await writeFile(join(memory, "gemini_history.md"), "# owner index\n");
+    await writeFile(join(memory, "gemini_history_monthly.md"), "# owner month\n");
+    for (let run = 0; run < 2; run += 1) execFileSync("sh", [join(root, "deploy", "docker", "memory-names.sh"), memory]);
+    assert.equal(await readFile(join(memory, "space_memory.md"), "utf8"), "# owner index\n");
+    assert.equal(await readFile(join(memory, "space_memory_monthly.md"), "utf8"), "# owner month\n");
+    assert.equal(await readlink(join(memory, "gemini_history.md")), "space_memory.md");
+    assert.equal(await readlink(join(memory, "gemini_history_monthly.md")), "space_memory_monthly.md");
+    assert.ok((await lstat(join(memory, "space_memory.md"))).isFile());
+  } finally {
+    await rm(memory, { recursive: true, force: true });
+  }
+  const fresh = await mkdtemp(join(tmpdir(), "spaceapp-memory-names-"));
+  try {
+    execFileSync("sh", [join(root, "deploy", "docker", "memory-names.sh"), fresh]);
+    await assert.rejects(lstat(join(fresh, "gemini_history.md")));
+    await assert.rejects(lstat(join(fresh, "space_memory.md")));
+  } finally {
+    await rm(fresh, { recursive: true, force: true });
+  }
+});
+
 test("core seeds generic starter memory only when mutable owner memory is absent", async () => {
   const core = await readFile(join(root, "deploy", "docker", "core-entrypoint.sh"), "utf8");
-  const starter = await readFile(join(root, "starter-memory", "gemini_history.md"), "utf8");
+  const starter = await readFile(join(root, "starter-memory", "space_memory.md"), "utf8");
 
   assert.match(core, /SPACE_MEMORY_ROOT/);
   assert.match(core, /SPACE_STARTER_MEMORY_ROOT/);
-  assert.match(core, /if \[ ! -e "\$SPACE_MEMORY_ROOT\/gemini_history\.md" \]/);
-  assert.match(core, /if \[ ! -e "\$SPACE_GEMINI_MEMORY_MONTHLY_PATH" \]/);
-  assert.match(core, /gemini_history\.md/);
-  assert.match(core, /gemini_history_monthly\.md/);
+  assert.match(core, /sh deploy\/docker\/memory-names\.sh "\$SPACE_MEMORY_ROOT"\nif \[ ! -e "\$SPACE_MEMORY_ROOT\/space_memory\.md" \]/);
+  assert.match(core, /if \[ ! -e "\$SPACE_MEMORY_MONTHLY_PATH" \]/);
+  assert.match(core, /space_memory_monthly\.md/);
+  assert.doesNotMatch(core, /gemini_history|SPACE_GEMINI_MEMORY/);
   assert.match(starter, /^# SpaceApp Memory/m);
   assert.doesNotMatch(starter, /\/etc\/docs|\/srv\/space|spaceapp-user|oll4\.com/i);
 });
