@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://spaceapp.dev"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
+  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><img src="https://raw.githubusercontent.com/oll4com/spaceapp/main/docs/images/spaceapp-hero-banner.png" alt="SpaceApp — The Super Agent App" width="900" /></a>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
 <p align="center">
   Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent rooms on your own machine. Rooms organize sessions; they are not a security boundary between mutually untrusted users.
   <br>
-  <a href="https://spaceapp.dev"><b>Explore spaceapp.dev »</b></a> | <a href="https://spaceapp.dev/spaceappmock/"><b>Try Live Demo »</b></a>
+  <a href="https://spaceapp.dev/?utm_source=github&utm_medium=readme"><b>Explore spaceapp.dev »</b></a> | <a href="https://spaceapp.dev/spaceappmock/?utm_source=github&utm_medium=readme"><b>Try Live Demo »</b></a>
 </p>
 
 ---
@@ -143,7 +143,7 @@ You can run any command using `npx --yes run-spaceapp@latest <command>` or simpl
 | :--- | :--- | :--- |
 | `owner reset-password` | **Forgot your password?** Securely resets the operator account password from your terminal via masked input. | `npx --yes run-spaceapp@latest owner reset-password` |
 | `owner rotate-setup-token` | **Setup token expired?** Generates a fresh 15-minute token if the first-run owner setup was not completed in time. | `npx --yes run-spaceapp@latest owner rotate-setup-token` |
-| `factory-reset` | **Fresh start:** Creates a safety backup (SpaceApp must be running), purges all Docker volumes and database data, and resets to clean slate. If the backup fails, it erases only after you type `FACTORY-RESET-WITHOUT-BACKUP`. | `npx --yes run-spaceapp@latest factory-reset` |
+| `factory-reset` | **Fresh start:** Creates a safety backup, purges all Docker volumes and database data, and resets to clean slate. | `npx --yes run-spaceapp@latest factory-reset` |
 
 ### 📁 Host Workspace Management
 
