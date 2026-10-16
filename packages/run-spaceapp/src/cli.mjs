@@ -459,7 +459,7 @@ export async function run(argv, {
     return factoryResetCommand({ root, config, platform, stdin, stdout, stderr, execute: runtimeExecute, runtimeVersion, persistSetupToken });
   }
   if (command === "workspace") {
-    return workspaceCommand(args, { root, config, stdout });
+    return workspaceCommand(args, { root, config, platform, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "credentials") {
     return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
@@ -523,7 +523,11 @@ export async function run(argv, {
   }
   if (command === "backup") {
     assertNoArgs(args, command);
-    return runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const backupCode = await runtimeExecute(composeCommand("backup", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    if (backupCode !== 0) return backupCode;
+    await addBackupExtras({ root, config, stdin, stdout, stderr, execute: runtimeExecute })
+      .catch((error) => stderr.write(`The backup was created; its workspace list and CLI settings were not added: ${error.message}\n`));
+    return 0;
   }
   if (command === "restore") {
     assertNoArgs(args, command);
@@ -546,7 +550,11 @@ export async function run(argv, {
       { stdin, stdout, stderr }
     );
     if (restoreCode !== 0) return restoreCode;
-    return runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    const upCode = await runtimeExecute(composeCommand("up", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }), { stdin, stdout, stderr });
+    if (upCode !== 0) return upCode;
+    await restoreBackupExtras({ root, config, backupId, stdin, stdout, stderr, execute: runtimeExecute })
+      .catch((error) => stderr.write(`The data was restored; the CLI settings of the backup were not: ${error.message}\n`));
+    return 0;
   }
   if (command === "uninstall") {
     if (args.length === 0) {
@@ -576,7 +584,7 @@ export async function run(argv, {
       return code;
     }
     if (args.length === 1 && args[0] === "--purge-data") {
-      const confirmation = await readSecret(stdin, stdout, "Type DELETE to remove Docker volumes: ", { mask: false });
+      const confirmation = await readSecret(stdin, stdout, "Type DELETE to remove Docker volumes: ", { mask: false, answerKey: "purgeConfirm" });
       if (confirmation !== "DELETE") {
         throw new Error("Purge cancelled.");
       }
@@ -1716,19 +1724,26 @@ async function loadExistingInstallation(root) {
   }
 }
 
-async function workspaceCommand(args, { root, config, stdout }) {
+async function workspaceCommand(args, { root, config, platform, stdin, stdout, stderr, execute }) {
   const [action, identity, ...rest] = args;
+  const applyWorkspaces = async (updated) => {
+    const code = await execute(composeCommand("syncWorkspaces", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+    if (code !== 0) stderr.write(`The change is saved, but the running services could not pick it up. Run "${UNIVERSAL_COMMAND} up".\n`);
+    return code;
+  };
   if (action === "add") {
     if (!identity || rest.some((arg) => arg !== "--read-only")) {
       throw new Error(
         `Usage: ${UNIVERSAL_COMMAND} workspace add <absolute-path> [--read-only]`
       );
     }
-    const updated = await addWorkspace(config, identity, { readOnly: rest.includes("--read-only") });
+    const readOnly = rest.includes("--read-only");
+    const updated = await addWorkspace(config, identity, { readOnly });
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace registered: ${identity}\n`);
-    return 0;
+    if (platform === "linux" && !readOnly) await writeAccessHint(identity, stdout);
+    return applyWorkspaces(updated);
   }
   if (action === "remove") {
     if (!identity || rest.length > 0) {
@@ -1740,13 +1755,65 @@ async function workspaceCommand(args, { root, config, stdout }) {
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace removed: ${identity}\n`);
-    return 0;
+    return applyWorkspaces(updated);
   }
   if (action === "list" && args.length === 1) {
     stdout.write(`${JSON.stringify(config.workspaces, null, 2)}\n`);
     return 0;
   }
   throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list>`);
+}
+
+// The CLIs run as uid 10001 in Docker; on Linux a bind-mounted folder keeps its host owner, so they cannot write to it.
+const CLI_UID = 10001;
+async function writeAccessHint(hostPath, stdout) {
+  const info = await stat(hostPath);
+  if (info.uid === CLI_UID || (info.mode & 0o002) !== 0) return;
+  const owner = process.getuid?.() ?? info.uid;
+  stdout.write(
+    `The AI CLIs run as uid ${CLI_UID} and cannot write to this folder yet. Give them access without changing its owner:\n` +
+    `  sudo setfacl -R -m u:${CLI_UID}:rwX -m u:${owner}:rwX -m d:u:${CLI_UID}:rwX -m d:u:${owner}:rwX ${JSON.stringify(hostPath)}\n` +
+    "(install the acl package first if setfacl is missing; add --read-only instead if they should only read)\n"
+  );
+}
+
+/** Adds the workspace list and the CLIs' own settings to the backup just created; a failure here keeps the backup. */
+async function addBackupExtras({ root, config, stdin, stdout, stderr, execute }) {
+  const directory = join(root, "backups", await selectLatestBackupId(root));
+  await copyFile(join(root, "config.json"), join(directory, "spaceapp-config.json"));
+  const archive = join(directory, "cli-config.tar.gz");
+  const out = createWriteStream(archive, { mode: 0o600 });
+  await once(out, "open");
+  const code = await execute(
+    composeCommand("exportCliSettings", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    { stdin, stdout: out, stderr }
+  ).catch(() => 1);
+  out.end();
+  await once(out, "close");
+  if (code !== 0) {
+    await rm(archive, { force: true });
+    stderr.write("The backup has no CLI settings (MCP servers, base URLs): the CLI service did not answer or has none.\n");
+  }
+  stdout.write(`Backup includes the workspace list${code === 0 ? " and the CLI settings" : ""}.\n`);
+}
+
+/** Puts the CLIs' settings back and names what a restore does not bring back. */
+async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stderr, execute }) {
+  const directory = join(root, "backups", backupId);
+  const archive = await readFile(join(directory, "cli-config.tar.gz")).catch(() => null);
+  if (archive) {
+    const code = await execute(
+      composeCommand("importCliSettings", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      { stdin, stdout, stderr, input: archive }
+    ).catch(() => 1);
+    stdout.write(code === 0 ? "CLI settings (MCP servers, base URLs) restored.\n" : "The CLI settings in this backup could not be restored.\n");
+  }
+  const saved = await readFile(join(directory, "spaceapp-config.json"), "utf8").then(JSON.parse).catch(() => null);
+  const missing = (saved?.workspaces ?? []).filter((workspace) => !config.workspaces.some((current) => current.hostPath === workspace.hostPath));
+  for (const workspace of missing) {
+    stdout.write(`Workspace of the backup to add again: ${UNIVERSAL_COMMAND} workspace add ${JSON.stringify(workspace.hostPath)}${workspace.readOnly ? " --read-only" : ""}\n`);
+  }
+  stdout.write(`API keys and CLI logins are never in backups: enter them again with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`);
 }
 
 async function credentialsCommand(args, { root, config, stdin, stdout, stderr, execute }) {

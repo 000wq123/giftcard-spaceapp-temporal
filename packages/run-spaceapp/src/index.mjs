@@ -102,6 +102,9 @@ const PROVIDERS = Object.freeze({
   experimental: Object.freeze(["deepseek"])
 });
 const ALL_PROVIDERS = new Set(Object.values(PROVIDERS).flat());
+export const CLI_SETTINGS_FILES = Object.freeze([
+  "claude/settings.json", "claude/.claude.json", "codex/config.toml", "opencode/config/opencode/opencode.json"
+]);
 const CONFIG_KEYS = new Set([
   "schemaVersion",
   "version",
@@ -650,6 +653,12 @@ export function composeCommand(action, root, options = {}) {
     logs: ["logs", "--tail", String(options.lines || 200)],
     pull: ["pull"],
     syncCredentials: ["up", "-d", "--no-deps", "--force-recreate", "spaceapp-cli"],
+    // Workspace bind mounts belong to these two services; compose recreates them only when the mounts changed.
+    syncWorkspaces: ["up", "-d", "spaceapp-core", "spaceapp-cli"],
+    // The CLIs' own settings (MCP servers, base URLs), never their logins: these files hold no credentials.
+    exportCliSettings: ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "sh", "-c",
+      `cd /var/lib/spaceapp-cli/providers && tar -czf - $(ls -d ${CLI_SETTINGS_FILES.join(" ")} 2>/dev/null)`],
+    importCliSettings: ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp-cli/providers", "-xzf", "-"],
     installClaude: [
       "run",
       "--rm",

@@ -238,6 +238,10 @@ test("public CLI wrapper isolates provider state and supports protected DeepSeek
   assert.match(wrapper, /login\)\n\s+ensure_optional_provider\n\s+ensure_runtime_dirs/);
   assert.doesNotMatch(credentialStatusBlock, /ensure_runtime_dirs/);
   assert.match(wrapper, /opencode\) exec "\$command_name" auth login/);
+  // Pilot finding F4: OpenCode uses the Anthropic and OpenAI keys set for Claude Code and Codex.
+  const opencodeBlock = wrapper.match(/\n  opencode\)\n[\s\S]*?;;/)?.[0] || "";
+  assert.match(opencodeBlock, /ANTHROPIC_API_KEY="\$\(cat "\$credential_root\/claude\.key"\)"/);
+  assert.match(opencodeBlock, /OPENAI_API_KEY="\$\(cat "\$credential_root\/codex\.key"\)"/);
   assert.match(wrapper, /vendor\/claude\/node_modules\/\.bin\/claude/);
   assert.match(wrapper, /autohand\)\n\s+command_name="autohand"/);
   assert.match(wrapper, /AUTOHAND_HOME="\$state_root"/);

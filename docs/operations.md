@@ -36,7 +36,12 @@ contains:
 - `data.tar.gz`: application data, excluding mutable memory and browser
   profiles;
 - `memory.tar.gz`: mutable owner memory;
-- `manifest.json`: format metadata, sizes, and SHA-256 checksums.
+- `manifest.json`: format metadata, sizes, and SHA-256 checksums;
+- `spaceapp-config.json`: the installation settings, including the registered
+  workspace list (no secrets);
+- `cli-config.tar.gz`: the CLIs' own settings: Claude Code `settings.json` and
+  `.claude.json`, Codex `config.toml`, OpenCode `opencode.json` (MCP servers,
+  base URLs, models). Login files and API keys are not included.
 
 Backups do **not** contain provider API-key files, OAuth/device login state,
 the provider-state Docker volume, registered host workspace contents, browser
@@ -62,7 +67,10 @@ The launcher:
 4. stops the core, CLI, and browser services;
 5. validates the selected manifest, checksums, archive paths, and format;
 6. replaces application data, memory, and PostgreSQL state;
-7. starts the application again.
+7. starts the application again;
+8. puts the CLI settings of the backup back and lists the backup's workspaces
+   that are not registered on this host, with the `workspace add` command for
+   each.
 
 Restore is destructive to current application data. Make an offline copy of
 the installation's `backups` directory before a disaster-recovery exercise.
