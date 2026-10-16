@@ -68,8 +68,10 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
 
   assert.match(
     normalizedCliStage,
-    /RUN npm install[\s\S]*opencode-ai@1\.18\.4[\s\S]*&& npm cache clean --force/
+    /RUN apt-get update[\s\S]*npm install[\s\S]*opencode-ai@1\.18\.4[\s\S]*&& npm cache clean --force/
   );
+  // Pilot F18: agents check their work with python3; the apt lists leave in the same layer.
+  assert.match(normalizedCliStage, /apt-get install -y --no-install-recommends python3-minimal\s+&& rm -rf \/var\/lib\/apt\/lists\/\*/);
 });
 
 test("CLI image resolves the default room project /opt/spaceapp to the documented /etc session directory", async () => {
