@@ -1,18 +1,20 @@
-import { lstat, readdir, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import process from "node:process";
 import { basename, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createFileRecord,
   hostSecretEntries,
+  optionalBackupFiles,
   parseDatabaseEnvironment,
   readDatabaseUrl,
+  requiredBackupFiles,
   runCommand,
   setTreeOwnership
 } from "./portable-backup.mjs";
 
 const backupNamePattern = /^spaceapp-backup-\d{8}T\d{9}Z$/;
-const expectedFileNames = ["database.dump", "data.tar.gz", "memory.tar.gz"];
+const stagingName = ".spaceapp-restore-staging";
 
 export async function selectLatestBackup(root) {
   const entries = await readdir(root, { withFileTypes: true });
@@ -51,17 +53,19 @@ export async function validateBackupManifest(backupDirectory) {
     throw new Error("Portable backup manifest is invalid.");
   }
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  // Version 1 has the three required files; version 2 may add the Temporal database dumps.
+  const names = typeof manifest?.files === "object" && manifest.files !== null ? Object.keys(manifest.files) : [];
+  const allowed = manifest?.schemaVersion === 2 ? [...requiredBackupFiles, ...optionalBackupFiles] : requiredBackupFiles;
   if (
     manifest?.format !== "spaceapp-portable-backup" ||
-    manifest?.schemaVersion !== 1 ||
+    (manifest?.schemaVersion !== 1 && manifest?.schemaVersion !== 2) ||
     !Number.isFinite(Date.parse(manifest?.createdAt)) ||
-    typeof manifest?.files !== "object" ||
-    manifest.files === null ||
-    Object.keys(manifest.files).sort().join(",") !== [...expectedFileNames].sort().join(",")
+    !requiredBackupFiles.every((name) => names.includes(name)) ||
+    !names.every((name) => allowed.includes(name))
   ) {
     throw new Error("Portable backup manifest has an unsupported format.");
   }
-  for (const name of expectedFileNames) {
+  for (const name of names) {
     const expected = manifest.files[name];
     if (
       !expected ||
@@ -97,36 +101,51 @@ export async function restorePortableBackup({
   await validateTarArchive(join(backupDirectory, "data.tar.gz"));
   await validateTarArchive(join(backupDirectory, "memory.tar.gz"));
 
-  await clearDirectory(dataRoot, new Set(["memory", ...hostSecretEntries]));
-  await clearDirectory(memoryRoot);
-  await runCommand("tar", [
-    "--extract",
-    "--gzip",
-    `--file=${join(backupDirectory, "data.tar.gz")}`,
-    `--directory=${dataRoot}`,
-    "--no-same-owner",
-    "--no-same-permissions"
-  ]);
-  await runCommand("tar", [
-    "--extract",
-    "--gzip",
-    `--file=${join(backupDirectory, "memory.tar.gz")}`,
-    `--directory=${memoryRoot}`,
-    "--no-same-owner",
-    "--no-same-permissions"
-  ]);
-  await setTreeOwnership(dataRoot, 10001, 10001);
+  // Files are extracted next to the live data first and swapped in only after every database restored, each in
+  // one transaction, so a failed restore leaves the files untouched (external review 2026-10-16). Staging stays
+  // on each root's own filesystem: the memory root can be a separate volume.
+  const dataStaging = join(dataRoot, stagingName);
+  const memoryStaging = join(memoryRoot, stagingName);
+  try {
+    for (const [archive, staging] of [["data.tar.gz", dataStaging], ["memory.tar.gz", memoryStaging]]) {
+      await rm(staging, { recursive: true, force: true });
+      await mkdir(staging, { mode: 0o700 });
+      await runCommand("tar", [
+        "--extract",
+        "--gzip",
+        `--file=${join(backupDirectory, archive)}`,
+        `--directory=${staging}`,
+        "--no-same-owner",
+        "--no-same-permissions"
+      ]);
+    }
 
-  const database = parseDatabaseEnvironment(await readDatabaseUrl(env));
-  await runCommand("pg_restore", [
-    "--clean",
-    "--if-exists",
-    "--no-owner",
-    "--no-acl",
-    "--exit-on-error",
-    ...database.args,
-    join(backupDirectory, "database.dump")
-  ], { env: { ...env, ...database.env } });
+    const database = parseDatabaseEnvironment(await readDatabaseUrl(env));
+    const restores = [[database.databaseName, "database.dump"], ...optionalBackupFiles
+      .filter((name) => manifest.files[name])
+      .map((name) => [name.replace(/\.dump$/, ""), name])];
+    for (const [databaseName, dump] of restores) {
+      await runCommand("pg_restore", [
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-acl",
+        "--single-transaction",
+        "--exit-on-error",
+        `--dbname=${databaseName}`,
+        join(backupDirectory, dump)
+      ], { env: { ...env, ...database.env, PGDATABASE: databaseName } });
+    }
+
+    await clearDirectory(dataRoot, new Set(["memory", stagingName, ...hostSecretEntries]));
+    await clearDirectory(memoryRoot, new Set([stagingName]));
+    await moveEntries(dataStaging, dataRoot);
+    await moveEntries(memoryStaging, memoryRoot);
+  } finally {
+    await rm(dataStaging, { recursive: true, force: true });
+    await rm(memoryStaging, { recursive: true, force: true });
+  }
+  await setTreeOwnership(dataRoot, 10001, 10001);
   stdout.write(`Backup restored: ${basename(backupDirectory)} (${manifest.createdAt})\n`);
   return backupDirectory;
 }
@@ -142,6 +161,10 @@ async function validateTarArchive(path) {
       throw new Error("Portable backup archive contains an unsafe path.");
     }
   }
+}
+
+async function moveEntries(source, target) {
+  for (const entry of await readdir(source)) await rename(join(source, entry), join(target, entry));
 }
 
 async function clearDirectory(root, preserved = new Set()) {

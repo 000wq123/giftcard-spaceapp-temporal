@@ -829,8 +829,16 @@ export function composeCommand(action, root, options = {}) {
       "sh",
       "@anthropic-ai/claude-code@2.1.301"
     ],
-    backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
+    // The backup runs in a one-off container while the writers are paused (backupWithWritersPaused in cli.mjs).
+    backup: [
+      "run", "--rm", "--no-deps", "--user", "0:0",
+      "--env", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
+      "--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"
+    ],
+    pauseWriters: ["pause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
+    unpauseWriters: ["unpause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
     stopForRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"],
+    stopForPortableRestore: ["stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"],
     resetOwnerPassword: [
       "exec",
       "-T",

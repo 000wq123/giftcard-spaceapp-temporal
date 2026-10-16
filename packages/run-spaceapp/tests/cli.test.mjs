@@ -1886,14 +1886,14 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
     stdin: Readable.from(["RESTORE\n"])
   }), 0);
 
-  assert.equal(calls.length, 4);
-  assert.deepEqual(calls[0].slice(-7), [
-    "exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"
+  assert.equal(calls.length, 6);
+  assert.deepEqual(calls[0].slice(-5), ["pause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"]);
+  assert.deepEqual(calls[1].slice(-4), ["--entrypoint", "node", "spaceapp-core", "scripts/portable-backup.mjs"]);
+  assert.deepEqual(calls[2].slice(-5), ["unpause", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"]);
+  assert.deepEqual(calls[3].slice(-5), [
+    "stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser", "temporal"
   ]);
-  assert.deepEqual(calls[1].slice(-4), [
-    "stop", "spaceapp-core", "spaceapp-cli", "spaceapp-browser"
-  ]);
-  assert.deepEqual(calls[2].slice(-17), [
+  assert.deepEqual(calls[4].slice(-17), [
     "run", "--rm", "--no-deps", "--user", "0:0",
     "--env", "SPACE_DATABASE_URL_FILE=/run/secrets/database-url",
     "--entrypoint", "node", "spaceapp-core", "scripts/portable-restore.mjs",
@@ -1901,7 +1901,7 @@ test("restore creates a safety backup, stops app writers, restores offline, and 
     "--backup-id", "spaceapp-backup-20260723T130000000Z",
     "--confirm", "RESTORE"
   ]);
-  assert.deepEqual(calls[3].slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.deepEqual(calls[5].slice(-3), ["up", "-d", "--remove-orphans"]);
 });
 
 test("restore leaves app writers stopped when the data restore fails", async () => {
@@ -1917,7 +1917,7 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     execute: async (spec, io) => {
       if(spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
       calls.push(spec.args);
-      return calls.length === 3 ? 47 : 0;
+      return calls.length === 5 ? 47 : 0;
     }
   };
   await run(["init"], { ...options, stdin: ttyStdin("y") });
@@ -1927,8 +1927,8 @@ test("restore leaves app writers stopped when the data restore fails", async () 
     ...options,
     stdin: Readable.from(["RESTORE\n"])
   }), 47);
-  assert.equal(calls.length, 3);
-  assert.deepEqual(calls[2].slice(-7), [
+  assert.equal(calls.length, 5);
+  assert.deepEqual(calls[4].slice(-7), [
     "scripts/portable-restore.mjs",
     "--input", "/backups",
     "--backup-id", "spaceapp-backup-20260723T140000000Z",
