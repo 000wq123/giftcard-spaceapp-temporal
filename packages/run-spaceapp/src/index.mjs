@@ -691,6 +691,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       "    init: true",
       "    security_opt:",
       "      - no-new-privileges:true",
+      "      - seccomp=./seccomp-cli.json",
+      "      - apparmor=unconfined",
       `    mem_limit: "${user.memoryLimit ?? settings.cliMemoryLimit}"`,
       "    cpus: \"${SPACEAPP_CLI_CPU_LIMIT}\"",
       "    environment:",
