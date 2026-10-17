@@ -155,7 +155,7 @@ case "${1:-}" in
     case "$runtime_name" in
       codex) exec "$command_name" login --device-auth "$@" ;;
       kimi|grok|claude) exec "$command_name" login "$@" ;;
-      opencode) exec "$command_name" auth login "$@" ;;
+      opencode) exec "$command_name" auth login --standalone "$@" ;;
       gemini|qwen) exec "$command_name" "$@" ;;
       deepseek)
         echo "Set DeepSeek credentials with: spaceapp credentials set deepseek" >&2
@@ -178,6 +178,13 @@ esac
 
 ensure_runtime_dirs
 ensure_optional_provider
+# OpenCode 2 starts a per-user background service unless a command runs --standalone (help and version need neither).
+if [ "$runtime_name" = "opencode" ]; then
+  case "${1:-}" in
+    --help|-h|--version|-v) ;;
+    *) set -- "$@" --standalone ;;
+  esac
+fi
 if [ "$runtime_name" = "opencode" ]; then
   case "${1:-}" in
     models|auth|--help|--version|version) ;;

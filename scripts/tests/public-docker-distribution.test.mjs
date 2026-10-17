@@ -39,7 +39,7 @@ test("public Dockerfile provides native multi-arch core, browser, and redistribu
   assert.match(dockerfile, /await r\.json\(\)/);
   assert.match(dockerfile, /body\.ok !== true/);
   assert.match(dockerfile, /rotate-owner-setup-token\.mjs/);
-  assert.match(dockerfile, /opencode-ai@1\.18\.4/);
+  assert.match(dockerfile, /@opencode\/cli@2\.0\.32/);
   assert.doesNotMatch(dockerfile, /@openai\/codex|@google\/gemini-cli|@anthropic-ai\/claude-code|run-deepseek-cli/);
   const installer = await readFile(join(root, "deploy/docker/provider-install.mjs"), "utf8");
   assert.match(installer, /@openai\/codex@0\.145\.0/);
@@ -68,7 +68,7 @@ test("CLI image removes the npm download cache in the same layer as bundled CLI 
 
   assert.match(
     normalizedCliStage,
-    /RUN apt-get update[\s\S]*npm install[\s\S]*opencode-ai@1\.18\.4[\s\S]*&& npm cache clean --force/
+    /RUN apt-get update[\s\S]*npm install[\s\S]*@opencode\/cli@2\.0\.32[\s\S]*&& npm cache clean --force/
   );
   // Pilot F18: agents check their work with python3; the apt lists leave in the same layer.
   assert.match(normalizedCliStage, /apt-get install -y --no-install-recommends python3-minimal\s+&& rm -rf \/var\/lib\/apt\/lists\/\*/);

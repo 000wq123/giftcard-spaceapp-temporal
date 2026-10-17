@@ -6,12 +6,16 @@ import { isAbsolute, join, normalize } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+// OpenCode 2's model API (`opencode api GET /api/model`): free (every cost tier zero), tool-capable, active Zen
+// models, newest first.
 export function parseCatalog(text) {
-  const candidates=[];
-  for(const match of text.matchAll(/^opencode\/([^\r\n]+)\r?\n(\{[\s\S]*?^\})/gm)){
-    try{const model=JSON.parse(match[2]);if(model.providerID==='opencode'&&model.cost?.input===0&&model.cost?.output===0&&model.capabilities?.toolcall===true&&model.status==='active')candidates.push({id:`opencode/${model.id}`,name:model.name,api:model.api,cost:model.cost,release:model.release_date??''});}catch{}
-  }
-  return candidates.sort((a,b)=>b.release.localeCompare(a.release));
+  let models=[];
+  try{models=JSON.parse(text)?.data??[];}catch{}
+  return (Array.isArray(models)?models:[])
+    .filter(model=>model?.providerID==='opencode'&&Array.isArray(model.cost)&&model.cost.length>0&&
+      model.cost.every(tier=>tier?.input===0&&tier?.output===0)&&model.capabilities?.tools===true&&model.status==='active'&&model.enabled!==false)
+    .map(model=>({id:`opencode/${model.id}`,name:model.name,api:{url:model.settings?.baseURL,npm:model.package},cost:model.cost[0],release:model.time?.released??0}))
+    .sort((a,b)=>b.release-a.release);
 }
 function execute(args,env,cwd,timeout=60000){return new Promise(resolve=>{
   const child=spawn('opencode',args,{env,cwd,stdio:['ignore','pipe','pipe']});let stdout='';let stderr='';let timedOut=false;
@@ -25,7 +29,8 @@ const CHECK_PROMPT=`Use the read tool to read the file ${CHECK_FILE} in the curr
 const events=stdout=>stdout.split('\n').flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
 // A model counts as working only after a full tool cycle: it calls the read
 // tool, receives the result and answers with the random token from the file.
-// A plain completion is not enough; some free models fail on tool follow-ups.
+// A plain completion is not enough; some free models fail on tool follow-ups. An OpenCode 2 standalone run ends
+// right after the answer without printing its last step_finish (2.0.31, 2.0.32), so the clean exit closes the turn.
 export function toolCycleSucceeded(result,token) {
   if(result.code!==0||!token)return false;
   const list=events(result.stdout);
@@ -33,7 +38,7 @@ export function toolCycleSucceeded(result,token) {
   const tool=list.findIndex(e=>e.type==='tool_use'&&e.part?.tool==='read'&&e.part?.state?.status==='completed');
   if(tool<0)return false;
   const answer=list.findIndex((e,i)=>i>tool&&e.type==='text'&&e.part?.text?.includes(token));
-  return answer>tool&&list.some((e,i)=>i>answer&&e.type==='step_finish');
+  return answer>tool;
 }
 const MEMORY_DIRECTORY='/var/lib/spaceapp/memory';
 // The 1.1.x default. Configs that still carry exactly this value get the new
@@ -90,7 +95,8 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
   const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
   try {
     const deadline=Date.now()+SELECTION_BUDGET_MS;
-    const listed=await executeNative(['models','opencode','--refresh','--verbose'],isolated,directory,20000);
+    // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
+    const listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,20000);
     if(listed.code!==0)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
     const candidates=preferDefault(parseCatalog(listed.stdout));
     const work=join(directory,'work');await mkdir(work);
@@ -99,7 +105,7 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
       process.stderr.write(`Checking free OpenCode model: ${candidate.name}\n`);
       const token=`SPACEAPP-${randomBytes(6).toString('hex')}`;
       await writeFile(join(work,CHECK_FILE),token+'\n');
-      const res=await executeNative(['run','--format','json','--model',candidate.id,CHECK_PROMPT],isolated,work,Math.min(40000,remaining));
+      const res=await executeNative(['run','--standalone','--format','json','--model',candidate.id,CHECK_PROMPT],isolated,work,Math.min(40000,remaining));
       if(toolCycleSucceeded(res,token)){
         return {...candidate,verification:'tool-call',verifiedAt:new Date().toISOString(),nativeSessionId:events(res.stdout).find(e=>e.sessionID)?.sessionID ?? null};
       }

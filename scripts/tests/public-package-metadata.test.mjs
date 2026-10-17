@@ -425,7 +425,7 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
   const packages = [
     "@openai/codex@0.145.0",
     "@google/gemini-cli@0.52.0",
-    "opencode-ai@1.18.4",
+    "@opencode/cli@2.0.32",
     "@qwen-code/qwen-code@0.20.1",
     "@moonshot-ai/kimi-code@0.29.0",
     "@xai-official/grok@0.2.111",
@@ -435,7 +435,7 @@ test("third-party notices cover every pinned CLI and the experimental DeepSeek b
   ];
 
   for (const packageSpec of packages) {
-    assert.match(packageSpec.startsWith("opencode-ai") ? dockerfile : optionalProviders, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(packageSpec.startsWith("@opencode/cli") ? dockerfile : optionalProviders, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(notices, new RegExp(packageSpec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(optionalProviders, /downloads\.cursor\.com\/lab\/2026\.07\.23-e383d2b\/linux\/\$\{process\.arch\}\/agent-cli-package\.tar\.gz/);

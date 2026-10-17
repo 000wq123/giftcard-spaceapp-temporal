@@ -101,10 +101,11 @@ COPY --chown=root:root starter-memory/installation-guide.md /etc/spaceapp-instal
 RUN chmod 0644 /etc/AGENTS.md
 ARG TARGETARCH
 # python3-minimal (about 13 MB): agents often check their work with a short python3 script (pilot F18).
+# OpenCode 2 (@opencode/cli): its postinstall picks the native binary for the image's platform.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3-minimal \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global --no-audit --no-fund opencode-ai@1.18.4 \
+    && npm install --global --no-audit --no-fund @opencode/cli@2.0.32 \
     && install -d -o spaceapp -g spaceapp -m 0700 /var/lib/spaceapp-cli/vendor \
     && npm cache clean --force \
     && install -d -o spaceapp -g spaceapp -m 0700 \

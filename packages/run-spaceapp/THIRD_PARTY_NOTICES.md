@@ -5,7 +5,7 @@ CLI packages that retain their own licenses and service terms:
 
 - `@openai/codex@0.145.0` — Apache-2.0
 - `@google/gemini-cli@0.52.0` — Apache-2.0
-- `opencode-ai@1.18.4` — MIT in npm metadata
+- `@opencode/cli@2.0.32` — MIT in npm metadata
 - `@qwen-code/qwen-code@0.20.1` — Apache-2.0
 - `@moonshot-ai/kimi-code@0.29.0` — MIT
 - `@xai-official/grok@0.2.111` — Apache-2.0 in npm metadata
