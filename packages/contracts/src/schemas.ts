@@ -8,6 +8,7 @@ import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
 import { nousSettingsSchema } from "./nous.js";
+import { patchSchema } from "./partial-update.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
 import { jobApplyPaneMetadataSchema, jobCopilotAccountProfileIdSchema } from "./job-apply.js";
@@ -180,7 +181,8 @@ export const eventTypeSchema = z.enum([
   "MARKETING_COPILOT_UPDATED",
   "FREELANCE_COPILOT_UPDATED",
   "NOTIFICATION_CREATED",
-  "NOTIFICATION_UPDATED"
+  "NOTIFICATION_UPDATED",
+  "NOUS_FOCUS_REQUESTED"
 ]);
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
@@ -8806,10 +8808,10 @@ export const updateUserSettingsInputSchema = z.object({
   uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).optional(),
   liquidGlassTint: z.number().int().min(0).max(100).optional(),
   roomTheme: z.string().optional(),
-  dateTime: dateTimeSettingsSchema.partial().optional(),
-  voice: voiceComposerSettingsSchema.partial().optional(),
-  keyboardAutocorrect: keyboardAutocorrectSettingsSchema.partial().optional(),
-  livePane: livePaneSettingsSchema.partial().optional(),
+  dateTime: patchSchema(dateTimeSettingsSchema).optional(),
+  voice: patchSchema(voiceComposerSettingsSchema).optional(),
+  keyboardAutocorrect: patchSchema(keyboardAutocorrectSettingsSchema).optional(),
+  livePane: patchSchema(livePaneSettingsSchema).optional(),
   promptVariables: z.array(promptVariableSchema).optional(),
   promptVariablesEnabled: z.boolean().optional(),
   promptVariablesAutoExpandOnSubmit: z.boolean().optional(),
@@ -9419,14 +9421,24 @@ export type SetClipboardItemCompletedRequest = z.infer<typeof setClipboardItemCo
 export type UpdatePlanProgressRequest = z.infer<typeof updatePlanProgressRequestSchema>;
 export type ClipboardItemListResponse = z.infer<typeof clipboardItemListResponseSchema>;
 
+const taskTimeZoneSchema = z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Asia/Bangkok.");
 /** When a task runs: Space types its objective into its CLI pane at each occurrence (a task without a pane is a reminder). */
-export const taskScheduleInputSchema = z
-  .object({
-    recurrence: dotScheduleRecurrenceSchema,
-    timeZone: z.string().trim().min(1).max(80).refine(isValidTimeZone, "Use an IANA time zone such as Europe/Athens.")
-  })
-  .strict();
-export const taskScheduleSchema = taskScheduleInputSchema
+export const storedTaskScheduleSchema = z.object({ recurrence: dotScheduleRecurrenceSchema, timeZone: taskTimeZoneSchema }).strict();
+/** A schedule as given: without timeZone it runs in its owner's working time zone (resolved by the store). */
+export const taskScheduleInputSchema = storedTaskScheduleSchema.extend({ timeZone: taskTimeZoneSchema.optional() }).strict();
+/**
+ * The owner's working time zone: Settings → Date & time (operator request 2026-10-17, plan clipboard:ubQLgcTtQWA_).
+ * "system" means the browser's own clock, which the server cannot know, so it falls back to UTC like an invalid zone.
+ */
+export function ownerWorkingTimeZone(settings: { dateTime?: { timeZone?: string } } | null | undefined): string {
+  const zone = settings?.dateTime?.timeZone;
+  return zone && zone !== "system" && isValidTimeZone(zone) ? zone : "UTC";
+}
+/** The schedule with its zone: a schedule given without one takes the owner's working time zone; null and undefined pass. */
+export function resolveTaskScheduleZone(schedule: TaskScheduleInput | null | undefined, ownerZone: string): StoredTaskSchedule | null | undefined {
+  return schedule ? { recurrence: schedule.recurrence, timeZone: schedule.timeZone ?? ownerZone } : schedule;
+}
+export const taskScheduleSchema = storedTaskScheduleSchema
   .extend({
     nextRunAt: isoDateTimeSchema.nullable(),
     lastRunAt: isoDateTimeSchema.nullable(),
@@ -9518,7 +9530,7 @@ export const taskItemListResponseSchema = paginated(taskItemSchema);
  * its pending run, so saving a task again does not shift an interval.
  */
 export function taskScheduleNextRunAt(
-  schedule: TaskScheduleInput | null,
+  schedule: StoredTaskSchedule | null,
   status: TaskStatus,
   nowMs: number,
   stored: TaskSchedule | null = null
@@ -9532,6 +9544,7 @@ export function taskScheduleNextRunAt(
 
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TaskScheduleInput = z.infer<typeof taskScheduleInputSchema>;
+export type StoredTaskSchedule = z.infer<typeof storedTaskScheduleSchema>;
 export type TaskSchedule = z.infer<typeof taskScheduleSchema>;
 export type TaskSource = z.infer<typeof taskSourceSchema>;
 export type TaskItem = z.infer<typeof taskItemSchema>;

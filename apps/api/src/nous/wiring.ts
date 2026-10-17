@@ -24,10 +24,12 @@ import { CHESS_MOVE_SOCKET } from "../chess/chess-cli.js";
 import { NOUS_MCP_PATH, postToWorker, registerNousMcpRoute, signNousToken } from "./mcp.js";
 import { nextPlanStep, paneLabel, renderNousWorld, type NousServerLoad } from "./digest.js";
 import { registerNousRoutes } from "./routes.js";
+import { registerNousAttachments } from "./attachment-routes.js";
 import { nousScorecard, NOUS_SCORECARD_WINDOW_DAYS } from "./progress.js";
 import { createNousService, NousUnavailableError, type NousRunner, type NousService } from "./service.js";
 import { createNousTools, nousToolDefinitions, type NousCopilotDeps, type NousCopilotItem } from "./tools.js";
 import { createCopilotControl, type CopilotInvoke } from "./copilot-control.js";
+import { createNousFocus, type NousFocusEventBus } from "./focus.js";
 
 const SETTINGS_CACHE_MS = 15_000;
 const HEARTBEAT_MS = 30 * 60_000;
@@ -52,6 +54,8 @@ export interface NousWiringOptions {
   copilots: { mail?: MailCopilotService; marketing?: MarketingCopilotService; freelance?: FreelanceCopilotService; job?: JobApplyService };
   /** The owner's own API as Space Control calls it, for space_copilot_control. */
   invoke?: CopilotInvoke;
+  /** The app's event stream, for space_focus_pane (ids only). */
+  eventBus?: NousFocusEventBus;
   /** The room monitor's events, for Nous's scorecard (how fast waiting panes get unblocked). */
   monitorEvents?: Pick<RoomAgentMonitorRepository, "listEvents">;
   /** Claude Code accounts with their remaining usage, to start each turn on one that has room. */
@@ -362,7 +366,8 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     ask: (input) => late.service!.ask(input),
     withdraw: async (owner, id, reason) => Boolean(await late.service!.withdraw(owner, id, reason)),
     copilots: copilotDeps(options, ownerPanes),
-    progress: (owner) => progress(owner)
+    progress: (owner) => progress(owner),
+    ...(options.eventBus ? { focus: createNousFocus({ eventBus: options.eventBus }) } : {})
   });
   const service = late.service = createNousService({
     repository, runner, tools, world, settings,
@@ -412,9 +417,10 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     const events = options.monitorEvents ? (await Promise.all(rooms.map((room) => options.monitorEvents!.listEvents(room.id, { limit: 200 })))).flat() : [];
     return nousScorecard({ now, facts, decisions, events, tools: definitions });
   }
-  registerNousMcpRoute(app, { secret: options.auth.sessionSecret, service, tools: definitions, routeOptions: options.routeOptions });
+  const attachments = registerNousAttachments(app, { config: options.config, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
+  registerNousMcpRoute(app, { secret: options.auth.sessionSecret, service, tools: definitions, routeOptions: options.routeOptions, attachments });
   registerNousRoutes(app, service, { routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request),
-    assertPerson: (request) => assertPerson(options, request), parseBody: options.parseBody, parseQuery: options.parseQuery, progress });
+    assertPerson: (request) => assertPerson(options, request), parseBody: options.parseBody, parseQuery: options.parseQuery, progress, attachments });
 
   const warn = (error: unknown, message: string) => app.log.warn({ err: error }, message);
   return {

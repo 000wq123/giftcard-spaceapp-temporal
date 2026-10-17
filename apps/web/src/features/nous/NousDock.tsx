@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import type { ClipboardItem, NousDecision, NousMessage, NousOverview, NousState } from "@space/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import type { ClipboardItem, NousAttachment, NousDecision, NousMessage, NousOverview, NousState } from "@space/contracts";
 import { api } from "../../api.js";
 import { ChatMarkdown } from "../agent-pane/ChatMarkdown.js";
+import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { DockButton, DockChips, DockFullscreenButton, DockIconButton, DockNotice, DockState, DockToolbar, useDockConfirm } from "../dock-kit/DockKit.js";
 import { useIsDockActive } from "../docks/dock-active-context.js";
-import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
-import { Check, CircleStop, Maximize2, Minimize2, Nous, Send, Trash2, X } from "../ui-theme/app-icons.js";
+import { requestNousFocus, useLeaveDuringNousFocus } from "../nous-focus/nous-focus-events.js";
+import { NousSettingsToggles } from "./NousSettingsCard.js";
+import { Check, ChevronRight, CircleStop, Maximize2, Minimize2, Nous, Paperclip, Send, Trash2, X } from "../ui-theme/app-icons.js";
 import { NousBrain3D } from "./NousBrain3D.js";
+import { clipboardFiles, NousMessageFiles, NousPendingFiles, operatorText, usePendingFiles } from "./NousFiles.js";
 import "./nous.css";
 
 type Tab = "conversation" | "decisions" | "overview";
@@ -15,10 +18,15 @@ const SLOW_POLL_MS = 20_000;
 const STATUS_LABELS: Record<NousState["status"], string> = {
   OFF: "Off: answers you only", IDLE: "On: watching every room", THINKING: "Thinking…", PAUSED_MODEL: "Paused: its model is not available"
 };
+const REASON_LABELS: Record<NonNullable<NousState["running"]>["reason"], string> = {
+  OPERATOR: "Answering you", INBOX: "Reading news from the rooms", DECISION: "Acting on your answer", HEARTBEAT: "Checking every room"
+};
+const VIEW_TITLES: Record<Tab, string> = { conversation: "Conversation", decisions: "Decisions", overview: "Overview" };
 const CATEGORY_LABELS: Record<NousDecision["category"], string> = { RELEASE: "Release", DESTRUCTIVE: "Irreversible", EXTERNAL: "Third parties or money", DIRECTION: "Direction" };
 const messageOf = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
 const planIdsIn = (text: string) => [...new Set(text.match(/clipboard:[A-Za-z0-9_-]+/g) ?? [])];
 const statusText = (status: string) => status.replace(/_/g, " ").toLowerCase();
+const clock = (iso: string) => formatUserTime(iso);
 
 // shortcut: there is no single-record clipboard route, so the PLAN list is paged until every id is found (at most 1,000 plans);
 // add GET /api/clipboard-items/:id if the operator's plans outgrow it. Missing ids come back as null.
@@ -47,16 +55,22 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [messageFiles, setMessageFiles] = useState<Record<string, NousAttachment[]>>({});
+  const [dragging, setDragging] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pending = usePendingFiles(useCallback((message: string) => setError(message), []));
 
   const refresh = useCallback(async () => {
     const [next, list, open] = await Promise.all([api.nous(), api.nousMessages(), api.nousDecisions()]);
     setState(next.state);
     setMessages(list.messages);
+    setMessageFiles(list.attachments ?? {});
     setDecisions(open.decisions);
   }, []);
 
   const thinking = state?.status === "THINKING" || sending;
+  const fullscreen = isFullscreen || planView !== null;
   useEffect(() => {
     if (!isActive || !canRun) return;
     let cancelled = false;
@@ -70,14 +84,15 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   }, [isActive, canRun, refresh, thinking]);
 
   useEffect(() => {
-    if (!isActive || !canRun || tab !== "overview") return;
+    // Maximized, the board shows the overview in every view.
+    if (!isActive || !canRun || (tab !== "overview" && !fullscreen)) return;
     let cancelled = false;
     const load = () => api.nousOverview().then((result) => { if (!cancelled) setOverview(result.overview); })
       .catch((err: unknown) => { if (!cancelled) setError(messageOf(err, "The overview could not be loaded.")); });
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [isActive, canRun, tab]);
+  }, [isActive, canRun, tab, fullscreen]);
 
   // One Escape closes the open plan first, then fullscreen (useDockFullscreen would leave both at once).
   useEffect(() => {
@@ -88,6 +103,10 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isFullscreen, planView]);
+
+  // While Nous takes the operator to a pane the dock leaves fullscreen (it would cover the pane) and returns to it after.
+  useLeaveDuringNousFocus({ fullscreen: isFullscreen, plan: planView }, () => { setIsFullscreen(false); setPlanView(null); },
+    (saved) => { setIsFullscreen(saved.fullscreen); setPlanView(saved.plan); });
 
   // Plans Nous asks about (refs.planId) or names in a reply.
   const planIds = useMemo(() => [...new Set([
@@ -104,17 +123,19 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   const planCard = (id: string, key: string) => <NousPlanCard key={key} plan={plans[id]} open={false} onToggle={() => openPlan(id)} />;
 
   const count = messages?.length ?? 0;
-  useEffect(() => { const list = listRef.current; if (list) list.scrollTop = list.scrollHeight; }, [count, tab]);
+  useEffect(() => { const list = listRef.current; if (list) list.scrollTop = list.scrollHeight; }, [count, tab, fullscreen]);
 
+  const canSend = (Boolean(draft.trim()) || pending.readyIds.length > 0) && !pending.uploading && !sending;
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
     const content = draft.trim();
-    if (!content || sending) return;
+    if (!canSend) return;
     setSending(true);
     setError(null);
     try {
-      await api.sendNousMessage(content);
+      await api.sendNousMessage(content, pending.readyIds);
       setDraft("");
+      pending.clear();
       await refresh();
     } catch (err) {
       setError(messageOf(err, "Your message could not be sent."));
@@ -125,6 +146,21 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); }
   };
+  // A pasted screenshot (or copied file) attaches; pasted text stays text.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = clipboardFiles(event.clipboardData);
+    if (!files.length) return;
+    if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+    pending.add(files);
+  };
+  const carriesFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  const onDragOver = (event: DragEvent) => { if (!carriesFiles(event)) return; event.preventDefault(); setDragging(true); };
+  const onDrop = (event: DragEvent) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    setDragging(false);
+    pending.add(Array.from(event.dataTransfer.files));
+  };
   const act = async (work: () => Promise<unknown>, fallback: string) => {
     setError(null);
     try { await work(); await refresh(); } catch (err) { setError(messageOf(err, fallback)); }
@@ -132,6 +168,16 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
 
   const answerDecision = (decision: NousDecision) => (input: { answer: "APPROVE" | "DECLINE" | "ANSWER"; text?: string }) =>
     act(() => api.answerNousDecision(decision.id, input), "Your answer could not be saved.");
+  // The board's "Needs you" leads to the decision where Nous asked it: into view, the keyboard on its first answer.
+  const showDecision = (id: string) => {
+    setPlanView(null);
+    setTab("conversation");
+    window.requestAnimationFrame(() => {
+      const card = listRef.current?.querySelector<HTMLElement>(`[data-decision-id="${id}"]`);
+      card?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      card?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    });
+  };
 
   if (!canRun) {
     return (
@@ -142,96 +188,217 @@ export function NousDock({ canRun = false }: { canRun?: boolean }) {
   }
 
   const open = decisions.filter((decision) => decision.status === "OPEN");
-  const fullscreen = isFullscreen || planView !== null;
-  const timeline = messages === null ? [] : [
-    ...messages.map((entry) => ({ at: entry.createdAt, node: <NousMessageRow key={entry.id} message={entry} planCard={planCard} /> })),
+  const entries = messages === null ? [] : [
+    ...messages.map((entry) => ({ at: entry.createdAt, tool: entry.kind === "TOOL" ? entry : null, node: <NousMessageRow key={entry.id} message={entry} files={messageFiles[entry.id] ?? []} planCard={planCard} /> })),
     // Every decision sits where Nous asked it; one about a plan carries the plan card that opens it.
-    ...decisions.map((decision) => ({ at: decision.createdAt, node: (
+    ...decisions.map((decision) => ({ at: decision.createdAt, tool: null, node: (
       <NousDecisionCard key={decision.id} inline decision={decision} onAnswer={answerDecision(decision)}
         plan={decision.refs.planId ? planCard(decision.refs.planId, "plan") : null} />
     ) }))
-  ].sort((a, b) => a.at.localeCompare(b.at)).map((entry) => entry.node);
+  ].sort((a, b) => a.at.localeCompare(b.at));
+  const modelLabel = state ? `${state.model.replace(/^claude-/, "Claude ").replace(/-(\d)-(\d)$/, " $1.$2")} · ${state.effort}` : "…";
+  const statusLine = <p className={`nous-status is-${(state?.status ?? "OFF").toLowerCase()}`} role="status">{state ? STATUS_LABELS[state.status] : "Loading…"}</p>;
+  const settings = (
+    <div className="nous-settings">
+      <NousSettingsToggles compact settings={state?.settings ?? null}
+        onChange={(patch) => void act(() => api.updateNousSettings(patch), "The setting could not be saved.")
+          // Turning it on starts a first review at once: look again shortly so the dock shows it thinking.
+          .then(() => { if (patch.enabled) window.setTimeout(() => void refresh().catch(() => undefined), 1_500); })} />
+      {state?.lastError ? <p className="nous-muted">Last problem: {state.lastError}</p> : null}
+    </div>
+  );
+  const views = <DockChips label="Nous views" value={tab} onChange={(next) => { setPlanView(null); setTab(next); }} options={[
+    { id: "conversation", label: "Conversation" }, { id: "decisions", label: "Decisions", ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview" }
+  ]} />;
+  const actions = (
+    <>
+      {tab === "conversation" && !planView ? (
+        <DockIconButton label="Clear the conversation" icon={Trash2} disabled={thinking || !count} onClick={async () => {
+          if (!(await confirm({ title: "Clear the conversation?", message: "Nous keeps its notes and decisions; the messages are removed.", confirmLabel: "Clear" }))) return;
+          await act(() => api.clearNousMessages(), "The conversation could not be cleared.");
+        }} />
+      ) : null}
+      <DockFullscreenButton name="Nous" active={fullscreen} onToggle={() => { setPlanView(null); setIsFullscreen(!fullscreen); }} />
+    </>
+  );
+  const notice = error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null;
+  const view = (items: ReactNode[], trailing: ReactNode) => planView ? (
+    <NousPlanView plan={plans[planView]} decisions={decisions.filter((decision) => decision.refs.planId === planView)}
+      onClose={() => setPlanView(null)} answerDecision={answerDecision} />
+  ) : tab === "conversation" ? (
+    <div className={`nous-conversation${dragging ? " is-dropping" : ""}`} onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
+      <div className="nous-messages" ref={listRef} aria-live="polite">
+        {messages === null ? <DockState kind="loading" title="Loading the conversation" /> : null}
+        {messages?.length === 0 ? <DockState kind="empty" icon={Nous} title="Talk to Nous" detail="Ask what is happening in every room, give it a goal, or turn on “Work on my behalf”." /> : null}
+        {items}
+        {trailing}
+      </div>
+      <NousPendingFiles files={pending.files} onRemove={pending.remove} />
+      <form className="nous-composer" onSubmit={(event) => void send(event)}>
+        <DockIconButton label="Attach files" icon={Paperclip} onClick={() => fileInputRef.current?.click()} />
+        <input ref={fileInputRef} type="file" multiple hidden aria-hidden="true" tabIndex={-1}
+          onChange={(event) => { pending.add(Array.from(event.currentTarget.files ?? [])); event.currentTarget.value = ""; }} />
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} rows={2} maxLength={8_000}
+          placeholder="Message Nous, or paste a screenshot" aria-label="Message Nous" />
+        {state?.status === "THINKING" ? (
+          <DockIconButton label="Stop" icon={CircleStop} onClick={() => void act(() => api.stopNous(), "Nous could not be stopped.")} />
+        ) : null}
+        <DockIconButton label="Send" icon={Send} type="submit" disabled={!canSend} busy={sending} />
+      </form>
+      {dragging ? <div className="nous-drop-hint" aria-hidden="true">Drop files to send them to Nous</div> : null}
+    </div>
+  ) : tab === "decisions" ? (
+    <div className="nous-decisions">
+      {decisions.length === 0 ? <DockState kind="empty" icon={Nous} title="No decisions" detail="Nous brings you only releases, irreversible actions, anything to third parties or with money, and product direction." /> : null}
+      {decisions.map((decision) => (
+        <NousDecisionCard key={decision.id} decision={decision} onAnswer={answerDecision(decision)} />
+      ))}
+    </div>
+  ) : (
+    <NousOverviewView overview={overview} />
+  );
+
+  if (fullscreen) {
+    // Maximized (operator request 2026-10-17): a command center for the whole day. Nous on the left, the work in the middle,
+    // what waits for the operator on the right; each run of tool steps folds into one line that opens to the whole list.
+    const folded: ReactNode[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const steps: NousMessage[] = [];
+      while (entries[index]?.tool) steps.push(entries[index++]!.tool!);
+      if (steps.length) folded.push(<NousSteps key={steps[0]!.id} steps={steps} />);
+      if (index < entries.length) folded.push(entries[index]!.node);
+    }
+    const turns = state?.turnsThisHour ?? 0;
+    const maxTurns = state?.settings.maxTurnsPerHour ?? 20;
+    return (
+      <section className={`dock-panel nous-dock is-fullscreen nous-workspace${thinking ? " is-thinking" : ""}`} aria-label="Nous">
+        <aside className="nous-rail" aria-label="Nous status">
+          <div className="nous-rail-identity">
+            <div className="nous-rail-brain"><NousBrain3D size={168} animate={isActive} thinking={thinking} firing /></div>
+            <h2>Nous</h2>
+            <p className="nous-tagline">The mind of SpaceApp</p>
+            <p className="nous-tagline">{modelLabel}</p>
+            {statusLine}
+            {state?.running ? <p className="nous-running">{REASON_LABELS[state.running.reason]} · <NousElapsed since={state.running.startedAt} /></p> : null}
+          </div>
+          {views}
+          <dl className="nous-gauges">
+            <div className={open.length ? "is-attention" : undefined}><dt>Decisions waiting</dt><dd>{open.length}</dd></div>
+            <div><dt>Inbox</dt><dd>{state?.inbox ?? 0}</dd></div>
+            <div className="is-meter">
+              <dt>Turns this hour</dt><dd>{turns}<span> of {maxTurns}</span></dd>
+              <span className="nous-meter" aria-hidden="true"><span style={{ width: `${Math.min(100, (turns / maxTurns) * 100)}%` }} /></span>
+            </div>
+          </dl>
+          {settings}
+        </aside>
+        <div className="nous-stage">
+          <header className="nous-stage-head"><h3>{planView ? "Plan" : VIEW_TITLES[tab]}</h3><div className="nous-stage-actions">{actions}</div></header>
+          {notice}
+          {view(folded, null)}
+        </div>
+        <NousBoard overview={overview} open={open} onShowDecision={showDecision} openPlan={openPlan} />
+        {confirmDialog}
+      </section>
+    );
+  }
+
   return (
-    <section className={`dock-panel nous-dock${fullscreen ? " is-fullscreen" : ""}`} aria-label="Nous">
+    <section className="dock-panel nous-dock" aria-label="Nous">
       <header className="nous-hero">
         <NousBrain3D animate={isActive} thinking={thinking} />
         <div className="nous-hero-text">
           <h2>Nous</h2>
-          <p className="nous-tagline">The mind of SpaceApp · {state ? `${state.model.replace(/^claude-/, "Claude ").replace(/-(\d)-(\d)$/, " $1.$2")} · ${state.effort}` : "…"}</p>
-          <p className={`nous-status is-${(state?.status ?? "OFF").toLowerCase()}`} role="status">{state ? STATUS_LABELS[state.status] : "Loading…"}</p>
+          <p className="nous-tagline">The mind of SpaceApp · {modelLabel}</p>
+          {statusLine}
         </div>
       </header>
-      <div className="nous-settings">
-        <SpaceToggle compact label="Work on my behalf" ariaLabel="Nous works on my behalf"
-          detail="Nous answers panes and copilots in every room, moves the plans on and holds your notifications. Releases, irreversible actions and anything to third parties still come to you."
-          checked={Boolean(state?.settings.enabled)} disabled={!state}
-          onChange={(enabled) => void act(() => api.updateNousSettings({ enabled }), "The setting could not be saved.")
-            // Turning it on starts a first review at once: look again shortly so the dock shows it thinking.
-            .then(() => { if (enabled) window.setTimeout(() => void refresh().catch(() => undefined), 1_500); })} />
-        <SpaceToggle compact label="May promote dev to stable" ariaLabel="Nous may promote dev to stable"
-          detail="Nous batches finished work and promotes dev to stable without asking you. Hotfixes, npm releases and queue control stay yours."
-          checked={Boolean(state?.settings.mayPromote)} disabled={!state}
-          onChange={(mayPromote) => void act(() => api.updateNousSettings({ mayPromote }), "The setting could not be saved.")} />
-        <SpaceToggle compact label="May approve Warm changes" ariaLabel="Nous may approve Warm changes"
-          detail="Nous approves changes to the protected Warm code after reading them; the tests and the real-browser performance check stay required."
-          checked={Boolean(state?.settings.mayApproveWarm)} disabled={!state}
-          onChange={(mayApproveWarm) => void act(() => api.updateNousSettings({ mayApproveWarm }), "The setting could not be saved.")} />
-        {state?.lastError ? <p className="nous-muted">Last problem: {state.lastError}</p> : null}
-      </div>
-      <DockToolbar className="nous-toolbar" summary={<DockChips label="Nous views" value={tab} onChange={(next) => { setPlanView(null); setTab(next); }} options={[
-        { id: "conversation", label: "Conversation" }, { id: "decisions", label: "Decisions", ...(open.length ? { count: open.length } : {}) }, { id: "overview", label: "Overview" }
-      ]} />}>
-        {tab === "conversation" && !planView ? (
-          <DockIconButton label="Clear the conversation" icon={Trash2} disabled={thinking || !count} onClick={async () => {
-            if (!(await confirm({ title: "Clear the conversation?", message: "Nous keeps its notes and decisions; the messages are removed.", confirmLabel: "Clear" }))) return;
-            await act(() => api.clearNousMessages(), "The conversation could not be cleared.");
-          }} />
-        ) : null}
-        <DockFullscreenButton name="Nous" active={fullscreen} onToggle={() => { setPlanView(null); setIsFullscreen(!fullscreen); }} />
-      </DockToolbar>
-      {error ? <DockNotice onDismiss={() => setError(null)}>{error}</DockNotice> : null}
-      {planView ? (
-        <NousPlanView plan={plans[planView]} decisions={decisions.filter((decision) => decision.refs.planId === planView)}
-          onClose={() => setPlanView(null)} answerDecision={answerDecision} />
-      ) : tab === "conversation" ? (
-        <>
-          <div className="nous-messages" ref={listRef} aria-live="polite">
-            {messages === null ? <DockState kind="loading" title="Loading the conversation" /> : null}
-            {messages?.length === 0 ? <DockState kind="empty" icon={Nous} title="Talk to Nous" detail="Ask what is happening in every room, give it a goal, or turn on “Work on my behalf”." /> : null}
-            {timeline}
-            {/* Operator request 2026-10-17: Nous's questions are answered in the conversation too, not only in Decisions. */}
-            {open.map((decision) => (
-              <NousDecisionCard key={decision.id} decision={decision}
-                onAnswer={answerDecision(decision)} />
-            ))}
-          </div>
-          <form className="nous-composer" onSubmit={(event) => void send(event)}>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} rows={2} maxLength={8_000}
-              placeholder="Message Nous" aria-label="Message Nous" />
-            {state?.status === "THINKING" ? (
-              <DockIconButton label="Stop" icon={CircleStop} onClick={() => void act(() => api.stopNous(), "Nous could not be stopped.")} />
-            ) : null}
-            <DockIconButton label="Send" icon={Send} type="submit" disabled={!draft.trim() || sending} busy={sending} />
-          </form>
-        </>
-      ) : tab === "decisions" ? (
-        <div className="nous-decisions">
-          {decisions.length === 0 ? <DockState kind="empty" icon={Nous} title="No decisions" detail="Nous brings you only releases, irreversible actions, anything to third parties or with money, and product direction." /> : null}
-          {decisions.map((decision) => (
-            <NousDecisionCard key={decision.id} decision={decision} onAnswer={answerDecision(decision)} />
-          ))}
-        </div>
-      ) : (
-        <NousOverviewView overview={overview} />
-      )}
+      {settings}
+      <DockToolbar className="nous-toolbar" summary={views}>{actions}</DockToolbar>
+      {notice}
+      {/* Operator request 2026-10-17: Nous's questions are answered in the conversation too; the entries place every decision where it was asked. */}
+      {view(entries.map((entry) => entry.node), null)}
       {confirmDialog}
     </section>
   );
 }
 
-function NousMessageRow({ message, planCard }: { message: NousMessage; planCard(id: string, key: string): ReactNode }) {
+/** Maximized only: one run of tool steps as a single line (count and the latest step) that opens to every step. */
+function NousSteps({ steps }: { steps: NousMessage[] }) {
+  const running = steps.some((step) => step.status === "RUNNING");
+  const failed = steps.filter((step) => step.status === "FAILED" || step.status === "REFUSED").length;
+  return (
+    <details className={`nous-steps${running ? " is-running" : ""}`}>
+      <summary>
+        <ChevronRight className="nous-steps-chevron" aria-hidden="true" />
+        <span className="nous-steps-count">{steps.length === 1 ? "1 step" : `${steps.length} steps`}</span>
+        <span className="nous-steps-last">{steps[steps.length - 1]!.content}</span>
+        {failed ? <span className="nous-steps-failed">{failed} failed</span> : null}
+      </summary>
+      <ol>{steps.map((step) => <li key={step.id} className={`nous-tool is-${step.status.toLowerCase()}`}>{step.content}</li>)}</ol>
+    </details>
+  );
+}
+
+/** How long the running turn has taken, counted every second. */
+function NousElapsed({ since }: { since: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 1_000); return () => window.clearInterval(timer); }, []);
+  const seconds = Math.max(0, Math.round((now - Date.parse(since)) / 1_000));
+  return <>{seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`}</>;
+}
+
+/** The maximized view's right column: what waits for the operator and where every plan stands, always in sight. */
+function NousBoard({ overview, open, onShowDecision, openPlan }: {
+  overview: NousOverview | null; open: NousDecision[]; onShowDecision(id: string): void; openPlan(id: string): void;
+}) {
+  return (
+    <aside className="nous-board" aria-label="Needs you and the plans">
+      <section aria-label="Needs you">
+        <h3>Needs you{open.length ? <span className="nous-board-count is-attention">{open.length}</span> : null}</h3>
+        {open.length === 0 ? <p className="nous-muted">Nothing waits for you. Nous brings releases, irreversible actions, third parties or money, and direction here.</p> : null}
+        {/* Each one is answered once, where Nous asked it in the conversation; here it is a line that leads there. */}
+        {open.map((decision) => (
+          <button key={decision.id} type="button" className="nous-board-ask" onClick={() => onShowDecision(decision.id)}>
+            <span className={`nous-category is-${decision.category.toLowerCase()}`}>{CATEGORY_LABELS[decision.category]}</span>
+            <strong>{decision.title}</strong>
+            <span className="nous-muted">Asked {clock(decision.createdAt)}{decision.recommendation ? ` · Nous recommends: ${decision.recommendation}` : ""}</span>
+          </button>
+        ))}
+      </section>
+      <section aria-label="Plans">
+        <h3>Plans{overview?.plans.length ? <span className="nous-board-count">{overview.plans.length}</span> : null}</h3>
+        {!overview ? <p className="nous-muted">Loading the plans…</p> : overview.plans.length === 0 ? <p className="nous-muted">No open plans.</p> : null}
+        {overview?.plans.map((plan) => (
+          <button key={plan.id} type="button" className={`nous-board-plan is-${plan.status.toLowerCase()}`} onClick={() => openPlan(plan.id)}
+            aria-label={`Open the plan ${plan.title}, ${plan.progress}%`}>
+            <span className="nous-plan-head"><strong>{plan.title}</strong><span>{plan.progress}%</span></span>
+            <span className="nous-progress" aria-hidden="true"><span style={{ width: `${plan.progress}%` }} /></span>
+            <span className="nous-muted">{statusText(plan.status)}{plan.pane ? ` · ${plan.pane}` : " · no pane yet"}{plan.room ? ` in ${plan.room}` : ""}</span>
+            {plan.nextStep ? <span className="nous-muted">Next: {plan.nextStep}</span> : null}
+          </button>
+        ))}
+      </section>
+      <section aria-label="Needs your hands">
+        <h3>Needs your hands{overview?.needsHands.length ? <span className="nous-board-count is-attention">{overview.needsHands.length}</span> : null}</h3>
+        {overview?.needsHands.length ? (
+          <ul>{overview.needsHands.map((item) => <li key={item.id}>{item.title}{item.room ? <span className="nous-muted"> · {item.room}</span> : null}</li>)}</ul>
+        ) : <p className="nous-muted">{overview ? "No sign-in, CAPTCHA or handoff waits for you." : "Loading…"}</p>}
+      </section>
+      <section aria-label="Release trains">
+        <h3>Release trains</h3>
+        <pre className="nous-trains">{overview ? overview.trains || "No release trains." : "Loading…"}</pre>
+      </section>
+    </aside>
+  );
+}
+
+function NousMessageRow({ message, files, planCard }: { message: NousMessage; files: NousAttachment[]; planCard(id: string, key: string): ReactNode }) {
   switch (message.kind) {
-    case "OPERATOR": return <div className="nous-message is-operator"><p>{message.content}</p></div>;
+    case "OPERATOR": {
+      const text = operatorText(message.content);
+      return <div className="nous-message is-operator">{text ? <p>{text}</p> : null}<NousMessageFiles files={files} /></div>;
+    }
     case "ANSWER": return (
       <div className="nous-message is-answer"><ChatMarkdown content={message.content} />{planIdsIn(message.content).map((id) => planCard(id, id))}</div>
     );
@@ -256,7 +423,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
   };
   const open = decision.status === "OPEN";
   return (
-    <article className={`nous-decision is-${decision.status.toLowerCase()}${inline ? " is-inline" : ""}`} aria-label={decision.title}>
+    <article className={`nous-decision is-${decision.status.toLowerCase()}${inline ? " is-inline" : ""}`} aria-label={decision.title} data-decision-id={decision.id}>
       <header>
         <span className={`nous-category is-${decision.category.toLowerCase()}`}>{CATEGORY_LABELS[decision.category]}</span>
         <h3>{decision.title}</h3>
@@ -267,6 +434,9 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
       {decision.action ? <p className="nous-muted">On approval Space runs: {describeAction(decision.action)}</p> : null}
       {open ? (
         <div className="nous-decision-actions">
+          {decision.refs.roomId && decision.refs.paneId ? (
+            <DockButton onClick={() => requestNousFocus({ roomId: decision.refs.roomId!, paneId: decision.refs.paneId!, ownerUserId: null, immediate: true })}>Take me there</DockButton>
+          ) : null}
           {/* With an action, Approve runs it; an option button would only answer in words and leave the action unrun (stable 2026-10-17). */}
           {(decision.action ? [] : decision.options).map((option) => (
             <DockButton key={option} disabled={busy} onClick={() => void answer({ answer: "ANSWER", text: option })}>{option}</DockButton>
@@ -280,7 +450,7 @@ function NousDecisionCard({ decision, onAnswer, inline = false, plan = null }: {
         </div>
       ) : (
         <p className="nous-muted">{decision.status === "APPROVED" ? "Approved" : decision.status === "DECLINED" ? "Declined" : decision.status === "ANSWERED" ? "Answered" : "Cancelled"}
-          {decision.answeredAt ? ` ${new Date(decision.answeredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}` : ""}
+          {decision.answeredAt ? ` ${formatUserTime(decision.answeredAt)}` : ""}
           {decision.status === "ANSWERED" ? `: ${decision.answer ?? ""}` : ""}{decision.outcome ? ` · ${decision.outcome}` : ""}</p>
       )}
     </article>

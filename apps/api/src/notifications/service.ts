@@ -63,7 +63,8 @@ export function createNotificationService(deps: NotificationServiceDeps) {
       if (created) {
         const settings = await deps.userSettings(input.ownerUserId).catch(() => null);
         const channels = resolveNotificationSettings(settings?.notifications);
-        const held = input.severity === "ATTENTION" && input.source !== "NOUS" && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false));
+        // Only the operator can take a browser handoff, so Nous never holds it back.
+        const held = input.severity === "ATTENTION" && input.source !== "NOUS" && input.source !== "BROWSER_HANDOFF" && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false));
         const telegram = !held && (input.telegram ?? (notificationChannelEnabled(channels, input.source, "telegram") && input.severity !== "INFO"));
         if (telegram && !settings?.suppressNotifications) {
           await deps.repository.enqueueTelegram(notification, { source: NOTIFICATION_SOURCE_LABELS[notification.source] })

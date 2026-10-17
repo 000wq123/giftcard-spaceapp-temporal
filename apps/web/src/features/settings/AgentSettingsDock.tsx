@@ -17,6 +17,7 @@ import {
   Hash,
   Keyboard,
   Mic,
+  Nous,
   Palette,
   PanelsTopLeft,
   Plug,
@@ -52,6 +53,7 @@ import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSe
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
 import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
+import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
 // The Settings dock (and the Workspace "Advanced settings" page): a search field, then
 // sections grouped by what they change, each with plain-language help.
@@ -331,6 +333,12 @@ export function AgentSettingsDock({
       </SettingsGroup>
 
       <SettingsGroup groupKey="assistants" title="Assistants & AI" description="How your AI helpers and agents work.">
+        {canManageInstallation ? <SettingsDisclosure sectionKey="nous" title="Nous" description="The mind of SpaceApp: work on your behalf, promote and approve Warm changes." scope="Your account" icon={Nous}
+          help="Work on my behalf turns Nous on: it answers panes and copilots in every room and brings you only releases, irreversible actions, third parties and direction. The next two let it promote dev to stable and approve Warm changes without asking you; the last one, on this device, lets it bring you to a pane that needs you. The Nous dock shows the same switches."
+          keywords="nous mind work on my behalf promote dev stable warm approve autonomy focus bring me panes">
+          <NousSettingsCard />
+        </SettingsDisclosure> : null}
+
         <SettingsDisclosure sectionKey="dots" title="Dots" description="Your six assistants: models, permissions and reminders." scope="Your account" icon={Bot}
           help="Dots are your built-in assistants. Choose which one opens first, which AI model it uses, how much it may do without asking you, and whether it may message you first."
           keywords="assistant model permissions email slack reminders">

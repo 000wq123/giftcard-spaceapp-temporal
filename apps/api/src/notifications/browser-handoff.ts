@@ -1,12 +1,16 @@
 import { SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
 import type { NotificationService } from "./service.js";
 
-type HandoffStore = Pick<SpaceStore, "getPane" | "listBrowserHandoffRequests" | "getActiveBrowserHandoffRequest">;
+type HandoffStore = Pick<SpaceStore, "getPane" | "listBrowserHandoffRequests" | "getActiveBrowserHandoffRequest" | "getBrowserHandoffRequest">;
 interface SettleDeps { store: HandoffStore; notifications: Pick<NotificationService, "unresolvedBySource" | "resolve"> }
 
 /** One notification per pane: a new handoff request in the pane refreshes it. */
 export const browserHandoffNotificationKey = (paneId: string) => `browser-handoff:${paneId}`;
 // A deleted pane nulls the notification's pane_id (ON DELETE SET NULL); its dedupe key still names the pane.
+/** The agent's reason ("CAPTCHA: Upwork: Cloudflare check, tick the box") names the site and what to click: its first line, without the kind. */
+export function browserHandoffTitle(reason: string | null | undefined): string {
+  return reason?.replace(/^(CAPTCHA|LOGIN|MFA|OTHER):\s*/, "").split("\n")[0]?.trim() || "The browser needs you";
+}
 const paneOfKey = (dedupeKey: string | null) => dedupeKey?.startsWith("browser-handoff:") ? dedupeKey.slice("browser-handoff:".length) : null;
 
 /**
@@ -56,9 +60,11 @@ export function startBrowserHandoffNotifications(deps: SettleDeps & {
     void (async () => {
       const owner = await deps.roomOwner(roomId);
       if (!owner) return;
+      const handoffId = event.payload.handoffRequestId;
+      const reason = typeof handoffId === "string" ? (await deps.store.getBrowserHandoffRequest(handoffId))?.reason : null;
       await deps.notifications.raise({
-        ownerUserId: owner, roomId, paneId: event.paneId ?? null, source: "BROWSER_HANDOFF", kind: event.type, severity: "ATTENTION", title: "The browser needs you",
-        body: event.message.slice(0, 2000), link: { roomId, ...(event.paneId ? { paneId: event.paneId } : {}) },
+        ownerUserId: owner, roomId, paneId: event.paneId ?? null, source: "BROWSER_HANDOFF", kind: event.type, severity: "ATTENTION", title: browserHandoffTitle(reason),
+        body: (reason ?? event.message).slice(0, 2000), link: { roomId, ...(event.paneId ? { paneId: event.paneId } : {}) },
         dedupeKey: event.paneId ? browserHandoffNotificationKey(event.paneId) : `event:${event.id}`, payload: {}, telegram: null
       });
     })().catch((error: unknown) => deps.log.warn({ err: error, eventId: event.id }, "Notification producer failed."));

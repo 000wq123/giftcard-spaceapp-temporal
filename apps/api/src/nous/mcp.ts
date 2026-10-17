@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { NousAttachments } from "./attachments.js";
 import type { NousService } from "./service.js";
 import type { NousToolDefinition } from "./tools.js";
 
@@ -42,6 +43,8 @@ const callSchema = z.object({ name: z.string().max(100), arguments: z.record(z.s
 
 export function registerNousMcpRoute(app: FastifyInstance, deps: {
   secret: string; service: Pick<NousService, "turnRunning" | "callTool">; tools: NousToolDefinition[]; routeOptions: Record<string, unknown>;
+  /** The operator's attached files: their tools answer with image blocks, which Nous's own tools cannot. */
+  attachments?: Pick<NousAttachments, "tools" | "handles" | "callTool">;
 }): void {
   // Claude Code may open a server-to-client stream first; this server only answers requests.
   app.get(NOUS_MCP_PATH, deps.routeOptions, async (_request, reply) => reply.code(405).header("allow", "POST").send());
@@ -59,10 +62,14 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
       return answer({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "space-nous", version: "1.0.0" } });
     }
     if (method === "ping") return answer({});
-    if (method === "tools/list") return answer({ tools: deps.tools });
+    if (method === "tools/list") return answer({ tools: [...deps.tools, ...(deps.attachments?.tools ?? [])] });
     if (method === "tools/call") {
       const call = callSchema.safeParse(params);
       if (!call.success) return { jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid tool call." } };
+      if (deps.attachments?.handles(call.data.name)) {
+        const result = await deps.attachments.callTool(claims.owner, call.data.name, call.data.arguments ?? {});
+        return answer({ content: [{ type: "text", text: result.text }, ...result.images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))], isError: !result.ok });
+      }
       const callId = typeof call.data._meta?.["claudecode/toolUseId"] === "string" ? String(call.data._meta["claudecode/toolUseId"]).slice(0, 80) : `${Date.now()}`;
       const outcome = await deps.service.callTool(claims.owner, claims.turnId, call.data.name, call.data.arguments ?? {}, callId);
       return answer({ content: [{ type: "text", text: outcome.result || outcome.display }], isError: !outcome.ok });

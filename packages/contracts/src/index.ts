@@ -48,6 +48,7 @@ export * from "./freelance-copilot.js";
 export * from "./notifications.js";
 export * from "./council.js";
 export * from "./nous.js";
+export * from "./nous-focus.js";
 export * from "./version.js";
 export * from "./observability.js";
 

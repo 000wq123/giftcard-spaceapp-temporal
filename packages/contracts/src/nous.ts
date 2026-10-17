@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { patchSchema } from "./partial-update.js";
 
 /**
  * Nous (Greek νους, "mind"; operator decision 2026-10-17): the mind of SpaceApp. One Claude Opus 5.5 at xhigh effort per
@@ -149,11 +150,38 @@ export const nousStateSchema = z.object({
 }).strict();
 export type NousState = z.infer<typeof nousStateSchema>;
 
-export const nousSendInputSchema = z.object({
-  content: z.string().trim().min(1).max(NOUS_OPERATOR_MESSAGE_MAX_CHARS)
+/**
+ * A file the operator sends Nous with a message (plan clipboard:hQg9iKGYDqx7): an image it looks at, a document it reads
+ * as extracted text, a video it gets as a reference with sampled frames, or another file it knows by name and size.
+ */
+export const nousAttachmentIdSchema = z.string().regex(/^nous_file:[A-Za-z0-9_-]{6,80}$/);
+export const nousAttachmentKindSchema = z.enum(["IMAGE", "DOCUMENT", "VIDEO", "FILE"]);
+export type NousAttachmentKind = z.infer<typeof nousAttachmentKindSchema>;
+export const NOUS_ATTACHMENTS_PER_MESSAGE = 10;
+/** The server appends the files' block (for Nous's turn) to the operator's message after this line; the dock hides it. */
+export const NOUS_ATTACHMENTS_MARKER = "[[Attachments:";
+export const nousAttachmentSchema = z.object({
+  id: nousAttachmentIdSchema,
+  messageId: nousMessageIdSchema.nullable(),
+  kind: nousAttachmentKindSchema,
+  filename: z.string().min(1).max(200),
+  mimeType: z.string().min(1).max(200),
+  byteSize: z.number().int().min(1),
+  width: z.number().int().min(1).nullable(),
+  height: z.number().int().min(1).nullable(),
+  durationSeconds: z.number().min(0).nullable(),
+  /** How much of a document Nous can read, e.g. "FULL" or "PARTIAL: first 40 of 120 pages". */
+  readable: z.string().max(300).nullable(),
+  createdAt: isoDateTime
 }).strict();
+export type NousAttachment = z.infer<typeof nousAttachmentSchema>;
 
-export const nousSettingsInputSchema = nousSettingsSchema.partial().strict();
+export const nousSendInputSchema = z.object({
+  content: z.string().trim().max(NOUS_OPERATOR_MESSAGE_MAX_CHARS).default(""),
+  attachmentIds: z.array(nousAttachmentIdSchema).max(NOUS_ATTACHMENTS_PER_MESSAGE).optional()
+}).strict().refine((input) => input.content.length > 0 || Boolean(input.attachmentIds?.length), { message: "Write a message or attach a file." });
+
+export const nousSettingsInputSchema = patchSchema(nousSettingsSchema).strict();
 
 export const nousDecisionAnswerInputSchema = z.object({
   answer: z.enum(["APPROVE", "DECLINE", "ANSWER"]),

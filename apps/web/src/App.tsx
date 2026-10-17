@@ -177,6 +177,7 @@ import { FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_
 import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js";
 import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
 import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
+import { forwardNousFocusEvents, useNousFocus } from "./features/nous-focus/NousFocus.js";
 import { HealthDock } from "./features/health/HealthDock.js";
 import {
   AppDiagnosticsGlobalIndicators,
@@ -4263,8 +4264,8 @@ export function App() {
     source.addEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
     source.addEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
     source.addEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
-    // Job, Mail, Marketing and Freelance Copilot activity reaches its pane through a window event (copilot-kit/copilot-stream.ts).
-    const stopCopilotStreams = forwardCopilotStreamEvents(source);
+    // Copilot activity (copilot-kit/copilot-stream.ts) and Nous focus requests (nous-focus) reach the page as window events.
+    const stopWindowStreams = [forwardCopilotStreamEvents(source), forwardNousFocusEvents(source)];
     // Notifications travel as ids only; the store reads the owner's records and delivers the new ones.
     const handleNotification = (message: MessageEvent<string>) => {
       const event = parseStreamEvent(message.data);
@@ -4279,7 +4280,7 @@ export function App() {
       source.removeEventListener("ROOM_CREATED", handleRoomCreated as EventListener);
       source.removeEventListener("BROWSER_HANDOFF_REQUESTED", handleBrowserHandoff as EventListener);
       source.removeEventListener("CAPABILITY_STATUS_CHANGED", handleCapabilityStatusChanged as EventListener);
-      stopCopilotStreams();
+      for (const stop of stopWindowStreams) stop();
       source.removeEventListener("NOTIFICATION_CREATED", handleNotification as EventListener);
       source.removeEventListener("NOTIFICATION_UPDATED", handleNotification as EventListener);
       source.close();
@@ -4882,6 +4883,7 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activateRoom, sideSurfaces.openSideSurface]);
   useNotificationBootstrap(startupReady ? auth?.user?.id ?? null : null, navigateToNotification);
+  const nousFocus = useNousFocus({ userId: auth?.user?.id ?? null, rooms, panes, selectedRoomId, selectedPaneId, selectRoom, selectPane: setSelectedPaneId, toggleMaximize, restorePane, sideSurfaces });
   const roomToolbarActions = useMemo<IconToolbarAction[]>(
     () => {
       return buildRoomToolbarActions({
@@ -5785,11 +5787,6 @@ export function App() {
       composer={{ preparingRoomId, presentationPanes, presentationRoom, addRoomPanes, openSettingsSurface }}
     />
   );
-
-  function resumeAgentSessionCodexThread(threadId: string) {
-    if (!activePane || !isCodexEnabled) return;
-    dispatchAgentPaneAction(activePane.id, { action: "open_thread", threadId });
-  }
 
   async function resumeAgentSession(item: AgentSessionHistoryItem): Promise<string | null> {
     if (!selectedRoomId) return "Open a room first to resume sessions.";
@@ -7456,7 +7453,7 @@ export function App() {
         </RecoverableSurface>
       ) : null}
       <LiveDebugToastView notices={notices} />
-      <NotificationToastHost />
+      <NotificationToastHost />{nousFocus}
       </main>
       <StreamingOverlay theme={uiTheme !== "classic" ? "modern" : "classic"} />
       </StreamingOverlayProvider>

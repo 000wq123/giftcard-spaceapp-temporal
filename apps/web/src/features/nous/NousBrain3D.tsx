@@ -4,7 +4,8 @@ import { projectMemoryPoint, type MemoryPoint3D } from "../memory-workspace/memo
 /**
  * Nous's emblem: a brain of memory nodes in 3D, drawn with the Space Memory 3D view's projection and turning slowly.
  * Two hemispheres of points on rippled half-ellipsoids, each node linked to its nearest neighbours. One static frame
- * when the dock is hidden or the user prefers reduced motion; faster while Nous thinks.
+ * when the dock is hidden or the user prefers reduced motion; faster while Nous thinks. With `firing` (the maximized view),
+ * nodes light up and pass the spark to a neighbour while Nous thinks.
  */
 const NODE_COUNT = 110;
 const LINKS_PER_NODE = 2;
@@ -41,7 +42,7 @@ function brainNodes(): { points: MemoryPoint3D[]; links: Array<[number, number]>
 
 const brain = brainNodes();
 
-export function NousBrain3D({ size = 88, animate, thinking = false }: { size?: number; animate: boolean; thinking?: boolean }) {
+export function NousBrain3D({ size = 88, animate, thinking = false, firing = false }: { size?: number; animate: boolean; thinking?: boolean; firing?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const thinkingRef = useRef(thinking);
   thinkingRef.current = thinking;
@@ -59,6 +60,8 @@ export function NousBrain3D({ size = 88, animate, thinking = false }: { size?: n
     let yaw = 0.6;
     let frame = 0;
     let last = 0;
+    // Firing nodes and how much light each has left (1 → 0).
+    const sparks = new Map<number, number>();
 
     const draw = () => {
       context.clearRect(0, 0, size, size);
@@ -69,7 +72,9 @@ export function NousBrain3D({ size = 88, animate, thinking = false }: { size?: n
       for (const [from, to] of brain.links) {
         const a = projected[from]!;
         const b = projected[to]!;
-        context.globalAlpha = Math.max(0.08, Math.min(0.5, 0.3 - (a.z + b.z) / 400));
+        const lit = Math.max(sparks.get(from) ?? 0, sparks.get(to) ?? 0);
+        context.globalAlpha = Math.max(0.08, Math.min(0.5, 0.3 - (a.z + b.z) / 400)) + lit * 0.5;
+        context.lineWidth = 0.6 + lit;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
@@ -83,7 +88,31 @@ export function NousBrain3D({ size = 88, animate, thinking = false }: { size?: n
         context.arc(point.x, point.y, Math.max(0.6, 1.5 * point.perspective * (size / 88)), 0, Math.PI * 2);
         context.fill();
       }
+      for (const [index, light] of sparks) {
+        const point = projected[index]!;
+        const radius = Math.max(0.6, 1.5 * point.perspective * (size / 88));
+        context.globalAlpha = light * 0.25;
+        context.beginPath();
+        context.arc(point.x, point.y, radius * 4, 0, Math.PI * 2);
+        context.fill();
+        context.globalAlpha = Math.min(1, light + 0.2);
+        context.beginPath();
+        context.arc(point.x, point.y, radius * 1.8, 0, Math.PI * 2);
+        context.fill();
+      }
       context.globalAlpha = 1;
+    };
+    const fire = () => {
+      for (const [index, light] of sparks) {
+        const next = light - 0.05;
+        // Halfway out a spark jumps once to a linked node, so thought runs along the network.
+        if (light > 0.5 && next <= 0.5) {
+          const link = brain.links.filter(([from, to]) => from === index || to === index)[Math.floor(Math.random() * LINKS_PER_NODE)];
+          if (link) sparks.set(link[0] === index ? link[1] : link[0], 1);
+        }
+        if (next <= 0) sparks.delete(index); else sparks.set(index, next);
+      }
+      if (thinkingRef.current && sparks.size < 12 && Math.random() < 0.35) sparks.set(Math.floor(Math.random() * NODE_COUNT), 1);
     };
 
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -94,13 +123,14 @@ export function NousBrain3D({ size = 88, animate, thinking = false }: { size?: n
       if (now - last >= 33) {
         yaw += (thinkingRef.current ? 0.045 : 0.012) * Math.min(3, (now - (last || now)) / 33 || 1);
         last = now;
+        if (firing) fire();
         draw();
       }
       frame = window.requestAnimationFrame(tick);
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [animate, size]);
+  }, [animate, size, firing]);
 
   return <canvas ref={canvasRef} className="nous-brain" style={{ width: size, height: size }} role="img" aria-label="Nous, the mind of SpaceApp" />;
 }

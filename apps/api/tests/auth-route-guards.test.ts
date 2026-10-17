@@ -1,12 +1,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCanonicalSpaceMemoryBridge, InMemorySpaceStore } from "@space/runtime";
 import type { AuthUser } from "@space/contracts";
 import { createApp } from "../src/app.js";
 import { cookieName, csrfHeaderName, signSession } from "../src/auth.js";
 import { getApiConfig, type SpaceApiConfig } from "../src/config.js";
+import { pluginsService } from "../src/plugins-service.js";
 
 const sessionSecret = "auth-route-guards-test-session-secret";
 const temporaryRoots: string[] = [];
@@ -59,6 +60,7 @@ async function sessionFor(app: Awaited<ReturnType<typeof createTestApp>>["app"],
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -164,6 +166,12 @@ describe("admin role changes", () => {
 });
 
 describe("room and pane ownership for USER accounts", () => {
+  // The plugins store writes under a fixed data path (/opt/spaceapp/var here, /opt/spaceapp in the public export, where
+  // the suite cannot create it); these probes check room and pane ownership, not plugin storage.
+  beforeEach(() => {
+    vi.spyOn(pluginsService, "getAgentConfig").mockImplementation(async (paneId) => ({ paneId, enabledPluginIds: [], disabledPluginIds: [] }));
+  });
+
   it("hides other users' rooms and panes behind 404 on every room and pane route", async () => {
     const { app, store } = await createTestApp();
     try {

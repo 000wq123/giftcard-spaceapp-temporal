@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NOTIFICATION_SOURCES, NOTIFICATION_SOURCE_LABELS, type NotificationSource, type SpaceNotification } from "@space/contracts";
 import { DockButton, DockChips, DockIconButton, DockState, DockToolbar } from "../dock-kit/DockKit.js";
 import { Bell, Check, CheckCircle2 } from "../ui-theme/app-icons.js";
+import { formatUserTime } from "../date-time-settings/date-time-settings.js";
 import { ackNotification, openNotification, readAllNotifications, refreshNotifications, useNotificationStore } from "./notification-store.js";
 import "./notifications.css";
 
@@ -13,7 +14,7 @@ function when(iso: string, now = Date.now()): string {
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours} h ago`;
-  return new Date(iso).toLocaleDateString();
+  return formatUserTime(iso, { withDate: true });
 }
 
 /** The Notification Center: everything Space wanted the operator to see, newest first, with read / acknowledge and a click that opens the source. */
@@ -44,7 +45,7 @@ export function NotificationCenterDock() {
               <span className="notification-item-source">{NOTIFICATION_SOURCE_LABELS[item.source]}</span>
               <strong className="notification-item-title">{item.title}</strong>
               {item.body ? <span className="notification-item-body">{item.body}</span> : null}
-              <time className="notification-item-time" dateTime={item.createdAt} title={item.createdAt}>{when(item.createdAt)}</time>
+              <time className="notification-item-time" dateTime={item.createdAt} title={formatUserTime(item.createdAt, { withDate: true })}>{when(item.createdAt)}</time>
             </button>
             {item.status === "OPEN" || item.status === "READ" ? (
               <DockIconButton label="Acknowledge" icon={Check} title="Acknowledge" onClick={() => void ackNotification(item.id)} />

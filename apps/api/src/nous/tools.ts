@@ -15,6 +15,7 @@ import { classifyPaneApproval } from "../room-agent-guardrails.js";
 import { classifyNousOutgoing, classifyNousPrompt, type NousAllowances } from "./guardrails.js";
 import { nousProgressText, type NousScorecard } from "./progress.js";
 import { COPILOT_CONTROL_DESCRIPTION, copilotControlActionSchema, type CopilotControlAction } from "./copilot-control.js";
+import { FOCUS_PANE_DESCRIPTION, focusPaneSchema, type NousFocus } from "./focus.js";
 
 /**
  * Nous's tools. Room actions reuse the Room Agent's tools in the room Nous names, acting as the owner; the owner's rooms
@@ -89,6 +90,7 @@ export interface NousToolDeps {
   copilots?: NousCopilotDeps;
   /** Nous's scorecard against its 2026-10-17 baseline (plan clipboard:L7RgHsveHbcR). */
   progress?(owner: string): Promise<NousScorecard>;
+  focus?: NousFocus;
 }
 
 export const NOUS_TOOL_RESULT_MAX_CHARS = 12_000;
@@ -191,6 +193,7 @@ const schemas = {
   space_copilot_items: z.object({}),
   space_copilot_state: z.object({ room: roomRef, pane: paneRef }),
   space_copilot_control: z.object({ room: roomRef, pane: paneRef, action: copilotControlActionSchema }),
+  space_focus_pane: focusPaneSchema,
   space_copilot_brief: z.object({ room: roomRef, pane: paneRef, text: z.string().trim().min(1).max(2_000).describe("The instruction, as a brief the copilot works on next.") }),
   space_copilot_answer: z.object({
     copilot: nousCopilotSchema, question: z.string().trim().min(1).max(200), pane: z.string().trim().min(1).max(200).nullable().optional(),
@@ -247,6 +250,7 @@ const descriptions: Record<NousToolName, string> = {
   space_copilot_items: "List what the copilots (Mail, Marketing, Freelance, Job) wait on: questions, reviews, proposed rules and campaigns, client-ready leads.",
   space_copilot_state: "Read a Freelance or Marketing Copilot pane's run (status, queue, counts) and its newest events.",
   space_copilot_control: COPILOT_CONTROL_DESCRIPTION,
+  space_focus_pane: FOCUS_PANE_DESCRIPTION,
   space_copilot_brief: "Give a Marketing or Freelance Copilot pane an instruction as a brief (copilot panes are not CLI panes: space_send_to_pane does not reach them). External sends stay behind the copilot's own review gates.",
   space_copilot_answer: "Answer a copilot's QUESTION yourself (facts, preferences you know). Reviews, rules, campaigns and leads send to third parties: ask the operator with action COPILOT.",
   space_ask_operator: "Bring one critical decision to the operator (RELEASE, DESTRUCTIVE, EXTERNAL, DIRECTION) with your recommendation and the exact action to run on their yes. The only way to get a release, an irreversible action, a send to third parties or a payment done. Never for small questions.",
@@ -708,6 +712,13 @@ export function createNousTools(deps: NousToolDeps) {
       if (!found.pane) return fail(`Could not find ${args.pane}`, found.problem!);
       const result = await deps.copilots.control(ctx.owner, found.pane, args.action);
       return { ok: true, display: result, result };
+    },
+    async space_focus_pane(args, ctx) {
+      if (!deps.focus) return fail("Bringing the operator to a pane is unavailable");
+      const { room, problem } = await findRoom(ctx.owner, args.room);
+      if (!room) return fail(`Could not find ${args.room}`, problem!);
+      const found = await findPane(room, args.pane);
+      return found.pane ? deps.focus.request(ctx.owner, room, found.pane, args.reason) : fail(`Could not find ${args.pane}`, found.problem!);
     },
     async space_copilot_brief(args, ctx) {
       if (!deps.copilots) return fail("Copilots are unavailable");

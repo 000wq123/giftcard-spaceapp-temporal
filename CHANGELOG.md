@@ -7,7 +7,7 @@ Semantic Versioning.
 
 ## [1.1.6] - 2026-10-17
 
-Source: sanitized Space app @ b9122162ac (4409 files). Adds install telemetry
+Source: sanitized Space app @ 732e9f3a78 (4428 files). Adds install telemetry
 for owners who opt in and the remaining fixes from the independent reviews of
 1.1.5; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
 

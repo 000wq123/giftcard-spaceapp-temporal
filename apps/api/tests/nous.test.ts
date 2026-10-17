@@ -565,7 +565,7 @@ describe("Nous's MCP endpoint", () => {
 });
 
 describe("Nous and the rest of Space", () => {
-  it("lets ATTENTION notifications wait for Nous; its own decisions and urgent ones still go out", async () => {
+  it("lets ATTENTION notifications wait for Nous; its own decisions, urgent ones and browser handoffs still go out", async () => {
     const repository = new InMemorySpaceNotificationsRepository();
     const enqueue = vi.spyOn(repository, "enqueueTelegram");
     const raised: SpaceNotification[] = [];
@@ -580,7 +580,9 @@ describe("Nous and the rest of Space", () => {
     expect(raised.map((item) => item.source)).toEqual(["MARKETING_COPILOT"]);
     await service.raise({ ...base, source: "NOUS", severity: "ATTENTION", dedupeKey: "b" });
     await service.raise({ ...base, source: "ROOM_WATCHDOG", severity: "URGENT", dedupeKey: "c" });
-    expect(enqueue).toHaveBeenCalledTimes(2);
+    // Only the operator can take a browser handoff: it is never held.
+    await service.raise({ ...base, source: "BROWSER_HANDOFF", severity: "ATTENTION", dedupeKey: "d" });
+    expect(enqueue).toHaveBeenCalledTimes(3);
   });
 
   it("leaves the Room Agent's auto-answer events to Nous when Nous handles them", async () => {
@@ -624,6 +626,10 @@ describe("Nous API", () => {
       .toMatchObject({ version: 1, baselineDate: "2026-10-17", baselineOverall: 44.7, window: { turns: 1 } });
     const settings = await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { enabled: true } });
     expect(settings.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false });
+    // Each toggle changes only itself: all three end up on.
+    await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { mayPromote: true } });
+    const all = await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { mayApproveWarm: true } });
+    expect(all.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: true, mayApproveWarm: true });
 
     const proof = await app.inject({ method: "POST", url: "/api/nous/decisions/nous_decision:abcdef123456/answer", headers: headers("user:operator-proof"), payload: { answer: "APPROVE" } });
     expect(proof.statusCode).toBe(403);

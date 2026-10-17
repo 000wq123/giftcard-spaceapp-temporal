@@ -86,6 +86,8 @@ import {
   updateTaskItemInputSchema,
   upsertTaskItemInputSchema,
   taskScheduleNextRunAt,
+  ownerWorkingTimeZone,
+  resolveTaskScheduleZone,
   listUserLinksQuerySchema,
   listMemoryCacheLinksQuerySchema,
   memoryCacheLinkSchema,
@@ -3535,7 +3537,8 @@ export class InMemorySpaceStore implements SpaceStore {
     );
     const timestamp = nowIso();
     const pending = existing?.item.schedule ?? null;
-    const schedule = parsed.schedule !== undefined ? parsed.schedule : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
+    const given = resolveTaskScheduleZone(parsed.schedule, ownerWorkingTimeZone(this.getUserSettings(parsed.ownerUserId)));
+    const schedule = given !== undefined ? given : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
     const nextRunAt = taskScheduleNextRunAt(schedule ?? null, parsed.status, Date.now(), pending);
     const item = taskItemSchema.parse({
       id: existing?.item.id ?? makeSpaceId("task"),
@@ -3604,7 +3607,8 @@ export class InMemorySpaceStore implements SpaceStore {
       throw new SpaceNotFoundError(`Task item ${taskItemId} was not found.`);
     }
     const pending = record.item.schedule;
-    const schedule = parsed.schedule !== undefined ? parsed.schedule : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
+    const given = resolveTaskScheduleZone(parsed.schedule, ownerWorkingTimeZone(this.getUserSettings(ownerUserId)));
+    const schedule = given !== undefined ? given : pending && { recurrence: pending.recurrence, timeZone: pending.timeZone };
     const nextRunAt = taskScheduleNextRunAt(schedule, parsed.status ?? record.item.status, Date.now(), pending);
     const updated = taskItemSchema.parse({
       ...record.item,

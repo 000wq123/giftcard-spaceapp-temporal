@@ -2141,7 +2141,8 @@ export class DemoStore {
           characterCount: Array.from(input.objective).length,
           createdAt: DEMO_FIXED_AT,
           lastUsedAt: DEMO_FIXED_AT,
-          schedule: input.schedule ? { ...input.schedule, nextRunAt: taskScheduleNextRunAt(input.schedule, input.status ?? "OPEN", Date.now()),
+          schedule: input.schedule ? { ...input.schedule, timeZone: input.schedule.timeZone ?? "UTC",
+            nextRunAt: taskScheduleNextRunAt({ ...input.schedule, timeZone: input.schedule.timeZone ?? "UTC" }, input.status ?? "OPEN", Date.now()),
             lastRunAt: null, lastOutcome: null } : null
         };
         this.fixture.taskItems.unshift(item);

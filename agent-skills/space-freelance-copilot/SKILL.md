@@ -47,6 +47,7 @@ proposal and follow-up playbook), `references/scams.md` (what to skip and report
    selfie, video call), phone numbers, payout and tax forms, CAPTCHAs and interviews are the operator's: set the
    account `NEEDS_OPERATOR` with what is needed in `notes` and hand the browser over
    (`space_browser_request_handoff`). Never invent identity data, never create a second account on a platform.
+   A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
 
 ## Routes (where the pane browser leaves from)
 

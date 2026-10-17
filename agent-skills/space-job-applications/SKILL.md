@@ -178,11 +178,12 @@ same steps, and still record fields and memory.
 
 - Never solve, bypass or automate a CAPTCHA or an anti-bot check. Never read, request or
   store credentials, cookies or session files.
+- A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
 - When a CAPTCHA, a login page, an MFA prompt or any decision only the operator can make
   appears: first make sure the live view shows that page (work only in a tab `space_browser_tabs` lists and
   `space_browser_tab_activate` it; tabs Playwright opens itself are not shown to the operator), then
   `space_browser_request_handoff {kind, reason}` with a one-line reason that names the
-  site and the step, then `space_job_handoff_wait {timeoutMs: 600000}`. The pane shows the operator an
+  site, the page and what to click, then `space_job_handoff_wait {timeoutMs: 600000}`. The pane shows the operator an
   overlay with "Take control"; while the operator holds control, `space_playwright_pane` refuses
   connections.
 - After `space_job_handoff_wait` returns `resumed: true`, re-snapshot: the page may have moved.

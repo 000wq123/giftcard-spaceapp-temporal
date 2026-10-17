@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { eventSchema } from "@space/contracts";
 import { InMemorySpaceNotificationsRepository } from "@space/db";
 import { InMemorySpaceStore, SpaceEventBus, makeSpaceId } from "@space/runtime";
-import { browserHandoffNotificationKey, settleBrowserHandoffNotifications } from "../src/notifications/browser-handoff.js";
+import { browserHandoffNotificationKey, browserHandoffTitle, settleBrowserHandoffNotifications, startBrowserHandoffNotifications } from "../src/notifications/browser-handoff.js";
 import { createNotificationService } from "../src/notifications/service.js";
 
 const owner = "user:operator";
@@ -35,7 +35,7 @@ function setup() {
     store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "ACCEPTED", operatorUserId: owner, operatorEmail: "operator@example.test", operatorRole: "ADMIN", controlLeaseId: lease.leaseId });
     store.updateBrowserHandoffRequest(handoff.handoffRequestId, { status: "COMPLETED" });
   }
-  return { store, repository, notifications, handoffPane, statusOf, complete };
+  return { store, repository, notifications, room, handoffPane, statusOf, complete };
 }
 
 describe("browser handoff notifications", () => {
@@ -69,5 +69,24 @@ describe("browser handoff notifications", () => {
     // Resolved, never deleted: the Notification Center keeps them.
     expect((await repository.list(owner, { status: "ALL", limit: 50 })).length).toBe(7);
     expect(await settleBrowserHandoffNotifications({ store, notifications })).toBe(0);
+  });
+
+  it("titles the notification with the agent's reason (site and what to click) and keeps room and pane", async () => {
+    expect(browserHandoffTitle("CAPTCHA: Upwork: Cloudflare check, tick the box\nmore")).toBe("Upwork: Cloudflare check, tick the box");
+    expect(browserHandoffTitle(null)).toBe("The browser needs you");
+    expect(browserHandoffTitle("LOGIN: ")).toBe("The browser needs you");
+    const { store, repository, notifications, room } = setup();
+    const eventBus = new SpaceEventBus();
+    const stop = startBrowserHandoffNotifications({ store, notifications, eventBus, roomOwner: async () => owner, log: { warn: () => {} } });
+    const pane = store.createPane({ roomId: room.id, title: "Freelance", mode: "BROWSER" });
+    store.createPaneBrowserSession({ sessionId: "browser_session:fl", paneId: pane.id, roomId: room.id, ownerAgentId: "agent:1", agentNumber: 1, profileId: "profile:fl",
+      profilePath: "/tmp/fl", viewport: "desktop", targetUrl: "https://www.upwork.com/", currentUrl: "https://www.upwork.com/", title: "Upwork", status: "READY", isActive: true });
+    const handoff = store.createBrowserHandoffRequest({ sessionId: "browser_session:fl", paneId: pane.id, roomId: room.id, requestedByType: "AGENT",
+      requestedById: "cli:cli_session:test", reason: "CAPTCHA: Upwork: Cloudflare check, tick the box", ttlSeconds: 1800 });
+    eventBus.publish(store.listEvents(room.id).find((event) => event.traceId === handoff.handoffRequestId)!);
+    await vi.waitFor(async () => expect((await repository.list(owner, { status: "ALL", limit: 5 }))[0]).toMatchObject({
+      title: "Upwork: Cloudflare check, tick the box", body: "CAPTCHA: Upwork: Cloudflare check, tick the box", roomId: room.id, paneId: pane.id,
+      link: { roomId: room.id, paneId: pane.id } }));
+    stop();
   });
 });

@@ -9,7 +9,7 @@ import { PostgresGoogleAccountsRepository } from "./google-accounts-repository.j
 import type { GoogleAccount, VerifiedGoogleIdentity } from "@space/runtime";
 import { transitionAgentRunLedger, pickNextAvailablePaneName, normalizePaneName } from "@space/contracts";
 import { splitCliHostTranscriptContent } from "@space/contracts";
-import { taskScheduleNextRunAt, type TaskScheduleInput } from "@space/contracts";
+import { ownerWorkingTimeZone, resolveTaskScheduleZone, taskScheduleNextRunAt, type TaskScheduleInput } from "@space/contracts";
 import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
 import pg from "pg";
@@ -5141,13 +5141,14 @@ export class PostgresSpaceStore implements SpaceStore {
   async upsertTaskItem(input: UpsertTaskItemInput): Promise<TaskItem> {
     const parsed = upsertTaskItemInputSchema.parse(input);
     const contentHash = createHash("sha256").update(parsed.objective).digest("hex");
+    const given = resolveTaskScheduleZone(parsed.schedule, parsed.schedule && !parsed.schedule.timeZone ? ownerWorkingTimeZone(await this.getUserSettings(parsed.ownerUserId)) : "UTC");
     return this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [parsed.ownerUserId]);
       const existingRow = (await client.query<TaskItemRow>(
         `${taskItemSelect} WHERE owner_user_id = $1 AND content_hash = $2 FOR UPDATE`, [parsed.ownerUserId, contentHash]
       )).rows[0];
       const existing = existingRow ? mapTaskItem(existingRow).schedule : null;
-      const schedule = parsed.schedule !== undefined ? parsed.schedule : existing && { recurrence: existing.recurrence, timeZone: existing.timeZone };
+      const schedule = given !== undefined ? given : existing && { recurrence: existing.recurrence, timeZone: existing.timeZone };
       const nextRunAt = taskScheduleNextRunAt(schedule ?? null, parsed.status, Date.now(), existing);
       const result = await client.query<TaskItemRow>(
         `
@@ -5250,12 +5251,13 @@ export class PostgresSpaceStore implements SpaceStore {
 
   async updateTaskItem(ownerUserId: string, taskItemId: string, input: UpdateTaskItemInput): Promise<TaskItem> {
     const parsed = updateTaskItemInputSchema.parse(input);
+    const given = resolveTaskScheduleZone(parsed.schedule, parsed.schedule && !parsed.schedule.timeZone ? ownerWorkingTimeZone(await this.getUserSettings(ownerUserId)) : "UTC");
     return this.withTransaction(async (client) => {
       const currentRow = (await client.query<TaskItemRow>(
         `${taskItemSelect} WHERE owner_user_id = $1 AND id = $2 FOR UPDATE`, [ownerUserId, taskItemId]
       )).rows[0];
       const current = mapTaskItem(firstOrNotFound(currentRow ? [currentRow] : [], `Task item ${taskItemId} was not found.`));
-      const schedule = parsed.schedule !== undefined ? parsed.schedule
+      const schedule = given !== undefined ? given
         : current.schedule && { recurrence: current.schedule.recurrence, timeZone: current.schedule.timeZone };
       const nextRunAt = taskScheduleNextRunAt(schedule, parsed.status ?? current.status, Date.now(), current.schedule);
       const values: unknown[] = [ownerUserId, taskItemId, schedule ? JSON.stringify(schedule.recurrence) : null, schedule?.timeZone ?? null, nextRunAt];

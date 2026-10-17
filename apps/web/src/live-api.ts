@@ -190,6 +190,7 @@ import type {
   NousDecision,
   NousDecisionAnswerInput,
   NousMessage,
+  NousAttachment,
   NousOverview,
   NousSettings,
   NousState,
@@ -1513,8 +1514,17 @@ export const api = {
     }),
   deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   nous: () => request<{ state: NousState }>("/api/nous"),
-  nousMessages: () => request<{ messages: NousMessage[] }>("/api/nous/messages"),
-  sendNousMessage: (content: string) => request<{ message: NousMessage }>("/api/nous/messages", { method: "POST", body: JSON.stringify({ content }) }),
+  nousMessages: () => request<{ messages: NousMessage[]; attachments?: Record<string, NousAttachment[]> }>("/api/nous/messages"),
+  sendNousMessage: (content: string, attachmentIds: string[] = []) => request<{ message: NousMessage; attachments?: NousAttachment[] }>("/api/nous/messages",
+    { method: "POST", body: JSON.stringify(attachmentIds.length ? { content, attachmentIds } : { content }) }),
+  uploadNousAttachments: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((file) => form.append("file", file, file.name || "upload"));
+    return request<{ attachments: NousAttachment[] }>("/api/nous/attachments", { method: "POST", body: form });
+  },
+  deleteNousAttachment: (id: string) => request<{ removed: boolean }>(`/api/nous/attachments/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nousAttachmentUrl: (id: string, mode?: "preview" | "download") =>
+    `/api/nous/attachments/${encodeURIComponent(id)}${mode === "preview" ? "?preview=1" : mode === "download" ? "?download=1" : ""}`,
   clearNousMessages: () => request<{ cleared: number }>("/api/nous/messages", { method: "DELETE" }),
   stopNous: () => request<{ stopped: boolean }>("/api/nous/stop", { method: "POST" }),
   updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
