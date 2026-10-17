@@ -1811,7 +1811,7 @@ async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stde
   const saved = await readFile(join(directory, "spaceapp-config.json"), "utf8").then(JSON.parse).catch(() => null);
   const missing = (saved?.workspaces ?? []).filter((workspace) => !config.workspaces.some((current) => current.hostPath === workspace.hostPath));
   for (const workspace of missing) {
-    stdout.write(`Workspace of the backup to add again: ${UNIVERSAL_COMMAND} workspace add ${JSON.stringify(workspace.hostPath)}${workspace.readOnly ? " --read-only" : ""}\n`);
+    stdout.write(`Workspace of the backup to add again: ${UNIVERSAL_COMMAND} workspace add "${workspace.hostPath}"${workspace.readOnly ? " --read-only" : ""}\n`);
   }
   stdout.write(`API keys and CLI logins are never in backups: enter them again with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`);
 }

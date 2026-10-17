@@ -84,7 +84,7 @@ test("a backup carries the workspace list and the CLI settings, and restore brin
   await run(["workspace", "remove", folder], fixture.options);
   assert.equal(await run(["restore"], { ...fixture.options, stdin: Readable.from(["RESTORE\n"]) }), 0);
   assert.equal(String(imported[0]), "cli-settings-archive");
-  assert.match(fixture.stdout.value(), new RegExp(`workspace add ${JSON.stringify(folder).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.ok(fixture.stdout.value().includes(`workspace add "${folder}"`));
   assert.match(fixture.stdout.value(), /never in backups/);
 });
 
