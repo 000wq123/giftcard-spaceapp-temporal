@@ -134,3 +134,47 @@ test("a restore names the users and their workspaces to add again", async () => 
   assert.match(out, /User of the backup to add again: .* user add user:Bob12345 --memory 2g/);
   assert.ok(out.includes(`workspace add "${folder}" --user user:Bob12345`));
 });
+
+test("a backup keeps each user's CLI settings and Space Memory, never their keys, and puts them back (MU-004)", async () => {
+  let root;
+  const imported = [];
+  const execute = async (spec, io = {}) => {
+    const service = spec.args?.[spec.args.indexOf("10001:10001") + 1];
+    if (spec.args?.includes("scripts/portable-backup.mjs")) {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      await mkdir(join(root, "backups", "spaceapp-backup-20261017T080000000Z"), { recursive: true });
+      await writeFile(join(root, "backups", "spaceapp-backup-20261017T080000000Z", "manifest.json"), "{}");
+    }
+    // Exports write an archive named after the container and what it holds; imports record what they got.
+    if (spec.args?.includes("-czf") || spec.args?.some((arg) => String(arg).includes("tar -czf"))) {
+      io.stdout.write(`${service}:${spec.args.includes("/var/lib/spaceapp/memory") ? "memory" : "settings"}`);
+    }
+    if (spec.args?.includes("-xzf")) imported.push(`${service} <- ${io.input}`);
+    return 0;
+  };
+  const fixture = await installation(execute);
+  root = fixture.root;
+  await run(["user", "enable"], fixture.options);
+  await run(["user", "add", "user:Bob12345"], fixture.options);
+  const slug = userSlug("user:Bob12345");
+  assert.equal(await run(["backup"], fixture.options), 0);
+  const directory = join(root, "backups", "spaceapp-backup-20261017T080000000Z");
+  assert.equal(await readFile(join(directory, "users", `${slug}-cli-config.tar.gz`), "utf8"), `spaceapp-cli-${slug}:settings`);
+  assert.equal(await readFile(join(directory, "users", `${slug}-memory.tar.gz`), "utf8"), `spaceapp-cli-${slug}:memory`);
+  assert.equal((await stat(join(directory, "users", `${slug}-memory.tar.gz`))).mode & 0o777, 0o600);
+  assert.match(fixture.stdout.value(), /CLI settings and Space Memory of 1 of 1 user\(s\)/);
+  // The user is still there: a restore puts their state straight back into their own container.
+  assert.equal(await run(["restore"], { ...fixture.options, stdin: Readable.from(["RESTORE\n"]) }), 0);
+  assert.deepEqual(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)),
+    [`spaceapp-cli-${slug} <- spaceapp-cli-${slug}:settings`, `spaceapp-cli-${slug} <- spaceapp-cli-${slug}:memory`]);
+  // On a fresh install the user is added again first, then "user restore" brings their state back.
+  imported.length = 0;
+  await run(["user", "remove", "user:Bob12345"], fixture.options);
+  assert.equal(await run(["restore"], { ...fixture.options, stdin: Readable.from(["RESTORE\n"]) }), 0);
+  assert.match(fixture.stdout.value(), /Then their CLI settings and Space Memory: .* user restore user:Bob12345/);
+  assert.deepEqual(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)), []);
+  await run(["user", "add", "user:Bob12345"], fixture.options);
+  assert.equal(await run(["user", "restore", "user:Bob12345"], fixture.options), 0);
+  assert.equal(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)).length, 2);
+  await assert.rejects(run(["user", "restore", "user:Nobody99"], fixture.options));
+});

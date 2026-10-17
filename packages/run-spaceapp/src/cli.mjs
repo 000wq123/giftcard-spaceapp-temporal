@@ -1802,24 +1802,59 @@ async function writeAccessHint(hostPath, stdout) {
   );
 }
 
-/** Adds the workspace list and the CLIs' own settings to the backup just created; a failure here keeps the backup. */
-async function addBackupExtras({ root, config, stdin, stdout, stderr, execute }) {
-  const directory = join(root, "backups", await selectLatestBackupId(root));
-  await copyFile(join(root, "config.json"), join(directory, "spaceapp-config.json"));
-  const archive = join(directory, "cli-config.tar.gz");
+/** Streams one compose export into a 0600 archive; a failed export leaves no file. */
+async function exportArchive(archive, action, { root, config, service, stdin, stderr, execute }) {
   const out = createWriteStream(archive, { mode: 0o600 });
   await once(out, "open");
   const code = await execute(
-    composeCommand("exportCliSettings", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+    composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
     { stdin, stdout: out, stderr }
   ).catch(() => 1);
   out.end();
   await once(out, "close");
-  if (code !== 0) {
-    await rm(archive, { force: true });
-    stderr.write("The backup has no CLI settings (MCP servers, base URLs): the CLI service did not answer or has none.\n");
+  if (code !== 0) await rm(archive, { force: true });
+  return code === 0;
+}
+
+const userArchive = (directory, userId, kind) => join(directory, "users", `${userSlug(userId)}-${kind}.tar.gz`);
+
+/** Adds the workspace list and the CLIs' own settings to the backup just created; a failure here keeps the backup. */
+async function addBackupExtras({ root, config, stdin, stdout, stderr, execute }) {
+  const directory = join(root, "backups", await selectLatestBackupId(root));
+  await copyFile(join(root, "config.json"), join(directory, "spaceapp-config.json"));
+  const io = { root, config, stdin, stderr, execute };
+  const saved = await exportArchive(join(directory, "cli-config.tar.gz"), "exportCliSettings", io);
+  if (!saved) stderr.write("The backup has no CLI settings (MCP servers, base URLs): the CLI service did not answer or has none.\n");
+  // Each user's CLI settings and Space Memory, from their own container; their logins and keys never (MU-004).
+  const users = config.users ?? [];
+  if (users.length > 0) await mkdir(join(directory, "users"), { recursive: true, mode: 0o700 });
+  let complete = 0;
+  for (const user of users) {
+    const service = `spaceapp-cli-${userSlug(user.id)}`;
+    const settings = await exportArchive(userArchive(directory, user.id, "cli-config"), "exportCliSettings", { ...io, service });
+    const memory = await exportArchive(userArchive(directory, user.id, "memory"), "exportMemory", { ...io, service });
+    if (settings && memory) complete++;
+    else stderr.write(`The backup misses the ${settings ? "Space Memory" : memory ? "CLI settings" : "CLI settings and Space Memory"} of ${user.id}: their container did not answer.\n`);
   }
-  stdout.write(`Backup includes the workspace list${code === 0 ? " and the CLI settings" : ""}.\n`);
+  stdout.write(`Backup includes the workspace list${saved ? " and the CLI settings" : ""}${users.length > 0 ? `, and the CLI settings and Space Memory of ${complete} of ${users.length} user(s)` : ""}.\n`);
+}
+
+/** Puts a user's CLI settings and Space Memory from a backup into their own container. */
+async function restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) {
+  const service = `spaceapp-cli-${userSlug(userId)}`;
+  const restored = [];
+  for (const [kind, action, label] of [["cli-config", "importCliSettings", "CLI settings"], ["memory", "importMemory", "Space Memory"]]) {
+    const input = await readFile(userArchive(directory, userId, kind)).catch(() => null);
+    if (!input) continue;
+    const code = await execute(
+      composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
+      { stdin, stdout, stderr, input }
+    ).catch(() => 1);
+    if (code === 0) restored.push(label);
+    else stderr.write(`The ${label} of ${userId} could not be restored.\n`);
+  }
+  if (restored.length > 0) stdout.write(`${restored.join(" and ")} of ${userId} restored.\n`);
+  return restored.length;
 }
 
 /** Puts the CLIs' settings back and names what a restore does not bring back. */
@@ -1841,8 +1876,13 @@ async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stde
   // Multi-user: the accounts come back with the database; each user's CLI container and workspaces are added again.
   if (saved?.users !== undefined && config.users === undefined) stdout.write(`SpaceApp accounts were on: ${UNIVERSAL_COMMAND} user enable\n`);
   for (const user of saved?.users ?? []) {
-    if (!(config.users ?? []).some((current) => current.id === user.id)) {
+    if ((config.users ?? []).some((current) => current.id === user.id)) {
+      await restoreUserState({ root, config, directory, userId: user.id, stdin, stdout, stderr, execute });
+    } else {
       stdout.write(`User of the backup to add again: ${UNIVERSAL_COMMAND} user add ${user.id}${user.memoryLimit ? ` --memory ${user.memoryLimit}` : ""}\n`);
+      if (await stat(userArchive(directory, user.id, "memory")).then(() => true, () => false)) {
+        stdout.write(`Then their CLI settings and Space Memory: ${UNIVERSAL_COMMAND} user restore ${user.id}\n`);
+      }
     }
     for (const workspace of user.workspaces ?? []) {
       stdout.write(`Their workspace to add again: ${UNIVERSAL_COMMAND} workspace add "${workspace.hostPath}"${workspace.readOnly ? " --read-only" : ""} --user ${user.id}\n`);
@@ -1928,11 +1968,19 @@ async function userCommand(args, { root, config, stdin, stdout, stderr, execute 
     const updated = addUser(config, userId, { memoryLimit: rest[1] });
     return apply(updated, `User ${userId} gets the CLI container spaceapp-cli-${userSlug(userId)}. Add their keys with "${UNIVERSAL_COMMAND} credentials set <provider> --user ${userId}".\n`);
   }
+  if (action === "restore" && userId && rest.length === 0) {
+    assertRegisteredUser(config, userId);
+    const directory = join(root, "backups", await selectLatestBackupId(root));
+    if (await restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) === 0) {
+      throw new Error(`The latest backup has no CLI settings or Space Memory of ${userId}.`);
+    }
+    return 0;
+  }
   if (action === "remove" && userId && rest.length === 0) {
     // The container goes; its volumes (the user's CLI logins, memory and files) stay until uninstall --purge-data.
     return apply(removeUser(config, userId), `User ${userId} no longer has a CLI container. Their volumes are kept.\n`);
   }
-  throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|remove <user-id>|list>`);
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|restore <user-id>|remove <user-id>|list>`);
 }
 
 async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -2657,6 +2705,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
                                     credentials and workspace take --user <user-id>
   user enable                       Turn SpaceApp accounts on (invites in Settings -> Users)
   user add <user-id> [--memory 2g]  Give an invited user their own CLI container
+  user restore <user-id>            Put a user's CLI settings and Space Memory back from the latest backup
   user remove <user-id> | user list
   provider install <provider>       Install an optional CLI in its persistent volume
                                     codex, gemini, qwen, kimi, grok, claude, deepseek,

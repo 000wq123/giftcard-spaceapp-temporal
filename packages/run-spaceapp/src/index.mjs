@@ -796,9 +796,12 @@ export function composeCommand(action, root, options = {}) {
     // Workspace bind mounts belong to these two services; compose recreates them only when the mounts changed.
     syncWorkspaces: ["up", "-d", "spaceapp-core", "spaceapp-cli"],
     // The CLIs' own settings (MCP servers, base URLs), never their logins: these files hold no credentials.
-    exportCliSettings: ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "sh", "-c",
+    exportCliSettings: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "sh", "-c",
       `cd /var/lib/spaceapp-cli/providers && tar -czf - $(ls -d ${CLI_SETTINGS_FILES.join(" ")} 2>/dev/null)`],
-    importCliSettings: ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp-cli/providers", "-xzf", "-"],
+    importCliSettings: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp-cli/providers", "-xzf", "-"],
+    // A user's own Space Memory lives only in their CLI container (the owner's is in the core's portable backup).
+    exportMemory: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp/memory", "-czf", "-", "."],
+    importMemory: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp/memory", "-xzf", "-"],
     installClaude: [
       "run",
       "--rm",
