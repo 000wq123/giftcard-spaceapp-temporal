@@ -704,8 +704,9 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       `      - spaceapp-workspaces-${slug}:/workspaces`,
       `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro`,
       ...user.workspaces.flatMap(bind),
+      // Its own network: internet only, never the owner's internal services (temporal, companions) or other users.
       "    networks:",
-      "      - spaceapp"
+      `      - spaceapp-user-${slug}`
     ];
   });
   return [
@@ -724,6 +725,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     ...userServices,
     ...(users.length > 0 ? ["volumes:"] : []),
     ...users.flatMap((user) => ["cli-state", "memory", "cli-socket", "workspaces"].map((kind) => `  spaceapp-${kind}-${userSlug(user.id)}: {}`)),
+    ...(users.length > 0 ? ["networks:"] : []),
+    ...users.map((user) => `  spaceapp-user-${userSlug(user.id)}: {}`),
     ""
   ].join("\n");
 }

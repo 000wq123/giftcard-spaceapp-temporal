@@ -56,6 +56,10 @@ test("user enable, add and remove give each user a CLI container and the core it
   // The user's container never mounts the owner's keys, CLI state, memory or workspaces.
   const service = compose.slice(compose.indexOf(`spaceapp-cli-${slug}:`), compose.indexOf("\nvolumes:"));
   assert.doesNotMatch(service, /- spaceapp-cli-state:|- spaceapp-memory:|- spaceapp-workspaces:|\.\/secrets\/providers:/);
+  // Nor joins the internal network of the owner's services (security review 2026-10-17).
+  assert.doesNotMatch(service, /^      - spaceapp$/m);
+  assert.match(service, new RegExp(`networks:\\n      - spaceapp-user-${slug}`));
+  assert.match(compose, new RegExp(`\\nnetworks:\\n  spaceapp-user-${slug}: \\{\\}`));
   assert.deepEqual(JSON.parse(await readFile(join(root, "cli-hosts.json"), "utf8")), { "user:Bob12345": `/run/spaceapp-cli-users/${slug}/host.sock` });
   assert.equal((await stat(join(root, "secrets", "users", slug, "providers"))).mode & 0o777, 0o700);
   assert.match(stdout.value(), /credentials set <provider> --user user:Bob12345/);
