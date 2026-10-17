@@ -18,6 +18,7 @@ import {
   stripTrailingLineEndings
 } from "./string-utils.mjs";
 import { UNIVERSAL_COMMAND } from "./package-info.mjs";
+import { imageDigestEnv, PACKAGE_IMAGE_LOCK } from "./image-lock.mjs";
 
 const CONFIG_SCHEMA_VERSION = 4;
 const CONTAINER_SECRET_MODE = 0o644;
@@ -624,11 +625,12 @@ export async function writeSetupToken(root, token) {
   return target;
 }
 
-export function renderRuntimeEnv(config) {
+export function renderRuntimeEnv(config, imageLock = PACKAGE_IMAGE_LOCK) {
   validateConfig(config);
   const settings = PROFILE_RUNTIME_SETTINGS[config.profile];
   return [
     `SPACEAPP_IMAGE_TAG=${safeEnv(config.version)}`,
+    ...imageDigestEnv(config.version, imageLock),
     `SPACEAPP_BIND_HOST=${safeEnv(config.bindHost)}`,
     `SPACEAPP_PORT=${config.port}`,
     `SPACEAPP_TELEMETRY=${config.telemetry}`,

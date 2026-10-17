@@ -1,6 +1,6 @@
 services:
   spaceapp-core:
-    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-core:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CORE_IMAGE_DIGEST:-}
     restart: unless-stopped
     init: true
     security_opt:
@@ -79,7 +79,7 @@ services:
       - spaceapp
 
   spaceapp-cli:
-    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}
     restart: unless-stopped
     init: true
     # compose.workspaces.yml adds the user-namespace profile where the host allows user namespaces (F17).
@@ -126,7 +126,7 @@ services:
       - spaceapp-codex-sessions:/sessions
 
   spaceapp-browser:
-    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-browser:${SPACEAPP_IMAGE_TAG}${SPACEAPP_BROWSER_IMAGE_DIGEST:-}
     profiles: ["standard"]
     restart: unless-stopped
     init: true
