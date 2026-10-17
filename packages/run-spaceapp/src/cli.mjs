@@ -18,6 +18,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import {
+  addUser,
   addWorkspace,
   applyConfigRepairs,
   commitInstallation,
@@ -31,6 +32,7 @@ import {
   planConfigRepairs,
   prepareInstallation,
   removeCredential,
+  removeUser,
   removeWorkspace,
   resolveInstallAccessMode,
   resolveInstallProfile,
@@ -39,6 +41,7 @@ import {
   selectLatestBackupId,
   SPACEAPP_UPGRADE_POLICY,
   upgradePath,
+  userSlug,
   writeCredential,
   writeRuntimeFiles,
   writeSetupToken
@@ -463,6 +466,9 @@ export async function run(argv, {
   }
   if (command === "credentials") {
     return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
+  }
+  if (command === "user") {
+    return userCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "provider") {
     return providerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
@@ -1724,10 +1730,28 @@ async function loadExistingInstallation(root) {
   }
 }
 
-async function workspaceCommand(args, { root, config, platform, stdin, stdout, stderr, execute }) {
+/** Takes "--user <user-id>" out of the arguments (multi-user: the command acts on that user's container). */
+function takeUserOption(args) {
+  const index = args.indexOf("--user");
+  if (index === -1) return { userId: undefined, args };
+  const userId = args[index + 1];
+  if (!userId) throw new Error("--user needs a SpaceApp user id, for example user:Ab12cd34Ef56.");
+  return { userId, args: [...args.slice(0, index), ...args.slice(index + 2)] };
+}
+
+function assertRegisteredUser(config, userId) {
+  if (!(config.users ?? []).some((user) => user.id === userId)) {
+    throw new Error(`User "${userId}" has no CLI container: run "${UNIVERSAL_COMMAND} user add ${userId}" first.`);
+  }
+}
+
+async function workspaceCommand(rawArgs, { root, config, platform, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
+  if (userId) assertRegisteredUser(config, userId);
   const [action, identity, ...rest] = args;
   const applyWorkspaces = async (updated) => {
-    const code = await execute(composeCommand("syncWorkspaces", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+    // A user's mounts belong to their own container; "up" recreates only the services whose mounts changed.
+    const code = await execute(composeCommand(userId ? "up" : "syncWorkspaces", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
     if (code !== 0) stderr.write(`The change is saved, but the running services could not pick it up. Run "${UNIVERSAL_COMMAND} up".\n`);
     return code;
   };
@@ -1738,7 +1762,7 @@ async function workspaceCommand(args, { root, config, platform, stdin, stdout, s
       );
     }
     const readOnly = rest.includes("--read-only");
-    const updated = await addWorkspace(config, identity, { readOnly });
+    const updated = await addWorkspace(config, identity, { readOnly, userId });
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace registered: ${identity}\n`);
@@ -1751,17 +1775,18 @@ async function workspaceCommand(args, { root, config, platform, stdin, stdout, s
         `Usage: ${UNIVERSAL_COMMAND} workspace remove <id-or-absolute-path>`
       );
     }
-    const updated = removeWorkspace(config, identity);
+    const updated = removeWorkspace(config, identity, { userId });
     await saveConfig(root, updated);
     await writeRuntimeFiles(root, updated);
     stdout.write(`Workspace removed: ${identity}\n`);
     return applyWorkspaces(updated);
   }
   if (action === "list" && args.length === 1) {
-    stdout.write(`${JSON.stringify(config.workspaces, null, 2)}\n`);
+    const workspaces = userId ? config.users.find((user) => user.id === userId).workspaces : config.workspaces;
+    stdout.write(`${JSON.stringify(workspaces, null, 2)}\n`);
     return 0;
   }
-  throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list>`);
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} workspace <add|remove|list> [--user <user-id>]`);
 }
 
 // The CLIs run as uid 10001 in Docker; on Linux a bind-mounted folder keeps its host owner, so they cannot write to it.
@@ -1816,7 +1841,11 @@ async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stde
   stdout.write(`API keys and CLI logins are never in backups: enter them again with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`);
 }
 
-async function credentialsCommand(args, { root, config, stdin, stdout, stderr, execute }) {
+async function credentialsCommand(rawArgs, { root, config, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
+  if (userId) assertRegisteredUser(config, userId);
+  // A user's keys reach only their own container.
+  const service = userId ? `spaceapp-cli-${userSlug(userId)}` : undefined;
   const [action, provider, ...rest] = args;
   if (action === "list" && args.length === 1) {
     stdout.write(`${JSON.stringify(credentialProviders(), null, 2)}\n`);
@@ -1829,9 +1858,9 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
       );
     }
     const value = await readSecret(stdin, stdout, `Enter ${provider} credential: `);
-    await writeCredential(root, provider, value);
+    await writeCredential(root, provider, value, { userId });
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -1845,9 +1874,9 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     if (!provider || rest.length > 0) {
       throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials remove <provider>`);
     }
-    const removed = await removeCredential(root, provider);
+    const removed = await removeCredential(root, provider, { userId });
     const syncCode = await execute(
-      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled }),
+      composeCommand("syncCredentials", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
       { stdin, stdout, stderr }
     );
     if (syncCode !== 0) {
@@ -1857,7 +1886,43 @@ async function credentialsCommand(args, { root, config, stdin, stdout, stderr, e
     stdout.write(removed ? `Credential removed and applied for ${provider}.\n` : `No credential stored for ${provider}.\n`);
     return syncCode;
   }
-  throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials <set|remove|list>`);
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} credentials <set|remove|list> [--user <user-id>]`);
+}
+
+// Multi-user: "user enable" turns SpaceApp accounts on (invites); each invited user gets their own CLI container with
+// "user add <user-id>" (the id is in Settings -> Users). Until then that user's CLIs do not start.
+async function userCommand(args, { root, config, stdin, stdout, stderr, execute }) {
+  const [action, userId, ...rest] = args;
+  const apply = async (updated, message) => {
+    await saveConfig(root, updated);
+    await writeRuntimeFiles(root, updated);
+    stdout.write(message);
+    const code = await execute(composeCommand("up", root, { profile: updated.profile, companionsEnabled: updated.companionsEnabled }), { stdin, stdout, stderr });
+    if (code !== 0) stderr.write(`The change is saved, but the running services could not pick it up. Run "${UNIVERSAL_COMMAND} up".\n`);
+    return code;
+  };
+  if (action === "list" && args.length === 1) {
+    stdout.write(`${JSON.stringify({ enabled: config.users !== undefined, users: (config.users ?? []).map((user) => ({ ...user, container: `spaceapp-cli-${userSlug(user.id)}` })) }, null, 2)}\n`);
+    return 0;
+  }
+  if (action === "enable" && args.length === 1) {
+    if (config.accessMode !== "isolated") throw new Error("SpaceApp accounts need isolated access: host-root lets every agent read the whole host.");
+    if (config.users !== undefined) {
+      stdout.write("SpaceApp accounts are already on.\n");
+      return 0;
+    }
+    return apply({ ...structuredClone(config), users: [] }, "SpaceApp accounts are on: invite people in Settings -> Users, then add each one here.\n");
+  }
+  if (action === "add" && userId && (rest.length === 0 || (rest.length === 2 && rest[0] === "--memory"))) {
+    if (config.users === undefined) throw new Error(`SpaceApp accounts are off: run "${UNIVERSAL_COMMAND} user enable" first.`);
+    const updated = addUser(config, userId, { memoryLimit: rest[1] });
+    return apply(updated, `User ${userId} gets the CLI container spaceapp-cli-${userSlug(userId)}. Add their keys with "${UNIVERSAL_COMMAND} credentials set <provider> --user ${userId}".\n`);
+  }
+  if (action === "remove" && userId && rest.length === 0) {
+    // The container goes; its volumes (the user's CLI logins, memory and files) stay until uninstall --purge-data.
+    return apply(removeUser(config, userId), `User ${userId} no longer has a CLI container. Their volumes are kept.\n`);
+  }
+  throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|remove <user-id>|list>`);
 }
 
 async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -2579,6 +2644,10 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   credentials set <provider>        Read a credential from masked stdin
   credentials remove <provider>
   credentials list
+                                    credentials and workspace take --user <user-id>
+  user enable                       Turn SpaceApp accounts on (invites in Settings -> Users)
+  user add <user-id> [--memory 2g]  Give an invited user their own CLI container
+  user remove <user-id> | user list
   provider install <provider>       Install an optional CLI in its persistent volume
                                     codex, gemini, qwen, kimi, grok, claude, deepseek,
                                     autohand, cursor, copilot (also installed on first use)

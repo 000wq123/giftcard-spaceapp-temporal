@@ -117,8 +117,14 @@ const CONFIG_KEYS = new Set([
   "workspaces",
   "companionsEnabled",
   "optionalModules",
-  "installId"
+  "installId",
+  "users"
 ]);
+
+// Multi-user (SpaceApp accounts with SPACE_MULTI_USER_ENABLED): every user's CLIs run in their own container, with
+// their own keys, logins, memory and workspaces; the core starts each pane in its owner's container.
+const USER_ID_PATTERN = /^user:[A-Za-z0-9_-]{1,80}$/;
+const MEMORY_LIMIT_PATTERN = /^[1-9]\d{0,5}[mg]$/;
 
 // Optional SpaceApp modules (games, copilots, channels, ...): "all", "none" or a comma list.
 // A config written before 1.1.5 has no field and keeps every module; new installs start with none.
@@ -363,7 +369,49 @@ export function validateConfig(config) {
   for (const workspace of config.workspaces) {
     validateWorkspace(workspace);
   }
+  if (config.users !== undefined) {
+    if (!Array.isArray(config.users)) throw new Error("users must be an array.");
+    // host-root would let every user's agent read the whole host, other users' keys included.
+    if (config.users.length > 0 && config.accessMode !== "isolated") throw new Error("Installations with users must use isolated access.");
+    const ids = new Set();
+    for (const user of config.users) {
+      if (!user || typeof user !== "object" || !USER_ID_PATTERN.test(user.id) || ids.has(user.id)) throw new Error("Invalid or repeated user id.");
+      ids.add(user.id);
+      if (user.memoryLimit !== undefined && !MEMORY_LIMIT_PATTERN.test(user.memoryLimit)) throw new Error("A user's memory limit looks like 2g or 1536m.");
+      if (!Array.isArray(user.workspaces)) throw new Error("A user's workspaces must be an array.");
+      for (const workspace of user.workspaces) validateWorkspace(workspace);
+    }
+  }
   return config;
+}
+
+/** A compose-safe name for a user's container and volumes; the hash keeps ids that differ only in case apart. */
+export function userSlug(userId) {
+  if (!USER_ID_PATTERN.test(userId)) throw new Error(`Invalid SpaceApp user id "${userId}".`);
+  const name = userId.slice("user:".length).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "user";
+  return `${name}-${createHash("sha256").update(userId).digest("hex").slice(0, 6)}`;
+}
+
+export function addUser(config, userId, { memoryLimit } = {}) {
+  validateConfig(config);
+  userSlug(userId);
+  if (config.accessMode !== "isolated") throw new Error("Users need isolated access: host-root lets every agent read the whole host.");
+  if ((config.users ?? []).some((user) => user.id === userId)) return structuredClone(config);
+  const user = { id: userId, ...(memoryLimit ? { memoryLimit } : {}), workspaces: [] };
+  return validateConfig({ ...structuredClone(config), users: [...(config.users ?? []), user] });
+}
+
+export function removeUser(config, userId) {
+  validateConfig(config);
+  const users = (config.users ?? []).filter((user) => user.id !== userId);
+  if (users.length === (config.users ?? []).length) throw new Error(`User "${userId}" is not registered.`);
+  return { ...structuredClone(config), users };
+}
+
+function userOf(config, userId) {
+  const user = (config.users ?? []).find((candidate) => candidate.id === userId);
+  if (!user) throw new Error(`User "${userId}" is not registered: run "${UNIVERSAL_COMMAND} user add ${userId}" first.`);
+  return user;
 }
 
 export async function saveConfig(root, config) {
@@ -465,8 +513,14 @@ export function applyConfigRepairs(rawConfig) {
   return validateConfig(repaired);
 }
 
-export async function addWorkspace(config, hostPath, { readOnly = false } = {}) {
+export async function addWorkspace(config, hostPath, { readOnly = false, userId } = {}) {
   validateConfig(config);
+  if (userId) {
+    // A user's workspace is mounted only into that user's container.
+    const user = userOf(config, userId);
+    const added = await addWorkspace({ ...structuredClone(config), users: undefined, workspaces: user.workspaces }, hostPath, { readOnly });
+    return { ...structuredClone(config), users: config.users.map((candidate) => candidate.id === userId ? { ...candidate, workspaces: added.workspaces } : candidate) };
+  }
   if (!isAbsolute(hostPath)) {
     throw new Error("Workspace path must be absolute.");
   }
@@ -492,8 +546,13 @@ export async function addWorkspace(config, hostPath, { readOnly = false } = {}) 
   return { ...structuredClone(config), workspaces: [...config.workspaces, workspace] };
 }
 
-export function removeWorkspace(config, identity) {
+export function removeWorkspace(config, identity, { userId } = {}) {
   validateConfig(config);
+  if (userId) {
+    const user = userOf(config, userId);
+    const removed = removeWorkspace({ ...structuredClone(config), users: undefined, workspaces: user.workspaces }, identity);
+    return { ...structuredClone(config), users: config.users.map((candidate) => candidate.id === userId ? { ...candidate, workspaces: removed.workspaces } : candidate) };
+  }
   const remaining = config.workspaces.filter(
     (workspace) => workspace.id !== identity && workspace.hostPath !== identity
   );
@@ -511,25 +570,30 @@ export function credentialProviders() {
   };
 }
 
-export async function writeCredential(root, provider, value) {
+/** Where a provider key lives: the default CLI container's, or one user's. */
+function providerSecretsRoot(root, userId) {
+  return userId ? join(root, "secrets", "users", userSlug(userId), "providers") : join(root, "secrets", "providers");
+}
+
+export async function writeCredential(root, provider, value, { userId } = {}) {
   assertProvider(provider);
   validateHome(root);
   const normalized = stripTrailingLineEndings(value);
   if (!normalized || normalized.includes("\0")) {
     throw new Error("Credential value cannot be empty or contain null bytes.");
   }
-  const credentialsRoot = join(root, "secrets", "providers");
+  const credentialsRoot = providerSecretsRoot(root, userId);
   await mkdir(credentialsRoot, { recursive: true, mode: 0o700 });
   const target = join(credentialsRoot, `${provider}.key`);
   await atomicWrite(target, normalized);
   return target;
 }
 
-export async function removeCredential(root, provider) {
+export async function removeCredential(root, provider, { userId } = {}) {
   assertProvider(provider);
   validateHome(root);
   try {
-    await rm(join(root, "secrets", "providers", `${provider}.key`));
+    await rm(join(providerSecretsRoot(root, userId), `${provider}.key`));
     return true;
   } catch (error) {
     if (error?.code === "ENOENT") {
@@ -606,15 +670,69 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
+  if (config.users === undefined) {
+    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ""].join("\n");
+  }
+  // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
+  const users = config.users;
+  const settings = profileRuntimeSettings(config.profile);
+  const bind = (workspace) => [
+    "      - type: bind",
+    `        source: ${JSON.stringify(workspace.hostPath)}`,
+    `        target: ${JSON.stringify(workspace.containerPath)}`,
+    `        read_only: ${workspace.readOnly}`
+  ];
+  const userServices = users.flatMap((user) => {
+    const slug = userSlug(user.id);
+    return [
+      `  spaceapp-cli-${slug}:`,
+      "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}",
+      "    restart: unless-stopped",
+      "    init: true",
+      "    security_opt:",
+      "      - no-new-privileges:true",
+      `    mem_limit: "${user.memoryLimit ?? settings.cliMemoryLimit}"`,
+      "    cpus: \"${SPACEAPP_CLI_CPU_LIMIT}\"",
+      "    environment:",
+      '      SPACE_PUBLIC_DISTRIBUTION: "true"',
+      "      SPACE_MEMORY_ROOT: /var/lib/spaceapp/memory",
+      "      SPACE_CLI_HOST_SOCKET: /run/spaceapp-cli/host.sock",
+      "    volumes:",
+      `      - spaceapp-cli-state-${slug}:/var/lib/spaceapp-cli`,
+      `      - spaceapp-memory-${slug}:/var/lib/spaceapp/memory`,
+      `      - spaceapp-cli-socket-${slug}:/run/spaceapp-cli`,
+      `      - spaceapp-workspaces-${slug}:/workspaces`,
+      `      - ./secrets/users/${slug}/providers:/run/spaceapp-secrets/providers:ro`,
+      ...user.workspaces.flatMap(bind),
+      "    networks:",
+      "      - spaceapp"
+    ];
+  });
   return [
     "services:",
     "  spaceapp-core:",
-    ...service,
+    "    environment:",
+    '      SPACE_MULTI_USER_ENABLED: "true"',
+    "      SPACE_CLI_HOST_SOCKETS_FILE: /etc/spaceapp/cli-hosts.json",
+    "    volumes:",
+    ...(mounts.length > 0 ? mounts : []),
+    "      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro",
+    ...users.map((user) => `      - spaceapp-cli-socket-${userSlug(user.id)}:/run/spaceapp-cli-users/${userSlug(user.id)}`),
     "  spaceapp-cli:",
     ...service,
     ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
+    ...userServices,
+    ...(users.length > 0 ? ["volumes:"] : []),
+    ...users.flatMap((user) => ["cli-state", "memory", "cli-socket", "workspaces"].map((kind) => `  spaceapp-${kind}-${userSlug(user.id)}: {}`)),
     ""
   ].join("\n");
+}
+
+/** The core's map of each user to the pane host socket of their container (SPACE_CLI_HOST_SOCKETS_FILE). */
+export function renderCliHosts(config) {
+  validateConfig(config);
+  return `${JSON.stringify(Object.fromEntries((config.users ?? []).map((user) =>
+    [user.id, `/run/spaceapp-cli-users/${userSlug(user.id)}/host.sock`])), null, 2)}\n`;
 }
 
 export function renderHostAccessCompose(config) {
@@ -670,7 +788,7 @@ export function composeCommand(action, root, options = {}) {
     status: ["ps"],
     logs: ["logs", "--tail", String(options.lines || 200)],
     pull: ["pull"],
-    syncCredentials: ["up", "-d", "--no-deps", "--force-recreate", "spaceapp-cli"],
+    syncCredentials: ["up", "-d", "--no-deps", "--force-recreate", options.service ?? "spaceapp-cli"],
     // Workspace bind mounts belong to these two services; compose recreates them only when the mounts changed.
     syncWorkspaces: ["up", "-d", "spaceapp-core", "spaceapp-cli"],
     // The CLIs' own settings (MCP servers, base URLs), never their logins: these files hold no credentials.
@@ -788,6 +906,9 @@ export async function writeRuntimeFiles(root, config) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
+  // The core reads it as uid 10001 through a read-only bind mount.
+  await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
+  for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
 }
 
