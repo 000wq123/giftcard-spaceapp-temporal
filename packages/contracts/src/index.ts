@@ -47,6 +47,7 @@ export * from "./marketing-copilot.js";
 export * from "./freelance-copilot.js";
 export * from "./notifications.js";
 export * from "./council.js";
+export * from "./nous.js";
 export * from "./version.js";
 export * from "./observability.js";
 

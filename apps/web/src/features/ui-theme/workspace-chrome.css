@@ -1808,7 +1808,7 @@
   max-width: 320px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .live-rail-conversation-window {
     left: 8px !important;
     right: 8px !important;
@@ -2307,9 +2307,11 @@ body:has(.desktop-navigation-menu.is-mobile) .health-indicator-rail { visibility
   display: flex;
   align-items: center;
   gap: 10px;
+  /* left: 50% alone would cap the width at half the viewport: on a phone the text wrapped into a tall ellipse. */
+  width: max-content;
   max-width: min(92vw, 480px);
   padding: 10px 16px;
-  border-radius: 9999px;
+  border-radius: 18px;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.3;

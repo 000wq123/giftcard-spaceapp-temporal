@@ -257,7 +257,8 @@ export function codexInputReady(output: string): boolean {
 // What each terminal CLI shows once its composer owns input (seen in tmux on 2026-10-14). Text sent to a CLI
 // that has just started arrives before that and is lost: Claude, Droid and Hermes dropped Space Control prompts.
 const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
-  "cli:claude": /\? for shortcuts|shift\+tab to cycle/,
+  // Claude 2.1.302 in a 42-column pane cuts its hints ("⏵⏵ bypass permissions on (shift+tab to"); the mode label stays.
+  "cli:claude": /\? for shortcuts|shift\+tab to cycle|(?:⏵⏵|⏸) [a-z ]+ on\b/,
   "cli:qwen": /type your message/,
   "cli:cursor": /plan, search, build anything|run everything/,
   "cli:omp": /π >|⇧⇥ to change thinking/,
@@ -634,6 +635,18 @@ export interface CliTerminalManagerOptions {
   ) => Promise<void>;
   onTelemetry?: (event: CliTerminalManagerTelemetryEvent) => void;
   onTaskInput?: (paneId: string) => void;
+  /** True when this user may only watch the pane's terminal (shared rooms; operator-approved 2026-10-16). */
+  observeOnly?: (pane: Pane, userId: string) => Promise<boolean>;
+  /**
+   * Per-user pane hosts (multi-user, operator-approved 2026-10-17): user id to that user's host socket, and the user
+   * whose host runs a pane. A pane whose user has no own host keeps the default host and its lanes.
+   */
+  userHostSockets?: Readonly<Record<string, string>> | null;
+  paneHostUser?: (paneId: string) => Promise<string | null>;
+  /** With per-user hosts, whether a user without an own host may use the default one (ADMIN, OPERATOR). */
+  defaultHostAllowed?: (userId: string) => Promise<boolean>;
+  /** Tests replace the per-user host clients. */
+  userHostClient?: (userId: string) => CliHostGateway;
   withOperatorMutation?: <T>(paneId: string, work: () => Promise<T>) => Promise<T>;
   /**
    * The exact native task to resume when a host-lost session of a runtime that declares
@@ -1304,6 +1317,10 @@ export class CliTerminalManager {
   private readonly hostClient: CliHostGateway;
   private readonly hostClients: readonly CliHostGateway[];
   private readonly adminHostClient: CliHostGateway;
+  private readonly userHosts = new Map<string, CliHostGateway>();
+  private readonly paneHostUsers = new Map<string, Promise<string | null>>();
+  private readonly resolvedPaneHostUsers = new Map<string, string | null>();
+  private readonly defaultHostUsers = new Map<string, Promise<boolean>>();
   private nextSocketConnectionOrder = 0;
 
   constructor(private readonly options: CliTerminalManagerOptions) {
@@ -1323,6 +1340,12 @@ export class CliTerminalManager {
             })
           )
         ];
+    for (const [userId, socketPath] of Object.entries(options.userHostSockets ?? {})) {
+      this.userHosts.set(userId, options.userHostClient?.(userId) ?? new CliHostClient({
+        socketPath,
+        onTransportClosed: () => this.handleHostTransportClosed(null, userId)
+      }));
+    }
     this.adminHostClient = options.adminHostClient ?? new CliHostClient({
       socketPath: options.config.cliAdminHostSocketPath,
       onTransportClosed: () => this.handleHostTransportClosed(-1)
@@ -1679,6 +1702,7 @@ export class CliTerminalManager {
   async reapDetachedSessions(): Promise<CliHostReapAggregate> {
     const hosts = [
       { hostId: "main" as const, enabled: this.options.config.cliEnabled, client: this.hostClient },
+      ...[...this.userHosts.values()].map((client) => ({ hostId: "main" as const, enabled: this.options.config.cliEnabled, client })),
       { hostId: "root" as const, enabled: this.options.config.cliRootEnabled, client: this.adminHostClient }
     ].filter((host) => host.enabled);
     const settled = await Promise.all(hosts.map(async (host) => {
@@ -1702,8 +1726,57 @@ export class CliTerminalManager {
 
   private hostForRuntime(runtimeId: string, sessionId?: string): CliHostGateway {
     if (runtimeId === "cli:root") return this.adminHostClient;
-    if (!sessionId || this.hostClients.length === 1) return this.hostClient;
-    return this.hostClients[cliHostLaneIndex(sessionId, this.hostClients.length)] ?? this.hostClient;
+    const lane = !sessionId || this.hostClients.length === 1
+      ? this.hostClient
+      : this.hostClients[cliHostLaneIndex(sessionId, this.hostClients.length)] ?? this.hostClient;
+    return sessionId && this.options.userHostSockets ? this.userRoutedHost(lane) : lane;
+  }
+
+  /** The pane's user, looked up once per pane; null keeps the default host. */
+  private paneHostUser(paneId: string): Promise<string | null> {
+    let user = this.paneHostUsers.get(paneId);
+    if (!user) {
+      // A failed lookup refuses this call and is tried again next time; it never falls back to the default host
+      // (operator-approved 2026-10-17).
+      user = (this.options.paneHostUser?.(paneId) ?? Promise.resolve(null))
+        .then((resolved) => { this.resolvedPaneHostUsers.set(paneId, resolved); return resolved; },
+          (error: unknown) => { this.paneHostUsers.delete(paneId); throw error; });
+      this.paneHostUsers.set(paneId, user);
+    }
+    return user;
+  }
+
+  /**
+   * Every session call goes to the host of its pane's user (by the identity's pane), else to the default lane. A USER
+   * without an own host gets no CLI rather than the owner's container and keys (operator-approved 2026-10-17).
+   */
+  private userRoutedHost(lane: CliHostGateway): CliHostGateway {
+    const pick = async (identity: CliHostIdentity) => {
+      const user = await this.paneHostUser(identity.paneId);
+      const own = user ? this.userHosts.get(user) : undefined;
+      if (own || !user) return own ?? lane;
+      let allowed = this.defaultHostUsers.get(user);
+      if (!allowed) {
+        allowed = (this.options.defaultHostAllowed?.(user) ?? Promise.resolve(false)).catch(() => false);
+        this.defaultHostUsers.set(user, allowed);
+      }
+      if (!await allowed) {
+        throw new SpaceFeatureDisabledError("CLI_USER_HOST_MISSING", "This user has no CLI container yet. The owner adds it with: run-spaceapp user add <user-id>.");
+      }
+      return lane;
+    };
+    return {
+      ...(lane.ping ? { ping: () => lane.ping!() } : {}),
+      ...(lane.reapDetached ? { reapDetached: () => lane.reapDetached!() } : {}),
+      health: () => lane.health(),
+      inspect: async (identity) => (await pick(identity)).inspect(identity),
+      attach: async (input, listener) => (await pick(input.identity)).attach(input, listener),
+      input: async (identity, ...rest) => (await pick(identity)).input(identity, ...rest),
+      resize: async (identity, ...rest) => (await pick(identity)).resize(identity, ...rest),
+      detach: async (identity, attachmentId) => (await pick(identity)).detach(identity, attachmentId),
+      terminate: async (identity) => (await pick(identity)).terminate(identity),
+      close: () => lane.close()
+    };
   }
 
   private pruneSessionAllocations(nowNs = process.hrtime.bigint()): void {
@@ -1716,6 +1789,20 @@ export class CliTerminalManager {
   private sessionAllocationMonotonicNs(sessionId: string): string | undefined {
     this.pruneSessionAllocations();
     return this.sessionAllocations.get(sessionId)?.allocatedAtNs.toString();
+  }
+
+  /** Removing a room share ends that user's terminals in the room at once (operator-approved 2026-10-16). */
+  closeUserRoomSockets(userId: string, roomId: string): number {
+    let closed = 0;
+    for (const managed of this.sessions.values()) {
+      if (managed.roomId !== roomId) continue;
+      for (const [socket, client] of managed.socketClients) {
+        if (client.userId !== userId || !socketIsOpen(socket)) continue;
+        socket.close(1008, "Room share removed");
+        closed += 1;
+      }
+    }
+    return closed;
   }
 
   issueTicket(paneId: string, sessionId: string, ttlMs: number): PaneCliWebSocketToken {
@@ -2431,18 +2518,22 @@ export class CliTerminalManager {
     this.sessions.clear();
     this.tickets.clear();
     await Promise.all(
-      [...new Set([...this.hostClients, this.adminHostClient])].map((client) => client.close())
+      [...new Set([...this.hostClients, this.adminHostClient, ...this.userHosts.values()])].map((client) => client.close())
     );
   }
 
-  private handleHostTransportClosed(hostIndex: number): void {
+  /** A lost default lane (hostIndex) or a lost per-user host (userId) closes the sockets of the sessions it ran. */
+  private handleHostTransportClosed(hostIndex: number | null, userId?: string): void {
     const managedSessions = [...this.sessions.values()];
     for (const managed of managedSessions) {
       if (managed.closed) continue;
+      const user = managed.runtimeId === "cli:root" ? null : this.resolvedPaneHostUsers.get(managed.paneId) ?? null;
+      const onUserHost = user !== null && this.userHosts.has(user);
+      if (userId !== undefined ? !onUserHost || user !== userId : onUserHost) continue;
       const lane = managed.runtimeId === "cli:root" ? -1 : this.hostClients.length === 1
         ? 0
         : cliHostLaneIndex(managed.sessionId, this.hostClients.length);
-      if (lane !== hostIndex) continue;
+      if (userId === undefined && lane !== hostIndex) continue;
       // The host process is gone (e.g. guarded service restart). Do NOT mark
       // the session EXITED in the store: keeping it RUNNING lets clients
       // reattach after the host returns and recreate the process with exact
@@ -2491,7 +2582,10 @@ export class CliTerminalManager {
       throw new SpaceConflictError("CLI session is not active.");
     }
 
-    const readOnlyObserver = input.proofScope === "READ_ONLY";
+    // In a shared room a user who does not own the pane attaches like a read-only proof: no input, no control, never
+    // starts the owner's CLI (operator-approved 2026-10-16).
+    const proofScope = input.proofScope ?? (await this.options.observeOnly?.(pane, input.userId) ? "READ_ONLY" as const : undefined);
+    const readOnlyObserver = proofScope === "READ_ONLY";
     const runtime = readOnlyObserver
       ? activeCliSessionObserverRuntime(this.options.config, session.runtimeId)
       : (await (this.options.discoverRuntimesForAttach ?? this.options.discoverRuntimes)()).data.find((candidate) => candidate.id === session.runtimeId);
@@ -2539,11 +2633,11 @@ export class CliTerminalManager {
       browserClientId: input.browserClientId ?? input.clientId ?? null,
       tabLineageId: input.tabLineageId ?? null,
       pageClientId: input.pageClientId ?? null,
-      clientMode: input.proofScope === "READ_ONLY"
+      clientMode: readOnlyObserver
         ? "OBSERVER"
         : input.clientMode ?? "INTERACTIVE",
       requestedLeaseId: input.requestedLeaseId ?? null,
-      proofScope: input.proofScope ?? null,
+      proofScope: proofScope ?? null,
       leaseId: null,
       requestId: input.requestId,
       connectionOrder: input.connectionOrder,
@@ -2558,7 +2652,7 @@ export class CliTerminalManager {
       const shouldReplay = !attach.spawned || attach.restoredTransport || attach.recreatedAfterHostLoss;
       if (shouldReplay) managed.socketReplayBuffers.set(socket, []);
       managed.sockets.add(socket);
-      if (protocolVersion === 1 && (
+      if (protocolVersion === 1 && !readOnlyObserver && (
         !managed.legacyControllerSocket ||
         !socketIsOpen(managed.legacyControllerSocket) ||
         (managed.socketClients.get(managed.legacyControllerSocket)?.connectionOrder ?? -1) <= input.connectionOrder
@@ -3533,6 +3627,11 @@ export class CliTerminalManager {
     mutation: "input" | "resize" | "interrupt"
   ): Promise<boolean> {
     if (client.protocolVersion === 1) {
+      // An observer or read-only client never mutates the terminal on protocol v1 either (operator-approved 2026-10-17).
+      if (client.clientMode === "OBSERVER" || client.proofScope === "READ_ONLY") {
+        this.sendControlDenied(managed, client, socket, "CLI_OBSERVER_MUTATION_DENIED", "Observer clients cannot change this terminal.");
+        return false;
+      }
       if (await this.options.store.getActivePaneCliTerminalControlLease(managed.sessionId)) {
         this.sendControlDenied(managed, client, socket, "CLI_CONTROL_REQUIRED", "Terminal control is held by a protocol-v2 page.");
         return false;

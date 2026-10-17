@@ -15,12 +15,14 @@ import {
   Settings,
   Terminal,
   type LucideIcon,
-  AgentFiles
+  AgentFiles,
+  Nous
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 
 export const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: string; surfaceLabel: string }> = {
   rooms: { icon: PanelLeft, label: "rooms", surfaceLabel: "Rooms" },
+  nous: { icon: Nous, label: "nous", surfaceLabel: "Nous" },
   notifications: { icon: Bell, label: "notifications", surfaceLabel: "Notifications" },
   "room-agent": { icon: Bot, label: "room agent", surfaceLabel: "Room Agent" },
   "shared-chat": { icon: MessagesSquare, label: "council", surfaceLabel: "Council" },

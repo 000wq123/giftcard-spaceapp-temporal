@@ -72,7 +72,10 @@ describe("SystemAnalyticsWorkspace", () => {
     const summary = await screen.findByRole("region", { name: "Period token totals" });
     expect(within(summary).getByText("$1.50")).toBeTruthy();
     expect(within(summary).getByText("3 turns have no price")).toBeTruthy();
-    expect(within(summary).getByText("1,005 · 160")).toBeTruthy();
+    // Space Gateway and direct each show their tokens and API value under one split bar.
+    const routes = summary.querySelector(".token-route-split")!;
+    expect([...routes.querySelectorAll("dl > div")].map(part => part.textContent)).toEqual(["Space Gateway1,005$1.25", "Direct160$0.25"]);
+    expect(routes.querySelectorAll(".token-split-bar i")).toHaveLength(2);
     expect(screen.getByText("API value $1.50", { selector: ".system-analytics-provider-card small" })).toBeTruthy();
 
     // Tokens over time: one bar per hour, a tooltip per bar, and the same figures as a table.

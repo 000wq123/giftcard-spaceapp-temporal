@@ -17,6 +17,7 @@ export function desktopActionVisible(id: string, adminMode: boolean): boolean {
 export const desktopActionDescriptions: Record<string, string> = {
   "advanced-settings": "All installation settings, providers, connections, and diagnostics.",
   "surface-rooms": "Choose a room or organize your workspace.",
+  "surface-nous": "The mind of SpaceApp: one conversation over every room, pane, copilot and plan.",
   "surface-room-agent": "Ask an assistant to coordinate this room.",
   "surface-shared-chat": "Several models answer one question, review each other and agree on a Top 3.",
   "surface-media": "Images, recordings, and other media.",

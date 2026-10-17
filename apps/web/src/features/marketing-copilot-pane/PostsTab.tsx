@@ -89,6 +89,19 @@ function PostCard({ post, paneId, onChanged }: { post: MarketingPost; paneId: st
           </div>
         </>
       )}
+      {post.assets.length ? (
+        // What the copilot will upload with the post: captures play here; pane files show their kind.
+        <ul className="mk-assets" aria-label="Post media">
+          {post.assets.map((asset, index) => (
+            <li key={index}>
+              {asset.artifactId && asset.kind === "VIDEO" ? <video src={api.artifactFileUrl(asset.artifactId)} controls playsInline preload="metadata" aria-label={asset.label} />
+                : asset.artifactId && asset.kind === "IMAGE" ? <img src={api.artifactFileUrl(asset.artifactId)} alt={asset.label} loading="lazy" />
+                : <span className="jc-tag">{asset.kind.toLowerCase()}</span>}
+              <span className="jc-muted">{asset.label}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {error ? <p className="jc-message" role="alert">{error}</p> : null}
     </li>
   );

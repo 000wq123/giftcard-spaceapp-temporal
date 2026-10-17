@@ -1500,11 +1500,11 @@ function terminalCurrentScreenText(terminal: XtermTerminal): string {
 }
 
 // Claude Code status: a spinner line "✻ Razzmatazzing… (12s · thinking with xhigh effort)" while a turn
-// runs, and a permission footer that gains "esc to interrupt" (truncated to "esc to …" in narrow panes).
+// runs, and a permission footer that gains "esc to interrupt" (truncated to "esc to …" or "esc t…" in narrow panes).
 // Finished turns read "✻ Baked for 35s · done 10:01 AM", which must not count as running.
 const CLAUDE_SPINNER_LINE_PATTERN = /^\s*[✢✳✶✻✽*·]\s+[A-Z][\w-]*…(?:\s+\(\s*((?:\d+h\s*)?(?:\d+m\s*)?\d+s)\b[^\n]*)?\s*$/m;
 const CLAUDE_FOOTER_LINE_PATTERN = /\(shift\+tab to cycle\)|\? for shortcuts|← for agents/i;
-const CLAUDE_FOOTER_INTERRUPT_PATTERN = /esc to (?:interrupt|…)/i;
+const CLAUDE_FOOTER_INTERRUPT_PATTERN = /esc t(?:o(?: (?:interrupt|…)|…)|…)/i;
 
 function claudeScreenRunningState(screenText: string): boolean | null {
   if (CLAUDE_SPINNER_LINE_PATTERN.test(screenText)) return true;

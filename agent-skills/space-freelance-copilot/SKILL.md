@@ -17,7 +17,7 @@ developer you sell. Plan: clipboard PLAN `clipboard:EFWug5E7pVln`.
 
 | Server | Tools |
 |---|---|
-| `space_freelancecopilot` | `space_freelance_state`; loop `space_freelance_next`, `space_freelance_report`; leads `space_freelance_leads_list`, `space_freelance_lead_read`, `space_freelance_lead_add`, `space_freelance_lead_update`, `space_freelance_client_ready`; messages `space_freelance_message_draft`, `space_freelance_message_update`, `space_freelance_message_incoming`; operator `space_freelance_review_request`, `space_freelance_review_wait`, `space_freelance_question_ask`, `space_freelance_question_wait`; sending `space_freelance_send_begin`, `space_freelance_send_done`, `space_freelance_send_failed`; accounts `space_freelance_accounts_list`, `space_freelance_account_update`, `space_freelance_profile`; mail `space_freelance_mail_recent`, `space_freelance_mail_read`, `space_freelance_mail_wait_for_code`, `space_freelance_mail_find_link`; `space_freelance_memory_recall`, `space_freelance_memory_remember`; `space_freelance_rules_list`, `space_freelance_rule_propose`; `space_freelance_note`. |
+| `space_freelancecopilot` | `space_freelance_state`; loop `space_freelance_next`, `space_freelance_report`; leads `space_freelance_leads_list`, `space_freelance_lead_read`, `space_freelance_lead_add`, `space_freelance_lead_update`, `space_freelance_client_ready`; messages `space_freelance_message_draft`, `space_freelance_message_update`, `space_freelance_message_incoming`; operator `space_freelance_review_request`, `space_freelance_review_wait`, `space_freelance_question_ask`, `space_freelance_question_wait`; sending `space_freelance_send_begin`, `space_freelance_send_done`, `space_freelance_send_failed`; accounts `space_freelance_accounts_list`, `space_freelance_account_update`, `space_freelance_profile`; bookmarks `space_freelance_bookmarks_list`, `space_freelance_bookmark_save` (a profile, dashboard or sent proposal the operator will want to reopen), `space_freelance_bookmark_open`; mail `space_freelance_mail_recent`, `space_freelance_mail_read`, `space_freelance_mail_wait_for_code`, `space_freelance_mail_find_link`; `space_freelance_memory_recall`, `space_freelance_memory_remember`; `space_freelance_rules_list`, `space_freelance_rule_propose`; `space_freelance_note`. |
 | `space_browser` | `space_browser_start` (this pane), `space_browser_navigate`, `space_browser_tabs`, `space_browser_screenshot` (evidence), `space_browser_request_handoff` (kind `LOGIN`, `MFA`, `CAPTCHA`), `space_browser_handoff_status`. |
 | `space_playwright_pane` | Element-level work on the same pane browser: `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_file_upload`, `browser_press_key`, `browser_wait_for`. It refuses while the operator holds control. |
 
@@ -37,7 +37,9 @@ proposal and follow-up playbook), `references/scams.md` (what to skip and report
    and PRICING memories (pinned). The positioning pack in `references/proposals.md` is the starting point; it is
    not a fact source until the operator confirmed it.
 3. Accounts not ACTIVE: register them one platform at a time (`references/channels.md`), with the channel's alias
-   as the email (upwork@example.invalid, contra@example.invalid, ...). Names, languages, work history and education for the
+   as the email (contra@example.invalid, fiverr@example.invalid, ...). Upwork is the exception (operator rule 2026-10-17): it signs
+   in only with "Continue with Google" on the pane's Google account (state `signIn: "GOOGLE"`), never the
+   email/password form or upwork@example.invalid; when it is signed out, hand the sign-in to the operator. Names, languages, work history and education for the
    forms come from `space_freelance_profile` (the operator's Job Copilot profile); ask only for what it lacks.
    Record progress with `space_freelance_account_update`.
    Codes and confirmation links arrive in work@example.invalid: `space_freelance_mail_wait_for_code {fromContains:
@@ -108,7 +110,7 @@ questions). The operator gets a notification and takes over; you no longer negot
 
 ## Hard rules
 
-- One account per person per platform; the aliases are login emails only. Never another person's account.
+- One account per person per platform; the aliases are login emails only (Upwork: Continue with Google only). Never another person's account.
 - Before a contract: no email addresses, phone numbers, messenger names or outside payment in messages, no
   links outside the platform except the operator's own sites (oll4.com, spaceapp.dev, GitHub, Loom). The server
   refuses them anyway.

@@ -265,8 +265,10 @@ export function buildDotToolCatalog(context: DotToolCatalogContext): DotToolEntr
     add({ id, title, description: `${controlToolDescriptions[tool]} ${controlDetails[tool] ?? ""}`.trim().slice(0, 1000), source: "SPACE_CONTROL", risk,
       inputSchema: jsonSchema(controlToolSchemas[tool], tool === "space_execute" ? ["userExplicitlyAuthorized"] : []) });
   }
-  add({ id: "space.screenshot", title: "Space screenshot", description: controlToolDescriptions.space_screenshot, source: "SPACE_CONTROL",
-    risk: "READ", inputSchema: jsonSchema(controlToolSchemas.space_screenshot) });
+  // Dots capture stills only (operator decision 2026-10-17).
+  add({ id: "space.screenshot", title: "Space screenshot", source: "SPACE_CONTROL",
+    description: "Photo of the room as the Space App shows it (read-only), saved in the room's Media. aspect picks a social size (16:9, 1:1, 4:5, 9:16 mobile, full window), viewport a device size; paneId, dock, settings or health pick what is shown, crop cuts the shot to the pane or dock.",
+    risk: "READ", inputSchema: jsonSchema(controlToolSchemas.space_screenshot.omit({ video: true })) });
   for (const operation of controlResourceOperations) {
     const forbidden = (dotForbiddenResourceOperations as readonly string[]).includes(operation);
     add({ id: `resource.${operation}`, title: `Resource ${operation}`,

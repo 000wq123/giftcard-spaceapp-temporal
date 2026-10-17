@@ -7,13 +7,15 @@ const mocks = vi.hoisted(() => ({
   createClipboardItem: vi.fn(),
   setClipboardItemCompleted: vi.fn(),
   deleteClipboardItem: vi.fn(),
-  clearClipboardItems: vi.fn()
+  clearClipboardItems: vi.fn(),
+  rooms: vi.fn()
 }));
 
 vi.mock("../src/api.js", () => ({ api: mocks }));
 
 import { SPACE_CLIPBOARD_ITEM_MIME, SPACE_CLIPBOARD_ITEM_TITLE_MIME } from "../src/features/clipboard-dock/clipboard-events.js";
 import { CLIPBOARD_SOURCE_FILTER_STORAGE_KEY } from "../src/features/clipboard-dock/ClipboardDock.js";
+import { SPACE_OPEN_PLAN_PANE_EVENT } from "../src/features/clipboard-dock/plan-assignee.js";
 import { ClipboardDock } from "../src/features/clipboard-dock/ClipboardDock.js";
 import { formatAppDateTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
@@ -91,6 +93,7 @@ describe("ClipboardDock", () => {
     mocks.deleteClipboardItem.mockResolvedValue({ id: item.id, deleted: true });
     mocks.setClipboardItemCompleted.mockResolvedValue({ ...planItem, isCompleted: true });
     mocks.clearClipboardItems.mockResolvedValue({ deletedCount: 1 });
+    mocks.rooms.mockResolvedValue({ data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 1 } });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) }
@@ -275,9 +278,56 @@ describe("ClipboardDock", () => {
     expect(await screen.findByText("Rollout plan")).toBeTruthy();
     expect(screen.getByRole("listitem").className).toContain("is-plan");
     expect(screen.getByText("Plan", { selector: ".dock-kit-badge" })).toBeTruthy();
-    expect(screen.getAllByText((_, element) => Boolean(element?.matches(".clipboard-plan-min-model, .clipboard-plan-step-model") && element.textContent?.trim() === "gpt-5.6-sol")).length).toBeGreaterThanOrEqual(2);
+    // The plan's model shows once on the card, not again on each stage that uses it.
+    expect(screen.getAllByText((_, element) => Boolean(element?.matches(".clipboard-plan-min-model") && element.textContent?.trim() === "gpt-5.6-sol"))).toHaveLength(1);
+    expect(document.querySelector(".clipboard-plan-step-model")).toBeNull();
     expect(document.body.textContent).not.toMatch(/🧠|🤖/);
     expect(screen.getByText("(antigravity)")).toBeTruthy();
+  });
+
+  it("shows who took a plan in which room, its stages in order, and a compact completed toggle", async () => {
+    const step = (order: number, title: string, status: "PENDING" | "COMPLETED" = "PENDING") => ({
+      ...planItem.steps[0]!, id: `step-${order}`, order, title, status, progress: status === "COMPLETED" ? 100 : 0, agent: null
+    });
+    mocks.clipboardItems.mockResolvedValue({
+      data: [{
+        ...planItem,
+        roomId: "room:ops",
+        paneTitle: "Cody",
+        steps: [step(1, "Step 1"), step(7, "Step 7"), step(3, "Step 3", "COMPLETED"), step(2, "Review [claude-opus-5-5 / high]"), step(4, "Step 4"), step(5, "Step 5"), step(6, "Step 6")]
+      }],
+      pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
+    });
+    mocks.rooms.mockResolvedValue({ data: [{ id: "room:ops", name: "Ops" }], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } });
+    render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+
+    await waitFor(() => expect(document.querySelector(".clipboard-plan-assignee")?.textContent).toBe("antigravity · Linked to Cody · Room: Ops"));
+    const card = screen.getByRole("listitem");
+    // The time stays in the meta line; the agent and room have their own line.
+    expect(card.querySelector(".dock-kit-meta-text")?.textContent).not.toContain("Cody");
+    const titles = () => Array.from(card.querySelectorAll(".clipboard-plan-step-title")).map((element) => element.textContent);
+    expect(titles()).toEqual(["Step 1", "Review", "Step 3", "Step 4", "Step 5"]);
+    // Only the stage with a model of its own carries a model tag.
+    expect(Array.from(card.querySelectorAll(".clipboard-plan-step-model")).map((element) => element.textContent?.trim())).toEqual(["claude-opus-5-5 · high"]);
+    // The collapsed card shows the plan's prose without its heading.
+    expect(card.querySelector(".clipboard-card-snippet")?.textContent).toBe("Continue from here.");
+
+    fireEvent.click(within(card).getByRole("button", { name: "+2 more stages" }));
+    expect(titles()).toEqual(["Step 1", "Review", "Step 3", "Step 4", "Step 5", "Step 6", "Step 7"]);
+    expect(card.querySelector(".clipboard-card-snippet")).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Collapse" }));
+    expect(titles()).toHaveLength(5);
+
+    // The icon at the end of the line asks the workspace to open the plan's room and pane.
+    const opened = vi.fn();
+    window.addEventListener(SPACE_OPEN_PLAN_PANE_EVENT, opened);
+    fireEvent.click(within(card).getByRole("button", { name: "Open Cody in Ops" }));
+    window.removeEventListener(SPACE_OPEN_PLAN_PANE_EVENT, opened);
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect((opened.mock.calls[0]![0] as CustomEvent).detail).toEqual({ roomId: "room:ops", paneId: "pane:one" });
+
+    const toggle = screen.getByRole("switch", { name: "Show completed plans" }).closest("label")!;
+    expect(toggle.textContent).not.toMatch(/Disabled|Enabled/);
   });
 
   it("restores the last selected source filter when the dock opens", async () => {

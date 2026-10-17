@@ -380,7 +380,7 @@ export function TaskDock({ canInsert, activePaneLabel, activeCliPaneId = null, o
             </div>
             {repeat !== "NONE" ? (
               <span className="task-editor-hint">
-                {/^\d+$/.test(repeat) ? "Starts now. " : ""}Times in {timeZone}.{runIn ? " Space types the task into that CLI when it is due, only at an empty prompt." : ""}
+                {/^\d+$/.test(repeat) ? "Starts now. " : ""}Times in {timeZone}.{runIn ? " Space types the task into that CLI when it is due, only at an empty prompt; it does not track whether the CLI finishes it." : ""}
               </span>
             ) : null}
             <div className="dock-kit-editor-footer">

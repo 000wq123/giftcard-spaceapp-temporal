@@ -485,7 +485,7 @@ import {
   type CliAuthCapture,
   type ConfigImportHooks
 } from "@space/runtime";
-import type { SetupOnboarding, AdminUserItem, UserInvite } from "@space/contracts";
+import type { SetupOnboarding, AdminUserItem, UserInvite, RoomShare } from "@space/contracts";
 import type { TelegramOutboxPersistence, TelegramPersistence } from "@space/runtime";
 import { PostgresTelegramPersistence } from "./telegram-persistence.js";
 
@@ -1965,7 +1965,11 @@ const paneBrowserSessionSelect = `
     resolved_stream_mode AS "resolvedStreamMode",
     runtime_state AS "runtimeState",
     capacity_state AS "capacityState",
-    control_state AS "controlState",
+    -- A lease past its expiry holds nothing even before anyone marks it EXPIRED (an acquire whose answer was lost).
+    CASE WHEN control_state <> 'UNCONTROLLED' AND NOT EXISTS (
+      SELECT 1 FROM browser_control_leases held
+      WHERE held.session_id = pane_browser_sessions.session_id AND held.status = 'ACTIVE' AND held.expires_at > now()
+    ) THEN 'UNCONTROLLED' ELSE control_state END AS "controlState",
     pages,
     active_page_id AS "activePageId",
     worker_heartbeat_at AS "workerHeartbeatAt",
@@ -2745,6 +2749,10 @@ function userInviteFromRow(row: UserInviteRow): UserInvite {
     expiresAt: toIso(row.expiresAt), acceptedAt: toIso(row.acceptedAt), acceptedUserId: row.acceptedUserId, revokedAt: toIso(row.revokedAt)
   };
 }
+
+interface RoomShareRow { roomId: string; userId: string; permission: RoomShare["permission"]; createdBy: string; createdAt: Date | string }
+const roomShareColumns = `room_id AS "roomId", user_id AS "userId", permission, created_by AS "createdBy", created_at AS "createdAt"`;
+const roomShareFromRow = (row: RoomShareRow): RoomShare => ({ ...row, createdAt: toIso(row.createdAt) });
 
 function toIso(value: Date | string): string;
 function toIso(value: Date | string | null): string | null;
@@ -5543,6 +5551,51 @@ export class PostgresSpaceStore implements SpaceStore {
       [userId]
     );
     return result.rows[0]?.disabled === true;
+  }
+
+  async setRoomShare(share: RoomShare): Promise<RoomShare> {
+    const result = await this.pool.query<RoomShareRow>(
+      `INSERT INTO room_shares (room_id, user_id, permission, created_by, created_at) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (room_id, user_id) DO UPDATE SET permission = EXCLUDED.permission, created_by = EXCLUDED.created_by
+       RETURNING ${roomShareColumns}`,
+      [share.roomId, share.userId, share.permission, share.createdBy, share.createdAt]
+    );
+    return roomShareFromRow(result.rows[0]!);
+  }
+
+  async deleteRoomShare(roomId: string, userId: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM room_shares WHERE room_id = $1 AND user_id = $2", [roomId, userId]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async getRoomShare(roomId: string, userId: string): Promise<RoomShare | null> {
+    const result = await this.pool.query<RoomShareRow>(
+      `SELECT ${roomShareColumns} FROM room_shares WHERE room_id = $1 AND user_id = $2`, [roomId, userId]);
+    return result.rows[0] ? roomShareFromRow(result.rows[0]) : null;
+  }
+
+  async listRoomShares(roomId: string): Promise<RoomShare[]> {
+    const result = await this.pool.query<RoomShareRow>(
+      `SELECT ${roomShareColumns} FROM room_shares WHERE room_id = $1 ORDER BY created_at ASC`, [roomId]);
+    return result.rows.map(roomShareFromRow);
+  }
+
+  async listSharedRooms(userId: string): Promise<Room[]> {
+    const result = await this.pool.query<RoomRow>(
+      `${roomSelect} WHERE id IN (SELECT room_id FROM room_shares WHERE user_id = $1) ORDER BY room_order ASC, created_at ASC`,
+      [userId]
+    );
+    return result.rows.map(mapRoom);
+  }
+
+  async setPaneOwner(paneId: string, userId: string): Promise<void> {
+    await this.pool.query("UPDATE panes SET owner_user_id = $2 WHERE id = $1", [paneId, userId]);
+  }
+
+  async getPaneOwner(paneId: string): Promise<string | null> {
+    const result = await this.pool.query<{ ownerUserId: string | null }>(
+      'SELECT owner_user_id AS "ownerUserId" FROM panes WHERE id = $1', [paneId]);
+    return result.rows[0]?.ownerUserId ?? null;
   }
 
   async updateUserRole(userId: string, role: "ADMIN" | "USER"): Promise<AuthUser> {

@@ -1,0 +1,153 @@
+/* Nous dock on the shared dock kit: colors come from the --dock-* tokens, so every theme follows. */
+
+.dock-panel.nous-dock {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dock-gap, 0.6rem);
+  overflow: hidden;
+}
+
+.nous-dock > * { flex: 0 0 auto; }
+
+.nous-hero {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.5rem 0;
+}
+
+.nous-brain { display: block; color: var(--dock-accent); filter: drop-shadow(0 0 10px var(--dock-accent-soft)); }
+
+.nous-hero-text h2 { margin: 0; font-size: 1.15rem; letter-spacing: 0.04em; color: var(--dock-text); }
+.nous-tagline { margin: 0.1rem 0 0; color: var(--dock-muted); font-size: var(--dock-font-sm); }
+.nous-status { margin: 0.25rem 0 0; font-size: var(--dock-font-sm); color: var(--dock-muted); }
+.nous-status.is-idle { color: var(--dock-success); }
+.nous-status.is-thinking { color: var(--dock-accent); }
+.nous-status.is-paused_model { color: var(--dock-warning); }
+
+.nous-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; padding: 0 0.5rem; }
+.nous-settings .space-toggle { width: 100%; justify-content: space-between; font-size: var(--dock-font-sm); }
+.nous-muted { margin: 0; color: var(--dock-muted); font-size: 0.72rem; line-height: 1.4; overflow-wrap: anywhere; }
+
+.nous-messages,
+.nous-decisions,
+.nous-overview,
+.nous-plan-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0 0.5rem 0.5rem;
+}
+
+.nous-message { max-width: 100%; overflow-wrap: anywhere; font-size: var(--dock-font, 0.8rem); line-height: 1.5; }
+.nous-message p { margin: 0; white-space: pre-wrap; }
+.nous-message.is-operator {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--dock-radius);
+  background: var(--dock-accent-soft);
+  color: var(--dock-text);
+}
+.nous-message.is-answer { color: var(--dock-text); }
+.nous-message.is-decision { padding: 0.4rem 0.6rem; border-left: 2px solid var(--dock-accent); color: var(--dock-muted); }
+.nous-message.is-error { padding: 0.4rem 0.6rem; border-radius: var(--dock-radius-sm); background: var(--dock-danger-soft); color: var(--dock-danger); }
+
+.nous-tool { font-size: 0.72rem; color: var(--dock-muted); padding-left: 0.6rem; border-left: 2px solid var(--dock-border); }
+.nous-tool.is-running { color: var(--dock-accent); }
+.nous-tool.is-failed, .nous-tool.is-refused { color: var(--dock-warning); }
+
+.nous-inbox { font-size: 0.72rem; color: var(--dock-muted); }
+.nous-inbox summary { cursor: pointer; }
+.nous-inbox pre, .nous-trains { margin: 0.3rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.7rem; line-height: 1.4; color: var(--dock-muted); }
+
+.nous-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 0.35rem;
+  padding: 0 0.5rem 0.5rem;
+}
+
+.nous-composer textarea,
+.nous-decision-answer input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-raised);
+  color: var(--dock-text);
+  font: inherit;
+  /* 16px keeps mobile browsers from zooming into the field. */
+  font-size: max(16px, var(--dock-font, 0.8rem));
+  line-height: 1.45;
+}
+.nous-composer textarea { resize: none; field-sizing: content; min-height: 2.75rem; max-height: 12rem; }
+.nous-composer textarea:focus-visible,
+.nous-decision-answer input:focus-visible { outline: 2px solid var(--dock-accent); outline-offset: 1px; }
+
+.nous-decision {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.4rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--dock-border);
+  border-radius: var(--dock-radius);
+  background: var(--dock-surface);
+}
+.nous-decision.is-open { border-color: var(--dock-accent); }
+.nous-decision header { display: grid; gap: 0.2rem; }
+.nous-decision h3 { margin: 0; font-size: 0.85rem; color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-category { justify-self: start; padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.65rem; background: var(--dock-soft); color: var(--dock-muted); }
+.nous-category.is-release, .nous-category.is-destructive { background: var(--dock-warning-soft); color: var(--dock-warning); }
+.nous-category.is-external { background: var(--dock-danger-soft); color: var(--dock-danger); }
+.nous-recommendation { margin: 0; font-size: var(--dock-font-sm); color: var(--dock-text); overflow-wrap: anywhere; }
+.nous-decision-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+.nous-decision-answer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem; width: 100%; }
+
+.nous-overview section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+.nous-overview h3 { margin: 0.3rem 0 0; font-size: 0.78rem; color: var(--dock-text); }
+.nous-overview ul { margin: 0; padding-left: 1rem; font-size: var(--dock-font-sm); color: var(--dock-text); }
+.nous-plan { display: grid; gap: 0.25rem; padding: 0.45rem 0.55rem; border: 1px solid var(--dock-border); border-radius: var(--dock-radius-sm); }
+.nous-plan-head { display: flex; justify-content: space-between; gap: 0.5rem; font-size: var(--dock-font-sm); color: var(--dock-text); }
+.nous-plan-head strong { overflow-wrap: anywhere; }
+.nous-progress { height: 4px; border-radius: 999px; background: var(--dock-soft); overflow: hidden; }
+.nous-progress span { display: block; height: 100%; background: var(--dock-accent); }
+
+/* In the conversation a decision keeps its body short; the Decisions tab and the plan view show it whole. */
+.nous-decision.is-inline > .chat-markdown { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.nous-plan-view .nous-decision.is-inline > .chat-markdown { display: block; }
+.nous-plan-card { background: var(--dock-surface); }
+.nous-message .nous-plan-card { margin-top: 0.45rem; }
+.nous-plan-card .dock-kit-button { justify-self: start; }
+.nous-plan-steps { margin: 0; padding-left: 1.3rem; display: grid; gap: 0.2rem; font-size: var(--dock-font-sm); color: var(--dock-text); }
+.nous-step-status { color: var(--dock-muted); }
+.nous-plan-steps .is-completed .nous-step-status { color: var(--dock-success); }
+.nous-plan-steps .is-in_progress .nous-step-status { color: var(--dock-accent); }
+.nous-plan-steps :is(.is-blocked, .is-failed) .nous-step-status { color: var(--dock-warning); }
+.nous-plan-text { font-size: var(--dock-font, 0.8rem); line-height: 1.55; color: var(--dock-text); overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nous-brain { filter: none; }
+}
+
+/* Fullscreen fills the whole SpaceApp window (operator request 2026-10-17); Escape or the button leaves it. */
+.dock-panel.nous-dock.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  padding: 1rem;
+  background: var(--dock-surface);
+}
+/* A readable column on wide screens: the scroll areas keep the full width (scrollbar at the edge), the text stays about 76ch. */
+.dock-panel.nous-dock.is-fullscreen :is(.nous-messages, .nous-decisions, .nous-overview, .nous-plan-view, .nous-composer) {
+  padding-inline: max(0.5rem, calc((100% - 76ch) / 2));
+}

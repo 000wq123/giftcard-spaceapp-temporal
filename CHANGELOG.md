@@ -5,9 +5,9 @@ Semantic Versioning.
 
 ## [Unreleased]
 
-## [1.1.6] - 2026-10-16
+## [1.1.6] - 2026-10-17
 
-Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
+Source: sanitized Space app @ b9122162ac (4409 files). Adds install telemetry
 for owners who opt in and the remaining fixes from the independent reviews of
 1.1.5; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
 
@@ -28,7 +28,13 @@ for owners who opt in and the remaining fixes from the independent reviews of
 
 ### Security
 
-- WebSocket handshakes (VNC stream, shared chat) check the Origin.
+- A signed-out session token can no longer be reused: session tokens must have
+  exactly two segments, so a revoked token with an extra segment is refused.
+- Session revocations fail closed until the saved ones are loaded after a
+  restart, and sign-out reports an error when the revocation could not be saved.
+- WebSocket handshakes (VNC stream, shared chat, harness) check the Origin.
+- Stored database passwords need a full 16-byte authentication tag, and the
+  Admin Mode delete guard also compares real paths.
 - The app is sent with `frame-ancestors 'self'`, `object-src 'none'` and
   `X-Frame-Options: SAMEORIGIN`.
 - Every API child process, including the Space screenshot engine, starts

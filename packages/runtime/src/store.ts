@@ -161,6 +161,7 @@ import type {
   AdminUserItem,
   UserInvite,
   UserInviteRole,
+  RoomShare,
   AgentPaneBinding,
   AgentPaneHistoryItem,
   AgentPaneStoredSession,
@@ -974,6 +975,15 @@ export interface SpaceStore {
   getPasswordUser?(email: string): MaybePromise<OwnerCredentials | null>;
   setUserDisabled?(userId: string, disabled: boolean, at: string): MaybePromise<boolean>;
   isUserDisabled?(userId: string): MaybePromise<boolean>;
+  // Room sharing (SPACE_MULTI_USER_ENABLED). A pane's owner is the user who opened it in a room they do not own;
+  // null means the room's owner.
+  setRoomShare?(share: RoomShare): MaybePromise<RoomShare>;
+  deleteRoomShare?(roomId: string, userId: string): MaybePromise<boolean>;
+  getRoomShare?(roomId: string, userId: string): MaybePromise<RoomShare | null>;
+  listRoomShares?(roomId: string): MaybePromise<RoomShare[]>;
+  listSharedRooms?(userId: string): MaybePromise<Room[]>;
+  setPaneOwner?(paneId: string, userId: string): MaybePromise<void>;
+  getPaneOwner?(paneId: string): MaybePromise<string | null>;
   listGoogleAccounts(userId: string): MaybePromise<GoogleAccount[]>;
   linkGoogleAccount(userId: string, identity: VerifiedGoogleIdentity): MaybePromise<GoogleAccount>;
   setPrimaryGoogleAccount(userId: string, accountId: string): MaybePromise<GoogleAccount>;
@@ -2517,6 +2527,8 @@ export class InMemorySpaceStore implements SpaceStore {
   private userPasswordHashes = new Map<string, string>();
   private userInvites = new Map<string, UserInvite & { tokenSha256: string }>();
   private disabledUsers = new Set<string>();
+  private roomShares = new Map<string, RoomShare>();
+  private paneOwners = new Map<string, string>();
   private userSettings = new Map<string, UserSettings>();
   private ownerSetup: {
     tokenHash: string | null;
@@ -3126,6 +3138,39 @@ export class InMemorySpaceStore implements SpaceStore {
 
   isUserDisabled(userId: string): boolean {
     return this.disabledUsers.has(userId);
+  }
+
+  setRoomShare(share: RoomShare): RoomShare {
+    this.getRoom(share.roomId);
+    if (!this.users.has(share.userId)) throw new SpaceNotFoundError(`User ${share.userId} was not found.`);
+    const stored = { ...share, createdAt: this.roomShares.get(`${share.roomId} ${share.userId}`)?.createdAt ?? share.createdAt };
+    this.roomShares.set(`${share.roomId} ${share.userId}`, stored);
+    return stored;
+  }
+
+  deleteRoomShare(roomId: string, userId: string): boolean {
+    return this.roomShares.delete(`${roomId} ${userId}`);
+  }
+
+  getRoomShare(roomId: string, userId: string): RoomShare | null {
+    return this.rooms.has(roomId) ? this.roomShares.get(`${roomId} ${userId}`) ?? null : null;
+  }
+
+  listRoomShares(roomId: string): RoomShare[] {
+    return [...this.roomShares.values()].filter((share) => share.roomId === roomId);
+  }
+
+  listSharedRooms(userId: string): Room[] {
+    return [...this.roomShares.values()].filter((share) => share.userId === userId && this.rooms.has(share.roomId))
+      .map((share) => this.getRoom(share.roomId));
+  }
+
+  setPaneOwner(paneId: string, userId: string): void {
+    this.paneOwners.set(paneId, userId);
+  }
+
+  getPaneOwner(paneId: string): string | null {
+    return this.paneOwners.get(paneId) ?? null;
   }
 
   updateOwnerPassword(passwordHash: string): AuthUser {

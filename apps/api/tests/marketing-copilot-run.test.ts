@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +49,7 @@ async function fixture() {
   const other = store.createPane({ roomId: room.id, title: "Shell", mode: "TERMINAL", terminalRuntimeId: "cli:codex" });
   const otherSession = store.createPaneCliSession({ paneId: other.id, roomId: room.id, runtimeId: "cli:codex", providerId: "codex", agentId: "codex", status: "RUNNING", purpose: "NORMAL" });
   const outsider = { [cliBrowserBridgeTokenHeader]: issueCliBrowserBridgeToken(config, { roomId: room.id, paneId: other.id, cliSessionId: otherSession.sessionId })!, "content-type": "application/json" };
-  return { app, pane, headers, agent, outsider, roomEvents, kickoffs, paneUrl: `/api/panes/${encodeURIComponent(pane.id)}/marketing-copilot` };
+  return { app, store, room, pane, headers, agent, outsider, roomEvents, kickoffs, paneUrl: `/api/panes/${encodeURIComponent(pane.id)}/marketing-copilot` };
 }
 
 const cli = "/api/cli/marketing-copilot";
@@ -111,7 +112,7 @@ describe("marketing copilot run loop", () => {
     }
   });
 
-  it("shows the agent the operator's bookmarks with their Google accounts", async () => {
+  it("shows the agent the operator's bookmarks with their Google accounts and lets it save new ones", async () => {
     const { app, headers, agent, outsider } = await fixture();
     try {
       const saved = await app.inject({ method: "POST", url: "/api/marketing-copilot/bookmarks", headers, payload: { url: "https://x.com/home", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" } });
@@ -121,6 +122,43 @@ describe("marketing copilot run loop", () => {
       expect((await app.inject({ method: "GET", url: `${cli}/state`, headers: agent })).json().bookmarks).toEqual([expect.objectContaining(bookmark)]);
       expect((await app.inject({ method: "GET", url: `${cli}/bookmarks`, headers: outsider })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: `${cli}/bookmarks/mktbm:missing000/open`, headers: agent, payload: {} })).statusCode).toBe(404);
+      // The agent saves bookmarks too: the pane's account, or another account of the (ADMIN) room owner.
+      const own = await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "https://hashnode.com/@spaceapp" } });
+      expect(own.json().bookmark, own.body).toMatchObject({ title: "hashnode.com", profileId: null, accountLabel: null });
+      const other = await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "https://bsky.app", profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" } });
+      expect(other.json().bookmark, other.body).toMatchObject({ profileId: "google_account:dev", accountLabel: "spaceappdv@gmail.com" });
+      expect((await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: agent, payload: { url: "javascript:alert(1)" } })).statusCode).toBe(422);
+      expect((await app.inject({ method: "POST", url: `${cli}/bookmarks`, headers: outsider, payload: { url: "https://bsky.app" } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "GET", url: "/api/marketing-copilot/bookmarks", headers })).json().bookmarks).toHaveLength(3);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("attaches captured media of the owner's rooms as post assets with the server's path and kind, and keeps the file", async () => {
+    const { app, store, room, agent } = await fixture();
+    try {
+      const capture = (roomId: string, kind: "VIDEO" | "SCREENSHOT" | "TRACE") => store.createArtifact({ roomId, kind, mimeType: kind === "VIDEO" ? "video/mp4" : "image/png",
+        storageUri: `space-artifact://browser-evidence/space-control-${randomUUID()}/${kind === "VIDEO" ? "video-story.mp4" : "screenshot.png"}`, sha256: "a".repeat(64), byteSize: 4,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(), metadata: { source: "SPACE_CONTROL_RECORDING" } }).artifact;
+      const video = capture(room.id, "VIDEO");
+      const post = (body: Record<string, unknown>) => app.inject({ method: "POST", url: `${cli}/posts`, headers: agent,
+        payload: { channel: "X", body: "Run Codex, Claude Code and OpenCode side by side in rooms you host.", ...body } });
+      // A path the agent sends with a capture is replaced by the artifact's own file.
+      const created = await post({ assets: [{ artifactId: video.id, label: "9:16 tour", path: "/etc/passwd", kind: "FILE" }] });
+      expect(created.statusCode).toBe(200);
+      const [asset] = created.json().post.assets;
+      expect(asset).toMatchObject({ artifactId: video.id, label: "9:16 tour", kind: "VIDEO" });
+      expect(asset.path).toMatch(/\/browser-evidence\/space-control-[0-9a-f-]{36}\/video-story\.mp4$/);
+      expect(store.getArtifact(video.id)).toMatchObject({ expiresAt: null, pinnedAt: expect.any(String) });
+      const shot = capture(room.id, "SCREENSHOT");
+      const updated = await app.inject({ method: "PATCH", url: `${cli}/posts/${encodeURIComponent(created.json().post.id)}`, headers: agent, payload: { assets: [{ artifactId: shot.id, label: "1:1 shot" }] } });
+      expect(updated.json().post.assets).toEqual([expect.objectContaining({ artifactId: shot.id, kind: "IMAGE" })]);
+
+      const foreign = store.createRoom({ name: "Someone else's", initialPaneCount: 0 }, undefined, "user:someone-else");
+      for (const artifactId of [capture(foreign.id, "SCREENSHOT").id, capture(room.id, "TRACE").id, "artifact:missing"]) {
+        expect((await post({ assets: [{ artifactId, label: "x" }] })).statusCode, artifactId).toBe(404);
+      }
     } finally {
       await app.close();
     }

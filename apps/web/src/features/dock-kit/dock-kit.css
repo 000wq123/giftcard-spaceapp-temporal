@@ -596,6 +596,31 @@
   min-height: 1.85rem;
 }
 
+/* A quiet text button inside a card, such as "+2 more stages". */
+.dock-kit-link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--dock-muted);
+  font: inherit;
+  font-size: var(--dock-font-sm);
+  cursor: pointer;
+}
+
+.dock-kit-link:hover:not(:disabled),
+.dock-kit-link:focus-visible {
+  background: none;
+  color: var(--dock-text);
+  text-decoration: underline;
+}
+
+.dock-kit-link:focus-visible {
+  outline: 2px solid var(--dock-accent);
+  outline-offset: 1px;
+}
+
 .dock-kit-badge {
   display: inline-flex;
   align-items: center;

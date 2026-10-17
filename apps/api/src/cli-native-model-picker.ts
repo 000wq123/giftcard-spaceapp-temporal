@@ -68,6 +68,11 @@ export async function prepareNativeCliSettings(input: NativeControl): Promise<Sc
   if (prompt && input.runtimeId === 'cli:claude' && input.readUndimmed) {
     prompt = nativePromptDraft(await input.readUndimmed(), input.runtimeId);
   }
+  if (prompt && input.runtimeId === 'cli:droid' && input.readUndimmed) {
+    // Droid draws its placeholder dim after the cursor cell, which shows the first letter in reverse video.
+    const undimmed = nativePromptDraft(await input.readUndimmed(), input.runtimeId);
+    prompt = undimmed && !(undimmed.length === 1 && prompt.length > 1 && prompt.startsWith(undimmed)) ? undimmed : undefined;
+  }
   // Escape can restore a previous settings command. A normal draft is never
   // cleared, even when a previous picker attempt failed.
   if (prompt && /^\/(?:model|effort|reasoning|thinking|switch)(?:\s|$)/.test(prompt)) {
@@ -227,6 +232,10 @@ function nativeControlScreen(screen: string, runtimeId: string): string {
   return runtimeId === 'cli:deepseek' || runtimeId === 'cli:hermes' ? screen.replace(/[ \t]*[│┃█][ \t]*$/gm, '') : screen;
 }
 
+/** Droid's footer (autonomy · approvals, then the model and its reasoning level) and its level labels. */
+const droidFooter = /^(?:Auto|Spec|Plan)\b[^·]*·/;
+const droidEfforts: Record<string, string> = { off: 'none', low: 'low', medium: 'medium', high: 'high', 'extra high': 'xhigh', max: 'max' };
+
 export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, model?: Model): string | null {
   screen = nativeControlScreen(screen, runtimeId);
   if (runtimeId === 'cli:deepseek') {
@@ -290,6 +299,7 @@ export function nativeCliConfirmedReasoning(screen: string, runtimeId: string, m
       : runtimeId === 'cli:kimi' ? line.match(/(?:\bthinking:\s*|^Thinking set to\s+)(low|high|max)\b/i)?.[1]
       : runtimeId === 'cli:grok' ? line.match(/Grok [\d.]+\s*\((low|medium|high|xhigh)\)/i)?.[1]
       : runtimeId === 'cli:hermes' ? line.match(/^reasoning:\s*(none|minimal|low|medium|high|xhigh|max|ultra)\b/i)?.[1]
+      : runtimeId === 'cli:droid' && droidFooter.test(line) ? droidEfforts[line.match(/\((Off|Low|Medium|High|Extra high|Max)\)\s*$/i)?.[1]?.toLowerCase() ?? '']
       : runtimeId === 'cli:cursor' && /\s{2,}(?:Run Everything|Ask Every Time)\s*$/.test(line) ? line.match(/\b(Extra High|None|Low|Medium|High|Max)(?:\s+Fast)?\s{2,}/i)?.[1]?.replace(/extra high/i,'xhigh')
       : null;
     if (value) return value.toLowerCase();
@@ -305,6 +315,8 @@ async function applyNativeCliReasoning(input: {
   if (!input.model.supportedReasoningEfforts.includes(input.effort)) throw new SpaceConflictError('This reasoning level is not supported by the selected model.');
   if (input.effort === 'none' && input.model.reasoningOptions?.length === 0) return;
   if (input.runtimeId === 'cli:cursor' && input.model.reasoningOptions?.length) return switchCursorReasoning(input);
+  // Droid sets the level in its model selector, so a level-only change re-selects the current model.
+  if (input.runtimeId === 'cli:droid') return applyNativeCliModel(input);
   const prefix = ({'cli:deepseek':'/effort', 'cli:grok':'/effort', 'cli:claude':'/effort', 'cli:kimi':'/thinking', 'cli:hermes':'/reasoning'} as Record<string,string>)[input.runtimeId];
   if (!prefix) {
     if (input.runtimeId === 'cli:omp') {
@@ -504,6 +516,8 @@ export function nativeCliConfirmedModel(screen: string, models: readonly Model[]
     }
     if (runtimeId === "cli:hermes" && /^[^│┃·]+\s*·\s*Nous Research/.test(line)) modelText ??= line.split(/\s*·\s*/)[0];
     if (runtimeId === "cli:deepseek") modelText ??= line.match(/\bMODEL\s+(.+?)\s+EFFORT\b/)?.[1];
+    // "Auto (Off) · all actions require approval      Opus 5.5 (High)"; narrow panes clip the middle with "… ".
+    if (runtimeId === "cli:droid" && droidFooter.test(line)) modelText ??= line.split(/\s{2,}|…\s*/).filter(Boolean).at(-1);
     if (runtimeId === "cli:cursor" && /\s{2,}(?:Run Everything|Ask Every Time)\s*$/.test(line)) modelText = line.split(/\s{2,}/)[0];
     if (runtimeId === "cli:copilot" && /open sidebar.*tab next tab/i.test(line)) modelText = line.split(/\s{2,}/).at(-1);
     if (runtimeId === "cli:grok") modelText ??= line.match(/(Grok [0-9.]+)\s*\([^)]*\)\s*·/)?.[1]
@@ -682,7 +696,7 @@ async function applyNativeCliModel(input: {
   const wait = input.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const before = await prepareNativeCliSettings(input);
   if (nativeCliConfirmedModel(before.text, [input.model], input.runtimeId) === input.model.id) {
-    if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini') && input.effort && input.effort !== 'none') {
+    if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini' || input.runtimeId === 'cli:droid') && input.effort && input.effort !== 'none') {
       const confirmedEffort = nativeCliConfirmedReasoning(before.text, input.runtimeId, input.model);
       if (confirmedEffort && confirmedEffort === input.effort) return;
     } else {
@@ -708,6 +722,34 @@ async function applyNativeCliModel(input: {
       ? `/switch ${input.model.id}${input.effort && input.effort !== 'none' ? `:${input.effort}` : ''}`
       : `/model ${targetModel}${input.runtimeId === "cli:hermes" ? " --session" : ""}`;
   if (/[\u0000-\u001f\u007f]/.test(command)) throw new SpaceConflictError("The CLI model label contains unsupported control characters.");
+  // Droid opens its selector whatever /model names: filter it by the advertised name, take the match once it is the
+  // only row, then move to the requested level in the reasoning menu that follows ("> High (current)").
+  let droidStep = 'filter' as 'filter' | 'select' | 'effort' | 'done';
+  const droidSelectorStep = async (text: string): Promise<boolean> => {
+    if (droidStep === 'filter' && /Select Model For This Session/.test(text)) {
+      await input.assertCurrent(); await input.write(input.model.displayName); droidStep = 'select'; return true;
+    }
+    const rows = text.split(/\r?\n/).map((line) => line.replace(/^\s*│\s?|\s*│\s*$/g, '').trim());
+    if (droidStep === 'select' && /Select Model For This Session/.test(text)) {
+      // The filter field repeats the name; Enter waits for the list row below it.
+      const label = (row: string) => row.replace(/^[>●]\s*/, '').replace(/\s*\((?:Off|Low|Medium|High|Extra high|Max)\)$/i, '');
+      if (rows.filter((row) => label(row) === input.model.displayName).length < 2) return true;
+      await input.assertCurrent(); await input.write('\r');
+      droidStep = input.model.reasoningOptions?.length ? 'effort' : 'done';
+      return true;
+    }
+    if ((droidStep === 'select' || droidStep === 'effort') && /Use ↑↓ to navigate/.test(text)) {
+      const levels = rows.map((row) => droidEfforts[row.replace(/^>\s*/, '').replace(/\s*\(current\)$/, '').toLowerCase()] ?? null);
+      const cursor = rows.findIndex((row, index) => row.startsWith('>') && levels[index] !== null);
+      const target = input.effort ? levels.indexOf(input.effort) : -1;
+      const steps = target < 0 || cursor < 0 ? 0 : target - cursor;
+      await input.assertCurrent();
+      await input.write((steps > 0 ? '\u001b[B' : '\u001b[A').repeat(Math.abs(steps)) + '\r');
+      droidStep = 'done';
+      return true;
+    }
+    return false;
+  };
   await input.write(command + (input.runtimeId === "cli:deepseek" ? " " : ""));
   await wait(250);
   await input.assertCurrent();
@@ -723,7 +765,13 @@ async function applyNativeCliModel(input: {
     // The preflight ruled out this model. Confirm the newly observed complete
     // screen: narrow acknowledgements can reuse an unchanged first line.
     const newLines = after.text.split(/\r?\n/).filter((line) => !before.text.split(/\r?\n/).includes(line)).join("\n");
-    if (nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id) {
+    if (input.runtimeId === 'cli:droid') {
+      // Earlier "Model switched to" lines stay on screen: only the footer of a closed selector confirms.
+      if (droidStep === 'done' && !/Select Model For This Session|Use ↑↓ to navigate/.test(after.text)
+        && nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id
+        && (!input.model.reasoningOptions?.length || !input.effort || input.effort === 'none'
+          || nativeCliConfirmedReasoning(after.text, input.runtimeId, input.model) === input.effort)) return;
+    } else if (nativeCliConfirmedModel(after.text, [input.model], input.runtimeId) === input.model.id) {
       if ((input.runtimeId === 'cli:omp' || input.runtimeId === 'cli:gemini') && input.effort && input.effort !== 'none') {
         const confirmedEffort = nativeCliConfirmedReasoning(after.text, input.runtimeId, input.model);
         if (confirmedEffort === input.effort || (!confirmedEffort && !/unknown|invalid|error/i.test(after.text) && !/╰─[^\n]*\/switch/i.test(after.text))) return;
@@ -742,6 +790,7 @@ async function applyNativeCliModel(input: {
     if (/unknown command|unrecognized command|invalid (?:slash command|model)|model (?:not found|unavailable)|error:\s*unknown model/i.test(newLines)) {
       throw new SpaceConflictError("The CLI rejected the model selection. Check its model menu.");
     }
+    if (input.runtimeId === 'cli:droid' && await droidSelectorStep(after.text)) continue;
     if (input.runtimeId === 'cli:kimi' && /Select a model/.test(after.text)) {
       if (!kimiFiltered) {
         await input.assertCurrent(); await input.write(input.model.displayName); kimiFiltered = true; continue;

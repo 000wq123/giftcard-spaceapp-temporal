@@ -68,7 +68,7 @@ describe("buildRoomToolbarActions", () => {
 
   it("lists the default actions in order and leaves consolidated ones to the Workspace menu", () => {
     const ids = buildRoomToolbarActions(context()).map((action) => action.id);
-    expect(ids.slice(0, 5)).toEqual(["surface-rooms", "surface-notifications", "surface-room-agent", "surface-shared-chat", "surface-agent-files"]);
+    expect(ids.slice(0, 5)).toEqual(["surface-rooms", "surface-nous", "surface-notifications", "surface-room-agent", "surface-shared-chat"]);
     expect(ids).not.toContain("surface-media");
     expect(ids).not.toContain("surface-health");
     expect(ids).not.toContain("surface-streaming");

@@ -819,13 +819,14 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         payload: { questionId, question: input.question, options: input.options ?? [] } });
       return { questionId, answered: false as const };
     },
-    async answerQuestion(owner: string, pane: Pane, input: { questionId: string; answer: string }) {
+    /** by NOUS: Nous, the mind of SpaceApp, answered for the operator (its answer is the agent's memory, not the operator's voice). */
+    async answerQuestion(owner: string, pane: Pane, input: { questionId: string; answer: string }, by: "USER" | "NOUS" = "USER") {
       const events = await repository.listEvents(owner, { types: ["QUESTION"], limit: 300 });
       const question = events.find((event) => event.payload.questionId === input.questionId);
       if (!question) throw new SpaceNotFoundError("The question was not found.");
       const memory = await repository.upsertMemory({ ownerUserId: owner, kind: "FACT", key: String(question.payload.question).toLowerCase().slice(0, 300), text: input.answer, contactEmail: null,
-        domain: null, accountEmail: null, tags: ["question"], source: "USER", confidence: 0.9, pinned: false });
-      await record(owner, { paneId: pane.id, type: "ANSWERED", accountEmail: question.accountEmail, threadId: question.threadId, message: `You answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id } });
+        domain: null, accountEmail: null, tags: ["question"], source: by === "NOUS" ? "AGENT" : "USER", confidence: 0.9, pinned: false });
+      await record(owner, { paneId: pane.id, type: "ANSWERED", accountEmail: question.accountEmail, threadId: question.threadId, message: `${by === "NOUS" ? "Nous" : "You"} answered: ${input.answer.slice(0, 200)}`, payload: { questionId: input.questionId, answer: input.answer, memoryId: memory.id, answeredBy: by } });
       return { memory };
     },
     async waitForAnswer(owner: string, input: { questionId: string; waitMs: number }) {

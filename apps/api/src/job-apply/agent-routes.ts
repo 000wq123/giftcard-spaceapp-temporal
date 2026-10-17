@@ -112,13 +112,14 @@ export function registerJobApplyAgentRoutes(app: FastifyInstance, service: JobAp
     const bridge = await deps.requireBridge(request, reply);
     if (!bridge) return undefined;
     const ownerId = await owner(bridge.claims);
-    const [profile, cv, settings] = await Promise.all([service.getProfile(ownerId), service.cvText(ownerId), paneSettings(bridge.claims.paneId)]);
+    const [profile, cv, photo, settings] = await Promise.all([service.getProfile(ownerId), service.cvText(ownerId), service.photo(ownerId), paneSettings(bridge.claims.paneId)]);
     const coverLetterPath = profile.coverLetterArtifactId ? await service.artifactPath(profile.coverLetterArtifactId) : null;
     return {
       candidate: profile.candidate,
       qaBank: profile.qaBank,
       cv: { artifactId: cv.artifactId, path: cv.path, chars: cv.text?.length ?? 0 },
       coverLetter: { artifactId: profile.coverLetterArtifactId, path: coverLetterPath },
+      photo,
       mailboxConnected: jobApplyMailboxConnected(profile),
       google: profile.google,
       googleAccounts: profile.googleAccounts,

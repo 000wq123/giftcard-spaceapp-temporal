@@ -15,6 +15,7 @@ import { ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, MoreHorizontal
 import { workspaceRoomActivity } from "../ui-theme/workspace-room-filter.js";
 import type { AdminUsers } from "./useAdminUsers.js";
 import { ensureProjectFolder } from "./room-catalog.js";
+import { RoomSharing } from "./RoomSharing.js";
 import type { AdminRoomFilterMode, RoomsDock } from "./useRoomsDock.js";
 import "./rooms-dock.css";
 
@@ -23,7 +24,7 @@ const LazyProjectSourcePicker = lazyWithPreload(() => import("../source-control/
 export interface RoomEntry { room: Room; activity: ReturnType<typeof workspaceRoomActivity> }
 
 /** Rooms shown in the dock: own rooms, or the admin's account filter, then the search. */
-export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, completions, roomCliActivityCounts, isAdminMode, userId, dock, userEmailById, notificationRooms }: {
+export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, completions, roomCliActivityCounts, isAdminMode, userId, dock, userEmailById, notificationRooms, listsEveryRoom = false }: {
   rooms: Room[];
   selectedRoomId: string | null;
   /** Panes of the active room. */
@@ -37,6 +38,8 @@ export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, 
   userEmailById: Map<string, string>;
   /** Open notifications per room, from the notification store. */
   notificationRooms?: Record<string, number>;
+  /** A USER's room list already holds only their own and shared rooms (multi-user, operator-approved 2026-10-17). */
+  listsEveryRoom?: boolean;
 }): { entries: RoomEntry[]; isRoomListFiltered: boolean } {
   const { roomSearch, adminRoomFilterMode, adminSelectedUserId } = dock;
   const entries = rooms.map(room => ({
@@ -44,7 +47,7 @@ export function selectRoomEntries({ rooms, selectedRoomId, panes, roomRuntimes, 
     activity: workspaceRoomActivity(room.id === selectedRoomId ? panes : roomRuntimes[room.id]?.panes ?? [], completions, roomCliActivityCounts[room.id], notificationRooms?.[room.id] ?? 0)
   })).filter(({ room }) => {
     if (!isAdminMode) {
-      if (room.ownerUserId && room.ownerUserId !== userId) return false;
+      if (!listsEveryRoom && room.ownerUserId && room.ownerUserId !== userId) return false;
     } else {
       if (adminRoomFilterMode === "mine") {
         if (room.ownerUserId && room.ownerUserId !== userId) return false;
@@ -527,6 +530,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
                 </DockButton>
               </div>
             ) : null}
+            <RoomSharing roomId={room.id} />
             <DockButton
               tone="ghost"
               icon={Trash2}

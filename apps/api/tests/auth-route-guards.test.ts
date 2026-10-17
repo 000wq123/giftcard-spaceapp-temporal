@@ -220,4 +220,100 @@ describe("room and pane ownership for USER accounts", () => {
       await app.close();
     }
   });
+
+  it("checks a roomId or paneId in the query, body or a :roomId/:paneId path, and artifacts by their room", async () => {
+    const { app, store } = await createTestApp();
+    try {
+      const alice = await sessionFor(app, store, { id: "user:alice", email: "alice@space.local", role: "USER" });
+      const mallory = await sessionFor(app, store, { id: "user:mallory", email: "mallory@space.local", role: "USER" });
+      const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Alice room", initialPaneCount: 1 } })).json();
+      const roomId = (room.room ?? room).id as string;
+      const pane = (await store.listPanes(roomId))[0]!;
+      const { artifact } = await store.createArtifact({ roomId, kind: "EXPORT", mimeType: "text/plain",
+        storageUri: "space-artifact://browser-evidence/fixture/alice.txt", byteSize: 7, sha256: "a".repeat(64), metadata: {} });
+
+      const probes: Array<{ method: "GET" | "POST" | "DELETE" | "PATCH"; url: string; payload?: unknown }> = [
+        { method: "GET", url: `/api/events?roomId=${roomId}` },
+        { method: "GET", url: `/api/turns?roomId=${roomId}` },
+        { method: "POST", url: "/api/turns", payload: { roomId, paneId: pane.id, prompt: "stolen" } },
+        { method: "GET", url: `/api/plugins/agent/${pane.id}` },
+        { method: "GET", url: `/api/control/v1/layout/${roomId}` },
+        { method: "POST", url: "/api/rooms/reorder", payload: { roomIds: [roomId] } },
+        { method: "GET", url: `/api/artifacts/${artifact.id}/file` },
+        { method: "GET", url: `/api/artifacts/${artifact.id}/download` },
+        { method: "DELETE", url: `/api/artifacts/${artifact.id}` }
+      ];
+      for (const probe of probes) {
+        const response = await app.inject({ method: probe.method, url: probe.url, headers: mallory.headers, payload: probe.payload });
+        expect(response.statusCode, `${probe.method} ${probe.url} -> ${response.body}`).toBe(404);
+        // The refusal never reveals the room behind a pane or an artifact.
+        if (!probe.url.includes(roomId) && !JSON.stringify(probe.payload ?? {}).includes(roomId)) expect(response.body).not.toContain(roomId);
+      }
+      // The owner reaches the same routes (the artifact file itself is not on disk in this fixture).
+      for (const probe of probes.filter((item) => item.method === "GET" && !item.url.startsWith("/api/artifacts/"))) {
+        const response = await app.inject({ method: probe.method, url: probe.url, headers: alice.headers });
+        expect(response.statusCode, `${probe.method} ${probe.url} -> ${response.body}`).toBe(200);
+      }
+      const ownFile = await app.inject({ method: "GET", url: `/api/artifacts/${artifact.id}/file`, headers: alice.headers });
+      expect(ownFile.json().error.message).not.toContain(artifact.id);
+      const refusedFile = await app.inject({ method: "GET", url: `/api/artifacts/${artifact.id}/file`, headers: mallory.headers });
+      expect(refusedFile.json().error.message).toBe(`Artifact ${artifact.id} was not found.`);
+      const listed = await app.inject({ method: "GET", url: "/api/artifacts", headers: mallory.headers });
+      expect(listed.statusCode, listed.body).toBe(200);
+      expect(listed.json().data.map((item: { id: string }) => item.id)).not.toContain(artifact.id);
+      const ownList = await app.inject({ method: "GET", url: "/api/artifacts", headers: alice.headers });
+      expect(ownList.json().data.map((item: { id: string }) => item.id)).toContain(artifact.id);
+      const ownEvents = await app.inject({ method: "GET", url: `/api/events?roomId=${roomId}`, headers: alice.headers });
+      expect(ownEvents.statusCode, ownEvents.body).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+  it("streams and lists only a USER's own rooms' events", async () => {
+    const { app, store, adminCookie } = await createTestApp();
+    const controller = new AbortController();
+    try {
+      const alice = await sessionFor(app, store, { id: "user:alice", email: "alice@space.local", role: "USER" });
+      const mallory = await sessionFor(app, store, { id: "user:mallory", email: "mallory@space.local", role: "USER" });
+      const create = async (headers: Record<string, string>, name: string) => {
+        const created = (await app.inject({ method: "POST", url: "/api/rooms", headers, payload: { name, initialPaneCount: 0 } })).json();
+        return (created.room ?? created).id as string;
+      };
+      const aliceRoom = await create(alice.headers, "Alice room");
+      const malloryRoom = await create(mallory.headers, "Mallory room");
+
+      const listed = await app.inject({ method: "GET", url: "/api/events", headers: mallory.headers });
+      expect(listed.json().data).toEqual([]);
+      const adminList = await app.inject({ method: "GET", url: "/api/events", headers: { cookie: adminCookie } });
+      expect(adminList.body).toContain(aliceRoom);
+
+      const address = await app.listen({ port: 0, host: "127.0.0.1" });
+      const response = await fetch(`${address}/api/events/stream?replayLimit=200`, { headers: { cookie: mallory.cookie }, signal: controller.signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      const readUntil = async (needle: string) => {
+        const deadline = Date.now() + 8000;
+        while (!text.includes(needle)) {
+          const left = deadline - Date.now();
+          const chunk = left > 0 ? await Promise.race([reader.read(), new Promise<null>((resolve) => setTimeout(() => resolve(null), left))]) : null;
+          if (!chunk || chunk.done) throw new Error(`stream never contained ${needle}: ${text.slice(-600)}`);
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+      };
+      await readUntil("event: replay-complete");
+      expect(text).toContain(malloryRoom);
+      expect(text).not.toContain(aliceRoom);
+
+      const aliceLater = await create(alice.headers, "Alice later");
+      await create(mallory.headers, "Mallory later");
+      await readUntil("Room Mallory later created.");
+      expect(text).not.toContain(aliceRoom);
+      expect(text).not.toContain(aliceLater);
+      expect(text).not.toContain("Alice later");
+    } finally {
+      controller.abort();
+      await app.close();
+    }
+  });
 });

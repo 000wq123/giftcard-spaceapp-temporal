@@ -23,6 +23,7 @@ import {
 export { roomToolbarNeedsSecondRow, paneHeaderNeedsSecondRow, resolvePaneGridPlacements, calculatePaneGridBaseRows } from "./features/pane-grid/pane-grid-layout.js";
 export type { PaneColumnAnchor, PaneColumnAnchorMap } from "./features/pane-grid/pane-grid-layout.js";
 import { LoginScreen } from "./features/auth/LoginScreen.js";
+import { InviteAcceptScreen, readInviteToken } from "./features/auth/InviteAcceptScreen.js";
 // Evaluated at its old position so the stylesheet order is unchanged; the Settings dock renders it.
 import "./features/voice-input/VoiceSettingsCard.js";
 import { clearLegacyCliShortcutUsage } from "./features/terminal-pane/CliShortcutsMenu.js";
@@ -190,6 +191,7 @@ import { GitBranch } from "./features/ui-theme/app-icons.js";
 import { SettingsDisclosure, SettingsSections } from "./features/settings/SettingsDisclosure.js";
 import { useRoomAgentAttention } from "./features/room-agent/use-room-agent-attention.js";
 import { dispatchNotificationStreamEvent, useNotificationBootstrap } from "./features/notifications/useNotifications.js";
+import { pushNotificationsEnabled, setPushNotifications } from "./features/notifications/desktop-notifications.js";
 import { useNotificationStore, type NotificationNavigator } from "./features/notifications/notification-store.js";
 import { NotificationToastHost } from "./features/notifications/NotificationToastHost.js";
 import { useDocksVisibility } from "./features/docks/use-docks-visibility.js";
@@ -260,6 +262,7 @@ import { paneRuntimeBlockedReason, roomPaneLimit } from "./pane-runtime-availabi
 import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyboard.js";
 import { useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
 import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
+import { usePaneOpener } from "./features/pane-card/pane-opener.js";
 import {
   DesktopWidgetsLayer,
   useDesktopWidgets,
@@ -550,6 +553,8 @@ const LazySharedChatDock = lazyWithPreload(() =>
   import("./features/shared-chat/SharedChatDock.js").then((module) => ({ default: module.SharedChatDock })),
   { idle: true }
 );
+const LazyNousDock = lazyWithPreload(() =>
+  import("./features/nous/NousDock.js").then((module) => ({ default: module.NousDock })), { idle: true });
 const LazyClipboardDock = lazyWithPreload(() =>
   import("./features/clipboard-dock/ClipboardDock.js").then((module) => ({ default: module.ClipboardDock })),
   { idle: true }
@@ -2309,7 +2314,7 @@ export function App() {
       };
     }
     setRooms(sortRoomsByOrder(roomPayload.data));
-    const myRooms = roomPayload.data.filter((room) => !room.ownerUserId || room.ownerUserId === me.user?.id);
+    const myRooms = roomPayload.data.filter((room) => me.user?.role === "USER" || !room.ownerUserId || room.ownerUserId === me.user?.id); // a USER's list is own + shared rooms
     const selectedRoomIsMine = userSelectedRoomId ? myRooms.some((room) => room.id === userSelectedRoomId) : false;
     const selectedRoomStillExists = userSelectedRoomId ? roomPayload.data.some((room) => room.id === userSelectedRoomId) : false;
     const starterRoom = myRooms.find((room) => room.name.toLowerCase() === "getting started")
@@ -2726,7 +2731,15 @@ export function App() {
   }
 
   async function signOut() {
-    await api.logout();
+    // A signed-out phone must not keep showing this account's pushes.
+    if (pushNotificationsEnabled()) await setPushNotifications(false, api).catch(() => undefined);
+    try {
+      await api.logout();
+    } catch (error) {
+      // The server ended the session but could not save the logout (LOGOUT_NOT_SAVED): say so instead of reloading.
+      setError(error instanceof Error ? error.message : "The logout could not be saved.");
+      return;
+    }
     if (runtimeKind === "demo") {
       setAuth(await api.me());
       setAppView("workspace");
@@ -3214,7 +3227,7 @@ export function App() {
   });
 
   useEffect(() => {
-    if (!isAdminMode && selectedRoomId && rooms.length > 0) {
+    if (!isAdminMode && selectedRoomId && rooms.length > 0 && auth?.user?.role !== "USER") {
       const currentRoom = rooms.find((r) => r.id === selectedRoomId);
       if (currentRoom && currentRoom.ownerUserId && currentRoom.ownerUserId !== auth?.user?.id) {
         const myFirstRoom = rooms.find((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id);
@@ -3258,7 +3271,7 @@ export function App() {
     const deletedIds = new Set(roomIds);
     const deletedRooms = rooms.filter((room) => deletedIds.has(room.id));
     const nextRooms = rooms.filter((room) => !deletedIds.has(room.id));
-    const candidateRooms = !isAdminMode ? nextRooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id) : nextRooms;
+    const candidateRooms = !isAdminMode && auth?.user?.role !== "USER" ? nextRooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id) : nextRooms;
     const selectedDeleted = selectedRoomId !== null && deletedIds.has(selectedRoomId);
     const nextSelectedRoomId = selectedDeleted ? candidateRooms[0]?.id ?? null : selectedRoomId;
     setDeletePendingRoomId(roomIds[0]!);
@@ -4332,7 +4345,7 @@ export function App() {
   }, [panes, pendingBrowserHandoffPaneId]);
   const userNavigableRooms = useMemo(() => {
     if (!isAdminMode || adminRoomFilterMode === "mine") {
-      return rooms.filter((r) => !r.ownerUserId || r.ownerUserId === auth?.user?.id);
+      return rooms.filter((r) => auth?.user?.role === "USER" || !r.ownerUserId || r.ownerUserId === auth?.user?.id);
     }
     if (adminRoomFilterMode === "user" && adminSelectedUserId) {
       return rooms.filter((r) => r.ownerUserId === adminSelectedUserId);
@@ -5488,10 +5501,8 @@ export function App() {
       pendingPaneHeaderFocusIdRef.current = pane.id;
     }
   });
-  const roomAgentOnOpenPane = useStableCallback((paneId: string) => {
-    const pane = panes.find((candidate) => candidate.id === paneId);
-    if (pane) void paneCardOnOpenExisting(pane);
-  });
+  // Room Agent links and a plan's "Open pane" (Clipboard dock, Open plans) open like an Agents Dashboard entry.
+  const roomAgentOnOpenPane = usePaneOpener(() => panesRef.current, paneCardOnOpenExisting, setError);
   const paneCardOnClose = useStableCallback(closePane);
   const paneCardOnMaximize = useStableCallback(toggleMaximize);
   const paneCardOnRestoreLayout = useStableCallback(() => {
@@ -5757,7 +5768,7 @@ export function App() {
 
   const { entries: filteredRoomEntries, isRoomListFiltered } = selectRoomEntries({
     rooms, selectedRoomId, panes, roomRuntimes, completions: paneCompletionLifecycle.panes, roomCliActivityCounts,
-    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById, notificationRooms: notificationStore.pending.byRoom });
+    isAdminMode, userId: auth?.user?.id, dock: roomsDock, userEmailById: adminUsers.userEmailById, notificationRooms: notificationStore.pending.byRoom, listsEveryRoom: auth?.user?.role === "USER" });
   const roomsSurfaceContent = (
     <RoomsDockPanel
       dock={roomsDock}
@@ -5919,6 +5930,8 @@ export function App() {
       <LazyAgentFilesDock activeRoom={activeRoom} refreshKey={latestArtifactEventId} paneTitles={agentFilesPaneTitles} />
     ) : surface === "shared-chat" ? (
       <LazySharedChatDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
+    ) : surface === "nous" ? (
+      <LazyNousDock canRun={auth?.user?.role === "ADMIN" || auth?.user?.role === "OPERATOR"} />
     ) : surface === "clipboard" ? (
       <LazyClipboardDock
         canInsert={activePane?.mode === "CHAT" || activePane?.mode === "TERMINAL"}
@@ -6022,6 +6035,20 @@ export function App() {
     return (
       <AppIconProvider pack={modernIconPack}>
         <OwnerSetupScreen expiresAt={setupStatus.expiresAt} onClaim={handleOwnerClaim} />
+      </AppIconProvider>
+    );
+  }
+
+  const inviteToken = auth.isAuthenticated ? null : readInviteToken(window.location);
+  if (inviteToken) {
+    return (
+      <AppIconProvider pack={modernIconPack}>
+        <InviteAcceptScreen
+          token={inviteToken}
+          colorMode={uiTheme !== "classic" ? modernColorMode : null}
+          modern={uiTheme !== "classic"}
+          onLogin={handleLogin}
+        />
       </AppIconProvider>
     );
   }

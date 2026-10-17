@@ -5,7 +5,7 @@ import { NotificationCenterDock } from "../src/features/notifications/Notificati
 import { NotificationSettingsCard } from "../src/features/notifications/NotificationSettingsCard.js";
 import { NotificationToastHost } from "../src/features/notifications/NotificationToastHost.js";
 import { deliverNotifications } from "../src/features/notifications/notification-delivery.js";
-import { desktopNotificationPermission, setDesktopNotifications, showDesktopNotification, subscribeNativeNotificationOpen } from "../src/features/notifications/desktop-notifications.js";
+import { desktopNotificationPermission, setDesktopNotifications, showDesktopNotification, subscribeNativeNotificationOpen, subscribePushTokenRegistration } from "../src/features/notifications/desktop-notifications.js";
 import {
   ingestNotificationStreamPayload, peekNotificationStore, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator
 } from "../src/features/notifications/notification-store.js";
@@ -13,7 +13,7 @@ import { workspaceRoomActivity } from "../src/features/ui-theme/workspace-room-f
 
 const apiMock = vi.hoisted(() => ({
   notificationsPending: vi.fn(), notifications: vi.fn(), notification: vi.fn(), markNotificationRead: vi.fn(), ackNotification: vi.fn(), readAllNotifications: vi.fn(), testNotification: vi.fn(),
-  userSettings: vi.fn(), updateUserSettings: vi.fn()
+  registerPushDevice: vi.fn(), removePushDevice: vi.fn(), userSettings: vi.fn(), updateUserSettings: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 const chimeMock = vi.hoisted(() => ({ playChime: vi.fn() }));
@@ -27,8 +27,8 @@ function notification(id: string, overrides: Partial<SpaceNotification> = {}): S
 }
 function pending(items: SpaceNotification[]) {
   const open = items.filter((item) => item.status === "OPEN");
-  const count = (key: (item: SpaceNotification) => string | null) => open.reduce<Record<string, number>>((out, item) => { const value = key(item); if (value) out[value] = (out[value] ?? 0) + 1; return out; }, {});
-  return { total: open.length, bySource: count((item) => item.source), byRoom: count((item) => item.roomId), byPane: count((item) => item.paneId), latest: open };
+  const count = (key: (item: SpaceNotification) => string | null, from = open) => from.reduce<Record<string, number>>((out, item) => { const value = key(item); if (value) out[value] = (out[value] ?? 0) + 1; return out; }, {});
+  return { total: open.length, bySource: count((item) => item.source), byRoom: count((item) => item.roomId, open.filter((item) => item.severity !== "INFO")), byPane: count((item) => item.paneId), latest: open };
 }
 
 describe("Space notifications (web)", () => {
@@ -93,7 +93,7 @@ describe("Space notifications (web)", () => {
     expect(chimeMock.playChime).toHaveBeenCalledTimes(1);
     // A source turned down in the settings delivers nothing either.
     document.documentElement.removeAttribute("data-suppress-notifications");
-    act(() => { deliverNotifications([notification("d")], { channels: { inApp: true, toast: true, sound: true, desktop: true, telegram: true }, perSource: { MAIL_COPILOT: { inApp: false } } }); });
+    act(() => { deliverNotifications([notification("d")], { channels: { inApp: true, toast: true, sound: true, desktop: true, telegram: true, push: true }, perSource: { MAIL_COPILOT: { inApp: false } } }); });
     expect(screen.queryByText(/Anna/)).toBeNull();
   });
 
@@ -197,5 +197,42 @@ describe("Space notifications (web)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send a test notification" }));
     await waitFor(() => expect(apiMock.testNotification).toHaveBeenCalled());
     expect(await screen.findByRole("status")).toBeTruthy();
+  });
+
+  it("inside an Android app with Firebase the device switch registers its push token, keeps it registered and removes it; elsewhere there is no push switch", async () => {
+    apiMock.userSettings.mockResolvedValue({ notifications: null });
+    apiMock.registerPushDevice.mockResolvedValue({ registered: true, available: false });
+    apiMock.removePushDevice.mockResolvedValue({ removed: true });
+    const { unmount } = render(<NotificationSettingsCard suppressNotifications={false} onSuppressNotificationsChange={vi.fn()} />);
+    await waitFor(() => expect(apiMock.userSettings).toHaveBeenCalled());
+    expect(screen.queryByRole("switch", { name: "Push notifications on this device" })).toBeNull();
+    unmount();
+    const token = `fcm:${"t".repeat(40)}`;
+    const native = { notify: vi.fn(() => true), notificationsAllowed: vi.fn(() => false), requestNotificationPermission: vi.fn(() => false), takePendingNotification: vi.fn(() => null),
+      pushToken: vi.fn(() => token), appVersion: vi.fn(() => "0.1.24") };
+    (window as unknown as { SpaceNative?: unknown }).SpaceNative = native;
+    try {
+      render(<NotificationSettingsCard suppressNotifications={false} onSuppressNotificationsChange={vi.fn()} />);
+      const push = await screen.findByRole("switch", { name: "Push notifications on this device" });
+      await waitFor(() => expect((push as HTMLInputElement).disabled).toBe(false));
+      fireEvent.click(push);
+      await waitFor(() => expect(apiMock.registerPushDevice).toHaveBeenCalledWith({ token, platform: "ANDROID", appVersion: "0.1.24" }));
+      expect(native.requestNotificationPermission).toHaveBeenCalled();
+      expect(await screen.findByText(/no push key yet/)).toBeTruthy();
+      expect(screen.getAllByRole("switch", { name: "Push" })).toHaveLength(10); // one per notification source
+      // A new token from Firebase (or the next start) registers again while the switch is on.
+      apiMock.registerPushDevice.mockClear();
+      const unsubscribe = subscribePushTokenRegistration(apiMock);
+      expect(apiMock.registerPushDevice).toHaveBeenCalledTimes(1);
+      (window as unknown as { __spacePushToken?: () => void }).__spacePushToken?.();
+      expect(apiMock.registerPushDevice).toHaveBeenCalledTimes(2);
+      unsubscribe();
+      fireEvent.click(screen.getByRole("switch", { name: "Push notifications on this device" }));
+      await waitFor(() => expect(apiMock.removePushDevice).toHaveBeenCalledWith(token));
+      expect(window.localStorage.getItem("space.notifications.push")).toBe("off");
+    } finally {
+      delete (window as unknown as { SpaceNative?: unknown }).SpaceNative;
+      window.localStorage.removeItem("space.notifications.push");
+    }
   });
 });

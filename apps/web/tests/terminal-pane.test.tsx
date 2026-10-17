@@ -494,6 +494,8 @@ describe("Space terminal panes", () => {
     expect(isTerminalScreenRunningText(`* Razzmatazzing… (35s · ↓ 8.8k tokens)\n────\n❯ \n────\n${runningFooter}`, "cli:claude")).toBe(true);
     // A 60-column pane truncates the footer and drops "← for agents".
     expect(isTerminalScreenRunningText("────\n❯ \n────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to …", "cli:claude")).toBe(true);
+    // A 58-column pane cuts it to "esc t…"; a frame without the spinner line is still a running turn.
+    expect(isTerminalScreenRunningText("\n\n────\n❯ \n────\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc t…", "cli:claude")).toBe(true);
     expect(isTerminalScreenRunningText(`✻ Baked for 35s · done 10:01 AM\n────\n❯ \n────\n${footer}`, "cli:claude")).toBe(false);
     // Conversation text that merely mentions thinking must not keep an idle Claude pane running.
     expect(isTerminalScreenRunningText(`⏺ I was thinking about the lighthouse.\n────\n❯ \n────\n${footer}`, "cli:claude")).toBe(false);
@@ -1299,8 +1301,8 @@ describe("Space terminal panes", () => {
         profileId: "profile:pane_browser",
         profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/room_cli/pane_browser/browser_session",
         viewport: "desktop",
-        targetUrl: "https://www.example.invalid/",
-        currentUrl: "https://www.example.invalid/",
+        targetUrl: "https://www.google.com/",
+        currentUrl: "https://www.google.com/",
         title: "Olla",
         status: "READY",
         statusReason: "Page ready.",
@@ -1316,7 +1318,7 @@ describe("Space terminal panes", () => {
         roomId: browserPane.roomId,
         status: "READY",
         viewport: "desktop",
-        currentUrl: "https://www.example.invalid/",
+        currentUrl: "https://www.google.com/",
         title: "Olla",
         screenshotDataUrl: "data:image/png;base64,aGVsbG8=",
         capturedAt: browserTimestamp
@@ -2038,7 +2040,7 @@ describe("Space terminal panes", () => {
           "/api/browser/status": {
             enabled: true,
             statusReason: "Managed Chrome browser sessions are enabled.",
-            defaultUrl: "https://www.example.invalid/",
+            defaultUrl: "https://www.google.com/",
             checkedAt: browserTimestamp
           },
           "/api/panes/pane%3Abrowser/browser/session": browserSessionResponse,

@@ -24,7 +24,7 @@ export const workspaceRoomActionIds = ["rename-room", "theme", "cli-floats", "re
 export const workspaceFooterActionIds = ["sign-out"];
 // Docks read as: navigate, collaborate, content, connections, then Settings last.
 export const workspaceDockOrder = [
-  "surface-rooms", "surface-room-agent", "surface-shared-chat", "surface-tasks", "surface-agent-sessions",
+  "surface-rooms", "surface-nous", "surface-room-agent", "surface-shared-chat", "surface-tasks", "surface-agent-sessions",
   "surface-agent-files", "surface-media", "surface-clipboard", "surface-links", "surface-streaming",
   "surface-cli", "surface-source-control", "surface-health", "surface-settings"
 ];
@@ -83,7 +83,7 @@ export function workspaceActionColor(id: string): string | undefined {
 const labels: Record<string, string> = {
   "server-restart": "Manage",
   "surface-rooms": "Rooms",
-  "surface-room-agent": "Room Agent", "surface-shared-chat": "Council", "surface-tasks": "Tasks",
+  "surface-nous": "Nous", "surface-room-agent": "Room Agent", "surface-shared-chat": "Council", "surface-tasks": "Tasks",
   "surface-agent-files": "Agent Files", "surface-agent-sessions": "Sessions", "surface-media": "Media",
   "surface-clipboard": "Clipboard", "surface-links": "Links", "surface-settings": "Settings",
   "surface-cli": "CLI tools",

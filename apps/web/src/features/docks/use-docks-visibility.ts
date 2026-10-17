@@ -16,7 +16,8 @@ import {
   Settings,
   Terminal,
   type LucideIcon,
-  AgentFiles
+  AgentFiles,
+  Nous
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
@@ -44,6 +45,12 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     label: "Rooms",
     description: "Choose a room or organize your workspace.",
     icon: PanelLeft
+  },
+  {
+    id: "nous",
+    label: "Nous",
+    description: "The mind of SpaceApp: one conversation over every room, pane, copilot and plan.",
+    icon: Nous
   },
   {
     id: "notifications",

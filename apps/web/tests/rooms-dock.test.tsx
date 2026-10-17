@@ -127,6 +127,18 @@ describe("useRoomsDock", () => {
   });
 });
 
+describe("selectRoomEntries for multi-user accounts", () => {
+  // Operator-approved 2026-10-17: a USER's list from the API already holds only their own and shared rooms.
+  const rooms = [room("a", 0), room("b", 1, { ownerUserId: "user:other", name: "Shared by other" })];
+  const dock = { roomSearch: "", adminRoomFilterMode: "all", adminSelectedUserId: null } as unknown as Parameters<typeof selectRoomEntries>[0]["dock"];
+  const base = { rooms, selectedRoomId: "a", panes: [] as Pane[], roomRuntimes: {}, completions: {}, roomCliActivityCounts: {},
+    isAdminMode: false, userId: "user:me", dock, userEmailById: new Map<string, string>() };
+  it("shows a USER the rooms shared with them and keeps the owner filter for everyone else", () => {
+    expect(selectRoomEntries({ ...base, listsEveryRoom: true }).entries.map((entry) => entry.room.id)).toEqual(["a", "b"]);
+    expect(selectRoomEntries(base).entries.map((entry) => entry.room.id)).toEqual(["a"]);
+  });
+});
+
 describe("RoomsDockPanel", () => {
   afterEach(() => cleanup());
 

@@ -33,7 +33,7 @@ import {
   readOpenCodeServerControl,
   fetchOpenCodeSessionTitle,
   updateOpenCodeSessionTitle,
-  openCodeServerBaseUrl,
+  fetchOpenCodeSessionMessages,
 } from "@space/opencode-control";
 import type { CodexParityService } from "./codex-parity.js";
 import {
@@ -569,17 +569,9 @@ export class TaskTitleService {
         try {
           nativeTitle =
             (await fetchOpenCodeSessionTitle(control, nativeId))?.title ?? null;
-          const response = await fetch(
-            `${openCodeServerBaseUrl(control.serverPort, control.serverHost)}/session/${encodeURIComponent(nativeId)}/message?limit=30`,
-            {
-              headers: {
-                authorization: `Basic ${Buffer.from(`${control.serverUsername}:${control.serverPassword}`).toString("base64")}`,
-              },
-              signal: AbortSignal.timeout(5000),
-            },
-          );
-          if (response.ok) {
-            const messages = ((await response.json()) as any[])
+          const history = await fetchOpenCodeSessionMessages(control, nativeId, 30).catch(() => null);
+          if (history) {
+            const messages = (history as any[])
               .filter((m) => m.info?.role === "user");
             const native = messages.map((m) =>
                 (m.parts ?? [])

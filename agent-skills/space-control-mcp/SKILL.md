@@ -59,8 +59,9 @@ Space Control MCP (`version: space-control-v1`) provides authoritative, safe, au
 - **Parameters**: `roomId` (optional).
 
 ### 4. `space_screenshot`
-- **Purpose**: Captures the room as SpaceApp shows it, read-only as the caller (terminals attach as observers), for Vision AI analysis. The image is saved as a SCREENSHOT in the room's Media (7 days).
-- **Parameters**: `roomId`, `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`, `viewport` (desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android; default desktop).
+- **Purpose**: A photo or an MP4 video of the room as SpaceApp shows it, read-only as the caller (terminals attach as observers), for vision analysis or social posts. Saved in the room's Media (7 days) as a SCREENSHOT or VIDEO artifact.
+- **Parameters**: `roomId`, `aspect` (16:9, 1:1, 4:5, 9:16 phone layout, full) or `viewport` (desktop, desktop-hd, laptop, tablet, tablet-landscape, mobile, android, square, portrait, story; default desktop), `paneId`, `dock`, `settings`, `health`, `crop` (pane/dock, photos only), `format` (jpeg/png/webp), `quality`, `maxWidth`, `maxHeight`, `video` (`{steps:[{dock?,settings?,health?,dwellMs}]}`, at most 20 steps and 180 s).
+- **Video**: answers RUNNING with an `operationId`; poll `space_operations` (`operation: "get"`, `id`) until COMPLETED for the `artifactId` and the real `durationMs`. `skipped` lists docks or sections that could not be opened. Dots capture photos only.
 - **Engine**: `scripts/space-media-capture.mjs`, shared with the `space-media-studio` skill (social sizes, frames, theme previews, video).
 
 ### 5. `space_operations`

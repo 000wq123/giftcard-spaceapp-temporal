@@ -142,6 +142,7 @@ describe("TaskDock", () => {
     fireEvent.change(screen.getByLabelText("Time"), { target: { value: "18:30" } });
     expect((screen.getByRole("combobox", { name: "Run in" }) as HTMLSelectElement).value).toBe("pane:cli");
     expect(screen.getByText(/Times in Europe\/Athens/)).toBeTruthy();
+    expect(screen.getByText(/does not track whether the CLI finishes it/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save task" }));
     await waitFor(() => expect(mocks.createTaskItem).toHaveBeenCalledWith({
       title: "Backups",

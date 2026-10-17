@@ -1869,12 +1869,12 @@ describe("Space contracts", () => {
       profileId: "profile:room-browser-1:pane-browser-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/room_browser_1/pane_browser_1/browser_session_test",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const session = paneBrowserSessionSchema.parse({
       sessionId: "browser_session:test-1",
       ...createInput,
-      currentUrl: "https://www.example.invalid/",
+      currentUrl: "https://www.google.com/",
       title: "Olla",
       status: "READY",
       statusReason: "Page ready.",
@@ -1890,7 +1890,7 @@ describe("Space contracts", () => {
       roomId: session.roomId,
       status: "READY",
       viewport: "desktop",
-      currentUrl: "https://www.example.invalid/",
+      currentUrl: "https://www.google.com/",
       title: "Olla",
       screenshotDataUrl: "data:image/png;base64,aGVsbG8=",
       capturedAt: timestamp
@@ -1904,7 +1904,7 @@ describe("Space contracts", () => {
     const response = paneBrowserSessionResponseSchema.parse({ session, frame, websocket });
     const startRequest = createPaneBrowserSessionRequestSchema.parse({
       viewport: "mobile",
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const click = browserToolActionInputSchema.parse({ type: "click", x: 10, y: 20 });
     const diagnostics = browserToolActionInputSchema.parse({ type: "diagnostics" });
@@ -1930,7 +1930,7 @@ describe("Space contracts", () => {
     expect(diagnostics).toMatchObject({ type: "diagnostics", includeNetwork: true, limit: 100 });
     expect(recording).toMatchObject({ type: "record", durationMs: 500, intervalMs: 250, format: "both" });
     expect(extract.text).toContain("Observed");
-    expect(streamMessage.frame.currentUrl).toBe("https://www.example.invalid/");
+    expect(streamMessage.frame.currentUrl).toBe("https://www.google.com/");
     expect(() => browserToolActionInputSchema.parse({ type: "click", x: -1, y: 20 })).toThrow();
     expect(() => paneBrowserSessionSchema.parse({ ...session, viewport: "invalid-viewport" })).toThrow();
     expect(JSON.stringify(response)).not.toMatch(new RegExp("api[_-]?key|sec" + "ret\\s*[:=]|pass" + "word\\s*[:=]|sk-", "i"));
@@ -2122,7 +2122,7 @@ describe("Space contracts", () => {
         {
           toolId: "browser:navigate",
           targetPaneId: "pane:browser-1",
-          action: { type: "navigate", url: "https://www.example.invalid/" }
+          action: { type: "navigate", url: "https://www.google.com/" }
         },
         {
           toolId: "browser:extract_text",
@@ -2156,7 +2156,7 @@ describe("Space contracts", () => {
             roomId: "room:browser-1",
             actionType: "extract_text",
             viewport: "desktop",
-            currentUrl: "https://www.example.invalid/",
+            currentUrl: "https://www.google.com/",
             title: "Olla",
             text: "Observed page text",
             capturedAt: "2026-07-05T00:00:00.000Z"
@@ -2207,14 +2207,14 @@ describe("Space contracts", () => {
           agentNumber: 1,
           viewport: "desktop",
           status: "READY",
-          currentUrl: "https://www.example.invalid/",
+          currentUrl: "https://www.google.com/",
           title: "Olla",
           lastFrameAt: "2026-07-05T00:00:00.000Z"
         }
       ]
     });
     const startRequest = spaceCliBrowserSessionStartRequestSchema.parse({
-      targetUrl: "https://www.example.invalid/"
+      targetUrl: "https://www.google.com/"
     });
     const startResponse = spaceCliBrowserSessionStartResponseSchema.parse({
       session: context.browserSessions[0]
@@ -2240,7 +2240,7 @@ describe("Space contracts", () => {
             roomId: "room:browser-1",
             actionType: "extract_text",
             viewport: "desktop",
-            currentUrl: "https://www.example.invalid/",
+            currentUrl: "https://www.google.com/",
             title: "Olla",
             text: "Observed page text",
             capturedAt: "2026-07-05T00:00:00.000Z"

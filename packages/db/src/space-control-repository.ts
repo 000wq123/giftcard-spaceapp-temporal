@@ -50,7 +50,8 @@ export class InMemoryControlRepository implements ControlRepository {
       return await Promise.race([next, acquirePromise]) as T;
     }finally{
       if (acquireTimer) clearTimeout(acquireTimer);
-      if(this.locks.get(key)===next)this.locks.delete(key);
+      // A waiter that timed out stays queued behind the holder until it settles, so the next caller still waits.
+      void next.catch(()=>{}).finally(()=>{if(this.locks.get(key)===next)this.locks.delete(key);});
     }
   }
   private key(kind:string,actor:string,key:string){return JSON.stringify([kind,actor,key]);}

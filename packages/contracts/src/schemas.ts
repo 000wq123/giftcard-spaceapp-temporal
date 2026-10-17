@@ -7,6 +7,7 @@ import { cliAdapterContractSchema } from "./cli-adapter.js";
 import { controlToolSchemas } from "./space-control.js";
 import { z } from "zod";
 import { roomMiniRouteSchema } from "./pane-catalog.js";
+import { nousSettingsSchema } from "./nous.js";
 import { taskMetadataSchema } from "./task-metadata.js";
 import { t3CodePaneMetadataSchema } from "./t3code.js";
 import { jobApplyPaneMetadataSchema, jobCopilotAccountProfileIdSchema } from "./job-apply.js";
@@ -8791,6 +8792,8 @@ export const userSettingsSchema = z.object({
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
+  /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
+  nous: nousSettingsSchema.nullable().optional(),
   updatedAt: isoDateTimeSchema.optional()
 });
 
@@ -8856,7 +8859,8 @@ export const updateUserSettingsInputSchema = z.object({
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   /** null forgets the default: the next Freelance Copilot pane asks again. */
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
-  notifications: notificationSettingsSchema.nullable().optional()
+  notifications: notificationSettingsSchema.nullable().optional(),
+  nous: nousSettingsSchema.nullable().optional()
 }).strict();
 
 export const authMeSchema = z.object({
@@ -8916,6 +8920,26 @@ export const acceptUserInviteInputSchema = z.object({
 }).strict();
 export const setUserDisabledInputSchema = z.object({
   disabled: z.boolean()
+}).strict();
+// Room sharing (multi-user step 3, plan clipboard:evAaFYqrgDfd), only with SPACE_MULTI_USER_ENABLED=true: a room's
+// owner shares it with VIEW (read only) or COLLABORATE (own panes in the room); only a pane's owner types into it.
+export const roomSharePermissionSchema = z.enum(["VIEW", "COLLABORATE"]);
+export const roomShareSchema = z.object({
+  roomId: idSchema,
+  userId: idSchema,
+  permission: roomSharePermissionSchema,
+  createdBy: idSchema,
+  createdAt: isoDateTimeSchema
+}).strict();
+export const setRoomShareInputSchema = z.object({
+  permission: roomSharePermissionSchema
+}).strict();
+export const addRoomShareInputSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  permission: roomSharePermissionSchema
+}).strict();
+export const roomShareListResponseSchema = z.object({
+  shares: z.array(roomShareSchema.extend({ email: z.string().email() }))
 }).strict();
 
 export const updateUserRoleInputSchema = z.object({
@@ -10222,6 +10246,9 @@ export type AuthUser = z.infer<typeof authUserSchema>;
 export type AdminUserItem = z.infer<typeof adminUserItemSchema>;
 export type UserInvite = z.infer<typeof userInviteSchema>;
 export type UserInviteRole = z.infer<typeof userInviteRoleSchema>;
+export type RoomShare = z.infer<typeof roomShareSchema>;
+export type RoomSharePermission = z.infer<typeof roomSharePermissionSchema>;
+export type RoomShareListResponse = z.infer<typeof roomShareListResponseSchema>;
 export type AdminUserListResponse = z.infer<typeof adminUserListResponseSchema>;
 export type UpdateUserRoleInput = z.infer<typeof updateUserRoleInputSchema>;
 export type AuthMe = z.infer<typeof authMeSchema>;

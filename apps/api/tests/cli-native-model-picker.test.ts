@@ -67,7 +67,35 @@ describe("native CLI model acknowledgement", () => {
     expect(write.mock.calls).toEqual([["/model provider/model-2"], ["\r"], ["Model Two"], ["\u001bs"]]);
   });
 
+  it("filters Droid's selector, picks the level and confirms from the footer, never from an older acknowledgement", async () => {
+    const droid = { id: "custom:Claude-Opus-5.5-API-credits-0", displayName: "Claude Opus 5.5 API credits", isDefault: false,
+      defaultReasoningEffort: "high", supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+      reasoningOptions: ["low", "medium", "high", "xhigh", "max"].map((reasoningEffort) => ({ reasoningEffort })) };
+    const footer = (model: string) => `● Model switched to Claude Opus 5.5 API credits\n Auto (Off) · all actio… ${model}\n│ >   │\n? for help`;
+    const selector = (filter: string, rows: string) => `│ Select Model For This Session │\n│ ◉ Main | ○ Spec │\n│ ${filter} │\n│ │\n${rows}\n  Type search   ↑↓ focus list   Enter select`;
+    const write = vi.fn(async () => undefined);
+    const read = vi.fn().mockResolvedValueOnce({ text: footer("GPT-6.1 Sol (High)"), revision: 1 })
+      .mockResolvedValueOnce({ text: selector("Filter models...", "│ ● GPT-6.1 Sol (High) │\n│   Opus 5.5 │"), revision: 2 })
+      .mockResolvedValueOnce({ text: selector("Claude Opus 5.5 API credits", "│   Claude Opus 5.5 API credits │"), revision: 3 })
+      .mockResolvedValueOnce({ text: "│   Low │\n│   Medium │\n│ > High (current) │\n│   Extra high │\n│   Max │\n  Use ↑↓ to navigate, Enter to select", revision: 4 })
+      .mockResolvedValue({ text: footer("Claude Opus 5.5 API credits (Extra high)"), revision: 5 });
+    await switchNativeCliModel({ model: droid, effort: "xhigh", runtimeId: "cli:droid", read, write,
+      readUndimmed: async () => footer("GPT-6.1 Sol (High)"), assertCurrent: async () => undefined, wait: async () => undefined });
+    expect(write.mock.calls).toEqual([["/model custom:Claude-Opus-5.5-API-credits-0"], ["\r"], ["Claude Opus 5.5 API credits"], ["\r"], ["\u001b[B\r"]]);
+    expect(nativeCliConfirmedReasoning(footer("Claude Opus 5.5 API credits (Extra high)"), "cli:droid", droid)).toBe("xhigh");
+  });
+
+  it("reads Droid's dim placeholder as an empty prompt but keeps a typed draft", async () => {
+    const screen = { text: '│ > Try "Fix all lint warnings" │\n Auto (Off) · all actions      GPT-6.1 Sol (High)', revision: 1 };
+    const control = (undimmed: string) => ({ runtimeId: "cli:droid", read: async () => screen, write: async () => undefined,
+      readUndimmed: async () => undimmed, assertCurrent: async () => undefined, wait: async () => undefined });
+    await expect(prepareNativeCliSettings(control("│ > T │"))).resolves.toEqual(screen);
+    await expect(prepareNativeCliSettings(control('│ > Try "Fix all lint warnings" │'))).rejects.toThrow(/draft/);
+  });
+
   it.each([
+    ["cli:droid", "custom:Claude-Haiku-5.5-API-credits-0", "Claude Haiku 5.5 API credits", " Auto (Off) · all ac… Claude Haiku 5.5 API credits (Medium)"],
+    ["cli:droid", "gpt-6-sol", "GPT-6.1 Sol", " Auto (High) · allow edits                    GPT-6.1 Sol (High)"],
     ["cli:gemini", "gemini-3.8-flash-high", "Gemini 3.8 Flash (High)", "⎿ Model set to Gemini 3.8 Flash (High)"],
     ["cli:kimi", "kimi-code/k3", "K3", "│ Model: K3 │"],
     ["cli:deepseek", "deepseek-flash/deepseek-v4-flash", "DeepSeek Flash", "MODEL deepseek-v4-flash   EFFORT auto"],

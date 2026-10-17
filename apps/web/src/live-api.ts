@@ -81,6 +81,11 @@ import type {
   AdminOperationRun,
   AdminUserItem,
   AdminUserListResponse,
+  UserInvite,
+  UserInviteRole,
+  RoomShare,
+  RoomShareListResponse,
+  RoomSharePermission,
   AuditEvent,
   AuthMe,
   AuthUser,
@@ -182,6 +187,12 @@ import type {
   CouncilRun,
   CouncilRunSummary,
   CreateCouncilRunInput,
+  NousDecision,
+  NousDecisionAnswerInput,
+  NousMessage,
+  NousOverview,
+  NousSettings,
+  NousState,
   ListSharedChatMessagesQuery,
   AuditChainEntry,
   ListAuditChainQuery,
@@ -1386,6 +1397,32 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ role })
     }),
+  // Multi-user accounts: these answer 404 MULTI_USER_DISABLED unless SPACE_MULTI_USER_ENABLED=true.
+  listUserInvites: () => request<{ invites: UserInvite[] }>("/api/admin/users/invites"),
+  createUserInvite: (input: { email: string; role: UserInviteRole }) =>
+    request<{ invite: UserInvite; token: string }>("/api/admin/users/invites", { method: "POST", body: JSON.stringify(input) }),
+  revokeUserInvite: (inviteId: string) =>
+    request<{ id: string; revoked: true }>(`/api/admin/users/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE" }),
+  setUserDisabled: (userId: string, disabled: boolean) =>
+    request<{ id: string; disabled: boolean }>(`/api/admin/users/${encodeURIComponent(userId)}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled })
+    }),
+  // Room sharing, also behind SPACE_MULTI_USER_ENABLED; only the room's owner gets an answer.
+  roomShares: (roomId: string) => request<RoomShareListResponse>(`/api/rooms/${encodeURIComponent(roomId)}/shares`),
+  addRoomShare: (roomId: string, email: string, permission: RoomSharePermission) =>
+    request<RoomShare>(`/api/rooms/${encodeURIComponent(roomId)}/shares`, { method: "PUT", body: JSON.stringify({ email, permission }) }),
+  setRoomShare: (roomId: string, userId: string, permission: RoomSharePermission) =>
+    request<RoomShare>(`/api/rooms/${encodeURIComponent(roomId)}/shares/${encodeURIComponent(userId)}`, { method: "PUT", body: JSON.stringify({ permission }) }),
+  removeRoomShare: (roomId: string, userId: string) =>
+    request<{ removed: true }>(`/api/rooms/${encodeURIComponent(roomId)}/shares/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  acceptUserInvite: (token: string, password: string) => {
+    resetCliRuntimeSettingsCache();
+    return request<AuthMe>("/api/auth/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token, password })
+    }).then(noteServerModules);
+  },
   clipboardItems: (query: { q?: string; source?: ClipboardSource; includeCompleted?: boolean; paneId?: string; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1475,6 +1512,16 @@ export const api = {
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     }),
   deleteCouncilRun: (id: string) => request<void>(`/api/council/runs/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nous: () => request<{ state: NousState }>("/api/nous"),
+  nousMessages: () => request<{ messages: NousMessage[] }>("/api/nous/messages"),
+  sendNousMessage: (content: string) => request<{ message: NousMessage }>("/api/nous/messages", { method: "POST", body: JSON.stringify({ content }) }),
+  clearNousMessages: () => request<{ cleared: number }>("/api/nous/messages", { method: "DELETE" }),
+  stopNous: () => request<{ stopped: boolean }>("/api/nous/stop", { method: "POST" }),
+  updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
+  nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
+  answerNousDecision: (id: string, input: NousDecisionAnswerInput) =>
+    request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1648,6 +1695,9 @@ export const api = {
   ackNotification: (id: string) => request<{ notification: import("@space/contracts").SpaceNotification }>(`/api/notifications/${encodeURIComponent(id)}/ack`, { method: "POST" }),
   readAllNotifications: () => request<{ read: number }>("/api/notifications/read-all", { method: "POST" }),
   testNotification: () => request<{ notification: import("@space/contracts").SpaceNotification }>("/api/notifications/test", { method: "POST" }),
+  // The Android app's FCM token while "Push notifications on this device" is on; `available` says whether the server can push.
+  registerPushDevice: (device: import("@space/contracts").PushDeviceRegistration) => request<{ registered: true; available: boolean }>("/api/notifications/push-devices", { method: "POST", body: JSON.stringify(device) }),
+  removePushDevice: (token: string) => request<{ removed: boolean }>("/api/notifications/push-devices", { method: "DELETE", body: JSON.stringify({ token }) }),
   codexHistory: (
     input:
       | number

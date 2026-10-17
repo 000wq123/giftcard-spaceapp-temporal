@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { eventSchema, MARKETING_CHANNEL_LABELS, type MarketingEvent, type MarketingRun, type Pane } from "@space/contracts";
 import { InMemoryMarketingCopilotRepository, PostgresMarketingCopilotRepository, type MarketingCopilotRepository } from "@space/db";
-import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { makeSpaceId, SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, type SpaceEventBus, type SpaceStore } from "@space/runtime";
+import { localArtifactFilePath } from "../artifact-storage.js";
 import type { CliTerminalManager } from "../cli-terminal.js";
 import type { PaneBrowserAccountControl } from "../pane-browser-routes.js";
 import { GitControlError } from "../source-control/errors.js";
@@ -23,6 +24,8 @@ export interface MarketingCopilotWiring extends Omit<MarketingCopilotRouteDepend
   terminal: Pick<CliTerminalManager, "runSerializedTerminalMutation" | "sendInput">;
   notifications: Pick<NotificationService, "raise" | "resolve">;
   roomOwner(roomId: string): Promise<string | null>;
+  /** Where room artifacts live (config.browserEvidenceArtifactRoot): captured post media are read from there. */
+  artifactRoot: string;
   /** The browser routes' account control (set once they register): bookmarks open through its openTab. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
   /** The instance jobs `marketing-copilot-scheduler` and `marketing-copilot-metrics` (stable; dev opts in). */
@@ -89,6 +92,16 @@ export function registerMarketingCopilot(app: FastifyInstance, deps: MarketingCo
       const accounts = deps.paneBrowserAccounts.current;
       if (!accounts) throw new SpaceFeatureDisabledError("BROWSER_ACCOUNTS_UNAVAILABLE", "Google account selection is unavailable on this runtime.");
       return accounts.openTab(owner, pane, bookmark.url, bookmark.profileId, traceId, actor);
+    },
+    resolveArtifactAsset: async (owner, artifactId) => {
+      const artifact = await Promise.resolve(store.getArtifact(artifactId)).catch(() => null);
+      const roomOwner = artifact?.roomId ? await deps.roomOwner(artifact.roomId) : null;
+      if (!artifact || artifact.deletedAt || !["IMAGE", "SCREENSHOT", "VIDEO"].includes(artifact.kind) || roomOwner !== owner) {
+        throw new SpaceNotFoundError(`Captured media ${artifactId} was not found in your rooms.`);
+      }
+      // A post keeps its media: neither the 7-day sweep nor deleting the Studio room (room_id becomes null) removes a pinned file.
+      await store.updateArtifactRetention(artifact.id, { pinnedAt: new Date().toISOString(), expiresAt: null });
+      return { path: localArtifactFilePath({ artifactRoot: deps.artifactRoot, artifact }), kind: artifact.kind === "VIDEO" ? "VIDEO" : "IMAGE" };
     },
     onEvent: (event) => {
       void (async () => {

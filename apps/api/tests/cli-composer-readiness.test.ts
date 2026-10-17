@@ -19,6 +19,10 @@ it("knows when each terminal CLI's composer is open, and not while it starts or 
     expect(cliComposerReady(runtimeId, ""), runtimeId).toBe(false);
     expect(roomTerminalState(screen), runtimeId).toBe("IDLE");
   }
+  // Claude Code 2.1.302 in a 42-column pane (tmux 2026-10-17): the hint is cut, the bypass question has no mode label.
+  expect(cliComposerReady("cli:claude", "❯ \n──────────\n  ⏵⏵ bypass permissions on (shift+tab to")).toBe(true);
+  expect(cliComposerReady("cli:claude", "  ⏸ manual mode on · ? for shortcuts · …")).toBe(true);
+  expect(cliComposerReady("cli:claude", "  ❯ No, exit\n    Yes, I accept\n\n  Enter to confirm · Esc to cancel")).toBe(false);
   expect(cliComposerReady("cli:grok", "Do you trust the contents of this directory?\n Yes, proceed  y\n No, quit  n")).toBe(false);
   expect(cliComposerReady("cli:kimi", "anything")).toBeNull();
   expect(roomTerminalState(" ⎋ Working…\n ⠇ 2s > ◒ GPT-6 Sol > 🌳 main")).toBe("RUNNING");

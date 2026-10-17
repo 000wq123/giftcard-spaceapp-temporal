@@ -102,6 +102,7 @@ export const appIconMaterialSymbols = {
   "Phone": "call",
   "AgentFiles": "folder_special",
   "CliFloats": "branding_watermark",
+  "Nous": "network_intelligence",
   "Router": "router",
   "Maximize": "fullscreen",
   "Minimize": "fullscreen_exit",

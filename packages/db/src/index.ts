@@ -91,6 +91,7 @@ export * from "./connector-accounts-repository.js";
 export * from "./job-apply-repository.js";
 export * from "./space-notifications-repository.js";
 export * from "./council-repository.js";
+export * from "./nous-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";
 export * from "./freelance-copilot-repository.js";

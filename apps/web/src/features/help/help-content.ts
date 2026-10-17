@@ -57,6 +57,7 @@ import {
   MemoryStick,
   MessageSquare,
   MessagesSquare,
+  Nous,
   MessageSquareX,
   Mic,
   Minimize2,
@@ -189,6 +190,7 @@ export const helpSections: HelpSection[] = [
     summary: "Global room actions, pane creation, links, capture tools, and privileged operations.",
     entries: [
       entry("surface-rooms", "Rooms", PanelLeft, "Room toolbar", "Shows or hides the persistent room list and its room creation action."),
+      entry("surface-nous", "Nous", Nous, "Room toolbar", "Opens Nous, the mind of SpaceApp (Claude Opus 5.5 at xhigh): one conversation over every room, pane, copilot and plan. With Work on my behalf on it answers panes and copilots, moves the plans on and brings you only releases, irreversible actions, anything to third parties or with money, and product direction."),
       entry("surface-room-agent", "Room Agent", Bot, "Room toolbar", "Opens the persistent supervisor that can coordinate work across the current room."),
       entry("surface-shared-chat", "Council", MessagesSquare, "Room toolbar", "Opens the Research Council: a coordinator plans, several models answer and score each other, and you get the Top 3 they agree on."),
       entry("surface-media", "Media dock", Images, "Room toolbar", "Opens room images, recordings, uploaded files, and browser evidence artifacts."),

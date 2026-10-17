@@ -121,6 +121,9 @@ same steps, and still record fields and memory.
 8. CV upload: `browser_file_upload` with `cv.path` from the packet on the resume input
    (or after clicking "Attach" when the input is hidden). Then confirm the file name appears
    in the page text; React forms sometimes report success while `files.length` is 0.
+   Photo fields (photo, headshot, profile picture): `browser_file_upload` with `photo.path` from
+   the packet, the CV's own photo. Operator rule (2026-10-17): every form that asks for a photo
+   gets this one, so never stop or ask for a photo while `photo.path` is set.
 9. Before Submit, re-snapshot and verify: name/email/phone show the profile values, the CV
    file name is present, no value leaked into an unrelated field (a URL or a number appearing
    in several inputs means a mass-fill bug — repair by ref before continuing).

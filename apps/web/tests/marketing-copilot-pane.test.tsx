@@ -8,6 +8,7 @@ import { summarizeMetrics } from "../src/features/marketing-copilot-pane/Analyti
 import { registerBrowserPaneEventTarget } from "../src/features/browser-pane/events.js";
 
 const apiMock = vi.hoisted(() => ({
+  artifactFileUrl: (id: string) => `/api/artifacts/${encodeURIComponent(id)}/file`,
   marketingCopilotSettings: vi.fn(),
   updateMarketingCopilotSettings: vi.fn(),
   userSettings: vi.fn(),
@@ -198,11 +199,30 @@ describe("MarketingCopilotPane", () => {
     await waitFor(() => expect(apiMock.decideMarketingPost).toHaveBeenLastCalledWith(pane.id, post.id, { decision: "edit", title: null, body: "I built SpaceApp: seamless agents.", scheduledAt: null }));
     // Send back needs a note.
     expect((within(review).getByRole("button", { name: /Send back/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(review).queryByRole("list", { name: "Post media" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "Brief for the copilot" }), { target: { value: "A launch thread for 0.2.5" } });
     fireEvent.click(screen.getByRole("button", { name: /Ask/ }));
     await waitFor(() => expect(apiMock.createMarketingBrief).toHaveBeenCalledWith(pane.id, { text: "A launch thread for 0.2.5" }));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(apiMock.marketingCopilotRunAction).toHaveBeenCalledWith(pane.id, "start"));
+  });
+});
+
+describe("post media", () => {
+  it("shows the captures a post will upload (video and image) and a pane file by its kind", async () => {
+    const post = { id: "mktpost:media01", ownerUserId: "user:operator", paneId: "pane:mkt000001", campaignId: null, channel: "LINKEDIN", kind: "POST", target: null, title: null,
+      body: "SpaceApp on a phone.", status: "APPROVED", scheduledAt: null, reviewNote: null, ruleId: null, publishedUrl: null, publishedAt: null,
+      assets: [{ artifactId: "artifact:video1", path: "/opt/spaceapp/var/artifacts/browser-evidence/space-control-x/video-story.mp4", label: "9:16 tour", kind: "VIDEO" },
+        { artifactId: "artifact:shot1", path: "/opt/spaceapp/var/artifacts/browser-evidence/space-control-y/screenshot.png", label: "1:1 shot", kind: "IMAGE" },
+        { path: "/opt/spaceapp/var/artifacts/cli-workspaces/a/logo.svg", label: "Logo", kind: "FILE" }],
+      evidence: {}, metrics: {}, createdAt: "2026-10-17T08:00:00.000Z", updatedAt: "2026-10-17T08:00:00.000Z" } as MarketingPost;
+    apiMock.marketingPosts.mockResolvedValue({ posts: [post] });
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const media = await screen.findByRole("list", { name: "Post media" });
+    expect(within(media).getByLabelText("9:16 tour").getAttribute("src")).toBe("/api/artifacts/artifact%3Avideo1/file");
+    expect(within(media).getByRole("img", { name: "1:1 shot" }).getAttribute("src")).toBe("/api/artifacts/artifact%3Ashot1/file");
+    expect(within(media).getByText("file")).toBeTruthy();
+    expect(within(media).getByText("Logo")).toBeTruthy();
   });
 });
 

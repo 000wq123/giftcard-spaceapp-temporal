@@ -183,7 +183,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
     status: () => ({
       enabled: true,
       statusReason: "Browser sessions enabled for test.",
-      defaultUrl: "https://www.example.invalid/",
+      defaultUrl: "https://www.google.com/",
       checkedAt: "2026-07-05T00:00:00.000Z"
     }),
     startOrRestore: async () => {
@@ -203,7 +203,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
       return {
         session: {
           ...session,
-          currentUrl: `https://www.example.invalid/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
+          currentUrl: `https://www.google.com/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
           title: `Olla ${redactionQueryKey}=${redactionFixtureValue}`
         },
         frame: {
@@ -212,7 +212,7 @@ function fakeBrowserSessionManager(store: InMemorySpaceStore) {
           roomId: session.roomId,
           status: "READY",
           viewport: session.viewport,
-          currentUrl: `https://www.example.invalid/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
+          currentUrl: `https://www.google.com/?${redactionQueryKey}=${redactionFixtureValue}&category=tea`,
           title: `Olla ${redactionQueryKey}=${redactionFixtureValue}`,
           screenshotDataUrl: "data:image/png;base64,aGVsbG8=",
           capturedAt: "2026-07-05T00:00:00.000Z"
@@ -686,7 +686,8 @@ describe("Space API native agent panes", () => {
         "opencode-v1|opencode-go/deepseek-v4-pro|high", "opencode-v1|opencode-go/deepseek-v4-pro|max",
         "opencode-v1|opencode-go/qwen3.7-plus|minimal", "opencode-v1|opencode-go/qwen3.7-plus|high"
       ]);
-      expect(fetchMock).toHaveBeenCalledOnce();
+      // One catalog request; the other is the cached OpenCode API version probe.
+      expect(fetchMock.mock.calls.filter(([url]) => !String(url).endsWith("/api/info"))).toHaveLength(1);
       control.collaborationModes = [];
       const updated = await adapter.updateSettings({ pane, collaborationMode: "plan" });
       expect(updated.session.collaborationMode).toBe("plan");
@@ -1878,8 +1879,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/?token=raw-secret&category=tea",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/?token=raw-secret&category=tea",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -1979,8 +1980,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-2",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-2",
       viewport: "mobile",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/?token=raw-secret&category=tea",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/?token=raw-secret&category=tea",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2004,7 +2005,7 @@ describe("Space API native agent panes", () => {
       url: `/api/panes/${encodeURIComponent(chatPane.id)}/agent/messages`,
       headers: { cookie, [csrfHeaderName]: csrfToken },
       payload: {
-        content: "Research example.invalid using the visible browser.",
+        content: "Research google.com using the visible browser.",
         selectedToolIds: ["browser:extract_text", "browser:set_viewport"]
       }
     });
@@ -2028,7 +2029,7 @@ describe("Space API native agent panes", () => {
     expect(starter.started[0]!.prompt).toContain("Space private clipboard tools selected:");
     expect(starter.started[0]!.prompt).toContain("```space-clipboard-actions");
     expect(starter.started[0]!.prompt).toContain("Use these tools only when the operator explicitly asks");
-    expect(starter.started[0]!.prompt).toContain("User prompt:\nResearch example.invalid using the visible browser.");
+    expect(starter.started[0]!.prompt).toContain("User prompt:\nResearch google.com using the visible browser.");
     expect(starter.started[0]!.prompt).not.toContain("Space Agent Bootstrap:");
     expect(starter.started[0]!.prompt).not.toContain("Space managed browser tools selected");
     expect(starter.started[0]!.prompt).not.toContain("browser_session:olla-2");
@@ -2192,8 +2193,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:defaults-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/defaults-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2270,8 +2271,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:reload-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/reload-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2373,8 +2374,8 @@ describe("Space API native agent panes", () => {
       profileId: "profile:browser-bridge-1",
       profilePath: "/opt/spaceapp/var/artifacts/browser-profiles/browser-bridge-1",
       viewport: "desktop",
-      targetUrl: "https://www.example.invalid/",
-      currentUrl: "https://www.example.invalid/",
+      targetUrl: "https://www.google.com/",
+      currentUrl: "https://www.google.com/",
       title: "Olla Store",
       status: "READY",
       isActive: true
@@ -2463,7 +2464,7 @@ describe("Space API native agent panes", () => {
     expect(executed.json().results[0]).toMatchObject({
       status: "EXECUTED",
       observation: {
-        currentUrl: `https://www.example.invalid/?${redactionQueryKey}=%5BREDACTED%5D&category=tea`,
+        currentUrl: `https://www.google.com/?${redactionQueryKey}=%5BREDACTED%5D&category=tea`,
         title: `Olla ${redactionQueryKey}:[REDACTED]`,
         text: `Observed page text with ${redactionQueryKey}:[REDACTED]`
       }

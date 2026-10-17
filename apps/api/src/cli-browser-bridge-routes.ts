@@ -146,7 +146,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       parseBody,
       parseQuery,
       audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
-      candidate: deps.jobApplyService ? async (owner) => (await deps.jobApplyService!.getProfile(owner)).candidate : undefined
+      candidate: deps.jobApplyService ? async (owner) => (await deps.jobApplyService!.getProfile(owner)).candidate : undefined,
+      bookmarks: deps.marketingCopilotService
     });
   }
   registerTaskAgentRoutes(app, {
