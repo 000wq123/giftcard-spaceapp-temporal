@@ -5,6 +5,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+- Codex sandboxes each command in the CLI container (Docker's default seccomp
+  profile plus user namespaces, no AppArmor profile) on Docker Desktop and on
+  Linux hosts that allow unprivileged user namespaces; Ubuntu 23.10 and later
+  restrict them, so Codex still asks before each command there.
+- `restore` prints workspace paths in plain quotes (Windows paths no longer show
+  doubled backslashes).
+
 ## [1.1.6] - 2026-10-16
 
 Source: sanitized Space app @ eebf761963 (4362 files). Adds install telemetry
