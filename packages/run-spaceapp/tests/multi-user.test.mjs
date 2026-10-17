@@ -103,3 +103,32 @@ test("users need isolated access, and user ids are validated", () => {
   assert.doesNotMatch(renderWorkspaceCompose(off), /SPACE_MULTI_USER_ENABLED|cli-hosts/);
   assert.equal(renderCliHosts(off), "{}\n");
 });
+
+test("a restore names the users and their workspaces to add again", async () => {
+  let root;
+  const execute = async (spec) => {
+    if (spec.args?.includes("scripts/portable-backup.mjs")) {
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      await mkdir(join(root, "backups", "spaceapp-backup-20261017T070000000Z"), { recursive: true });
+      await writeFile(join(root, "backups", "spaceapp-backup-20261017T070000000Z", "manifest.json"), "{}");
+    }
+    return 0;
+  };
+  const fixture = await installation(execute);
+  root = fixture.root;
+  await run(["user", "enable"], fixture.options);
+  await run(["user", "add", "user:Bob12345", "--memory", "2g"], fixture.options);
+  const folder = await mkdtemp(join(tmpdir(), "spaceapp-multi-user-repo-"));
+  await run(["workspace", "add", folder, "--user", "user:Bob12345"], fixture.options);
+  assert.equal(await run(["backup"], fixture.options), 0);
+  // A fresh installation without accounts restores this backup.
+  const { writeFile } = await import("node:fs/promises");
+  const config = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  delete config.users;
+  await writeFile(join(root, "config.json"), JSON.stringify(config));
+  assert.equal(await run(["restore"], { ...fixture.options, stdin: Readable.from(["RESTORE\n"]) }), 0);
+  const out = fixture.stdout.value();
+  assert.match(out, /SpaceApp accounts were on: .* user enable/);
+  assert.match(out, /User of the backup to add again: .* user add user:Bob12345 --memory 2g/);
+  assert.ok(out.includes(`workspace add ${JSON.stringify(folder)} --user user:Bob12345`));
+});

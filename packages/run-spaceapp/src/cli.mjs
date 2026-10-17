@@ -1838,6 +1838,16 @@ async function restoreBackupExtras({ root, config, backupId, stdin, stdout, stde
   for (const workspace of missing) {
     stdout.write(`Workspace of the backup to add again: ${UNIVERSAL_COMMAND} workspace add "${workspace.hostPath}"${workspace.readOnly ? " --read-only" : ""}\n`);
   }
+  // Multi-user: the accounts come back with the database; each user's CLI container and workspaces are added again.
+  if (saved?.users !== undefined && config.users === undefined) stdout.write(`SpaceApp accounts were on: ${UNIVERSAL_COMMAND} user enable\n`);
+  for (const user of saved?.users ?? []) {
+    if (!(config.users ?? []).some((current) => current.id === user.id)) {
+      stdout.write(`User of the backup to add again: ${UNIVERSAL_COMMAND} user add ${user.id}${user.memoryLimit ? ` --memory ${user.memoryLimit}` : ""}\n`);
+    }
+    for (const workspace of user.workspaces ?? []) {
+      stdout.write(`Their workspace to add again: ${UNIVERSAL_COMMAND} workspace add ${JSON.stringify(workspace.hostPath)}${workspace.readOnly ? " --read-only" : ""} --user ${user.id}\n`);
+    }
+  }
   stdout.write(`API keys and CLI logins are never in backups: enter them again with "${UNIVERSAL_COMMAND} credentials set <provider>".\n`);
 }
 
