@@ -578,7 +578,24 @@ export function renderRuntimeEnv(config) {
   ].join("\n");
 }
 
-export function renderWorkspaceCompose(config) {
+/**
+ * Codex sandboxes each command with bubblewrap, which needs unprivileged user namespaces (pilot finding F17). Docker
+ * Desktop's VM allows them; on Linux the host decides, and Ubuntu 23.10 and later restrict them through AppArmor.
+ * shortcut: a Linux host running Docker Desktop is judged by the host's own settings; upgrade if such installs appear.
+ */
+export async function userNamespacesUsable(platform = process.platform, read = (path) => readFile(path, "utf8")) {
+  if (platform !== "linux") return true;
+  const value = async (path) => (await read(path).catch(() => ""))?.trim();
+  if (await value("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1") return false;
+  if (await value("/proc/sys/kernel/unprivileged_userns_clone") === "0") return false;
+  return await value("/proc/sys/user/max_user_namespaces") !== "0";
+}
+
+// Docker's default seccomp profile plus user namespaces, and no AppArmor profile (docker-default denies the namespace
+// mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
+const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
+
+export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   validateConfig(config);
   const mounts = config.workspaces.flatMap((workspace) => [
     "      - type: bind",
@@ -595,6 +612,7 @@ export function renderWorkspaceCompose(config) {
     ...service,
     "  spaceapp-cli:",
     ...service,
+    ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
     ""
   ].join("\n");
 }
@@ -769,7 +787,7 @@ export async function writeRuntimeFiles(root, config) {
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
   await atomicWrite(join(root, "compose.host-access.yml"), renderHostAccessCompose(config));
 }
 

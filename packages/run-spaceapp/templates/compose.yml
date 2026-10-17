@@ -78,12 +78,9 @@ services:
     image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
     restart: unless-stopped
     init: true
-    # Docker's default seccomp profile plus user namespaces, and no AppArmor profile (docker-default denies the
-    # namespace mounts), so Codex can sandbox each command with bubblewrap (pilot finding F17).
+    # compose.workspaces.yml adds the user-namespace profile where the host allows user namespaces (F17).
     security_opt:
       - no-new-privileges:true
-      - seccomp=./seccomp-cli.json
-      - apparmor=unconfined
     mem_limit: "${SPACEAPP_CLI_MEMORY_LIMIT}"
     cpus: "${SPACEAPP_CLI_CPU_LIMIT}"
     environment:

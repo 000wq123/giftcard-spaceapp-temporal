@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createDefaultConfig, renderWorkspaceCompose, userNamespacesUsable } from "../src/index.mjs";
 
 const template = await readFile(new URL("../templates/compose.yml", import.meta.url), "utf8");
 const images = [...template.matchAll(/^\s+image:\s*(\S+)\s*$/gm)].map((match) => match[1]);
@@ -26,9 +27,18 @@ test("the headroom companion is pinned to the reviewed digest", () => {
   assert.ok(storageSource.includes(`"${headroom}"`), "storage plan must estimate the same companion image");
 });
 
-test("the CLI container allows user namespaces only through its own seccomp profile (F17)", async () => {
+test("the CLI container gets the user-namespace profile only where the host allows user namespaces (F17)", async () => {
   const cli = template.slice(template.indexOf("\n  spaceapp-cli:\n"), template.indexOf("\n  spaceapp-cli:\n") + 600);
-  assert.match(cli, /- seccomp=\.\/seccomp-cli\.json\n\s+- apparmor=unconfined/);
+  assert.doesNotMatch(cli, /seccomp=|apparmor=/);
+  const config = createDefaultConfig({ version: "1.1.7" });
+  assert.match(renderWorkspaceCompose(config, { cliSandbox: true }), /  spaceapp-cli:\n    volumes: \[\]\n    security_opt:\n      - seccomp=\.\/seccomp-cli\.json\n      - apparmor=unconfined\n/);
+  assert.doesNotMatch(renderWorkspaceCompose(config), /security_opt/);
+  const host = (files) => (path) => path in files ? Promise.resolve(`${files[path]}\n`) : Promise.reject(new Error("ENOENT"));
+  assert.equal(await userNamespacesUsable("darwin", host({})), true);
+  assert.equal(await userNamespacesUsable("linux", host({ "/proc/sys/user/max_user_namespaces": "63000" })), true);
+  assert.equal(await userNamespacesUsable("linux", host({ "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1" })), false);
+  assert.equal(await userNamespacesUsable("linux", host({ "/proc/sys/kernel/unprivileged_userns_clone": "0" })), false);
+  assert.equal(await userNamespacesUsable("linux", host({ "/proc/sys/user/max_user_namespaces": "0" })), false);
   const profile = JSON.parse(await readFile(new URL("../templates/seccomp-cli.json", import.meta.url), "utf8"));
   assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
   const added = profile.syscalls.at(-1);
