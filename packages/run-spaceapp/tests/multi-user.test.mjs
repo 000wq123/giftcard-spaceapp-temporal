@@ -130,5 +130,5 @@ test("a restore names the users and their workspaces to add again", async () => 
   const out = fixture.stdout.value();
   assert.match(out, /SpaceApp accounts were on: .* user enable/);
   assert.match(out, /User of the backup to add again: .* user add user:Bob12345 --memory 2g/);
-  assert.ok(out.includes(`workspace add ${JSON.stringify(folder)} --user user:Bob12345`));
+  assert.ok(out.includes(`workspace add "${folder}" --user user:Bob12345`));
 });
