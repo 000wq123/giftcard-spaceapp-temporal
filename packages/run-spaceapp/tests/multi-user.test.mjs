@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { run } from "../src/cli.mjs";
-import { addUser, createDefaultConfig, renderCliHosts, renderWorkspaceCompose, userSlug, validateConfig } from "../src/index.mjs";
+import { addUser, createDefaultConfig, loadConfig, renderCliHosts, renderWorkspaceCompose, userSlug, validateConfig } from "../src/index.mjs";
 
 // Multi-user (plan clipboard:evAaFYqrgDfd step 5): each user's CLIs run in their own container with their own keys,
 // logins, memory and workspaces; the core reads the user -> pane host socket map from SPACE_CLI_HOST_SOCKETS_FILE.
@@ -59,7 +59,8 @@ test("user enable, add and remove give each user a CLI container and the core it
   // Nor joins the internal network of the owner's services (security review 2026-10-17).
   assert.doesNotMatch(service, /^      - spaceapp$/m);
   assert.match(service, new RegExp(`networks:\\n      - spaceapp-user-${slug}`));
-  assert.match(service, /- seccomp=\.\/seccomp-cli\.json\n      - apparmor=unconfined/);
+  // The user-namespace profile follows the host (F17); its rendering is checked in compose-images.test.mjs.
+  assert.match(renderWorkspaceCompose(await loadConfig(root), { cliSandbox: true }), new RegExp(`  spaceapp-cli-${slug}:[^]*?no-new-privileges:true\\n      - seccomp=\\./seccomp-cli\\.json\\n      - apparmor=unconfined`));
   assert.match(compose, new RegExp(`\\nnetworks:\\n  spaceapp-user-${slug}: \\{\\}`));
   assert.deepEqual(JSON.parse(await readFile(join(root, "cli-hosts.json"), "utf8")), { "user:Bob12345": `/run/spaceapp-cli-users/${slug}/host.sock` });
   assert.equal((await stat(join(root, "secrets", "users", slug, "providers"))).mode & 0o777, 0o700);

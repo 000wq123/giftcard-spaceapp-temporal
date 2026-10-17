@@ -671,7 +671,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ""].join("\n");
+    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
@@ -691,8 +691,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
       "    init: true",
       "    security_opt:",
       "      - no-new-privileges:true",
-      "      - seccomp=./seccomp-cli.json",
-      "      - apparmor=unconfined",
+      ...(cliSandbox ? CLI_SANDBOX_OPTIONS.slice(1) : []),
       `    mem_limit: "${user.memoryLimit ?? settings.cliMemoryLimit}"`,
       "    cpus: \"${SPACEAPP_CLI_CPU_LIMIT}\"",
       "    environment:",
