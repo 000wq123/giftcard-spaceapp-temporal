@@ -877,14 +877,17 @@ export async function prepareInstallation(root, {
 
 export async function commitInstallation(root, config, {
   templateDir = defaultTemplateDir(),
-  persistConfig = true
+  persistConfig = true,
+  // Compose resolves ./seccomp-cli.json against the project directory, also when the compose files are staged.
+  projectRoot = root
 } = {}) {
   validateHome(root);
   validateConfig(config);
   const composeTemplate = await readFile(join(templateDir, "compose.yml"), "utf8");
   await mkdir(root, { recursive: true, mode: 0o700 });
   await atomicWrite(join(root, "compose.yml"), composeTemplate);
-  await atomicWrite(join(root, "seccomp-cli.json"), await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8"));
+  await mkdir(projectRoot, { recursive: true, mode: 0o700 });
+  await atomicWrite(join(projectRoot, "seccomp-cli.json"), await readFile(join(defaultTemplateDir(), "seccomp-cli.json"), "utf8"));
   await writeRuntimeFiles(root, config);
   if (persistConfig) await saveConfig(root, config);
 }

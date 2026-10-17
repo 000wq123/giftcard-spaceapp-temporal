@@ -821,7 +821,7 @@ async function installCommand(args, {
   };
   try {
     stage = "pull";
-    await commitInstallation(stagedStateRoot, result.config);
+    await commitInstallation(stagedStateRoot, result.config, { projectRoot: root });
     const stagedComposeCommand = (action, options = {}) =>
       composeCommand(action, root, {
         profile,
@@ -1354,7 +1354,7 @@ async function performUpdate({
   const stagedRoot = await mkdtemp(join(tmpdir(), "spaceapp-update-"));
   let checkpoint = null;
   try {
-    await commitInstallation(stagedRoot, updated);
+    await commitInstallation(stagedRoot, updated, { projectRoot: root });
     const stagedCommand = (action) => composeCommand(action, root, {...updated, stateRoot: stagedRoot});
     const pullCode = await withHeadlessDockerConfig(
       platform, stagedCommand("pull"),
