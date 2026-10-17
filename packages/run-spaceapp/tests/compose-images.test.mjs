@@ -25,3 +25,16 @@ test("the headroom companion is pinned to the reviewed digest", () => {
   assert.match(headroom, /@sha256:[0-9a-f]{64}$/);
   assert.ok(storageSource.includes(`"${headroom}"`), "storage plan must estimate the same companion image");
 });
+
+test("the CLI container allows user namespaces only through its own seccomp profile (F17)", async () => {
+  const cli = template.slice(template.indexOf("\n  spaceapp-cli:\n"), template.indexOf("\n  spaceapp-cli:\n") + 600);
+  assert.match(cli, /- seccomp=\.\/seccomp-cli\.json\n\s+- apparmor=unconfined/);
+  const profile = JSON.parse(await readFile(new URL("../templates/seccomp-cli.json", import.meta.url), "utf8"));
+  assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
+  const added = profile.syscalls.at(-1);
+  assert.deepEqual(added.names, ["clone", "mount", "pivot_root", "setns", "umount2", "unshare"]);
+  assert.equal(added.action, "SCMP_ACT_ALLOW");
+  // Everything else stays denied by the default profile, e.g. bpf, keyctl and perf_event_open.
+  const allowed = new Set(profile.syscalls.filter((rule) => rule.action === "SCMP_ACT_ALLOW" && !rule.includes?.caps).flatMap((rule) => rule.names));
+  for (const name of ["bpf", "keyctl", "perf_event_open", "kexec_load"]) assert.equal(allowed.has(name), false, name);
+});
