@@ -96,6 +96,7 @@
   "packages/cli-host/tests/ipc.test.ts": "fails on the exported tree (review F15 measurement 2026-10-14)",
   "packages/cli-host/tests/session-registry.test.ts": "the export rewrites private values in the test or the code (review F18)",
   "packages/codex-app-server/tests/schema-generator.test.ts": "reads a private deploy file or script",
+  "packages/contracts/tests/design.test.ts": "imports scripts/space-media-capture.mjs (Media Studio engine), which the public tree does not ship (1.1.6 re-cut 2026-10-18)",
   "packages/contracts/tests/heavy-mcp-contracts.test.ts": "reads a private deploy file or script",
   "packages/contracts/tests/marketing-copilot.test.ts": "reads a private deploy file or script",
   "packages/contracts/tests/space-inventory-helper.test.ts": "reads a private deploy file or script",
