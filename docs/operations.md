@@ -42,6 +42,9 @@ contains:
 - `cli-config.tar.gz`: the CLIs' own settings: Claude Code `settings.json` and
   `.claude.json`, Codex `config.toml`, OpenCode `opencode.json` (MCP servers,
   base URLs, models). Login files and API keys are not included.
+- `users/<user>-cli-config.tar.gz` and `users/<user>-memory.tar.gz` (team
+  accounts only): each user's CLI settings and Space Memory from their own CLI
+  container. Their logins and keys are not included.
 
 Backups do **not** contain provider API-key files, OAuth/device login state,
 the provider-state Docker volume, registered host workspace contents, browser
@@ -188,6 +191,31 @@ npx --yes run-spaceapp@latest uninstall --purge-data
 `--purge-data` is destructive to application, database, memory, provider
 state, and workspace-volume data. Host files below `SPACEAPP_HOME`, including
 backups and provider key files, remain and must be reviewed separately.
+
+## Team accounts
+
+An owner can give other people their own SpaceApp account. Each user's CLIs run
+in a CLI container of their own, with their own keys, logins, Space Memory and
+workspaces; the owner's keys and repositories never reach it. Accounts need the
+isolated access mode.
+
+```bash
+npx --yes run-spaceapp@latest user enable                      # turn accounts on
+# invite the person in Settings -> Users; they set a password from the link
+npx --yes run-spaceapp@latest user add <user-id> [--memory 2g] # their CLI container
+npx --yes run-spaceapp@latest credentials set <provider> --user <user-id>
+npx --yes run-spaceapp@latest workspace add <path> --user <user-id>
+npx --yes run-spaceapp@latest provider install <provider> --user <user-id>
+npx --yes run-spaceapp@latest user list
+npx --yes run-spaceapp@latest user remove <user-id>            # volumes are kept
+```
+
+`user add` waits until the user's CLI container answers. A user sees only their
+own rooms and the rooms shared with them; the owner shares a room from the
+Rooms dock (View or Collaborate). A backup keeps each user's CLI settings and
+Space Memory. After `restore` on a new installation, run the `user enable`,
+`user add` and `workspace add --user` commands it prints, enter the users' keys
+again, then `user restore <user-id>` puts each user's settings and memory back.
 
 ## Exposure and reverse proxies
 
