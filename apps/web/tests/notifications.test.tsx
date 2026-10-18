@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SpaceNotification } from "@space/contracts";
+import { NOTIFICATION_SOURCES, type SpaceNotification } from "@space/contracts";
 import { NotificationCenterDock } from "../src/features/notifications/NotificationCenterDock.js";
 import { NotificationSettingsCard } from "../src/features/notifications/NotificationSettingsCard.js";
 import { NotificationToastHost } from "../src/features/notifications/NotificationToastHost.js";
@@ -254,7 +254,7 @@ describe("Space notifications (web)", () => {
       await waitFor(() => expect(apiMock.registerPushDevice).toHaveBeenCalledWith({ token, platform: "ANDROID", appVersion: "0.1.24" }));
       expect(native.requestNotificationPermission).toHaveBeenCalled();
       expect(await screen.findByText(/no push key yet/)).toBeTruthy();
-      expect(screen.getAllByRole("switch", { name: "Push" })).toHaveLength(10); // one per notification source
+      expect(screen.getAllByRole("switch", { name: "Push" })).toHaveLength(NOTIFICATION_SOURCES.length); // one per notification source
       // A new token from Firebase (or the next start) registers again while the switch is on.
       apiMock.registerPushDevice.mockClear();
       const unsubscribe = subscribePushTokenRegistration(apiMock);

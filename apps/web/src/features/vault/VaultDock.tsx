@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   VAULT_PASSWORD_SYMBOLS, VAULT_SIGNUP_GRANT_LIMITS, VaultCryptoError, canonicalVaultOrigin, generateVaultPassword, vaultSignupSite,
-  type VaultApprovalMode, type VaultItemMetadata, type VaultItemRecord, type VaultPasswordPolicy
+  type VaultItemMetadata, type VaultItemRecord, type VaultPasswordPolicy
 } from "@space/contracts";
 import { api } from "../../api.js";
 import type { VaultStateResponse } from "../../live-api.js";
@@ -10,27 +10,36 @@ import { DockButton, DockChips, DockNotice, DockSearch, DockState, DockToolbar, 
 import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { Eye, EyeOff, Lock, Pencil, Plus, RefreshCw, ShieldOff, Trash2, Unlock, Vault } from "../ui-theme/app-icons.js";
 import {
-  changeMasterPassword, confirmVaultItem, decryptVaultItem, encryptVaultItem, importVaultPending, lockVaultKeys, restorePreviousVaultItem, setUpVault, signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey,
-  type UnlockedVault, type VaultItemSecrets
+  VAULT_AGENT_POLICY, changeMasterPassword, confirmVaultItem, decryptVaultItem, encryptVaultItem, importVaultPending, lockVaultKeys, restorePreviousVaultItem, setUpVault,
+  signVaultSignupGrant, delegateVaultItems, unlockVault, vaultInboxKey, type UnlockedVault, type VaultItemSecrets
 } from "./vault-client.js";
 import { useVaultDefaults, type VaultDefaults } from "./vault-defaults.js";
 import { VAULT_IDLE_CHOICES, useVaultAutoLock, useVaultAutoLockSettings, type VaultAutoLockReason, type VaultAutoLockSettings } from "./vault-auto-lock.js";
 import "./vault.css";
 
 // The Vault dock (plan clipboard:vEYtT6-bEN0J step 5). Everything secret is decrypted here, in this tab's memory, and
-// dropped on Lock or when the dock closes; the server sees ciphertext only.
+// dropped on Lock or when the dock closes; the server sees ciphertext only. One switch lets agents and Nous use the Vault
+// (operator decision 2026-10-18, plan clipboard:Ml8zElMcc4Ac): while it is on, the dock hands every login to the broker after
+// each unlock and item change, and the logins agents saved are added on unlock.
 
 type View = "items" | "audit" | "settings";
-interface Draft {
-  id?: string; label: string; origins: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean;
-  approvalMode: VaultApprovalMode; submitAllowed: boolean; previous?: VaultItemRecord;
-}
+interface Draft { id?: string; label: string; origins: string; acceptedRisks: string[]; secrets: VaultItemSecrets; agentUse: boolean; previous?: VaultItemRecord }
 const MIN_MASTER = 12;
-const emptyDraft = (defaults: VaultDefaults): Draft => ({ label: "", origins: "", acceptedRisks: [], secrets: {}, agentUse: false, approvalMode: defaults.approvalMode, submitAllowed: defaults.submitAllowed });
-const APPROVAL_OPTIONS = [{ id: "ASSIST", label: "Ask me each time" }, { id: "RULES", label: "By rules" }, { id: "FULL", label: "Without asking" }] as const;
-const approvalTag = { ASSIST: "ask first", RULES: "by rules", FULL: "no asking" } as const;
+const emptyDraft = (): Draft => ({ label: "", origins: "", acceptedRisks: [], secrets: {}, agentUse: true });
 const warningText = { INSECURE_HTTP: "not encrypted (http)", IP_LITERAL: "an IP address", PUNYCODE: "an international (punycode) name that can imitate another site" } as const;
 const errorText = (error: unknown) => error instanceof VaultCryptoError ? "The master password is not correct." : error instanceof Error ? error.message : "Something went wrong.";
+
+/**
+ * While agent access is on, hands every login not hidden from agents to the broker again (a new delegation replaces the last),
+ * so items added, changed or saved by agents become fillable. Nothing to hand over leaves the last delegation; the fill path
+ * ignores items deleted or hidden since.
+ */
+async function handOverToAgents(keys: UnlockedVault): Promise<void> {
+  const state = await api.vaultState();
+  if (!state.agentAccess) return;
+  const records = await Promise.all((await api.vaultItems()).items.map(async (item) => (await api.vaultItem(item.id)).item));
+  await delegateVaultItems(api, keys, { records, delegationGeneration: state.vault?.delegationGeneration ?? 0, epoch: state.vault?.epoch });
+}
 
 export function VaultDock() {
   const [state, setState] = useState<VaultStateResponse | null>(null);
@@ -58,10 +67,12 @@ export function VaultDock() {
     try { await work(); } catch (cause) { setNotice(errorText(cause)); } finally { setBusy(false); }
   };
   const holdKeys = (keys: UnlockedVault) => { lockVaultKeys(unlockedRef.current); unlockedRef.current = keys; setUnlocked(true); };
-  // After every unlock: the inbox key exists, and passwords agents generated meanwhile become PENDING items.
+  // After every unlock: the inbox key exists, logins agents saved meanwhile are added, and agents get the current items.
   const openInbox = async (keys: UnlockedVault) => {
     const count = await importVaultPending(api, keys, await vaultInboxKey(api, keys));
-    if (count) setInfo(`${count} password${count === 1 ? "" : "s"} an agent created ${count === 1 ? "is" : "are"} waiting: keep or discard ${count === 1 ? "it" : "them"} below.`);
+    if (count) setInfo(`Added ${count} login${count === 1 ? "" : "s"} that agents saved or changed.`);
+    await handOverToAgents(keys);
+    await load();
   };
   const dropKeys = () => { lockVaultKeys(unlockedRef.current); unlockedRef.current = null; setUnlocked(false); };
   const lock = () => run(async () => { dropKeys(); await api.vaultLock(); await load(); });
@@ -73,7 +84,7 @@ export function VaultDock() {
     void api.vaultLock().then(load, () => undefined);
   });
   const revoke = async () => {
-    if (!await confirm({ title: "Revoke agent access?", message: "Every agent delegation stops at once and agents can no longer fill anything until you delegate again. No password is needed.", confirmLabel: "Revoke access" })) return;
+    if (!await confirm({ title: "Revoke agent access?", message: "Agents and Nous stop using the Vault at once, until you turn agent access on again. No password is needed.", confirmLabel: "Revoke access" })) return;
     await run(async () => { const result = await api.vaultRevoke(); setNotice(`Agent access revoked (generation ${result.generation}).`); await load(); });
   };
 
@@ -86,11 +97,11 @@ export function VaultDock() {
     </section>;
   }
 
-  const agentLine = state.agentFill === "ENABLED" ? "Agent fills are on" : "Agent fills are off";
+  const agentLine = state.agentAccess ? `Agents and Nous: on (${state.delegatedItems} login${state.delegatedItems === 1 ? "" : "s"})` : "Agents and Nous: off";
   return (
     <section className="dock-panel vault-dock" aria-label="Vault">
       {confirmDialog}
-      <DockToolbar summary={state.enrolled ? `${unlocked ? "Unlocked" : "Locked"} · ${agentLine} · generation ${state.vault?.delegationGeneration ?? 0}` : "Set up your Vault"}>
+      <DockToolbar summary={state.enrolled ? `${unlocked ? "Unlocked" : "Locked"} · ${agentLine}` : "Set up your Vault"}>
         {state.enrolled ? <DockButton icon={ShieldOff} tone="danger" onClick={() => void revoke()} disabled={busy}>Revoke agent access</DockButton> : null}
         {unlocked ? <DockButton icon={Lock} onClick={() => void lock()} disabled={busy}>Lock</DockButton> : null}
       </DockToolbar>
@@ -184,28 +195,30 @@ function ItemsView({ keys, run, confirm, defaults, vaultState, onVaultChanged }:
   }, []);
   useEffect(() => { void run(reload); }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => (items ?? []).filter((item) => `${item.label} ${item.origins.join(" ")}`.toLowerCase().includes(search.trim().toLowerCase())), [items, search]);
-  const save = (record: Parameters<typeof api.vaultSaveItem>[0]) => run(async () => { await api.vaultSaveItem(record); await reload(); });
+  // Every change reaches agents and Nous at once while agent access is on.
+  const changed = async () => { await reload(); await handOverToAgents(keys.current!); await onVaultChanged(); };
+  const save = (record: Parameters<typeof api.vaultSaveItem>[0]) => run(async () => { await api.vaultSaveItem(record); await changed(); });
+  const remove = (id: string) => run(async () => { await api.vaultDeleteItem(id); await changed(); });
 
   if (draft) {
     return <ItemEditor draft={draft} generator={defaults.generator} onCancel={() => setDraft(null)} onSave={(next) => run(async () => {
       const origins = next.origins.split(/\s+/).filter(Boolean).map((origin) => canonicalVaultOrigin(origin)?.origin ?? origin);
-      const record = await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, secrets: next.secrets, status: "ACTIVE",
-        policy: { agentUse: next.agentUse, approvalMode: next.approvalMode, submitAllowed: next.submitAllowed, maxFillsPerHour: 6, acceptedOriginRisks: next.acceptedRisks.filter((origin) => origins.includes(origin)) } }, next.previous);
-      await api.vaultSaveItem(record); setDraft(null); await reload();
+      const policy = { ...(next.previous?.metadata.policy ?? VAULT_AGENT_POLICY), agentUse: next.agentUse, acceptedOriginRisks: next.acceptedRisks.filter((origin) => origins.includes(origin)) };
+      await api.vaultSaveItem(await encryptVaultItem(keys.current!, { id: next.id, label: next.label.trim(), origins, secrets: next.secrets, status: "ACTIVE", policy }, next.previous));
+      setDraft(null); await changed();
     })} />;
   }
   if (!items) return <DockState kind="loading" title="Opening your items" />;
   return (
     <div className="vault-items">
-      <AgentRequests run={run} labels={Object.fromEntries(items.map((item) => [item.id, item.label]))} />
-      <AgentAccess items={items} records={records} vaultState={vaultState} run={run} onDelegate={async (agentRecords) => {
-        const done = await delegateVaultItems(api, keys.current!, { records: agentRecords, delegationGeneration: vaultState.vault?.delegationGeneration ?? 0 });
+      <AgentAccess vaultState={vaultState} run={run} onChange={async (enabled) => {
+        await api.vaultSetAgentAccess(enabled);
+        if (enabled) await handOverToAgents(keys.current!);
         await onVaultChanged();
-        return done;
       }} />
       <div className="vault-items-bar">
         <DockSearch value={search} onChange={setSearch} label="Search the Vault" placeholder="Search by name or address" />
-        <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft(defaults))}>Add item</DockButton>
+        <DockButton icon={Plus} tone="primary" onClick={() => setDraft(emptyDraft())}>Add item</DockButton>
       </div>
       {shown.length === 0 ? <DockState kind="empty" icon={Vault} title={items.length ? "No item matches" : "No items yet"} detail={items.length ? undefined : "Add a login to keep it encrypted here."} /> : null}
       <ul className="vault-list">
@@ -220,7 +233,7 @@ function ItemsView({ keys, run, confirm, defaults, vaultState, onVaultChanged }:
                 <span className="vault-tags">
                   {item.status === "PENDING" ? <span className="vault-tag is-pending">Pending</span> : null}
                   {changed ? <span className="vault-tag is-changed">New password not confirmed</span> : null}
-                  {item.policy.agentUse ? <span className="vault-tag">Agents: {approvalTag[item.policy.approvalMode]}</span> : null}
+                  {!item.policy.agentUse ? <span className="vault-tag">Hidden from agents</span> : null}
                 </span>
               </div>
               <div className="vault-row-actions">
@@ -229,17 +242,16 @@ function ItemsView({ keys, run, confirm, defaults, vaultState, onVaultChanged }:
                   <DockButton onClick={() => void (async () => {
                     const previous = restorePreviousVaultItem(record);
                     if (previous) return save(previous);
-                    if (await confirm({ title: `Discard ${item.label}?`, message: "The item and its generated password are deleted.", confirmLabel: "Discard" })) await run(async () => { await api.vaultDeleteItem(item.id); await reload(); });
+                    if (await confirm({ title: `Discard ${item.label}?`, message: "The item and its generated password are deleted.", confirmLabel: "Discard" })) await remove(item.id);
                   })()}>{changed ? "Restore previous" : "Discard"}</DockButton>
                 </> : null}
                 <DockButton icon={Pencil} aria-label={`Edit ${item.label}`} onClick={() => void run(async () => {
                   const full = (await api.vaultItem(item.id)).item;
                   const secrets = await decryptVaultItem(keys.current!, full);
-                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), acceptedRisks: item.policy.acceptedOriginRisks, secrets,
-                    agentUse: item.policy.agentUse, approvalMode: item.policy.approvalMode, submitAllowed: item.policy.submitAllowed, previous: full });
+                  setDraft({ id: item.id, label: item.label, origins: item.origins.join("\n"), acceptedRisks: item.policy.acceptedOriginRisks, secrets, agentUse: item.policy.agentUse, previous: full });
                 })} />
                 <DockButton icon={Trash2} tone="danger" aria-label={`Delete ${item.label}`} onClick={() => void (async () => {
-                  if (await confirm({ title: `Delete ${item.label}?`, message: "Its encrypted fields are deleted for good.", confirmLabel: "Delete" })) await run(async () => { await api.vaultDeleteItem(item.id); await reload(); });
+                  if (await confirm({ title: `Delete ${item.label}?`, message: "Its encrypted fields are deleted for good.", confirmLabel: "Delete" })) await remove(item.id);
                 })()} />
               </div>
             </li>
@@ -250,30 +262,15 @@ function ItemsView({ keys, run, confirm, defaults, vaultState, onVaultChanged }:
   );
 }
 
-/**
- * The delegation step: "Let agents fill this login" only allows it; this hands the allowed logins to the Vault's broker,
- * signed by this unlocked dock, for 30 days. A new hand-over replaces the previous one; Revoke agent access ends it.
- */
-function AgentAccess({ items, records, vaultState, run, onDelegate }: {
-  items: VaultItemMetadata[]; records: Record<string, VaultItemRecord>; vaultState: VaultStateResponse; run: Runner;
-  onDelegate: (records: VaultItemRecord[]) => Promise<{ generation: number; count: number; expiresAt: string }>;
-}) {
-  const [done, setDone] = useState<{ count: number; expiresAt: string } | null>(null);
-  const allowed = items.filter((item) => item.policy.agentUse && item.status === "ACTIVE");
-  if (allowed.length === 0) return null;
-  const handedOver = (vaultState.vault?.delegationGeneration ?? 0) > 0;
+/** The one switch (operator decision 2026-10-18): on, agents and Nous fill and save logins with no further approval. */
+function AgentAccess({ vaultState, run, onChange }: { vaultState: VaultStateResponse; run: Runner; onChange: (enabled: boolean) => Promise<void> }) {
+  const count = vaultState.delegatedItems;
   return (
     <div className="vault-card" role="region" aria-label="Agent access">
-      <h3>Agent access</h3>
-      <p>{allowed.length} login{allowed.length === 1 ? " lets" : "s let"} agents fill {allowed.length === 1 ? "it" : "them"}. Agents can use only what you hand over here: Space fills it
-        into the page at the exact address and agents never see it. The hand-over lasts 30 days.</p>
-      {vaultState.agentFill !== "ENABLED" ? <p className="vault-hint">Agent fills are still off on this server, so this only prepares them.</p> : null}
-      {done ? <p className="vault-hint" role="status">Handed {done.count} login{done.count === 1 ? "" : "s"} to agents until {formatUserTime(done.expiresAt, { withDate: true })}.</p> : null}
-      <div className="vault-form-actions">
-        <DockButton tone="primary" onClick={() => void run(async () => {
-          setDone(await onDelegate(allowed.map((item) => records[item.id]).filter((record): record is VaultItemRecord => Boolean(record))));
-        })}>{handedOver ? "Update agent access" : "Hand to agents"}</DockButton>
-      </div>
+      <SpaceToggle checked={vaultState.agentAccess} label="Agents and Nous can use my Vault"
+        detail="They fill your logins into the page and save the accounts they create, without asking each time. Space types every password itself, only at the login's own address; they never see it."
+        onChange={(enabled) => void run(() => onChange(enabled))} />
+      {vaultState.agentAccess ? <p className="vault-hint" role="status">{count} login{count === 1 ? " is" : "s are"} ready for them. This keeps working while the Vault is locked; new logins become usable after your next unlock.</p> : null}
     </div>
   );
 }
@@ -308,14 +305,10 @@ function ItemEditor({ draft: initial, generator, onCancel, onSave }: { draft: Dr
         }}>Generate</DockButton>
       </div>
       {generateError ? <p className="vault-hint is-error">{generateError}</p> : null}
-      <SpaceToggle checked={draft.agentUse} label="Let agents fill this login" detail="Agents never see it; Space fills it only at this address." onChange={(agentUse) => set({ agentUse })} />
+      <SpaceToggle checked={draft.agentUse} label="Agents and Nous can use this login" detail="When agent access is on. They never see it; Space fills it only at this address." onChange={(agentUse) => set({ agentUse })} />
       <details className="vault-more">
         <summary>More options</summary>
         <label>Authenticator key<input type="password" autoComplete="off" value={draft.secrets.OTP ?? ""} onChange={(event) => setSecret("OTP", event.target.value.replace(/\s+/g, ""))} /></label>
-        {draft.agentUse ? <>
-          <DockChips label="Before an agent fills" value={draft.approvalMode} onChange={(approvalMode) => set({ approvalMode })} options={APPROVAL_OPTIONS} />
-          <SpaceToggle checked={draft.submitAllowed} label="Agents may submit the form after filling" onChange={(submitAllowed) => set({ submitAllowed })} />
-        </> : null}
       </details>
       <div className="vault-form-actions">
         <DockButton type="submit" tone="primary" disabled={!canSave}>Save</DockButton>
@@ -375,20 +368,10 @@ function SettingsView({ keys, run, confirm, busy, defaults, onDefaultsChange, au
         <SpaceToggle compact checked={defaults.generator.digits} label="Digits (0-9)" onChange={(digits) => onDefaultsChange({ ...defaults, generator: { ...defaults.generator, digits } })} />
         <SpaceToggle compact checked={defaults.generator.symbols.length > 0} label="Symbols" onChange={(on) => onDefaultsChange({ ...defaults, generator: { ...defaults.generator, symbols: on ? VAULT_PASSWORD_SYMBOLS : "" } })} />
       </div>
-      <div className="vault-card" role="region" aria-label="Agent defaults">
-        <h3>Agents</h3>
-        <p>What a login starts with when you let agents fill it; each item can change it under More options.</p>
-        <DockChips label="Before an agent fills" value={defaults.approvalMode} onChange={(approvalMode) => onDefaultsChange({ ...defaults, approvalMode })} options={APPROVAL_OPTIONS} />
-        <SpaceToggle checked={defaults.submitAllowed} label="Agents may submit the form after filling" onChange={(submitAllowed) => onDefaultsChange({ ...defaults, submitAllowed })} />
-      </div>
       <div className="vault-card">
         <h3>Change master password</h3>
         <p>Your items stay as they are; only the lock around them changes. The recovery key keeps working.</p>
         <PasswordPair busy={busy} submitLabel="Change master password" onSubmit={onChangePassword} />
-      </div>
-      <div className="vault-card">
-        <h3>Agents and protected browsers</h3>
-        <p>Approvals you give agents appear here once agent fills are enabled. A browser pane that receives a fill becomes private: room members you share with see a placeholder instead of it.</p>
       </div>
       <SignupGrants keys={keys} run={run} confirm={confirm} busy={busy} />
     </div>
@@ -424,8 +407,9 @@ function SignupGrants({ keys, run, confirm, busy }: { keys: { current: UnlockedV
   return (
     <div className="vault-card" role="region" aria-label="Sign-up grants">
       <h3>Sign-up grants</h3>
-      <p>Agents may create new accounts only on the exact sites you sign here. Each new account gets a fresh random password that
-        Space types into the page itself; it waits under Items as Pending until you keep or discard it. Agent fills must also be on.</p>
+      <p>Optional: on the exact sites you sign here, agents can create new accounts with a fresh random password that Space
+        generates and types itself, so not even the agent knows it. It is added to Items on your next unlock. Agent access must
+        also be on. Elsewhere, agents save the accounts they create with their own password.</p>
       {grants === null ? <DockState kind="loading" title="Loading grants" /> : grants.length === 0 ? <p className="vault-hint">No active grants.</p> : (
         <ul className="vault-list">
           {grants.map((grant) => (
@@ -454,30 +438,6 @@ function SignupGrants({ keys, run, confirm, busy }: { keys: { current: UnlockedV
         {sites.trim() && problem ? <p className="vault-hint">{problem}</p> : null}
         <DockButton type="submit" tone="primary" busy={busy} disabled={busy || !canSign}>Sign grant</DockButton>
       </form>
-    </div>
-  );
-}
-
-/** Assist requests: an agent asks to fill these fields of an item in a pane once. */
-function AgentRequests({ run, labels }: { run: Runner; labels: Record<string, string> }) {
-  const [requests, setRequests] = useState<Awaited<ReturnType<typeof api.vaultApprovals>>["approvals"]>([]);
-  const reload = useCallback(async () => setRequests((await api.vaultApprovals()).approvals.filter((request) => request.status === "PENDING")), []);
-  useEffect(() => { void reload().catch(() => undefined); }, [reload]);
-  if (requests.length === 0) return null;
-  return (
-    <div className="vault-card" role="region" aria-label="Agent requests">
-      <h3>Agent requests</h3>
-      <ul className="vault-list">
-        {requests.map((request) => (
-          <li key={request.id} className="vault-row">
-            <span>{labels[request.handle] ?? "An item"}: {request.fields.map((field) => field.toLowerCase()).join(" and ")}, until {formatUserTime(request.expiresAt)}</span>
-            <span className="vault-row-actions">
-              <DockButton tone="primary" onClick={() => void run(async () => { await api.vaultDecideApproval(request.id, "APPROVE"); await reload(); })}>Approve</DockButton>
-              <DockButton onClick={() => void run(async () => { await api.vaultDecideApproval(request.id, "DENY"); await reload(); })}>Deny</DockButton>
-            </span>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

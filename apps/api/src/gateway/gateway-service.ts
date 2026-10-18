@@ -78,7 +78,7 @@ export interface GatewayAdminService {
   importAntigravityProfile(profileId: string): Promise<{ status: number; body: unknown }>;
   /** Adds an OpenAI API key account: a pasted key, or the server's Space OpenAI key file. */
   /** OpenAI, OpenRouter or DeepSeek API keys (OpenAI may use this server's key). */
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<{ status: number; body: unknown }>;
 }
 
 export class GatewayAccountNotFoundError extends Error {}

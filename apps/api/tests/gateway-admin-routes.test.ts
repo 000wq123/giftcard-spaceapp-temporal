@@ -325,6 +325,19 @@ describe("Space Gateway admin routes", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("adds a pasted Google AI key for Space Memory embeddings, never the server's Live key", async () => {
+    const googleKey = `AIza${"g".repeat(35)}`;
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ status: "CONNECTED", account: { id: accountId, provider: "GOOGLE_AI", label: "Google AI API key …gggg" } })));
+    const { app } = await setup(fetchImpl as unknown as typeof fetch, "internal-secret");
+    const pasted = await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "GOOGLE_AI", apiKey: googleKey } });
+    expect(pasted.json()).toMatchObject({ status: "CONNECTED" });
+    expect(pasted.body).not.toContain("AIza");
+    expect(JSON.parse(String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ provider: "GOOGLE_AI", apiKey: googleKey });
+    // The Live pane's Google key is not for embeddings (operator decision 2026-10-18): there is no server key to reuse.
+    expect((await app.inject({ method: "POST", url: "/api/admin/gateway/api-key/add", headers: authHeaders("ADMIN"), payload: { provider: "GOOGLE_AI", useSpaceKey: true } })).statusCode).toBe(422);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("hands the Anthropic admin key to the gateway, audits only its hint and reports the bill (operator request 2026-10-18)", async () => {
     const adminKey = `sk-ant-admin01-${"a".repeat(40)}`;
     const status = { configured: true, keyHint: "…aaaa", savedAt: "2030-01-10T11:00:00.000Z", lastSyncAt: "2030-01-10T11:00:01.000Z", lastError: null, upstream: [] };

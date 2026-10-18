@@ -39,7 +39,9 @@ export type VaultHostFillResult = z.infer<typeof vaultHostFillResultSchema>;
 
 /** The pane's live page as the host sees it, for the broker's use capability. */
 export const vaultHostTargetSchema = z.object({
-  eligible: z.boolean(), reason: code.nullable(), targetId: z.string().max(128).nullable(), frameId: z.string().max(128).nullable(), origin: z.string().max(300).nullable()
+  eligible: z.boolean(), reason: code.nullable(), targetId: z.string().max(128).nullable(), frameId: z.string().max(128).nullable(), origin: z.string().max(300).nullable(),
+  /** The top frame's document (CDP loaderId); it changes only when a new document loads. Absent from hosts started before 2026-10-18. */
+  document: z.string().max(128).nullable().optional()
 }).strict();
 export type VaultHostTarget = z.infer<typeof vaultHostTargetSchema>;
 

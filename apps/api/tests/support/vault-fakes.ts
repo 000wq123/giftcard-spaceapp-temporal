@@ -21,9 +21,8 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
   const items = new Map<string, { owner: string; record: VaultItemRecord }>();
   const nonces = new Map<string, { owner: string; purpose: string; epoch: number; used: boolean }>();
   const delegations: unknown[] = [];
-  const protectedPanes = new Map<string, string>();
+  const protectedPanes = new Map<string, { owner: string; fill: any }>();
   const pending: any[] = [];
-  const approvals: any[] = [];
   const grants: Array<{ owner: string; certificate: any; revokedAt: string | null }> = [];
   const audit = new Map<string, Array<{ id: string; seq: number; event: any; prevHash: string; hash: string; createdAt: string }>>();
   const append = async (owner: string, event: VaultAuditEvent) => {
@@ -36,7 +35,7 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
   return {
     delegations,
     getVault: async (owner) => vaults.get(owner) ?? null,
-    enroll: async (owner, input) => { const vault = { ...input, ownerUserId: owner, formatVersion: 1, recovery: null, epoch: 1, delegationGeneration: 0, auditSeq: 0, createdAt: "", updatedAt: "" }; vaults.set(owner, vault); await append(owner, { actor: "OPERATOR", action: "ENROLL", result: "OK" }); return vault; },
+    enroll: async (owner, input) => { const vault = { ...input, ownerUserId: owner, formatVersion: 1, recovery: null, epoch: 1, delegationGeneration: 0, auditSeq: 0, createdAt: "", updatedAt: "", agentAccess: false }; vaults.set(owner, vault); await append(owner, { actor: "OPERATOR", action: "ENROLL", result: "OK" }); return vault; },
     rotateUnlock: async (owner, epoch, input) => { const vault = vaults.get(owner); if (!vault) return null; Object.assign(vault, input, { epoch: vault.epoch + 1 }); return vault; },
     setRecovery: async (owner, recovery) => { const vault = vaults.get(owner); if (!vault) return false; vault.recovery = recovery; return true; },
     bumpEpoch: async (owner) => { const vault = vaults.get(owner); if (!vault) return null; return (vault.epoch += 1); },
@@ -44,16 +43,21 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     getItem: async (owner, id) => { const known = items.get(id); return known?.owner === owner ? known.record : null; },
     listItems: async (owner) => [...items.values()].filter((item) => item.owner === owner).map((item) => item.record.metadata),
     deleteItem: async (owner, id) => items.get(id)?.owner === owner && items.delete(id),
-    revokeAgentAccess: async (owner) => { const vault = vaults.get(owner); if (!vault) return null; for (const grant of grants) if (grant.owner === owner) grant.revokedAt ??= new Date().toISOString(); vault.delegationGeneration += 1; vault.epoch += 1; return { generation: vault.delegationGeneration, epoch: vault.epoch }; },
+    enableAgentAccess: async (owner) => { const vault = vaults.get(owner); if (!vault) return false; vault.agentAccess = true; return true; },
+    revokeAgentAccess: async (owner) => {
+      const vault = vaults.get(owner); if (!vault) return null;
+      for (const grant of grants) if (grant.owner === owner) grant.revokedAt ??= new Date().toISOString();
+      for (let index = delegations.length - 1; index >= 0; index -= 1) if ((delegations[index] as { owner: string }).owner === owner) delegations.splice(index, 1);
+      vault.agentAccess = false; vault.delegationGeneration += 1; vault.epoch += 1; return { generation: vault.delegationGeneration, epoch: vault.epoch };
+    },
     issueNonce: async (owner, purpose) => { const vault = vaults.get(owner); if (!vault) return null; const nonce = vaultBase64url.encode(vaultRandomBytes(32)); nonces.set(nonce, { owner, purpose, epoch: vault.epoch, used: false }); return { nonce, epoch: vault.epoch, generation: null, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
     consumeNonce: async (owner, nonce, purpose) => { const entry = nonces.get(nonce); if (!entry || entry.used || entry.owner !== owner || entry.purpose !== purpose || entry.epoch !== vaults.get(owner)?.epoch) return false; entry.used = true; return true; },
     appendAudit: append,
     listAudit: async (owner, { limit = 50 } = {}) => [...(audit.get(owner) ?? [])].reverse().slice(0, limit),
     verifyAudit: async () => ({ ok: true, brokenAtSeq: null }),
-    protectPane: async (owner: string, paneId: string) => { if (protectedPanes.has(paneId) && protectedPanes.get(paneId) !== owner) return false; protectedPanes.set(paneId, owner); return true; },
-    unprotectPane: async (owner: string, paneId: string) => protectedPanes.get(paneId) === owner && protectedPanes.delete(paneId),
-    protectedPaneOwner: async (paneId: string) => protectedPanes.get(paneId) ?? null,
-    listProtectedPanes: async (owner: string) => [...protectedPanes].filter(([, value]) => value === owner).map(([key]) => key),
+    protectPane: async (owner: string, paneId: string, fill: any) => { if (protectedPanes.has(paneId) && protectedPanes.get(paneId)!.owner !== owner) return false; protectedPanes.set(paneId, { owner, fill }); return true; },
+    unprotectPane: async (owner: string, paneId: string) => protectedPanes.get(paneId)?.owner === owner && protectedPanes.delete(paneId),
+    protectedPane: async (paneId: string) => protectedPanes.get(paneId) ?? null,
     getActiveDelegation: async (owner: string) => (delegations as Array<{ owner: string; certificate: any; keyEnvelope: unknown; fillEnvelopes: unknown }>).filter((entry) => entry.owner === owner)
       .map((entry) => ({ generation: entry.certificate.claims.generation, certificate: entry.certificate, keyEnvelope: entry.keyEnvelope, fillEnvelopes: entry.fillEnvelopes })).at(-1) ?? null,
     setInbox: async (owner: string, input: any) => { const vault = vaults.get(owner); if (!vault) return false; vault.inbox = input; return true; },
@@ -61,12 +65,6 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
     addPending: async (owner: string, input: any) => { pending.push({ owner, ...input }); return true; },
     listPending: async (owner: string) => pending.filter((entry) => entry.owner === owner).map(({ owner: _owner, ...entry }) => entry),
     deletePending: async (owner: string, id: string) => { const index = pending.findIndex((entry) => entry.owner === owner && entry.id === id); if (index < 0) return false; pending.splice(index, 1); return true; },
-    addApproval: async (owner: string, input: any) => { approvals.push({ owner, ...input, status: "PENDING", createdAt: new Date().toISOString(), decidedAt: null }); return true; },
-    listApprovals: async (owner: string) => approvals.filter((entry) => entry.owner === owner).map(({ owner: _owner, ...entry }) => entry).reverse(),
-    decideApproval: async (owner: string, id: string, decision: string) => {
-      const entry = approvals.find((candidate) => candidate.owner === owner && candidate.id === id && candidate.status === "PENDING");
-      if (!entry) return false; entry.status = decision === "APPROVE" ? "APPROVED" : "DENIED"; entry.decidedAt = new Date().toISOString(); return true;
-    },
     addSignupGrant: async (owner: string, certificate: any) => { if (!vaults.has(owner) || certificate.claims.ownerUserId !== owner) return false; grants.push({ owner, certificate, revokedAt: null }); return true; },
     listSignupGrants: async (owner: string) => grants.filter((grant) => grant.owner === owner && !grant.revokedAt && Date.parse(grant.certificate.claims.expiresAt) > Date.now()).reverse()
       .map(({ certificate }) => ({ id: certificate.claims.grantId, sites: certificate.claims.sites, dailyCap: certificate.claims.dailyCap, createdAt: certificate.claims.issuedAt, expiresAt: certificate.claims.expiresAt, revokedAt: null, certificate })),
@@ -84,7 +82,7 @@ export function fakeRepository(): VaultStore & { delegations: unknown[] } {
   } as VaultStore;
 }
 
-export async function fixture(options: { broker?: VaultBroker; agentFills?: boolean } = {}) {
+export async function fixture(options: { broker?: VaultBroker } = {}) {
   const config = getApiConfig({ SPACE_LOG_LEVEL: "silent", SPACE_BROWSER_TOOL_BRIDGE_ENABLED: "true", SPACE_INTERNAL_API_TOKEN: "vault-routes-internal-token" });
   const store = new InMemorySpaceStore();
   const brokerKey = await generateVaultTransportKey();
@@ -113,7 +111,7 @@ export async function fixture(options: { broker?: VaultBroker; agentFills?: bool
   const repository = fakeRepository();
   const app = await createApp({
     store, config, auth: { sessionSecret, devLogin: true, secureCookies: false },
-    vault: { repository, broker, agentFillGate: async () => options.agentFills ? { enabled: true } as const : { enabled: false, reason: "FLAG_OFF" } as const }
+    vault: { repository, broker }
   });
   const session = async (user: AuthUser) => {
     await store.upsertUser(user);
@@ -143,7 +141,7 @@ export async function itemRecord(owner: string, vaultId: string, id = newVaultHa
   const scope = { ownerUserId: owner, vaultId, keyVersion: 1, itemId: id };
   const dek = vaultRandomBytes(32);
   return {
-    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE" },
+    metadata: { id, label: "Synthetic", origins: ["https://example.com"], fieldRoles: ["PASSWORD"], policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 6, acceptedOriginRisks: [] }, status: "ACTIVE" },
     keyVersion: 1, history: [], dekEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), dek, { ...scope, purpose: "ITEM_KEY" }),
     fields: { PASSWORD: await sealVaultEnvelope(dek, new TextEncoder().encode(SENTINEL), { ...scope, purpose: "ITEM_FIELD", field: "PASSWORD" }) }
   };

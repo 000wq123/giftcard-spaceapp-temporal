@@ -34,7 +34,8 @@ const apiMock = vi.hoisted(() => ({
   marketingBookmarks: vi.fn(),
   createMarketingBookmark: vi.fn(),
   deleteMarketingBookmark: vi.fn(),
-  openMarketingBookmark: vi.fn()
+  openMarketingBookmark: vi.fn(),
+  requestDesignFromPane: vi.fn()
 }));
 vi.mock("../src/api.js", () => ({ api: apiMock }));
 vi.mock("../src/runtime/SpaceRuntime.js", () => ({ getSpaceRuntime: () => ({ platform: { localStorage: window.localStorage } }) }));
@@ -223,6 +224,24 @@ describe("post media", () => {
     expect(within(media).getByRole("img", { name: "1:1 shot" }).getAttribute("src")).toBe("/api/artifacts/artifact%3Ashot1/file");
     expect(within(media).getByText("file")).toBeTruthy();
     expect(within(media).getByText("Logo")).toBeTruthy();
+  });
+});
+
+describe("Make graphic", () => {
+  it("asks the Design pane for the channel's format with the post as the callback, and never for Hacker News", async () => {
+    const base = { ownerUserId: "user:operator", paneId: pane.id, campaignId: null, kind: "POST", target: null, title: null, assets: [], scheduledAt: null, reviewNote: null, ruleId: null,
+      publishedUrl: null, publishedAt: null, evidence: {}, metrics: {}, createdAt: "2026-10-18T08:00:00.000Z", updatedAt: "2026-10-18T08:00:00.000Z" };
+    const linkedin = { ...base, id: "mktpost:linked1", channel: "LINKEDIN", body: "SpaceApp 0.3 is out.", status: "APPROVED" } as MarketingPost;
+    const hn = { ...base, id: "mktpost:hacker1", channel: "HACKER_NEWS", body: "Show HN: SpaceApp", status: "DRAFT" } as MarketingPost;
+    apiMock.marketingPosts.mockResolvedValue({ posts: [linkedin, hn] });
+    apiMock.requestDesignFromPane.mockResolvedValue({ request: { id: "dreq:abc123" }, designPaneId: "pane:design0001" });
+    render(<MarketingCopilotPane pane={pane} isVisible terminal={<div />} browser={<div />} />);
+    const buttons = await screen.findAllByRole("button", { name: /Make graphic/ });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]!);
+    await waitFor(() => expect(apiMock.requestDesignFromPane).toHaveBeenCalledWith(pane.id, expect.objectContaining({
+      formatIds: ["linkedin"], callback: { kind: "MARKETING_POST", postId: linkedin.id }, brief: expect.stringContaining("SpaceApp 0.3 is out.") })));
+    expect(await screen.findByText(/Sent to the Design pane/)).toBeTruthy();
   });
 });
 

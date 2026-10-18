@@ -36,7 +36,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
   it("enrolls, unlocks only with password AND broker, delegates with the operator's signature, and revocation reaches the broker", async () => {
     const root = await mkdtemp(join(tmpdir(), "space-vault-e2e-"));
     roots.push(root);
-    const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state"), custody: async () => ({ enabled: true }) });
+    const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state") });
     const server = createVaultBrokerHttpServer(core);
     await new Promise<void>((resolve) => server.listen(join(root, "broker.sock"), resolve));
     closers.push(() => server.close());
@@ -106,7 +106,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       expect((await delegate({ sealedFillKey, operatorSignature: wrong })).json().error.code).toBe("VAULT_DELEGATION_REFUSED");
       expect((await delegate({ sealedFillKey })).json()).toEqual({ generation });
 
-      // Agent fills stay off: the API gate (flag and custody report) is closed, so every agent call is BLOCKED.
+      // Agent access is off until the operator turns it on in the dock, so every agent call is BLOCKED.
       const room = (await as("POST", "/api/rooms", { name: "E2E", initialPaneCount: 0 })).json();
       const pane = harness.store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
       const cli = harness.store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
@@ -130,10 +130,10 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
     }
   });
 
-  it("signs a sign-up grant in the dock, and a NEW_ACCOUNT fill under it lands PENDING in the inbox only while agent fills are on", async () => {
+  it("signs a sign-up grant in the dock, and a NEW_ACCOUNT fill under it lands in the inbox only while agent access is on", async () => {
     const root = await mkdtemp(join(tmpdir(), "space-vault-e2e-"));
     roots.push(root);
-    const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state"), custody: async () => ({ enabled: true }) });
+    const core = await createVaultBroker({ ark: vaultRandomBytes(32), stateDir: join(root, "state") });
     const server = createVaultBrokerHttpServer(core);
     await new Promise<void>((resolve) => server.listen(join(root, "broker.sock"), resolve));
     closers.push(() => server.close());
@@ -201,7 +201,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
       const signup = (origin = "https://shop.example") => runVaultSignup({ repository: harness.repository, fill },
         { owner, paneId: "pane:vaultpane1", target: { targetId: "target-1", frameId: "frame-1", origin }, label: "Synthetic shop", username: "synthetic@example.com", roles: ["NEW_PASSWORD"], submit: false });
 
-      // Option B opens nothing by itself: with the custody gate closed the agent's NEW_ACCOUNT call is BLOCKED and nothing waits.
+      // Option B opens nothing by itself: with agent access off the agent's NEW_ACCOUNT call is BLOCKED and nothing waits.
       const room = (await as("POST", "/api/rooms", { name: "E2E grants", initialPaneCount: 0 })).json();
       const pane = harness.store.createPane({ roomId: room.id, title: "Claude", mode: "TERMINAL", terminalRuntimeId: "cli:claude" });
       const cli = harness.store.createPaneCliSession({ paneId: pane.id, roomId: room.id, runtimeId: "cli:claude", providerId: "claude", agentId: "claude", status: "RUNNING", purpose: "NORMAL" });
@@ -228,7 +228,7 @@ describe("Vault end to end: browser crypto, API routes and the real broker", () 
         serverShareEnvelope: (await harness.repository.getVault(owner))!.serverShareEnvelope })).body;
       expect(certificate).toEqual({ error: "REVOKED" });
       const events = (await as("GET", "/api/space-vault/audit?limit=20")).json().entries.map((entry: { event: { action: string; result: string; reason: string | null } }) => entry.event);
-      expect(events.filter((event: { action: string }) => event.action === "GENERATE")).toEqual([expect.objectContaining({ actor: "AGENT", result: "BLOCKED", reason: "FLAG_OFF" })]);
+      expect(events.filter((event: { action: string }) => event.action === "GENERATE")).toEqual([expect.objectContaining({ actor: "AGENT", result: "BLOCKED", reason: "AGENT_ACCESS_OFF" })]);
 
       const all = seen.join("\n");
       for (const secret of [generated, PASSWORD, b64.encode(serverShare)]) expect(all).not.toContain(secret);

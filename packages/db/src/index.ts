@@ -100,6 +100,7 @@ export * from "./pane-reports-repository.js";
 export * from "./nous-attachment-repository.js";
 export * from "./mail-copilot-repository.js";
 export * from "./marketing-copilot-repository.js";
+export * from "./design-repository.js";
 export * from "./freelance-copilot-repository.js";
 export * from "./dot-delegations-repository.js";
 export * from "./auto-route-shadow-repository.js";

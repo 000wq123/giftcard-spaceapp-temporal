@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { generateVaultTransportKey, newVaultHandle, sealVaultEnvelope, vaultBase64url, vaultRandomBytes } from "@space/contracts";
+import { generateVaultTransportKey, newVaultHandle, vaultBase64url } from "@space/contracts";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { VaultBrokerUnavailableError } from "../src/vault/broker-client.js";
-import { SENTINEL, enrollment, fakeRepository, fixture, itemRecord } from "./support/vault-fakes.js";
+import { SENTINEL, enrollment, fixture, itemRecord } from "./support/vault-fakes.js";
 
 describe("Vault operator routes", () => {
   it("needs a session and CSRF, enrolls through the broker and unlocks once per challenge", async () => {
@@ -10,7 +10,7 @@ describe("Vault operator routes", () => {
     try {
       expect((await app.inject({ method: "GET", url: "/api/space-vault/state" })).statusCode).toBe(401);
       const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
-      expect((await app.inject({ method: "GET", url: "/api/space-vault/state", headers: alice.headers })).json()).toMatchObject({ ownerUserId: "user:alice", enrolled: false, brokerAvailable: true, agentFill: "FLAG_OFF", vault: null });
+      expect((await app.inject({ method: "GET", url: "/api/space-vault/state", headers: alice.headers })).json()).toMatchObject({ ownerUserId: "user:alice", enrolled: false, brokerAvailable: true, agentAccess: false, delegatedItems: 0, vault: null });
       const { body, signing } = await enrollment(brokerKey.publicKey, "user:alice");
       expect((await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: { cookie: alice.cookie }, payload: body })).json().error.code).toBe("CSRF_INVALID");
       // The server share travels only sealed: a plaintext share field is refused before the broker is asked.
@@ -84,7 +84,7 @@ describe("Vault operator routes", () => {
 });
 
 describe("Vault agent routes", () => {
-  it("answer only BLOCKED with an audit id while the custody gate is closed, and refuse anything but handles", async () => {
+  it("answer BLOCKED with an audit id while agent access is off, report it in status, and refuse anything but handles", async () => {
     const { app, store, config, brokerKey, session } = await fixture();
     try {
       const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
@@ -100,76 +100,56 @@ describe("Vault agent routes", () => {
       const { body } = await enrollment(brokerKey.publicKey, (await store.getRoom(room.id)).ownerUserId!);
       await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
       const handle = newVaultHandle("vault_item");
-      for (const [path, payload] of [["status", {}], ["list", {}], ["fill", { handle, fields: ["USERNAME", "PASSWORD"] }], ["totp-fill", { handle }],
+      for (const [path, payload] of [["list", {}], ["fill", { handle, fields: ["USERNAME", "PASSWORD"] }], ["totp-fill", { handle }],
         ["generate-fill", { purpose: "NEW_ACCOUNT", label: "Synthetic shop", username: "synthetic@example.com", roles: ["NEW_PASSWORD", "CONFIRM_PASSWORD"] }],
-        ["generate-fill", { purpose: "CHANGE_PASSWORD", handle }], ["approval", { handle, fields: ["PASSWORD"] }], ["audit", {}]] as const) {
+        ["generate-fill", { purpose: "CHANGE_PASSWORD", handle }], ["save", { site: "https://shop.example", username: "synthetic@example.com", password: SENTINEL, label: "Shop" }]] as const) {
         const answer = await call(path, payload);
         expect(answer.statusCode, path).toBe(200);
-        expect(Object.keys(answer.json()).sort(), path).toEqual(["auditId", "status"]);
-        expect(answer.json(), path).toMatchObject({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/) });
+        expect(answer.json(), path).toEqual({ status: "BLOCKED", auditId: expect.stringMatching(/^vault_audit:/) });
+        expect(answer.body, path).not.toContain(SENTINEL);
       }
-      // Selectors, URLs, values and unknown keys never pass the schema.
+      expect((await call("status", {})).json()).toEqual({ status: "LISTED", auditId: expect.stringMatching(/^vault_audit:/), agentAccess: false, delegatedItems: 0 });
+      const audited = (await call("audit", { limit: 3 })).json();
+      expect(audited.entries).toHaveLength(3);
+      expect(audited.entries[0]).toEqual({ at: expect.any(String), action: "AGENT_LIST", result: "LISTED", reason: null, itemId: null });
+      expect(audited.entries[1]).toMatchObject({ action: "ITEM_SAVE", result: "BLOCKED", reason: "AGENT_ACCESS_OFF" });
+      // Selectors, URLs, values and unknown keys never pass the schema; a save needs a plain web site.
       for (const [path, payload] of [["fill", { handle, fields: ["PASSWORD"], selector: "#password" }], ["fill", { handle, fields: ["PASSWORD"], origin: "https://evil.example" }],
         ["generate-fill", { purpose: "NEW_ACCOUNT" }], ["generate-fill", { purpose: "CHANGE_PASSWORD" }], ["fill", { handle: "vault_item:../x", fields: ["PASSWORD"] }],
-        ["list", { paneId: "pane:other" }]] as const) {
-        expect((await call(path, payload)).statusCode, JSON.stringify(payload)).toBe(422);
+        ["list", { paneId: "pane:other" }], ["approval", { handle, fields: ["PASSWORD"] }], ["fill", { handle, fields: ["PASSWORD"], targetPaneId: "../x" }],
+        ["save", { site: "http://10.0.0.1", username: "a", label: "A" }], ["save", { site: "https://shop.example", username: "a", label: "A", fields: { PASSWORD: "x" } }]] as const) {
+        expect([404, 422], JSON.stringify(payload)).toContain((await call(path, payload)).statusCode);
       }
       const audit = (await app.inject({ method: "GET", url: "/api/space-vault/audit?limit=3", headers: alice.headers })).json();
-      expect(audit.entries[0].event).toMatchObject({ actor: "AGENT", result: "BLOCKED", reason: "FLAG_OFF", paneId: pane.id });
+      expect(audit.entries[0].event).toMatchObject({ actor: "AGENT", paneId: pane.id });
     } finally {
       await app.close();
     }
   });
 });
 
-describe("Vault protected panes", () => {
-  it("lets only the pane's owner protect it, and then only that owner sees its browser", async () => {
-    const { app, store, brokerKey, session } = await fixture();
+describe("Vault agent access switch", () => {
+  it("turns on with the operator's session only, shows in the state, and goes off with revoke", async () => {
+    const { app, brokerKey, session } = await fixture();
     try {
       const alice = await session({ id: "user:alice", email: "alice@space.local", role: "OPERATOR" });
+      const url = "/api/space-vault/agent-access";
+      expect((await app.inject({ method: "PUT", url, headers: alice.headers, payload: { enabled: true } })).json().error.code).toBe("VAULT_NOT_ENROLLED");
       const { body } = await enrollment(brokerKey.publicKey, "user:alice");
       await app.inject({ method: "POST", url: "/api/space-vault/enroll", headers: alice.headers, payload: body });
-      const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Protected", initialPaneCount: 0 } })).json();
-      const pane = store.createPane({ roomId: room.id, title: "Browser", mode: "BROWSER" });
-      const url = `/api/space-vault/protected-panes/${encodeURIComponent(pane.id)}`;
-      expect((await app.inject({ method: "PUT", url: "/api/space-vault/protected-panes/pane:notmine0001", headers: alice.headers })).json().error.code).toBe("VAULT_PANE_NOT_FOUND");
-      expect((await app.inject({ method: "PUT", url, headers: alice.headers })).json()).toEqual({ protected: true });
-      expect((await app.inject({ url: "/api/space-vault/protected-panes", headers: alice.headers })).json()).toEqual({ paneIds: [pane.id] });
-      expect((await app.inject({ url: `/api/panes/${encodeURIComponent(pane.id)}/browser/diagnostics`, headers: alice.headers })).json().error.code).toBe("VAULT_PROTECTED_PANE_PRIVATE");
-      expect((await app.inject({ method: "DELETE", url, headers: alice.headers })).json()).toEqual({ protected: false });
-      expect((await app.inject({ url: `/api/panes/${encodeURIComponent(pane.id)}/browser/diagnostics`, headers: alice.headers })).json().error?.code).not.toBe("VAULT_PROTECTED_PANE_PRIVATE");
+      expect((await app.inject({ method: "PUT", url, headers: { cookie: alice.cookie }, payload: { enabled: true } })).json().error.code).toBe("CSRF_INVALID");
+      expect((await app.inject({ method: "PUT", url, headers: alice.headers, payload: { enabled: true } })).json()).toEqual({ agentAccess: true });
+      expect((await app.inject({ url: "/api/space-vault/state", headers: alice.headers })).json()).toMatchObject({ agentAccess: true, delegatedItems: 0 });
+      expect((await app.inject({ method: "PUT", url, headers: alice.headers, payload: { enabled: false } })).json()).toEqual({ agentAccess: false, generation: 1, epoch: 2 });
+      expect((await app.inject({ url: "/api/space-vault/state", headers: alice.headers })).json().agentAccess).toBe(false);
+      await app.inject({ method: "PUT", url, headers: alice.headers, payload: { enabled: true } });
+      await app.inject({ method: "POST", url: "/api/space-vault/revoke", headers: alice.headers, payload: {} });
+      expect((await app.inject({ url: "/api/space-vault/state", headers: alice.headers })).json().agentAccess).toBe(false);
+      // The operator's protected-pane step and per-use approvals are gone.
+      expect((await app.inject({ url: "/api/space-vault/protected-panes", headers: alice.headers })).statusCode).toBe(404);
+      expect((await app.inject({ url: "/api/space-vault/approvals", headers: alice.headers })).statusCode).toBe(404);
     } finally {
       await app.close();
     }
-  });
-});
-
-describe("Nous's handle-only Vault tool", () => {
-  it("answers only {status, auditId}: BLOCKED with the gate's reason while it fails, and BLOCKED while no fill path exists", async () => {
-    const { createNousTools } = await import("../src/nous/tools.js");
-    const repository = fakeRepository();
-    const { body } = await enrollment((await generateVaultTransportKey()).publicKey, "user:alice");
-    const { sealedServerShare: _sealed, ...rest } = body;
-    await repository.enroll("user:alice", { ...rest, serverShareEnvelope: await sealVaultEnvelope(vaultRandomBytes(32), vaultRandomBytes(32), { ownerUserId: "user:alice", vaultId: body.vaultId, keyVersion: 1, purpose: "SERVER_SHARE" }) });
-    const room = { id: "room:a", name: "Work" };
-    const pane = { id: "pane:a", roomId: room.id, paneName: "Andy", title: "Andy", isClosed: false };
-    let gate: { enabled: true } | { enabled: false; reason: "CUSTODY_NOT_PROVEN" } = { enabled: false, reason: "CUSTODY_NOT_PROVEN" };
-    const tools = createNousTools({ rooms: async (owner: string) => owner === "user:alice" ? [room] : [], listPanes: async () => [pane],
-      vault: { repository, agentFillGate: async () => gate } } as never);
-    const ctx = { owner: "user:alice", turnId: "t", callId: "c", traceId: "trace" };
-    const handle = newVaultHandle("vault_item");
-    const call = (owner = ctx.owner) => tools.execute("space_vault_fill", { room: "Work", pane: "Andy", handle, fields: ["PASSWORD"] }, { ...ctx, owner });
-    const closed = await call();
-    expect(closed).toMatchObject({ ok: false, refused: true });
-    expect(Object.keys(JSON.parse(closed.result)).sort()).toEqual(["auditId", "status"]);
-    expect(JSON.parse(closed.result).status).toBe("BLOCKED");
-    gate = { enabled: true };
-    expect(JSON.parse((await call()).result).status).toBe("BLOCKED");
-    const audit = await repository.listAudit("user:alice", { limit: 10 });
-    expect(audit.map((entry) => entry.event.reason)).toEqual(expect.arrayContaining(["CUSTODY_NOT_PROVEN", "FILL_PATH_UNAVAILABLE"]));
-    expect(audit[0]!.event).toMatchObject({ actor: "AGENT", action: "FILL", itemId: handle, paneId: pane.id });
-    // Another owner reaches neither the room nor the audit; a value, URL or selector is not an argument.
-    expect((await call("user:bob")).ok).toBe(false);
-    expect((await tools.execute("space_vault_fill", { room: "Work", pane: "Andy", handle, fields: ["PASSWORD"], url: "https://example.com" }, ctx)).result).toContain("Invalid arguments");
   });
 });

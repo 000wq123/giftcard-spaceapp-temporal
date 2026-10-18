@@ -2551,7 +2551,7 @@
       "status": "confirmed",
       "reproduction": null,
       "evidence": null,
-      "disposition": "A public install has one owner and every pane is that owner's; the boundary is the CLI container, not the pane. Multi-user installs run one CLI container per user (core f5ad82792d, 3cb67847e9; launcher branch feat/multi-user-cli-containers, not released yet); per-pane isolation within one user stays a later release.",
+      "disposition": "A public install has one owner and every pane is that owner's; the boundary is the CLI container, not the pane. Multi-user installs run one CLI container per user (core f5ad82792d, 3cb67847e9; launcher run-spaceapp 1.1.6, opt-in with user enable); per-pane isolation within one user stays a later release.",
       "resolution": "accepted-tradeoff"
     },
     {
@@ -3151,7 +3151,7 @@
       "observation": "run-spaceapp backup does not include a user's own CLI container volumes (CLI logins and settings, memory, files); keys are never in backups",
       "severity": "P3",
       "status": "confirmed",
-      "disposition": "Fixed in the launcher branch feat/multi-user-cli-containers (0fb9462, 8f5542a): a backup keeps each user's CLI settings and Space Memory (never keys or logins); restore puts them back for users that exist and 'user restore <id>' for users added again. Lab-verified on public-host 2026-10-18. Ships with the multi-user launcher in a release train.",
+      "disposition": "Fixed in the launcher branch feat/multi-user-cli-containers (0fb9462, 8f5542a): a backup keeps each user's CLI settings and Space Memory (never keys or logins); restore puts them back for users that exist and 'user restore <id>' for users added again. Lab-verified on public-host 2026-10-18. Ships in run-spaceapp 1.1.6.",
       "resolution": "partial"
     },
     {

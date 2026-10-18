@@ -495,7 +495,7 @@ export const helpSections: HelpSection[] = [
       entry("mode-review", "Review pane symbol", modeIcons.REVIEW, "Pane badge", "Identifies a review-oriented workflow pane.", ["INFORMATIONAL"]),
       entry("mode-code", "Code pane symbol", modeIcons.CODE, "Pane badge", "Identifies a code-oriented workflow pane.", ["INFORMATIONAL"]),
       entry("mode-swarm", "Swarm pane symbol", modeIcons.SWARM, "Pane badge", "Identifies a swarm-coordination workflow pane.", ["INFORMATIONAL"]),
-      entry("mode-design", "Design pane symbol", modeIcons.DESIGN, "Pane badge", "Identifies a design-oriented workflow pane.", ["INFORMATIONAL"]),
+      entry("mode-design", "Design pane symbol", modeIcons.DESIGN, "Pane badge", "Identifies a Design pane: the graphics studio that makes social graphics, banners and motion for you and for any agent that asks.", ["INFORMATIONAL"]),
       entry("mode-youtube", "YouTube pane symbol", modeIcons.YOUTUBE, "Pane badge", "Identifies an embedded YouTube player and audio pane.", ["INFORMATIONAL"]),
       entry("mode-vnc", "VNC pane symbol", modeIcons.VNC, "Pane badge", "Identifies a graphical VNC remote desktop pane.", ["INFORMATIONAL"]),
       entry("mode-harness", "DeepSeek Harness pane symbol", modeIcons.HARNESS, "Pane badge", "Identifies a specialized DeepSeek Harness benchmark and execution pane.", ["INFORMATIONAL"]),

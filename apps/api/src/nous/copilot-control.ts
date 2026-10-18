@@ -21,7 +21,7 @@ export const COPILOT_CONTROL_DESCRIPTION = "Control a copilot pane (Mail, Market
 export type CopilotInvoke = (owner: string, method: "GET" | "POST" | "PUT", url: string, payload?: unknown) => Promise<unknown>;
 
 const routePrefix: Partial<Record<Pane["mode"], string>> = {
-  JOB_APPLY: "job-apply", MAIL_COPILOT: "mail-copilot", MARKETING_COPILOT: "marketing-copilot", FREELANCE_COPILOT: "freelance-copilot"
+  JOB_APPLY: "job-apply", MAIL_COPILOT: "mail-copilot", MARKETING_COPILOT: "marketing-copilot", FREELANCE_COPILOT: "freelance-copilot", DESIGN: "design"
 };
 
 const running = (session: PaneCliSession | null) =>

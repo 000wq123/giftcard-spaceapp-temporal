@@ -19479,7 +19479,7 @@ label input:not([type="checkbox"]):not([type="radio"]):not([role="switch"]) {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .space-shell,
   .workspace,
   .board,

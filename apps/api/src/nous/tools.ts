@@ -24,7 +24,10 @@ import { COPILOT_CONTROL_DESCRIPTION, copilotControlActionSchema, type CopilotCo
 import { calmPromptActionSchema, holdCalmPrompts, holdUnlessAllowed, type NousHeld } from "./held-dispatch.js";
 import { FOCUS_PANE_DESCRIPTION, focusPaneSchema, type NousFocus } from "./focus.js";
 import { NOUS_AWAY_GRANTS, nousAwayArgsSchema, type NousAwayArgs, type NousAwayTurn } from "./away.js";
-import { NOUS_VAULT_FILL_DESCRIPTION, nousVaultFill, nousVaultFillArgsSchema } from "./vault.js";
+import {
+  NOUS_VAULT_FILL_DESCRIPTION, NOUS_VAULT_LIST_DESCRIPTION, NOUS_VAULT_SAVE_DESCRIPTION, nousVaultFill, nousVaultFillArgsSchema, nousVaultList, nousVaultListArgsSchema,
+  nousVaultSave, nousVaultSaveArgsSchema
+} from "./vault.js";
 import type { VaultModule } from "../vault/wiring.js";
 
 /**
@@ -259,7 +262,9 @@ const schemas = {
   space_ops_services: nousOpsServicesArgsSchema,
   space_ops_usage: nousOpsUsageArgsSchema,
   space_nous_away: nousAwayArgsSchema,
-  space_vault_fill: nousVaultFillArgsSchema
+  space_vault_fill: nousVaultFillArgsSchema,
+  space_vault_list: nousVaultListArgsSchema,
+  space_vault_save: nousVaultSaveArgsSchema
 } as const;
 
 export type NousToolName = keyof typeof schemas;
@@ -302,7 +307,7 @@ const descriptions: Record<NousToolName, string> = {
   space_copilot_state: "Read a Freelance or Marketing Copilot pane's run (status, queue, counts) and its newest events.",
   space_copilot_control: COPILOT_CONTROL_DESCRIPTION,
   space_focus_pane: FOCUS_PANE_DESCRIPTION,
-  space_copilot_brief: "Give a Marketing or Freelance Copilot pane an instruction as a brief (copilot panes are not CLI panes: space_send_to_pane does not reach them). External sends stay behind the copilot's own review gates.",
+  space_copilot_brief: "Give a Marketing or Freelance Copilot pane an instruction as a brief, or a Design pane a design request (copilot and Design panes are not CLI panes: space_send_to_pane does not reach them). External sends stay behind the copilot's own review gates.",
   space_copilot_answer: "Answer a copilot's QUESTION yourself (facts, preferences you know). Reviews, rules, campaigns and leads send to third parties: ask the operator with action COPILOT.",
   space_ask_operator: "Bring one critical decision to the operator (RELEASE, DESTRUCTIVE, EXTERNAL, DIRECTION) with your recommendation and the exact action to run on their yes. The only way to get a release, an irreversible action, a send to third parties or a payment done. Never for small questions.",
   space_nous_outcome: "Once at the end of every turn that answered the operator: how each of their requests ended. SELF: done with your own tools. HELPER: a pane had to do it because you lack a tool (name it in missing). OPERATOR: it is their decision. PENDING: still running. correction: they corrected you or repeated an earlier request. Report honestly: this measures your progress.",
@@ -317,7 +322,9 @@ const descriptions: Record<NousToolName, string> = {
   space_ops_usage: "Read only: token usage per model with its API value (range 1h, 24h, 7d, 30d; default 24h) and Space Gateway's state, accounts, keys and last 24 hours.",
   space_nous_away: "Away mode, when the operator says they are going away (to sleep, \"away until …\"): op start with their reason, mandate, until and only the grant their message gives; "
     + "status; end. Start and end work only in a turn the operator's own chat message started. While Away your inbox replies go to the away log and your alerts wait; their next message ends it and you brief them.",
-  space_vault_fill: NOUS_VAULT_FILL_DESCRIPTION
+  space_vault_fill: NOUS_VAULT_FILL_DESCRIPTION,
+  space_vault_list: NOUS_VAULT_LIST_DESCRIPTION,
+  space_vault_save: NOUS_VAULT_SAVE_DESCRIPTION
 };
 
 const stripSchemaKey = (schema: Record<string, unknown>) => { const rest = { ...schema }; delete rest.$schema; return rest; };
@@ -384,6 +391,8 @@ export function nousToolLabel(name: string, args: Record<string, unknown>): stri
     case "space_ops_services": return "Checking the services";
     case "space_ops_usage": return "Checking token usage and Space Gateway";
     case "space_vault_fill": return `Asking the Vault to fill ${text(args.pane)}${at}`;
+    case "space_vault_list": return "Listing the Vault items I may use";
+    case "space_vault_save": return `Saving a login for ${text(args.site)} to the Vault`;
     default: return `Using ${name}`;
   }
 }
@@ -495,7 +504,7 @@ export function createNousTools(deps: NousToolDeps) {
         if (!found.pane) return fail(`Could not find ${ref}`, found.problem!);
         panes.push(found.pane);
       }
-      const copilot = panes.find((pane) => pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT");
+      const copilot = panes.find((pane) => pane.mode === "MARKETING_COPILOT" || pane.mode === "FREELANCE_COPILOT" || pane.mode === "DESIGN");
       if (copilot) return fail(`${paneLabel(copilot)} is a copilot pane`, `${paneLabel(copilot)} is a copilot pane, not a CLI: give it the instruction with space_copilot_brief.`);
       const critical = classifyNousOutgoing(args.text, await deps.allowances(ctx.owner));
       if (critical) {
@@ -940,8 +949,16 @@ export function createNousTools(deps: NousToolDeps) {
       const link = await findLink(ctx.owner, args);
       if ("problem" in link) return fail(`Could not find ${args.pane}`, link.problem);
       const pane = (await deps.listPanes(link.roomId)).find((entry) => entry.id === link.paneId)!;
-      const result = await nousVaultFill(deps.vault, ctx.owner, pane, args);
+      const result = await nousVaultFill(deps.vault, ctx.owner, pane, args, ctx.traceId);
       return { ok: result.status !== "BLOCKED", display: `Vault fill: ${result.status}`, result: JSON.stringify(result), ...(result.status === "BLOCKED" ? { refused: true } : {}) };
+    },
+    async space_vault_list(_args, ctx) {
+      const result = await nousVaultList(deps.vault, ctx.owner, ctx.traceId);
+      return { ok: result.status === "LISTED", display: `Vault items: ${result.status}`, result: JSON.stringify(result), ...(result.status === "BLOCKED" ? { refused: true } : {}) };
+    },
+    async space_vault_save(args, ctx) {
+      const result = await nousVaultSave(deps.vault, ctx.owner, args, ctx.traceId);
+      return { ok: result.status === "SAVED", display: `Vault save: ${result.status}`, result: JSON.stringify(result), ...(result.status === "BLOCKED" ? { refused: true } : {}) };
     },
     async space_nous_away(args, ctx) {
       if (!deps.away) return fail("Away mode is unavailable");

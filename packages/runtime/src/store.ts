@@ -1,5 +1,5 @@
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import { type PlanExecutionEvent } from "./plan-execution-repository.js";
 import { managedPlanProjection } from "./plan-execution-projection.js";
 import { InMemoryPlanExecutionRepository, type PlanExecutionRepository } from "./plan-execution-repository.js";
@@ -571,12 +571,25 @@ export interface MemoryEntryRecord {
 
 export interface CreateMemoryEntryOptions {
   embedding?: number[];
+  /** The model that made `embedding`; a row of another model is re-embedded by the backfill. */
+  embeddingModel?: string;
 }
 
 export interface ListMemoryEntriesOptions {
   semanticReady?: boolean;
   queryEmbedding?: number[];
+  /** Semantic search compares only vectors of this model. */
+  embeddingModel?: string;
   limit?: number;
+}
+
+/** A memory_records row whose vector is missing or was made by another model. */
+export interface MemoryRecordToEmbed { id: string; title: string; body: string }
+
+export interface MemoryEmbeddingCounts {
+  total: number;
+  withoutEmbedding: number;
+  byModel: Array<{ model: string; count: number }>;
 }
 
 export interface SkillProposalRecord {
@@ -1056,6 +1069,7 @@ export interface SpaceStore {
   updateMailCopilotMetadata(paneId: string, metadata: MailCopilotPaneMetadata): MaybePromise<Pane>;
   updateMarketingCopilotMetadata(paneId: string, metadata: MarketingCopilotPaneMetadata): MaybePromise<Pane>;
   updateFreelanceCopilotMetadata(paneId: string, metadata: FreelanceCopilotPaneMetadata): MaybePromise<Pane>;
+  updateDesignMetadata(paneId: string, metadata: DesignPaneMetadata): MaybePromise<Pane>;
   listPanes(roomId: string, includeClosed?: boolean): MaybePromise<Pane[]>;
   createPane(input: CreatePaneInput, traceId?: string): MaybePromise<Pane>;
   createPanes(inputs: CreatePaneInput[], traceId?: string, claim?: PaneBatchClaim): MaybePromise<Pane[]>;
@@ -1314,6 +1328,10 @@ export interface SpaceStore {
   ): MaybePromise<ImportCandidateDecisionRecord>;
   createMemoryEntry(input: CreateMemoryEntryInput, traceId?: string, options?: CreateMemoryEntryOptions): MaybePromise<MemoryEntryRecord>;
   listMemoryEntries(query?: ListMemoryQuery, options?: ListMemoryEntriesOptions): MaybePromise<MemoryEntry[]>;
+  /** Rows to (re-)embed for `model`: those without a vector first, then the newest. */
+  listMemoryRecordsToEmbed(model: string, limit: number): MaybePromise<MemoryRecordToEmbed[]>;
+  setMemoryRecordEmbedding(id: string, embedding: number[], model: string): MaybePromise<void>;
+  countMemoryRecordEmbeddings(): MaybePromise<MemoryEmbeddingCounts>;
   linkMemoryCacheRecord(input: LinkMemoryCacheInput): MaybePromise<MemoryCacheLink>;
   getMemoryCacheLink(memoryRecordId: string): MaybePromise<MemoryCacheLink | null>;
   listMemoryCacheLinks(query?: ListMemoryCacheLinksQuery): MaybePromise<MemoryCacheLink[]>;
@@ -2578,6 +2596,8 @@ export class InMemorySpaceStore implements SpaceStore {
   private skills: Skill[];
   private importCandidates: ImportCandidate[] = [];
   private memoryEntries: MemoryEntry[] = [];
+  /** memory record id -> the model that embedded it (vectors themselves are not kept in memory). */
+  private memoryEmbeddingModels = new Map<string, string>();
   private memoryCacheLinks = new Map<string, MemoryCacheLink>();
   private memoryIssueStates = new Map<string, MemoryIssueState>();
   private memoryConsolidationRuns = new Map<string, MemoryConsolidationRun>();
@@ -4976,6 +4996,15 @@ export class InMemorySpaceStore implements SpaceStore {
     return structuredClone(updated);
   }
 
+  updateDesignMetadata(paneId: string, metadata: DesignPaneMetadata): Pane {
+    const current = this.getPane(paneId);
+    if (current.mode !== "DESIGN" || current.isClosed) throw new SpaceConflictError("An open Design pane is required.");
+    const parsed = designPaneMetadataSchema.parse(metadata);
+    const updated = { ...current, designMetadata: structuredClone(parsed), updatedAt: nowIso() };
+    this.panes.set(paneId, updated);
+    return structuredClone(updated);
+  }
+
   updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Pane {
     const current = this.panes.get(paneId);
     if (!current) {
@@ -5017,7 +5046,7 @@ export class InMemorySpaceStore implements SpaceStore {
       providerId: input.providerId === undefined ? current.providerId : input.providerId,
       modelId: input.modelId === undefined ? current.modelId : input.modelId,
       terminalRuntimeId:
-        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT"].includes(input.mode ?? current.mode)
+        ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN"].includes(input.mode ?? current.mode)
           ? input.terminalRuntimeId === undefined
             ? current.terminalRuntimeId
             : input.terminalRuntimeId
@@ -6324,8 +6353,8 @@ export class InMemorySpaceStore implements SpaceStore {
     if (!pane || pane.roomId !== parsed.roomId) {
       throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
     }
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") {
-      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT panes.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN") {
+      throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN panes.`);
     }
     if (pane.isClosed) {
       throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -8025,7 +8054,7 @@ export class InMemorySpaceStore implements SpaceStore {
     return { candidate: updated, events, memoryEntry, skill };
   }
 
-  createMemoryEntry(input: CreateMemoryEntryInput, traceId = makeSpaceId("trace"), _options: CreateMemoryEntryOptions = {}): MemoryEntryRecord {
+  createMemoryEntry(input: CreateMemoryEntryInput, traceId = makeSpaceId("trace"), options: CreateMemoryEntryOptions = {}): MemoryEntryRecord {
     if (input.scope === "ROOM" && input.roomId) {
       this.getRoom(input.roomId);
     }
@@ -8040,6 +8069,7 @@ export class InMemorySpaceStore implements SpaceStore {
       createdAt: timestamp
     };
     this.memoryEntries.unshift(entry);
+    if (options.embedding && options.embeddingModel) this.memoryEmbeddingModels.set(entry.id, options.embeddingModel);
     if (entry.roomId) {
       this.touchRoom(entry.roomId, timestamp);
     }
@@ -8071,6 +8101,30 @@ export class InMemorySpaceStore implements SpaceStore {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const limit = options.limit === undefined ? null : Math.max(1, Math.min(500, Math.trunc(options.limit)));
     return limit === null ? entries : entries.slice(0, limit);
+  }
+
+  listMemoryRecordsToEmbed(model: string, limit: number): MemoryRecordToEmbed[] {
+    return this.memoryEntries
+      .filter((entry) => this.memoryEmbeddingModels.get(entry.id) !== model)
+      .sort((a, b) => Number(this.memoryEmbeddingModels.has(a.id)) - Number(this.memoryEmbeddingModels.has(b.id)) || b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.max(1, Math.min(500, Math.trunc(limit))))
+      .map(({ id, title, body }) => ({ id, title, body }));
+  }
+
+  setMemoryRecordEmbedding(id: string, embedding: number[], model: string): void {
+    if (!isFiniteVector(embedding)) throw new SpaceConflictError("A memory embedding must be a finite vector.");
+    if (!this.memoryEntries.some((entry) => entry.id === id)) throw new SpaceNotFoundError(`Memory record ${id} was not found.`);
+    this.memoryEmbeddingModels.set(id, model);
+  }
+
+  countMemoryRecordEmbeddings(): MemoryEmbeddingCounts {
+    const byModel = new Map<string, number>();
+    for (const entry of this.memoryEntries) {
+      const model = this.memoryEmbeddingModels.get(entry.id);
+      if (model) byModel.set(model, (byModel.get(model) ?? 0) + 1);
+    }
+    return { total: this.memoryEntries.length, withoutEmbedding: this.memoryEntries.filter((entry) => !this.memoryEmbeddingModels.has(entry.id)).length,
+      byModel: [...byModel].map(([model, count]) => ({ model, count })).sort((a, b) => a.model.localeCompare(b.model)) };
   }
 
   linkMemoryCacheRecord(input: LinkMemoryCacheInput): MemoryCacheLink {

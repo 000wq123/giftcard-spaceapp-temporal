@@ -263,3 +263,26 @@ export function inputPrices(model: string | null, provider: string): { input: nu
   if (!found) return null;
   return { input: found.price.input_per_1m, cachedInput: found.price.cached_input_per_1m ?? found.price.input_per_1m, cacheWrite: found.price.input_per_1m };
 }
+
+/**
+ * Image list prices (2026-10-18). Gemini API Standard, per output image by `imageSize`
+ * (ai.google.dev/gemini-api/docs/pricing); GPT Image per 1M tokens (developers.openai.com/api/docs/pricing), applied to
+ * the `tool_usage.image_gen` tokens a Codex image call reports. A size or model not listed stays unpriced (null).
+ */
+export const imagePrices: Record<string, { perImage: Partial<Record<string, number>> } | { textInput: number; imageInput: number; imageOutput: number }> = {
+  "gemini-3.1-flash-image": { perImage: { "512": 0.045, "1K": 0.067, "2K": 0.101, "4K": 0.151 } },
+  "gemini-3-pro-image": { perImage: { "1K": 0.134, "2K": 0.134, "4K": 0.24 } },
+  "gpt-image-2": { textInput: 5, imageInput: 8, imageOutput: 30 }
+};
+
+export interface ImageTokenUsage { textInputTokens: number; imageInputTokens: number; outputTokens: number }
+
+/** API-equivalent cost of one generated image: by size for Gemini, by tokens for GPT Image (`gpt-image-2-codex` is priced as gpt-image-2). */
+export function imageCostUsd(model: string, usage: { imageSize?: string | null; tokens?: ImageTokenUsage | null }): number | null {
+  const price = imagePrices[model.toLowerCase().replace(/-codex$/, "")];
+  if (!price) return null;
+  if ("perImage" in price) return price.perImage[usage.imageSize ?? "1K"] ?? null;
+  const tokens = usage.tokens;
+  if (!tokens) return null;
+  return (tokens.textInputTokens * price.textInput + tokens.imageInputTokens * price.imageInput + tokens.outputTokens * price.imageOutput) / 1e6;
+}

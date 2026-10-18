@@ -41,6 +41,8 @@ import { registerMailCopilotAgentRoutes } from "./mail-copilot/agent-routes.js";
 import type { MailCopilotService } from "./mail-copilot/service.js";
 import { registerMarketingCopilotAgentRoutes } from "./marketing-copilot/agent-routes.js";
 import type { MarketingCopilotService } from "./marketing-copilot/service.js";
+import { registerDesignAgentRoutes } from "./design/agent-routes.js";
+import type { DesignService } from "./design/service.js";
 import { registerFreelanceCopilotAgentRoutes } from "./freelance-copilot/agent-routes.js";
 import { registerTaskAgentRoutes } from "./task-agent-routes.js";
 import { registerPaneReportRoutes } from "./pane-report-routes.js";
@@ -68,6 +70,8 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
   mailCopilotService?: MailCopilotService;
   marketingCopilotService?: MarketingCopilotService;
   freelanceCopilotService?: FreelanceCopilotService;
+  /** Design requests (every CLI pane) and the Design pane's worker tools; see design/agent-routes.ts. */
+  designService?: DesignService;
   vault?: VaultModule;
   /** Set once the pane browser routes are registered; agents choose saved Google sign-ins through it. */
   paneBrowserAccounts: { current: PaneBrowserAccountControl | null };
@@ -167,7 +171,18 @@ export function registerCliBrowserBridgeRoutes(app: FastifyInstance, deps: {
       bookmarks: deps.marketingCopilotService
     });
   }
-  if (deps.vault) registerVaultAgentBridge(app, deps.vault, { store, requireBridge: requireCliBrowserBridgeContext, browser: browserSessionManager });
+  if (deps.designService) {
+    registerDesignAgentRoutes(app, deps.designService, {
+      store,
+      routeOptions: defaultRouteRateLimitOptions,
+      requireBridge: requireCliBrowserBridgeContext,
+      parseBody,
+      parseQuery,
+      uploadRoot: config.browserEvidenceArtifactRoot,
+      audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata })
+    });
+  }
+  if (deps.vault) registerVaultAgentBridge(app, deps.vault, { store, requireBridge: requireCliBrowserBridgeContext });
   registerTaskAgentRoutes(app, {
     store,
     routeOptions: defaultRouteRateLimitOptions,

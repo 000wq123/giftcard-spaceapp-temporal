@@ -3554,10 +3554,9 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return browserTimelineEventSummarySchema.array().parse([...consoleEvents, ...networkEvents].slice(-limit));
   }
 
-  // Vault sealed fill (ADR-012): one owned tab in a Chrome no other pane or account tab shares.
+  // Vault sealed fill (ADR-012): the pane's own tab, also in a shared Chrome (the API fences the filled browser, protection.ts).
   function vaultPage(pane: Pane, runtime: BrowserRuntime): SealedFillPage {
-    return { cdp: runtime.client, sessionId: runtime.cdpSessionId, targetId: runtime.targetId, paneId: pane.id, ownedPages: runtime.ownedPages.size,
-      sharedProfile: runtime.profile.members.size > 1 || runtime.accountTabs.size > 0 || runtime.pageProfiles.size > 0 };
+    return { cdp: runtime.client, sessionId: runtime.cdpSessionId, targetId: runtime.targetId, paneId: pane.id };
   }
   // H2 Option A: the Browser Host talks to the broker over its own socket, never through the API.
   const vaultBroker = sealedFillBroker(createSocketVaultBroker(VAULT_BROKER_HOST_SOCKET_PATH));

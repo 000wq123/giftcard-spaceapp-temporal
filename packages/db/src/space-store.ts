@@ -1,6 +1,6 @@
 import { rollbackKeepingError } from "./rollback.js";
 import { t3CodePaneMetadataSchema, type T3CodePaneMetadata } from "@space/contracts";
-import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
+import { jobApplyPaneMetadataSchema, mailCopilotPaneMetadataSchema, marketingCopilotPaneMetadataSchema, freelanceCopilotPaneMetadataSchema, designPaneMetadataSchema, type DesignPaneMetadata, type JobApplyPaneMetadata, type MailCopilotPaneMetadata, type MarketingCopilotPaneMetadata, type FreelanceCopilotPaneMetadata } from "@space/contracts";
 import type { PlanExecutionEvent } from "@space/runtime";
 import { managedPlanProjection } from "@space/runtime";
 import { managedPlanExecutionSchema } from "@space/contracts";
@@ -413,6 +413,8 @@ import {
   type CodexCliTurnMarkerRecord,
   type CreateCodexCliTurnMarkerInput,
   type CreateMemoryEntryOptions,
+  type MemoryEmbeddingCounts,
+  type MemoryRecordToEmbed,
   type CreateMemoryChangeSetOptions,
   type CreateQueuedTurnInput,
   type CreateRoomStoreInput,
@@ -826,6 +828,7 @@ type PaneRow = {
   mailCopilotMetadata?: Pane["mailCopilotMetadata"];
   marketingCopilotMetadata?: Pane["marketingCopilotMetadata"];
   freelanceCopilotMetadata?: Pane["freelanceCopilotMetadata"];
+  designMetadata?: Pane["designMetadata"];
   paneName?: string | null;
   mode: Pane["mode"];
   status: Pane["status"];
@@ -1791,6 +1794,7 @@ const paneSelect = `
     mail_copilot_metadata AS "mailCopilotMetadata",
     marketing_copilot_metadata AS "marketingCopilotMetadata",
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
+    design_metadata AS "designMetadata",
     mode,
     status,
     provider_id AS "providerId",
@@ -2973,6 +2977,7 @@ function mapPane(row: PaneRow): Pane {
     mailCopilotMetadata: row.mailCopilotMetadata ?? null,
     marketingCopilotMetadata: row.marketingCopilotMetadata ?? null,
     freelanceCopilotMetadata: row.freelanceCopilotMetadata ?? null,
+    designMetadata: row.designMetadata ?? null,
     paneName: row.paneName ?? null,
     mode: row.mode,
     status: row.status,
@@ -7933,6 +7938,17 @@ export class PostgresSpaceStore implements SpaceStore {
     });
   }
 
+  async updateDesignMetadata(paneId: string, metadata: DesignPaneMetadata): Promise<Pane> {
+    const parsed = designPaneMetadataSchema.parse(metadata);
+    return this.withTransaction(async client => {
+      const pane = await this.getPaneForUpdate(client, paneId);
+      if (pane.mode !== "DESIGN" || pane.isClosed) throw new SpaceConflictError("An open Design pane is required.");
+      const timestamp = nowIso();
+      await client.query("UPDATE panes SET design_metadata = $2::jsonb, updated_at = $3 WHERE id = $1", [paneId, JSON.stringify(parsed), timestamp]);
+      return { ...pane, designMetadata: parsed, updatedAt: timestamp };
+    });
+  }
+
   async updatePane(paneId: string, input: UpdatePaneInput, traceId = makeSpaceId("trace")): Promise<Pane> {
     return this.withTransaction(async (client) => {
       const current = await this.getPaneForUpdate(client, paneId);
@@ -7978,7 +7994,7 @@ export class PostgresSpaceStore implements SpaceStore {
         providerId: input.providerId === undefined ? current.providerId : input.providerId,
         modelId: input.modelId === undefined ? current.modelId : input.modelId,
         terminalRuntimeId:
-          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT"].includes(input.mode ?? current.mode)
+          ["TERMINAL", "JOB_APPLY", "MAIL_COPILOT", "MARKETING_COPILOT", "FREELANCE_COPILOT", "DESIGN"].includes(input.mode ?? current.mode)
             ? input.terminalRuntimeId === undefined
               ? current.terminalRuntimeId
               : input.terminalRuntimeId
@@ -8027,6 +8043,7 @@ export class PostgresSpaceStore implements SpaceStore {
     mail_copilot_metadata AS "mailCopilotMetadata",
     marketing_copilot_metadata AS "marketingCopilotMetadata",
     freelance_copilot_metadata AS "freelanceCopilotMetadata",
+    design_metadata AS "designMetadata",
             mode,
             status,
             provider_id AS "providerId",
@@ -10396,8 +10413,8 @@ export class PostgresSpaceStore implements SpaceStore {
       if (pane.roomId !== parsed.roomId) {
         throw new SpaceNotFoundError(`Pane ${parsed.paneId} was not found.`);
       }
-      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") {
-        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT panes.`);
+      if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN") {
+        throw new SpaceConflictError(`Pane ${pane.id} is ${pane.mode}; CLI sessions require TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN panes.`);
       }
       if (pane.isClosed) {
         throw new SpaceConflictError(`Pane ${pane.id} is closed.`);
@@ -14121,8 +14138,8 @@ export class PostgresSpaceStore implements SpaceStore {
       const memoryId = makeSpaceId("memory");
       const result = await client.query<MemoryEntryRow>(
         `
-          INSERT INTO memory_records (id, scope, room_id, title, body, provenance, embedding, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8)
+          INSERT INTO memory_records (id, scope, room_id, title, body, provenance, embedding, embedding_model, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $9, $8)
           RETURNING
             id,
             scope,
@@ -14140,7 +14157,8 @@ export class PostgresSpaceStore implements SpaceStore {
           redactMemoryText(input.body),
           redactMemoryText(input.provenance),
           toPgVectorLiteral(options.embedding),
-          timestamp
+          timestamp,
+          options.embedding ? options.embeddingModel ?? null : null
         ]
       );
       const entry = mapMemoryEntry(firstOrNotFound(result.rows, `Memory entry ${memoryId} was not recorded.`));
@@ -14186,6 +14204,10 @@ export class PostgresSpaceStore implements SpaceStore {
       const index = values.length;
       where.push("embedding IS NOT NULL");
       orderBy = `embedding <=> $${index}::vector ASC, created_at DESC`;
+      if (options.embeddingModel) {
+        values.push(options.embeddingModel);
+        where.push(`embedding_model = $${values.length}`);
+      }
     }
     let limitClause = "";
     if (options.limit !== undefined) {
@@ -14197,6 +14219,33 @@ export class PostgresSpaceStore implements SpaceStore {
       values
     );
     return result.rows.map(mapMemoryEntry);
+  }
+
+  async listMemoryRecordsToEmbed(model: string, limit: number): Promise<MemoryRecordToEmbed[]> {
+    const result = await this.pool.query<MemoryRecordToEmbed>(
+      `SELECT id, title, body FROM memory_records WHERE embedding_model IS DISTINCT FROM $1
+       ORDER BY (embedding IS NULL) DESC, created_at DESC, id LIMIT $2`,
+      [model, Math.max(1, Math.min(500, Math.trunc(limit)))]
+    );
+    return result.rows;
+  }
+
+  async setMemoryRecordEmbedding(id: string, embedding: number[], model: string): Promise<void> {
+    const literal = toPgVectorLiteral(embedding);
+    if (!literal) throw new SpaceConflictError("A memory embedding must be a finite vector.");
+    const result = await this.pool.query("UPDATE memory_records SET embedding = $2::vector, embedding_model = $3 WHERE id = $1", [id, literal, model]);
+    if (result.rowCount === 0) throw new SpaceNotFoundError(`Memory record ${id} was not found.`);
+  }
+
+  async countMemoryRecordEmbeddings(): Promise<MemoryEmbeddingCounts> {
+    const totals = await this.pool.query<{ total: string; withoutEmbedding: string }>(
+      `SELECT count(*) AS total, count(*) FILTER (WHERE embedding IS NULL) AS "withoutEmbedding" FROM memory_records`
+    );
+    const models = await this.pool.query<{ model: string; count: string }>(
+      `SELECT coalesce(embedding_model, 'unknown') AS model, count(*) AS count FROM memory_records WHERE embedding IS NOT NULL GROUP BY 1 ORDER BY 1`
+    );
+    return { total: Number(totals.rows[0]?.total ?? 0), withoutEmbedding: Number(totals.rows[0]?.withoutEmbedding ?? 0),
+      byModel: models.rows.map((row) => ({ model: row.model, count: Number(row.count) })) };
   }
 
   async linkMemoryCacheRecord(input: LinkMemoryCacheInput): Promise<MemoryCacheLink> {

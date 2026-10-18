@@ -45,6 +45,7 @@ export * from "./copilot.js";
 export * from "./mail-copilot.js";
 export * from "./marketing-copilot.js";
 export * from "./freelance-copilot.js";
+export * from "./design.js";
 export * from "./notifications.js";
 export * from "./council.js";
 export * from "./nous.js";

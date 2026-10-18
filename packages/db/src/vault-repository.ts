@@ -3,7 +3,7 @@ import {
   type VaultAuditEvent, type VaultAuditRecord, type VaultEnrollment, type VaultItemMetadata, type VaultItemRecord, type VaultItemRecordInput, type VaultNoncePurpose,
   type VaultRecovery, newVaultHandle, vaultAuditEventSchema, vaultCanonicalJson, vaultDelegationCertificateSchema, vaultDigest,
   vaultEnrollmentSchema, vaultFillEnvelopesSchema, vaultItemRecordSchema, vaultRecoverySchema, vaultSymmetricEnvelopeSchema,
-  vaultApprovalSchema, vaultInboxKeyRequestSchema, vaultPendingSecretSchema, vaultSignupGrantCertificateSchema, type VaultApproval, type VaultPendingSecret
+  vaultInboxKeyRequestSchema, vaultPendingSecretSchema, vaultSignupGrantCertificateSchema, type VaultPendingSecret
 } from "@space/contracts";
 import { createSpacePgPool, type PgClientLike, type PgPoolLike } from "./space-store.js";
 
@@ -18,7 +18,11 @@ export class VaultConflictError extends Error {
 export interface VaultState extends VaultEnrollment {
   ownerUserId: string; formatVersion: 1; recovery: VaultRecovery | null; epoch: number;
   delegationGeneration: number; auditSeq: number; createdAt: string; updatedAt: string;
+  /** The dock's switch: agents and Nous may use this vault (migration 0231). */
+  agentAccess: boolean;
 }
+/** The page a fill landed in: its protection lifts once this page is gone. */
+export interface VaultFillTarget { targetId: string; origin: string; document: string | null }
 export interface VaultAuditEntry { id: string; seq: number; event: VaultAuditRecord; prevHash: string; hash: string; createdAt: string }
 
 const GENESIS = "0".repeat(64);
@@ -30,19 +34,20 @@ const auditHash = (input: { vaultId: string; ownerUserId: string; seq: number; c
 interface VaultRow {
   id: string; ownerUserId: string; formatVersion: 1; kdf: unknown; passwordEnvelope: unknown; serverShareEnvelope: unknown; unlockPublicKey: string;
   unlockKeyVersion: number; recovery: unknown; epoch: number; delegationGeneration: number; auditSeq: string | number; auditHead: string;
-  createdAt: Date | string; updatedAt: Date | string;
+  createdAt: Date | string; updatedAt: Date | string; agentAccess: boolean;
 }
 const vaultColumns = `v.id, v.owner_user_id AS "ownerUserId", v.format_version AS "formatVersion", v.kdf, v.password_envelope AS "passwordEnvelope",
   v.server_share_envelope AS "serverShareEnvelope", v.unlock_public_key AS "unlockPublicKey", v.unlock_key_version AS "unlockKeyVersion", v.recovery,
   v.epoch, v.delegation_generation AS "delegationGeneration", v.audit_seq AS "auditSeq", v.audit_head AS "auditHead",
-  v.created_at AS "createdAt", v.updated_at AS "updatedAt"`;
+  v.created_at AS "createdAt", v.updated_at AS "updatedAt", v.agent_access AS "agentAccess"`;
 // An owner whose account is disabled has no vault as far as every caller can tell.
 const activeOwnerVault = `FROM vaults v JOIN users u ON u.id = v.owner_user_id AND u.disabled_at IS NULL WHERE v.owner_user_id = $1`;
 const fromVaultRow = (row: VaultRow): VaultState => ({
   ...vaultEnrollmentSchema.parse({ vaultId: row.id, kdf: row.kdf, passwordEnvelope: row.passwordEnvelope, serverShareEnvelope: row.serverShareEnvelope,
     unlockPublicKey: row.unlockPublicKey, unlockKeyVersion: row.unlockKeyVersion }),
   ownerUserId: row.ownerUserId, formatVersion: 1, recovery: row.recovery === null ? null : vaultRecoverySchema.parse(row.recovery), epoch: row.epoch,
-  delegationGeneration: row.delegationGeneration, auditSeq: Number(row.auditSeq), createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt)
+  delegationGeneration: row.delegationGeneration, auditSeq: Number(row.auditSeq), createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt),
+  agentAccess: row.agentAccess === true
 });
 
 interface ItemRow { id: string; label: string; origins: string[]; fieldRoles: string[]; policy: unknown; status: string; keyVersion: number; dekEnvelope: unknown; fields: unknown; history: unknown }
@@ -235,7 +240,18 @@ export class PostgresVaultRepository {
       keyEnvelope: vaultSymmetricEnvelopeSchema.parse(row.keyEnvelope), fillEnvelopes: vaultFillEnvelopesSchema.parse(row.fillEnvelopes) } : null;
   }
 
-  /** Revoke agent access: next generation and epoch, delegated envelopes deleted; needs no password. */
+  /** Turns the dock's agent-access switch on (the dock then delegates); off is revokeAgentAccess. */
+  async enableAgentAccess(owner: string): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const vault = await this.lock(client, owner);
+      if (!vault) return false;
+      await client.query(`UPDATE vaults SET agent_access = true, updated_at = now() WHERE id = $1`, [vault.id]);
+      await this.audit(client, vault, { actor: "OPERATOR", action: "DELEGATE", result: "OK", reason: "AGENT_ACCESS_ON" });
+      return true;
+    });
+  }
+
+  /** Revoke agent access: the switch goes off, next generation and epoch, delegated envelopes deleted; needs no password. */
   async revokeAgentAccess(owner: string, actor: "OPERATOR" | "SYSTEM" = "OPERATOR") {
     return this.transaction(async (client) => {
       const vault = await this.lock(client, owner);
@@ -244,7 +260,7 @@ export class PostgresVaultRepository {
         WHERE vault_id = $1 AND status = 'ACTIVE'`, [vault.id]);
       await client.query(`UPDATE vault_signup_grants SET revoked_at = now() WHERE vault_id = $1 AND revoked_at IS NULL`, [vault.id]);
       const next = (await client.query<{ epoch: number; generation: number }>(`UPDATE vaults SET delegation_generation = delegation_generation + 1,
-          epoch = epoch + 1, updated_at = now() WHERE id = $1 RETURNING epoch, delegation_generation AS generation`, [vault.id])).rows[0]!;
+          epoch = epoch + 1, agent_access = false, updated_at = now() WHERE id = $1 RETURNING epoch, delegation_generation AS generation`, [vault.id])).rows[0]!;
       await this.audit(client, vault, { actor, action: "REVOKE", result: "OK" });
       return next;
     });
@@ -317,22 +333,20 @@ export class PostgresVaultRepository {
     return rows.length === vault.auditSeq ? { ok: true, brokenAtSeq: null } : { ok: false, brokenAtSeq: rows.length + 1 };
   }
 
-  /** Protects a pane's browser for Vault fills; the owner check (the pane is theirs) is the caller's. */
-  async protectPane(owner: string, paneId: string): Promise<boolean> {
-    const result = await this.pool.query(`INSERT INTO vault_protected_panes (pane_id, owner_user_id) SELECT $2, $1 FROM users WHERE id = $1 AND disabled_at IS NULL
-      ON CONFLICT (pane_id) DO NOTHING`, [owner, paneId]);
-    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1 || (await this.protectedPaneOwner(paneId)) === owner;
+  /** Protects a pane's browser for the page a Vault fill lands in (the latest fill's page); the owner check is the caller's. */
+  async protectPane(owner: string, paneId: string, fill: VaultFillTarget): Promise<boolean> {
+    const result = await this.pool.query(`INSERT INTO vault_protected_panes (pane_id, owner_user_id, fill_target) SELECT $2, $1, $3::jsonb FROM users WHERE id = $1 AND disabled_at IS NULL
+      ON CONFLICT (pane_id) DO UPDATE SET fill_target = EXCLUDED.fill_target WHERE vault_protected_panes.owner_user_id = EXCLUDED.owner_user_id`, [owner, paneId, JSON.stringify(fill)]);
+    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
   }
   async unprotectPane(owner: string, paneId: string): Promise<boolean> {
     const result = await this.pool.query(`DELETE FROM vault_protected_panes WHERE pane_id = $2 AND owner_user_id = $1`, [owner, paneId]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
   }
-  /** Who protected this pane, or null when it is not protected. */
-  async protectedPaneOwner(paneId: string): Promise<string | null> {
-    return (await this.pool.query<{ owner: string }>(`SELECT owner_user_id AS owner FROM vault_protected_panes WHERE pane_id = $1`, [paneId])).rows[0]?.owner ?? null;
-  }
-  async listProtectedPanes(owner: string): Promise<string[]> {
-    return (await this.pool.query<{ paneId: string }>(`SELECT pane_id AS "paneId" FROM vault_protected_panes WHERE owner_user_id = $1 ORDER BY created_at`, [owner])).rows.map((row) => row.paneId);
+  /** Who protects this pane and for which filled page (null for a pane protected by hand before 2026-10-18), or null. */
+  async protectedPane(paneId: string): Promise<{ owner: string; fill: VaultFillTarget | null } | null> {
+    const row = (await this.pool.query<{ owner: string; fill: VaultFillTarget | null }>(`SELECT owner_user_id AS owner, fill_target AS fill FROM vault_protected_panes WHERE pane_id = $1`, [paneId])).rows[0];
+    return row ? { owner: row.owner, fill: row.fill ?? null } : null;
   }
 
   /** The inbox key: public half for fills, private half sealed under the VRK for the dock. */
@@ -353,7 +367,7 @@ export class PostgresVaultRepository {
     if (!vault) return false;
     await this.pool.query(`INSERT INTO vault_pending (id, vault_id, owner_user_id, kind, handle, label, origin, sealed_username, sealed_password, pane_id, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)`,
-    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), JSON.stringify(pending.sealedPassword), pending.paneId, pending.createdAt]);
+    [pending.id, vault.vaultId, owner, pending.kind, pending.handle, pending.label, pending.origin, json(pending.sealedUsername), json(pending.sealedPassword), pending.paneId, pending.createdAt]);
     return true;
   }
   async listPending(owner: string): Promise<VaultPendingSecret[]> {
@@ -367,38 +381,6 @@ export class PostgresVaultRepository {
     return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
   }
 
-  async addApproval(owner: string, input: { id: string; handle: string; fields: string[]; paneId: string; expiresAt: string }): Promise<boolean> {
-    const vault = await this.getVault(owner);
-    if (!vault) return false;
-    await this.pool.query(`INSERT INTO vault_approvals (id, vault_id, owner_user_id, handle, fields, pane_id, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7)`,
-      [input.id, vault.vaultId, owner, input.handle, input.fields, input.paneId, input.expiresAt]);
-    return true;
-  }
-  async listApprovals(owner: string, limit = 50): Promise<VaultApproval[]> {
-    // An undecided request past its time reads as EXPIRED.
-    const rows = (await this.pool.query<Record<string, unknown> & { createdAt: Date | string; expiresAt: Date | string; decidedAt: Date | string | null }>(
-      `SELECT a.id, a.handle, a.fields, a.pane_id AS "paneId",
-         CASE WHEN a.status IN ('PENDING', 'APPROVED') AND a.expires_at <= now() THEN 'EXPIRED' ELSE a.status END AS status,
-         a.created_at AS "createdAt", a.expires_at AS "expiresAt", a.decided_at AS "decidedAt"
-       FROM vault_approvals a JOIN users u ON u.id = a.owner_user_id AND u.disabled_at IS NULL WHERE a.owner_user_id = $1 ORDER BY a.created_at DESC LIMIT $2`,
-      [owner, Math.min(Math.max(limit, 1), 200)])).rows;
-    return rows.map((row) => vaultApprovalSchema.parse({ ...row, createdAt: iso(row.createdAt), expiresAt: iso(row.expiresAt), decidedAt: row.decidedAt === null ? null : iso(row.decidedAt) }));
-  }
-  /** The operator's decision on a still-pending, unexpired request. */
-  async decideApproval(owner: string, id: string, decision: "APPROVE" | "DENY"): Promise<boolean> {
-    const result = await this.pool.query(`UPDATE vault_approvals SET status = $3, decided_at = now()
-      WHERE owner_user_id = $1 AND id = $2 AND status = 'PENDING' AND expires_at > now()`, [owner, id, decision === "APPROVE" ? "APPROVED" : "DENIED"]);
-    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
-  }
-  /** One fill uses one approval: an approved, unexpired request for exactly this item, pane and covering fields, atomically. */
-  async consumeApproval(owner: string, input: { handle: string; paneId: string; fields: string[] }): Promise<boolean> {
-    const result = await this.pool.query(`UPDATE vault_approvals SET status = 'USED' WHERE id = (
-        SELECT id FROM vault_approvals WHERE owner_user_id = $1 AND handle = $2 AND pane_id = $3 AND status = 'APPROVED' AND expires_at > now() AND fields @> $4::text[]
-        ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) AND status = 'APPROVED'`, [owner, input.handle, input.paneId, input.fields]);
-    return ((result as { rowCount?: number | null }).rowCount ?? 0) === 1;
-  }
-
-  /** A broker-certified sign-up grant of this owner's vault (the API verified the broker's signature first). */
   async addSignupGrant(owner: string, certificate: unknown): Promise<boolean> {
     const { claims } = vaultSignupGrantCertificateSchema.parse(certificate);
     return this.transaction(async (client) => {

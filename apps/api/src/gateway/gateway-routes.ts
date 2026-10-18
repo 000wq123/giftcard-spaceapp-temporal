@@ -235,7 +235,7 @@ export function registerGatewayAdminRoutes(app: FastifyInstance, options: {
   app.post("/api/admin/gateway/api-key/add", writeOptions, async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
     const input = z.object({
-      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE"]),
+      provider: z.enum(["OPENAI_API", "OPENROUTER", "DEEPSEEK", "CLAUDE", "GOOGLE_AI"]),
       apiKey: z.string().trim().min(20).max(400).optional(),
       useSpaceKey: z.boolean().optional(),
       label: z.string().trim().min(1).max(80).optional()

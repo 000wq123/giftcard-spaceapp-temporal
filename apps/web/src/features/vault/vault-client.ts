@@ -151,10 +151,16 @@ export async function vaultInboxKey(client: Pick<VaultInboxApi, "vaultInbox" | "
   return pair;
 }
 
-/** Waiting generated passwords become PENDING items (a changed password keeps the old one in history) for Keep or Discard. */
+/** What a login starts with since agents and Nous share one switch (operator decision 2026-10-18); agentUse off hides it from them. */
+export const VAULT_AGENT_POLICY = { agentUse: true, approvalMode: "FULL", submitAllowed: true, maxFillsPerHour: 60, acceptedOriginRisks: [] } as const;
+
+/**
+ * Logins agents saved and passwords they generated become ACTIVE items at once: a new login is added, a changed password is
+ * applied and keeps the old one in history (Restore previous undoes it).
+ */
 export async function importVaultPending(client: VaultInboxApi, unlocked: UnlockedVault, inbox: { privateKey: Uint8Array; publicKey: Uint8Array }): Promise<number> {
   const scope = scopeOf(unlocked.ownerUserId, unlocked.vaultId);
-  const open = async (envelope: unknown) => new TextDecoder().decode(await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, envelope, scope));
+  const open = async (envelope: unknown) => envelope ? new TextDecoder().decode(await openWithVaultPrivateKey(inbox.privateKey, inbox.publicKey, envelope, scope)) : undefined;
   let imported = 0;
   for (const entry of (await client.vaultPending()).pending) {
     const password = await open(entry.sealedPassword);
@@ -162,11 +168,10 @@ export async function importVaultPending(client: VaultInboxApi, unlocked: Unlock
       const previous = (await client.vaultItem(entry.handle)).item;
       const secrets = await decryptVaultItem(unlocked, previous);
       const { id: _id, fieldRoles: _roles, ...metadata } = previous.metadata;
-      await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "PENDING", secrets: { ...secrets, PASSWORD: password } }, previous));
+      await client.vaultSaveItem(await encryptVaultItem(unlocked, { ...metadata, status: "ACTIVE", secrets: { ...secrets, PASSWORD: password } }, previous));
     } else {
-      const username = entry.sealedUsername ? await open(entry.sealedUsername) : undefined;
-      await client.vaultSaveItem(await encryptVaultItem(unlocked, { id: entry.handle, label: entry.label, origins: [entry.origin], status: "PENDING", secrets: { USERNAME: username, PASSWORD: password },
-        policy: { agentUse: false, approvalMode: "ASSIST", submitAllowed: false, maxFillsPerHour: 6, acceptedOriginRisks: [] } }));
+      await client.vaultSaveItem(await encryptVaultItem(unlocked, { id: entry.handle, label: entry.label, origins: [entry.origin], status: "ACTIVE",
+        secrets: { USERNAME: await open(entry.sealedUsername), PASSWORD: password }, policy: { ...VAULT_AGENT_POLICY, acceptedOriginRisks: [] } }));
     }
     await client.vaultDeletePending(entry.id);
     imported += 1;
@@ -186,15 +191,16 @@ export async function signVaultSignupGrant(unlocked: UnlockedVault, input: { sit
 }
 
 /**
- * Hands the agent-allowed logins to the Vault's broker (plan clipboard:vEYtT6-bEN0J, the dock's delegation step): their
- * fields are sealed under a fresh fill key, the key is sealed to the broker, and the unlock key signs exactly these items,
- * their addresses, fields and approval, the next generation, this unlock and the expiry. The broker fills them only at those
- * addresses; a new delegation replaces the previous one, and Revoke agent access ends it. Agents never get a value.
+ * Hands every ACTIVE login not hidden from agents to the Vault's broker while agent access is on (operator decision 2026-10-18;
+ * the dock does it after each unlock and item change): their fields are sealed under a fresh fill key, the key is sealed to
+ * the broker, and the unlock key signs exactly these items, their addresses and fields, the next generation, this unlock and a
+ * standing expiry. The broker fills them only at those addresses; a new delegation replaces the previous one, and turning
+ * agent access off ends it. Agents never get a value. Null when there is nothing to hand over.
  */
 export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBroker" | "vaultDelegate">, unlocked: UnlockedVault,
-  input: { records: VaultItemRecord[]; delegationGeneration: number; days?: number }): Promise<{ generation: number; count: number; expiresAt: string }> {
+  input: { records: VaultItemRecord[]; delegationGeneration: number; epoch?: number; days?: number }): Promise<{ generation: number; count: number } | null> {
   const records = input.records.filter((record) => record.metadata.policy.agentUse && record.metadata.status === "ACTIVE");
-  if (records.length === 0) throw new Error("No login lets agents fill it yet.");
+  if (records.length === 0) return null;
   const generation = input.delegationGeneration + 1;
   const scope = scopeOf(unlocked.ownerUserId, unlocked.vaultId);
   const fillKey = vaultRandomBytes(32);
@@ -209,16 +215,19 @@ export async function delegateVaultItems(client: Pick<typeof liveApi, "vaultBrok
       for (const role of fields) {
         fillEnvelopes[handle]![role] = await sealVaultEnvelope(fillKey, utf8.encode(secrets[role]!), { ...scope, purpose: "FILL_FIELD", itemId: handle, field: role, generation });
       }
-      items.push({ handle, origins: record.metadata.origins, fields, approvalMode: record.metadata.policy.approvalMode, submit: record.metadata.policy.submitAllowed });
+      // The broker's signed format still names an approval mode; every agent use is FULL now.
+      items.push({ handle, origins: record.metadata.origins, fields, approvalMode: "FULL", submit: true });
     }
-    const expiresAt = new Date(Date.now() + (input.days ?? 30) * 86_400_000).toISOString();
+    const expiresAt = new Date(Date.now() + (input.days ?? 3650) * 86_400_000).toISOString();
     const envelopeDigest = await vaultDigest(fillEnvelopes);
+    // The vault's current epoch (a revoke while unlocked moves it on); signing it proves the unlock key is held now.
+    const unlockEpoch = input.epoch ?? unlocked.epoch;
     const operatorSignature = await signVaultMessage(unlocked.signingKey, vaultDelegationOperatorMessage({ ownerUserId: unlocked.ownerUserId, vaultId: unlocked.vaultId,
-      envelopeDigest, generation, unlockEpoch: unlocked.epoch, expiresAt, items }));
+      envelopeDigest, generation, unlockEpoch, expiresAt, items }));
     const broker = await client.vaultBroker();
     const sealedFillKey = await sealToVaultPublicKey(b64.decode(broker.publicKey), fillKey, scope);
-    const answer = await client.vaultDelegate({ items, fillEnvelopes, sealedFillKey, generation, unlockEpoch: unlocked.epoch, expiresAt, operatorSignature });
-    return { generation: answer.generation, count: items.length, expiresAt };
+    const answer = await client.vaultDelegate({ items, fillEnvelopes, sealedFillKey, generation, unlockEpoch, expiresAt, operatorSignature });
+    return { generation: answer.generation, count: items.length };
   } finally {
     wipeVaultBytes(fillKey);
   }

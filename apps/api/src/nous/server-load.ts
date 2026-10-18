@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile } from "../safe-child-process.js";
 import { cpus, loadavg, totalmem } from "node:os";
 import { promisify } from "node:util";
 import type { PaneCliSession, SystemHealthHistory } from "@space/contracts";

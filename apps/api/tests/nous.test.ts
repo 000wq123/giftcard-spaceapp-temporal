@@ -17,7 +17,9 @@ import { renderNousWorld } from "../src/nous/digest.js";
 import { createNousService, nousHistory, NOUS_PERSONA, NousUnavailableError, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { createNousTools, nousControlRisk, nousToolDefinitions, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
 import { createNousMutes } from "../src/nous/mutes.js";
-import { nousLiveCounts, registerNous } from "../src/nous/wiring.js";
+import { copilotDeps, nousLiveCounts, registerNous } from "../src/nous/wiring.js";
+import { InMemoryDesignRepository } from "@space/db";
+import { createDesignService } from "../src/design/service.js";
 import { createRoomAgentAutopilot } from "../src/room-agent-autopilot.js";
 
 describe("Nous's guardrails", () => {
@@ -119,6 +121,24 @@ describe("Nous's tools", () => {
     expect((await tools.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Log in with Google." }, ctx)).result).toContain("space_copilot_brief");
     expect((await tools.execute("space_copilot_brief", { room: "Main", pane: "Andy", text: "Log in with Google." }, ctx)).ok).toBe(true);
     expect(brief).toHaveBeenCalledWith("user:operator", expect.objectContaining({ id: "pane:andy0001" }), "Log in with Google.");
+  });
+
+  it("briefs a Design pane as a design request, lists what waits on the operator and answers the designer's question", async () => {
+    const store = new InMemorySpaceStore();
+    const room = store.createRoom({ name: "Studio", initialPaneCount: 0 }, "trace:room", "user:operator");
+    const designPane = store.createPane({ roomId: room.id, title: "Design", mode: "DESIGN", terminalRuntimeId: "cli:claude" });
+    const design = createDesignService({ repository: new InMemoryDesignRepository(), store, roomOwner: async (roomId) => store.getRoom(roomId).ownerUserId ?? null, artifactRoot: tmpdir(), brandRoot: tmpdir() });
+    const deps = copilotDeps({ copilots: { design }, store } as never, async () => [])!;
+    const answer = await deps.brief("user:operator", designPane, "A LinkedIn banner for the 0.3 release");
+    expect(answer).toContain("Design pane has the request");
+    const [request] = await design.listRequests("user:operator", { limit: 5 });
+    expect(request).toMatchObject({ requester: { kind: "NOUS", label: "Nous" }, designPaneId: designPane.id, formatIds: ["square"] });
+    expect(JSON.parse(await deps.state("user:operator", designPane)).requests).toHaveLength(1);
+    await design.takeNext("user:operator", designPane);
+    await design.ask("user:operator", designPane, request!.id, "Dark or light?");
+    expect(await deps.items("user:operator")).toEqual([expect.objectContaining({ copilot: "DESIGN", kind: "QUESTION", id: request!.id, detail: "Dark or light?" })]);
+    await deps.answerQuestion("user:operator", { copilot: "DESIGN", questionId: request!.id, paneId: designPane.id, answer: "Dark" });
+    expect((await design.request("user:operator", request!.id)).request.answer).toBe("Dark");
   });
 
   it("holds back critical text and tells Nous the exact decision to ask", async () => {

@@ -10,6 +10,7 @@ import { createApp } from "../src/app.js";
 import { cliBrowserBridgeTokenHeader, issueCliBrowserBridgeToken } from "../src/cli-browser-bridge.js";
 import { isCliBridgeRoutePath } from "../src/cli-bridge-paths.js";
 import { getApiConfig } from "../src/config.js";
+import { pngOf } from "./fixtures/design-png.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 const temporaryRoots: string[] = [];
@@ -35,6 +36,7 @@ async function fixture() {
   const kickoffs: Array<{ paneId: string; runId: string }> = [];
   const app = await createApp({ store, config, eventBus, jobApplyMailTriage: false, marketingCopilotScheduler: false,
     marketingCopilotKickoff: async (pane: Pane, run: MarketingRun) => { kickoffs.push({ paneId: pane.id, runId: run.id }); },
+    designKickoff: async () => undefined, designRender: async (_owner, input) => ({ bytes: pngOf(input.width, input.height), mimeType: "image/png", width: input.width, height: input.height }),
     auth: { sessionSecret: "test-secret-with-enough-length", devLogin: true, secureCookies: false } });
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { email: "space@space.local", password: "space-dev" } });
   const cookie = `space_session=${login.cookies.find((entry) => entry.name === "space_session")?.value}`;
@@ -159,6 +161,29 @@ describe("marketing copilot run loop", () => {
       for (const artifactId of [capture(foreign.id, "SCREENSHOT").id, capture(room.id, "TRACE").id, "artifact:missing"]) {
         expect((await post({ assets: [{ artifactId, label: "x" }] })).statusCode, artifactId).toBe(404);
       }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("makes a post's graphic in the Design pane and attaches the delivery to the post", async () => {
+    const { app, store, room, pane, headers, agent } = await fixture();
+    try {
+      const created = (await app.inject({ method: "POST", url: `${cli}/posts`, headers: agent, payload: { channel: "X", body: "Rooms of CLIs you host yourself." } })).json().post;
+      const design = store.createPane({ roomId: room.id, title: "Design", mode: "DESIGN", terminalRuntimeId: "cli:codex" });
+      // "Make graphic" in the Marketing pane: the channel's format, the post as the callback.
+      const requested = await app.inject({ method: "POST", url: "/api/design/requests", headers,
+        payload: { fromPaneId: pane.id, brief: "An X graphic for this post", formatIds: ["x"], callback: { kind: "MARKETING_POST", postId: created.id } } });
+      expect(requested.statusCode).toBe(200);
+      expect(requested.json()).toMatchObject({ designPaneId: design.id, request: { requester: { kind: "OPERATOR", paneId: pane.id }, callback: { kind: "MARKETING_POST", postId: created.id } } });
+      expect((await app.inject({ method: "POST", url: "/api/design/requests", headers, payload: { fromPaneId: pane.id, brief: "x", callback: { kind: "MARKETING_POST", postId: "mktpost:missing1" } } })).statusCode).toBe(404);
+      const designUrl = `/api/panes/${encodeURIComponent(design.id)}/design`;
+      const requestId = requested.json().request.id as string;
+      const asset = (await app.inject({ method: "POST", url: `${designUrl}/render`, headers, payload: { templateId: "photo-headline", formatId: "x", params: { headline: "Rooms" }, requestId } })).json().asset;
+      const delivered = await app.inject({ method: "POST", url: `${designUrl}/requests/${encodeURIComponent(requestId)}/deliver`, headers, payload: { assetIds: [asset.id] } });
+      expect(delivered.json().request).toMatchObject({ status: "DELIVERED", message: null });
+      const post = (await app.inject({ method: "GET", url: `${cli}/posts/${encodeURIComponent(created.id)}`, headers: agent })).json().post;
+      expect(post.assets).toEqual([expect.objectContaining({ artifactId: asset.artifactId, label: "X post", kind: "IMAGE" })]);
     } finally {
       await app.close();
     }

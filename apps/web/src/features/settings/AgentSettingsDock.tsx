@@ -23,6 +23,7 @@ import {
   Plug,
   Rocket,
   Handshake,
+  PenTool,
   Search,
   ServerCog,
   Sparkles,
@@ -52,6 +53,7 @@ import type { JobCopilotSettingsCard } from "../job-apply-pane/JobCopilotSetting
 import type { MailCopilotSettingsCard } from "../mail-copilot-pane/MailCopilotSettingsCard.js";
 import type { MarketingCopilotSettingsCard } from "../marketing-copilot-pane/MarketingCopilotSettingsCard.js";
 import type { FreelanceCopilotSettingsCard } from "../freelance-copilot-pane/FreelanceCopilotSettingsCard.js";
+import type { DesignSettingsCard } from "../design-pane/DesignSettingsCard.js";
 import { NotificationSettingsCard } from "../notifications/NotificationSettingsCard.js";
 import { NousSettingsCard } from "../nous/NousSettingsCard.js";
 
@@ -81,6 +83,7 @@ export interface AgentSettingsCards {
   MailCopilot: typeof MailCopilotSettingsCard;
   MarketingCopilot: typeof MarketingCopilotSettingsCard;
   FreelanceCopilot: typeof FreelanceCopilotSettingsCard;
+  Design: typeof DesignSettingsCard;
 }
 
 export const settingsCardLoadingFallback = <div className="empty-mini" role="status">Loading settings…</div>;
@@ -185,7 +188,8 @@ export function AgentSettingsDock({
     JobCopilot: LazyJobCopilotSettingsCard,
     MailCopilot: LazyMailCopilotSettingsCard,
     MarketingCopilot: LazyMarketingCopilotSettingsCard,
-    FreelanceCopilot: LazyFreelanceCopilotSettingsCard
+    FreelanceCopilot: LazyFreelanceCopilotSettingsCard,
+    Design: LazyDesignSettingsCard
   } = cards;
   const [providerPending, setProviderPending] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -367,6 +371,11 @@ Choose that agent and its account once and every new Mail Copilot pane, on every
           help="Freelance Copilot finds clients on freelance platforms with an AI coding agent and the pane's browser. Choose that agent and its account once and every new Freelance Copilot pane, on every device, opens with it; turn on asking to pick each time."
           keywords="freelance copilot upwork contra fiverr toptal clients proposals agent claude codex account default ask launch">
           <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyFreelanceCopilotSettingsCard /></RecoverableSurface>
+        </SettingsDisclosure>
+        <SettingsDisclosure sectionKey="design" title="Design" description="The designer and account new Design panes open with." scope="Your account" icon={PenTool}
+          help="The Design pane makes graphics with an AI coding agent as its designer. Choose that agent and its account once and every new Design pane, on every device, opens with it; turn on asking to pick each time."
+          keywords="design graphics banner social images studio designer agent claude codex account default ask launch">
+          <RecoverableSurface fallback={settingsCardLoadingFallback}><LazyDesignSettingsCard /></RecoverableSurface>
         </SettingsDisclosure>
 
         {canManageCliRuntimes ? <SettingsDisclosure hidden={!adminMode} title="Default provider" description="The AI service new chats start with." scope="New sessions" icon={ServerCog}

@@ -7,7 +7,7 @@ import { AccountPool } from "./accounts/account-pool.js";
 import { StickyStore } from "./accounts/sticky-store.js";
 import { registerAccountAdminRoutes } from "./admin/account-admin.js";
 import { antigravityAccountActions, registerAntigravitySignInRoutes } from "./admin/antigravity-sign-in.js";
-import { apiKeyAccountActions, openAiApiAccountActions, registerApiKeyAccountRoutes } from "./admin/api-key-accounts.js";
+import { apiKeyAccountActions, googleAiEntry, openAiApiAccountActions, registerApiKeyAccountRoutes } from "./admin/api-key-accounts.js";
 import { keyPoolProviders, registerKeyPoolRoutes } from "./providers/key-pools/key-pools.js";
 import { claudeAccountActions, registerClaudeSignInRoutes } from "./admin/claude-sign-in.js";
 import { registerCodexSignInRoutes } from "./admin/codex-sign-in.js";
@@ -23,6 +23,7 @@ import { registerCodexModelRoutes } from "./providers/codex/models.js";
 import { createCodexRefresher } from "./providers/codex/credentials.js";
 import { startCodexUsagePoller } from "./providers/codex/usage-refresh.js";
 import { registerAntigravityProxyRoutes } from "./providers/antigravity/antigravity-proxy.js";
+import { registerImageRoutes } from "./providers/images/images-route.js";
 import { createAntigravityRefresher } from "./providers/antigravity/credentials.js";
 import { startAntigravityUsagePoller } from "./providers/antigravity/usage-refresh.js";
 import { registerClaudeProxyRoutes } from "./providers/claude/claude-proxy.js";
@@ -87,6 +88,7 @@ async function main() {
   const openAiApiPool = new AccountPool({ provider: "OPENAI_API", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const openRouterPool = new AccountPool({ provider: "OPENROUTER", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const deepSeekPool = new AccountPool({ provider: "DEEPSEEK", repository, cipher: () => cipher, refresher: apiKeyRefresher });
+  const googleAiPool = new AccountPool({ provider: "GOOGLE_AI", repository, cipher: () => cipher, refresher: apiKeyRefresher });
   const onStickyError = (error: unknown) =>
     process.stderr.write(`space-gateway sticky binding storage failed: ${error instanceof Error ? error.message : "unknown"}\n`);
   const promptCacheTtl = () => promptCacheTtlMs;
@@ -107,7 +109,7 @@ async function main() {
     repository, version: await readVersion(), credentialKeyPresent: () => credentialKeyPresent, logger: false, lan: config.lan,
     live: {
       inFlightByAccount: () => Object.assign({}, codexPool.inFlight(), claudePool.inFlight(), antigravityPool.inFlight(), openAiApiPool.inFlight(),
-        openRouterPool.inFlight(), deepSeekPool.inFlight()),
+        openRouterPool.inFlight(), deepSeekPool.inFlight(), googleAiPool.inFlight()),
       activeWebSockets: () => webSockets.active(),
       relayTasks: () => webSockets.relays(),
       compressionQueue: () => compressionPool.queued()
@@ -128,12 +130,15 @@ async function main() {
         otherProviders: { CLAUDE: claudeAccountActions({ repository, pool: claudePool }), ANTIGRAVITY: antigravityAccountActions({ repository, pool: antigravityPool }),
           OPENAI_API: openAiApiAccountActions({ pool: openAiApiPool }),
           OPENROUTER: apiKeyAccountActions({ entry: keyPoolProviders.openrouter, pool: openRouterPool }),
-          DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }) } });
-      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, logs, settings, settleKeyUsage });
-      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool },
+          DEEPSEEK: apiKeyAccountActions({ entry: keyPoolProviders.deepseek, pool: deepSeekPool }),
+          GOOGLE_AI: apiKeyAccountActions({ entry: googleAiEntry, pool: googleAiPool }) } });
+      registerEmbeddingsRoute(app, helpers, { pool: openAiApiPool, googlePool: googleAiPool, logs, settings, settleKeyUsage });
+      registerApiKeyAccountRoutes(app, { repository, pools: { OPENAI_API: openAiApiPool, OPENROUTER: openRouterPool, DEEPSEEK: deepSeekPool, CLAUDE: claudePool,
+        GOOGLE_AI: googleAiPool },
         cipher: () => cipher, internalToken: config.internalToken });
       registerKeyPoolRoutes(app, helpers, { pools: { openai: openAiApiPool, openrouter: openRouterPool, deepseek: deepSeekPool }, logs, settings, settleKeyUsage });
       registerAntigravityProxyRoutes(app, { pool: antigravityPool, repository, logs, settings, sticky: sticky.antigravitySessions, compression });
+      registerImageRoutes(app, helpers, { antigravityPool, codexPool, repository, logs, settings, settleKeyUsage, modelPlans });
       registerAntigravitySignInRoutes(app, { repository, pool: antigravityPool, cipher: () => cipher, internalToken: config.internalToken });
       registerClaudeSignInRoutes(app, { repository, pool: claudePool, cipher: () => cipher, internalToken: config.internalToken });
       registerAccountAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken,

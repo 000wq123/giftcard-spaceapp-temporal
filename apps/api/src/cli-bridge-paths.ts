@@ -2,6 +2,7 @@ import { cliJobApplyPathPrefix } from "./job-apply/agent-routes.js";
 import { cliMailCopilotPathPrefix } from "./mail-copilot/agent-routes.js";
 import { cliMarketingCopilotPathPrefix } from "./marketing-copilot/agent-routes.js";
 import { cliFreelanceCopilotPathPrefix } from "./freelance-copilot/agent-routes.js";
+import { cliDesignPathPrefix } from "./design/agent-routes.js";
 import { cliTaskItemsPathPrefix } from "./task-agent-routes.js";
 import { cliNousPathPrefix } from "./nous/mcp.js";
 import { cliVaultPathPrefix } from "./vault/routes.js";
@@ -19,7 +20,7 @@ const cliBrowserBridgePaths = new Set([
   "/api/cli/browser/cdp/status"
 ]);
 // Nous's MCP route checks its own turn token (nous/mcp.ts).
-const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath];
+const cliBridgePathPrefixes = [cliJobApplyPathPrefix, cliMailCopilotPathPrefix, cliMarketingCopilotPathPrefix, cliFreelanceCopilotPathPrefix, cliDesignPathPrefix, cliTaskItemsPathPrefix, cliNousPathPrefix, cliVaultPathPrefix, cliProgressPath];
 
 /** Whether the matched route path is a CLI bridge route (decide on the router's matched path, never the raw URL). */
 export function isCliBridgeRoutePath(routePath: string): boolean {

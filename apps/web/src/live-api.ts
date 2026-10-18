@@ -2,10 +2,11 @@ import type { ManagedPlanExecution, StartPlanExecutionRequest, PlanExecutionCont
 import type { ClientErrorReport } from "./client-error-reporter.js";
 import type { LiveHistorySnapshot, PersistedLiveTurn } from "./features/live-pane/live-history-sync.js";
 import type { LiveRoomContext } from "@space/contracts";
+import type { DesignAsset, DesignBrandKit, DesignBrandKitInput, DesignEvent, DesignFormat, DesignNetwork, DesignPaneMetadata, DesignRequest, DesignRequestCreate, DesignTemplateId, DesignView } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
-import type { VaultApproval, VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
+import type { VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
 import type {
   DemoAccountsResponse,
   DemoConnection,
@@ -924,8 +925,10 @@ export interface VaultStateResponse {
   ownerUserId: string;
   enrolled: boolean;
   brokerAvailable: boolean;
-  /** "ENABLED" or why agent fills are off (FLAG_OFF, CUSTODY_NOT_PROVEN, ...). */
-  agentFill: string;
+  /** The dock's switch: agents and Nous may use the Vault. */
+  agentAccess: boolean;
+  /** Items the current delegation hands to them. */
+  delegatedItems: number;
   vault: { vaultId: string; epoch: number; delegationGeneration: number; kdf: VaultKdfParams; unlockKeyVersion: number; hasRecovery: boolean; auditSeq: number } | null;
 }
 
@@ -1535,8 +1538,7 @@ export const api = {
   vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope }) => request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
   vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
   vaultDeletePending: (id: string) => request<{ deleted: true }>(`/api/space-vault/pending/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  vaultApprovals: () => request<{ approvals: VaultApproval[] }>("/api/space-vault/approvals"),
-  vaultDecideApproval: (id: string, decision: "APPROVE" | "DENY") => request<{ decided: string }>(`/api/space-vault/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }),
+  vaultSetAgentAccess: (enabled: boolean) => request<{ agentAccess: boolean }>("/api/space-vault/agent-access", { method: "PUT", body: JSON.stringify({ enabled }) }),
   vaultRevoke: () => request<{ generation: number; epoch: number }>("/api/space-vault/revoke", { method: "POST", body: "{}" }),
   vaultDelegate: (body: unknown) => request<{ generation: number }>("/api/space-vault/delegations", { method: "POST", body: JSON.stringify(body) }),
   vaultSignupGrants: () => request<{ grants: VaultSignupGrant[] }>("/api/space-vault/signup-grants"),
@@ -1962,7 +1964,7 @@ export const api = {
     "/api/admin/gateway/antigravity/profiles"),
   importGatewayAntigravityProfile: (profileId: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
     "/api/admin/gateway/antigravity/import", { method: "POST", body: JSON.stringify({ profileId }) }),
-  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
+  addGatewayOpenAiApiKey: (input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }) =>
     request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
       "/api/admin/gateway/api-key/add", { method: "POST", body: JSON.stringify({ provider: "OPENAI_API", ...input }) }),
   importGatewayCodexAuthJson: (authJson: string) => request<{ status: "CONNECTED"; account: { id: string; label: string } }>(
@@ -3894,6 +3896,44 @@ export const api = {
     request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { cache: "no-store" }),
   updateMailCopilotSettings: (paneId: string, metadata: MailCopilotPaneMetadata) =>
     request<{ metadata: MailCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/mail-copilot/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  // Design pane: settings and view, the Studio's renders and generations, the library, requests and brand kits.
+  designSettings: (paneId: string) =>
+    request<{ metadata: DesignPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/design/settings`, { cache: "no-store" }),
+  updateDesignSettings: (paneId: string, metadata: DesignPaneMetadata) =>
+    request<{ metadata: DesignPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/design/settings`, { method: "PUT", body: JSON.stringify(metadata) }),
+  updateDesignView: (paneId: string, view: Partial<Omit<DesignView, "updatedAt">>) =>
+    request<{ view: DesignView }>(`/api/panes/${encodeURIComponent(paneId)}/design/view`, { method: "PUT", body: JSON.stringify(view) }),
+  designFormats: () => request<{ formats: Array<DesignFormat & { networkLabel: string }> }>("/api/design/formats", { cache: "no-store" }),
+  designRender: (paneId: string, input: { templateId: DesignTemplateId; formatId: string; params?: Record<string, unknown>; backgroundAssetId?: string | null; brandKitId?: string | null; requestId?: string | null; label?: string | null }) =>
+    request<{ asset: DesignAsset }>(`/api/panes/${encodeURIComponent(paneId)}/design/render`, { method: "POST", body: JSON.stringify(input) }),
+  designGenerate: (paneId: string, input: { engine: "NANO_BANANA" | "NANO_BANANA_PRO" | "GPT_IMAGE"; prompt: string; formatId: string; requestId?: string | null; label?: string | null }) =>
+    request<{ asset: DesignAsset; text: string | null }>(`/api/panes/${encodeURIComponent(paneId)}/design/generate`, { method: "POST", body: JSON.stringify(input) }),
+  designAssets: (paneId: string, query: { network?: DesignNetwork; formatId?: string; brandKitId?: string; requestId?: string; limit?: number } = {}) =>
+    request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets?${new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`, { cache: "no-store" }),
+  designVariants: (paneId: string, assetId: string, input: { formatIds?: string[]; params?: Record<string, unknown>; requestId?: string | null }) =>
+    request<{ assets: DesignAsset[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets/${encodeURIComponent(assetId)}/variants`, { method: "POST", body: JSON.stringify(input) }),
+  deleteDesignAsset: (paneId: string, assetId: string) =>
+    request<{ deleted: true }>(`/api/panes/${encodeURIComponent(paneId)}/design/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" }),
+  designRequests: (paneId: string) =>
+    request<{ requests: DesignRequest[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests`, { cache: "no-store" }),
+  createDesignRequest: (paneId: string, input: Partial<DesignRequestCreate> & { brief: string }) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests`, { method: "POST", body: JSON.stringify(input) }),
+  deliverDesignRequest: (paneId: string, requestId: string, input: { assetIds?: string[]; message?: string | null } = {}) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/deliver`, { method: "POST", body: JSON.stringify(input) }),
+  cancelDesignRequest: (paneId: string, requestId: string) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/cancel`, { method: "POST", body: "{}" }),
+  answerDesignRequest: (paneId: string, requestId: string, answer: string) =>
+    request<{ request: DesignRequest }>(`/api/panes/${encodeURIComponent(paneId)}/design/requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+  /** A design request from another pane (Marketing Copilot's "Make graphic"), routed to the owner's Design pane. */
+  requestDesignFromPane: (fromPaneId: string, input: Partial<DesignRequestCreate> & { brief: string }) =>
+    request<{ request: DesignRequest; designPaneId: string | null }>("/api/design/requests", { method: "POST", body: JSON.stringify({ ...input, fromPaneId }) }),
+  designEvents: (paneId: string, limit = 100) =>
+    request<{ events: DesignEvent[] }>(`/api/panes/${encodeURIComponent(paneId)}/design/events?limit=${limit}`, { cache: "no-store" }),
+  designBrandKits: () => request<{ brandKits: DesignBrandKit[] }>("/api/design/brand-kits", { cache: "no-store" }),
+  createDesignBrandKit: (input: DesignBrandKitInput) => request<{ brandKit: DesignBrandKit }>("/api/design/brand-kits", { method: "POST", body: JSON.stringify(input) }),
+  updateDesignBrandKit: (id: string, input: Partial<DesignBrandKitInput>) =>
+    request<{ brandKit: DesignBrandKit }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteDesignBrandKit: (id: string) => request<{ deleted: true }>(`/api/design/brand-kits/${encodeURIComponent(id)}`, { method: "DELETE" }),
   marketingCopilotSettings: (paneId: string) =>
     request<{ metadata: MarketingCopilotPaneMetadata }>(`/api/panes/${encodeURIComponent(paneId)}/marketing-copilot/settings`, { cache: "no-store" }),
   updateMarketingCopilotSettings: (paneId: string, metadata: MarketingCopilotPaneMetadata) =>

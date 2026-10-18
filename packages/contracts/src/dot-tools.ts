@@ -387,6 +387,13 @@ export function buildDotToolCatalog(context: DotToolCatalogContext): DotToolEntr
     description: "Ask to publish a file from your workspace to Agent Files as the next version of that deliverable. The user approves every publication; ask only when they want the file.",
     inputSchema: { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 500, description: "Path relative to your workspace." } },
       required: ["path"], additionalProperties: false } });
+  add({ id: "design.request", title: "Ask for a design", source: "SPACE_COMPUTER", risk: "WRITE",
+    description: "Ask the owner's Design pane for a graphic (a social post image, a banner, a thumbnail) at named formats such as x, linkedin-banner or story. The user approves every request; the designs come back as Media artifacts of their room.",
+    inputSchema: { type: "object", properties: {
+      brief: { type: "string", minLength: 1, maxLength: 4000, description: "What the graphic shows, the exact text it carries, its mood and purpose." },
+      formatIds: { type: "array", items: { type: "string", maxLength: 40 }, maxItems: 8, description: "Format ids (x, linkedin, linkedin-banner, story, square, og, yt-thumb …) or custom-<width>x<height>." },
+      engine: { type: "string", enum: ["NANO_BANANA", "NANO_BANANA_PRO", "GPT_IMAGE", "TEMPLATE", "MOTION"] }
+    }, required: ["brief"], additionalProperties: false } });
   for (const tool of browserTools) {
     const schema = actionSchema(browserToolActionInputSchema, tool.type);
     const properties = { targetPaneId: { type: "string", description: `Browser pane id. Defaults to your own browser from computer.browser; changing the user's other Browser panes needs their approval.${

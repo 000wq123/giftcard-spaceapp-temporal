@@ -14,6 +14,7 @@ import { nousPlanActivity, nousStalledPlansLine, renderNousPlanActivity } from "
 import { createCanonicalSpaceMemoryBridge, makeSpaceId, type CanonicalMemoryBridge, type SpaceStore } from "@space/runtime";
 import { cookieName, verifySession } from "../auth.js";
 import type { FreelanceCopilotService } from "../freelance-copilot/service.js";
+import type { DesignService } from "../design/service.js";
 import type { JobApplyService } from "../job-apply/service.js";
 import type { MailCopilotService } from "../mail-copilot/service.js";
 import type { MarketingCopilotService } from "../marketing-copilot/service.js";
@@ -76,7 +77,7 @@ export interface NousWiringOptions {
   answerCli(pane: Pane, input: { sessionId: string; answer: string; fingerprint?: string }, traceId: string): Promise<unknown>;
   releaseTrain(input: ReleaseTrainInput, by: ReleaseTrainActor & { operatorApproved?: boolean }): Promise<string>;
   notifications: Pick<NotificationService, "raise" | "resolve" | "list" | "setStatus">;
-  copilots: { mail?: MailCopilotService; marketing?: MarketingCopilotService; freelance?: FreelanceCopilotService; job?: JobApplyService };
+  copilots: { mail?: MailCopilotService; marketing?: MarketingCopilotService; freelance?: FreelanceCopilotService; job?: JobApplyService; design?: DesignService };
   /** The SYSTEM_HEALTH sampler and the CLI sessions' root processes, for the server's load state (server-load.ts). */
   health?: ServerLoadDeps["health"];
   /** Read-only ops views for Nous's tools (services, token usage, Space Gateway; plan clipboard:8s0ZNiO3q5ZT S5). */
@@ -160,9 +161,9 @@ function assertPerson(options: NousWiringOptions, request: FastifyRequest): void
 }
 
 /** What the copilots wait on, and Nous's answers to their questions (never their reviews: those reach third parties). */
-function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mode: Pane["mode"]) => Promise<Pane[]>): NousCopilotDeps | undefined {
-  const { mail, marketing, freelance, job } = options.copilots;
-  if (!mail && !marketing && !freelance && !job) return undefined;
+export function copilotDeps(options: Pick<NousWiringOptions, "copilots" | "invoke" | "store">, ownerPanes: (owner: string, mode: Pane["mode"]) => Promise<Pane[]>): NousCopilotDeps | undefined {
+  const { mail, marketing, freelance, job, design } = options.copilots;
+  if (!mail && !marketing && !freelance && !job && !design) return undefined;
   const brief = (payload: Record<string, unknown>) => oneLine(String(payload.question ?? payload.summary ?? payload.reasoning ?? ""), 400);
   return {
     ...(options.invoke ? { control: createCopilotControl({ invoke: options.invoke, store: options.store }) } : {}),
@@ -177,6 +178,11 @@ function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mod
       if (marketing) add("MARKETING", await marketing.pendingItems(owner, null));
       if (freelance) add("FREELANCE", await freelance.pendingItems(owner, null));
       if (job) add("JOB", (await job.pendingItems(owner, null)).map((item) => ({ ...item, payload: { ...item.payload, applicationId: item.applicationId } })));
+      // Design requests waiting on the operator: a question Nous may answer, or a delivery only the operator approves.
+      if (design) add("DESIGN", (await design.listRequests(owner, { status: ["IN_PROGRESS", "NEEDS_APPROVAL"], limit: 50 }))
+        .filter((request) => request.status === "NEEDS_APPROVAL" || (request.question && !request.answer))
+        .map((request) => ({ kind: request.status === "NEEDS_APPROVAL" ? "APPROVAL" : "QUESTION", id: request.id, message: `${request.requester.label}: ${request.brief}`,
+          payload: request.status === "NEEDS_APPROVAL" ? { summary: "The operator approves this delivery in the Design pane." } : { question: request.question } })));
       return items;
     },
     async answerQuestion(owner, input) {
@@ -191,6 +197,9 @@ function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mod
       } else if (input.copilot === "FREELANCE") {
         if (!freelance) throw new Error("Freelance Copilot is not available.");
         await freelance.answerQuestion(owner, null, answer, "NOUS");
+      } else if (input.copilot === "DESIGN") {
+        if (!design) throw new Error("The Design pane is not available.");
+        await design.answer(owner, input.questionId, input.answer);
       } else {
         const item = job ? (await job.pendingItems(owner, null)).find((entry) => entry.kind === "QUESTION" && entry.id === input.questionId) : null;
         if (!job || !item?.applicationId) throw new Error("That Job Copilot question is not waiting any more.");
@@ -199,6 +208,10 @@ function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mod
       return "Answered; the copilot continues with it.";
     },
     async state(owner, pane) {
+      if (pane.mode === "DESIGN" && design) {
+        const [requests, events] = await Promise.all([design.listRequests(owner, { designPaneId: pane.id, limit: 20 }), design.events(owner, { paneId: pane.id, limit: 20 })]);
+        return JSON.stringify({ settings: design.settingsOf(pane), requests, events });
+      }
       const service = pane.mode === "FREELANCE_COPILOT" ? freelance : pane.mode === "MARKETING_COPILOT" ? marketing : undefined;
       if (!service) throw new Error("Only Freelance and Marketing Copilot panes have a run to read here.");
       const [run, events] = await Promise.all([service.runView(owner, pane), service.listEvents(owner, { paneId: pane.id, limit: 20 })]);
@@ -207,7 +220,11 @@ function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mod
     async brief(owner, pane, text) {
       if (pane.mode === "MARKETING_COPILOT" && marketing) { await marketing.createBrief(owner, pane, { text }); return "The Marketing Copilot has the brief; it works on it in its next run."; }
       if (pane.mode === "FREELANCE_COPILOT" && freelance) { await freelance.createBrief(owner, pane, { text }); return "The Freelance Copilot has the brief; it works on it in its next run."; }
-      throw new Error("Only Marketing and Freelance Copilot panes take briefs; Mail and Job Copilots take answers to their questions.");
+      if (pane.mode === "DESIGN" && design) {
+        const created = await design.createRequest(owner, { kind: "NOUS", roomId: pane.roomId, label: "Nous" }, { brief: text, formatIds: [], referenceArtifactIds: [], designPaneId: pane.id });
+        return `The Design pane has the request ${created.request.id} (${created.request.formatIds.join(", ")}); the designer delivers it as Media artifacts.`;
+      }
+      throw new Error("Only Marketing and Freelance Copilot panes and Design panes take briefs; Mail and Job Copilots take answers to their questions.");
     }
   };
 }

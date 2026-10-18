@@ -13,20 +13,23 @@ const SECRET = "SYNTHETIC-sealed-fill-password";
 const ORIGIN = "https://login.example";
 const BASE32_SEED = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // "12345678901234567890" (RFC 6238 test key)
 
-function fakePage(html: string, options: { url?: string; ownedPages?: number; sharedProfile?: boolean } = {}) {
+function fakePage(html: string, options: { url?: string } = {}) {
   const dom = new JSDOM(html, { runScripts: "outside-only", url: `${ORIGIN}/signin` });
   const window = dom.window;
   window.Element.prototype.getBoundingClientRect = () => ({ width: 120, height: 24 }) as DOMRect;
   const submitted = vi.fn();
   window.HTMLFormElement.prototype.requestSubmit = function () { submitted(); };
-  const state = { url: options.url ?? `${ORIGIN}/signin`, frameId: "frame-1", sent: [] as string[], onInsert: null as null | (() => void) };
+  const state = { url: options.url ?? `${ORIGIN}/signin`, frameId: "frame-1", sent: [] as string[], onInsert: null as null | (() => void), focusEmulated: false };
+  // Like a pane's Chrome on Xvfb: the window never has focus unless the fill emulates it.
+  window.document.hasFocus = () => state.focusEmulated;
   const page: SealedFillPage = {
-    targetId: "target-1", sessionId: "session-1", paneId: "pane:vault", ownedPages: options.ownedPages ?? 1, sharedProfile: options.sharedProfile ?? false,
+    targetId: "target-1", sessionId: "session-1", paneId: "pane:vault",
     cdp: {
       async send(method: string, params: Record<string, unknown> = {}) {
         state.sent.push(method);
-        if (method === "Page.getFrameTree") return { frameTree: { frame: { id: state.frameId, url: state.url } } } as never;
+        if (method === "Page.getFrameTree") return { frameTree: { frame: { id: state.frameId, url: state.url, loaderId: "loader-1" } } } as never;
         if (method === "Page.createIsolatedWorld") return { executionContextId: 7 } as never;
+        if (method === "Emulation.setFocusEmulationEnabled") { state.focusEmulated = params.enabled === true; return {} as never; }
         if (method === "Runtime.evaluate") return { result: { value: window.eval(String(params.expression)) } } as never;
         if (method === "Input.insertText") {
           const active = window.document.activeElement as HTMLInputElement;
@@ -78,18 +81,21 @@ describe("Vault sealed fill (Browser Host)", () => {
     expect(JSON.stringify(answer)).not.toContain(SECRET);
     // Every page script ran in the isolated world, and no script ever carried the value.
     expect(state.sent).toContain("Page.createIsolatedWorld");
+    // The window had no focus (Xvfb): the fill emulated it only while typing.
+    expect(state.sent.filter((method) => method === "Emulation.setFocusEmulationEnabled")).toHaveLength(2);
+    expect(state.focusEmulated).toBe(false);
   });
 
-  it("refuses a forged capability, another origin, a second tab or a shared profile before any secret is opened", async () => {
+  it("refuses a forged capability, another origin or a page that is no web page before any secret is opened", async () => {
     const { broker, opened, request } = await harness(["PASSWORD"]);
     expect((await runSealedFill(fakePage(LOGIN).page, broker, request("FILL", { sig: "f".repeat(86) }), now)).reason).toBe("CAPABILITY_INVALID");
     expect(await runSealedFill(fakePage(LOGIN, { url: "https://login.example.evil.test/signin" }).page, broker, request("FILL"), now)).toMatchObject({ status: "ORIGIN_MISMATCH", reason: "ORIGIN_CHANGED" });
-    expect(await runSealedFill(fakePage(LOGIN, { ownedPages: 2 }).page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED", reason: "NOT_PROTECTED_TARGET" });
-    expect(await runSealedFill(fakePage(LOGIN, { sharedProfile: true }).page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED" });
+    expect(await runSealedFill(fakePage(LOGIN, { url: "about:blank" }).page, broker, request("FILL"), now)).toMatchObject({ status: "BLOCKED", reason: "NO_WEB_ORIGIN" });
     expect(await runSealedFill(fakePage("<form><input id=x></form>").page, broker, request("FILL"), now)).toMatchObject({ reason: "FIELD_NOT_FOUND" });
     expect(await runSealedFill(fakePage(LOGIN).page, broker, { ...request("FILL"), selector: "#pass" }, now)).toMatchObject({ reason: "BAD_REQUEST" });
     expect(opened).not.toHaveBeenCalled();
-    expect((await readVaultTarget(fakePage(LOGIN, { sharedProfile: true }).page)).reason).toBe("PROFILE_SHARED");
+    // A shared Chrome or a second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser instead.
+    expect(await readVaultTarget(fakePage(LOGIN).page)).toEqual({ eligible: true, reason: null, targetId: "target-1", frameId: "frame-1", origin: ORIGIN, document: "loader-1" });
   });
 
   it("stops and clears what it typed when the page navigates away in the middle", async () => {

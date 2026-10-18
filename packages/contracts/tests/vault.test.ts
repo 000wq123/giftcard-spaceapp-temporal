@@ -3,7 +3,7 @@ import {
   VAULT_KDF_DEFAULTS, type VaultKdfParams, VaultCryptoError, canonicalVaultOrigin, deriveDelegationKey, generateVaultSigningKey,
   generateVaultTransportKey, joinVaultRootKey, newVaultHandle, openPasswordEnvelope, openRecoveryEnvelope, openServerShare,
   openVaultEnvelope, openWithVaultPrivateKey, sealPasswordEnvelope, sealRecoveryEnvelope, sealServerShare, sealToVaultPublicKey,
-  sealVaultEnvelope, signVaultCertificate, signVaultMessage, splitVaultRootKey, vaultAgentResultSchema, vaultAuditEventSchema,
+  sealVaultEnvelope, signVaultCertificate, signVaultMessage, splitVaultRootKey, vaultAgentResultSchema, vaultAgentSaveRequestSchema, vaultAgentSaveSite, vaultAuditEventSchema,
   vaultBase64url, vaultDelegationCertificateSchema, vaultDigest, vaultEnvelopeSchema, vaultItemMetadataSchema, vaultKdfParamsSchema,
   vaultRandomBytes, vaultUnlockChallengeMessage, verifyVaultCertificate, verifyVaultMessage
 } from "../src/index.js";
@@ -166,6 +166,20 @@ describe("Vault unlock challenge, certificates and transport", () => {
     const fill = await sealVaultEnvelope(first, new TextEncoder().encode(SENTINEL), { ...scope, purpose: "FILL_KEY", generation: 1 });
     await expect(openVaultEnvelope(second, fill, { ...scope, purpose: "FILL_KEY", generation: 2 })).rejects.toThrow(VaultCryptoError);
     expect(text(await openVaultEnvelope(first, fill, { ...scope, purpose: "FILL_KEY", generation: 1 }))).toBe(SENTINEL);
+  });
+});
+
+describe("Vault logins agents save (operator decision 2026-10-18)", () => {
+  it("saves at a plain web origin only, with the login the agent created and nothing else", () => {
+    expect(vaultAgentSaveSite("https://Shop.Example/register?step=2")).toBe("https://shop.example");
+    for (const risky of ["http://shop.example", "https://10.0.0.1", "https://xn--shp-qqa.example", "https://*.example", "ftp://shop.example"]) expect(vaultAgentSaveSite(risky), risky).toBeNull();
+    const login = { site: "https://shop.example", username: "synthetic@example.com", password: SENTINEL, label: "Shop" };
+    expect(vaultAgentSaveRequestSchema.parse(login)).toEqual(login);
+    const { password: _password, ...usernameOnly } = login;
+    expect(vaultAgentSaveRequestSchema.safeParse(usernameOnly).success).toBe(true);
+    for (const bad of [{ ...login, site: "http://shop.example" }, { ...login, password: "" }, { ...login, otp: "123456" }, { ...login, label: "" }]) {
+      expect(vaultAgentSaveRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
   });
 });
 

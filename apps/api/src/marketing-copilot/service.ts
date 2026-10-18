@@ -160,6 +160,14 @@ export function createMarketingCopilotService(options: MarketingCopilotServiceOp
       if (!post) throw new SpaceConflictError("Only a draft (or a failed post) can be edited; a post in review waits for the operator.");
       return { post, wordingIssues: marketingWordingIssues(`${post.title ?? ""}\n${post.body}`) };
     },
+    /** Graphics the Design pane delivered for a post ("Make graphic"): added to any post that is not published or rejected. */
+    async attachAssets(owner: string, postId: string, assets: Array<{ artifactId: string; label: string }>) {
+      const current = await postOf(owner, postId);
+      const post = await repository.updatePost(owner, postId, { assets: [...current.assets, ...await resolveAssets(owner, assets)] }, ["DRAFT", "IN_REVIEW", "APPROVED", "FAILED"]);
+      if (!post) throw new SpaceConflictError(`The post is ${current.status.toLowerCase()}; its graphics can no longer change.`);
+      await record(owner, { paneId: post.paneId, postId: post.id, campaignId: post.campaignId, type: "NOTE", message: `The Design pane attached ${assets.length} graphic${assets.length === 1 ? "" : "s"}` });
+      return post;
+    },
     async requestReview(owner: string, pane: Pane | null, input: { postId: string; summary?: string }) {
       const post = await repository.updatePost(owner, input.postId, { reviewNote: null }, ["DRAFT", "FAILED"]).then((updated) => updated && repository.updatePost(owner, input.postId, { status: "IN_REVIEW" }));
       if (!post) throw new SpaceConflictError("Only a draft (or a failed post) can be sent for review.");

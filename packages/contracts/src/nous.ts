@@ -71,7 +71,7 @@ export const nousDecisionStatusSchema = z.enum(["OPEN", "APPROVED", "DECLINED", 
 export type NousDecisionStatus = z.infer<typeof nousDecisionStatusSchema>;
 
 const refId = z.string().min(1).max(200);
-export const nousCopilotSchema = z.enum(["MAIL", "MARKETING", "FREELANCE", "JOB"]);
+export const nousCopilotSchema = z.enum(["MAIL", "MARKETING", "FREELANCE", "JOB", "DESIGN"]);
 export type NousCopilot = z.infer<typeof nousCopilotSchema>;
 
 /**

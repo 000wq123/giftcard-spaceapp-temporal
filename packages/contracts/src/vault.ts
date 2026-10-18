@@ -12,7 +12,8 @@ export const VAULT_ENVELOPE_PURPOSES = [
   "PASSWORD_SHARE", "RECOVERY_SHARE", "SERVER_SHARE", "ITEM_KEY", "ITEM_FIELD", "FILL_KEY", "FILL_FIELD", "TRANSPORT", "INBOX_KEY"
 ] as const;
 /** The only results an agent ever receives (design: VaultAgentResult). */
-export const VAULT_AGENT_STATUSES = ["FILLED", "SUBMITTED", "BLOCKED", "EXPIRED", "REVOKED", "ORIGIN_MISMATCH", "RATE_LIMITED", "APPROVAL_REQUESTED", "LISTED"] as const;
+// APPROVAL_REQUESTED stays for audit records written before per-use approvals were removed (2026-10-18).
+export const VAULT_AGENT_STATUSES = ["FILLED", "SUBMITTED", "BLOCKED", "EXPIRED", "REVOKED", "ORIGIN_MISMATCH", "RATE_LIMITED", "APPROVAL_REQUESTED", "LISTED", "SAVED"] as const;
 export const VAULT_AUDIT_ACTIONS = [
   "ENROLL", "UNLOCK", "LOCK", "PASSWORD_ROTATE", "RECOVERY_SET", "RECOVERY_USE", "ITEM_SAVE", "ITEM_DELETE",
   "DELEGATE", "REVOKE", "FILL", "APPROVAL", "EPOCH_BUMP", "AGENT_LIST", "GENERATE", "SIGNUP_GRANT"
@@ -31,7 +32,6 @@ export const vaultItemIdSchema = id("vault_item");
 export const vaultDelegationIdSchema = id("vault_delegation");
 export const vaultAuditIdSchema = id("vault_audit");
 export const vaultPendingIdSchema = id("vault_pending");
-export const vaultApprovalIdSchema = id("vault_approval");
 export const vaultSignupGrantIdSchema = id("vault_grant");
 const ownerSchema = z.string().min(1).max(200);
 const keyVersion = z.number().int().min(1).max(1_000_000);
@@ -196,14 +196,17 @@ export const vaultAuditEventSchema = z.object({
 export type VaultAuditEvent = z.input<typeof vaultAuditEventSchema>;
 export type VaultAuditRecord = z.output<typeof vaultAuditEventSchema>;
 
-// Agent requests (bridge /api/cli/space-vault/*, MCP space_vault). Pane, session, owner and origin always come from the
-// verified bridge and the live browser session, never from these bodies; no selector, URL, script or value is accepted.
+// Agent requests (bridge /api/cli/space-vault/*, MCP space_vault). Session, owner and origin always come from the verified
+// bridge and the live browser session; a named browser pane must be in the caller's room and the owner's. No selector, URL,
+// script or stored value is accepted (a save carries only the login the agent itself created).
 export const VAULT_GENERATE_ROLES = ["NEW_PASSWORD", "CONFIRM_PASSWORD"] as const;
 export const vaultAgentEmptyRequestSchema = z.object({}).strict();
+/** The browser pane in the caller's room to fill; default: the caller's own browser, else the room's first browser pane. */
+const targetPaneId = z.string().regex(/^pane:[A-Za-z0-9_-]{6,80}$/).optional();
 export const vaultAgentFillRequestSchema = z.object({
-  handle: vaultItemIdSchema, fields: z.array(z.enum(["USERNAME", "PASSWORD"])).min(1).max(2), submit: z.boolean().default(false)
+  handle: vaultItemIdSchema, fields: z.array(z.enum(["USERNAME", "PASSWORD"])).min(1).max(2), submit: z.boolean().default(false), targetPaneId
 }).strict();
-export const vaultAgentTotpRequestSchema = z.object({ handle: vaultItemIdSchema, submit: z.boolean().default(false) }).strict();
+export const vaultAgentTotpRequestSchema = z.object({ handle: vaultItemIdSchema, submit: z.boolean().default(false), targetPaneId }).strict();
 /** Generate a password inside the fill path and fill it; the agent learns only the handle of the (PENDING) item. */
 export const vaultAgentGenerateRequestSchema = z.object({
   purpose: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD"]),
@@ -214,14 +217,45 @@ export const vaultAgentGenerateRequestSchema = z.object({
   /** NEW_ACCOUNT: the account name the agent typed (it already knows it); stored encrypted. */
   username: z.string().trim().min(1).max(320).optional(),
   roles: z.array(z.enum(VAULT_GENERATE_ROLES)).min(1).max(2).default(["NEW_PASSWORD"]),
-  submit: z.boolean().default(false)
+  submit: z.boolean().default(false),
+  targetPaneId
 }).strict().superRefine((request, context) => {
   if (request.purpose === "CHANGE_PASSWORD" && !request.handle) context.addIssue({ code: "custom", message: "CHANGE_PASSWORD needs the item handle.", path: ["handle"] });
   if (request.purpose === "NEW_ACCOUNT" && (request.handle || !request.label)) context.addIssue({ code: "custom", message: "NEW_ACCOUNT needs a label and no handle.", path: ["label"] });
 });
-export const vaultAgentApprovalRequestSchema = z.object({ handle: vaultItemIdSchema, fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3) }).strict();
 export const vaultAgentAuditRequestSchema = z.object({ limit: z.number().int().min(1).max(50).default(20) }).strict();
 export type VaultAgentGenerateRequest = z.infer<typeof vaultAgentGenerateRequestSchema>;
+
+/** A site for an agent-saved login: an exact origin without risk warnings (http, IP address, punycode need the operator). */
+export function vaultAgentSaveSite(input: string): string | null {
+  const parsed = canonicalVaultOrigin(input);
+  return parsed && parsed.warnings.length === 0 ? parsed.origin : null;
+}
+/**
+ * A login an agent (or Nous) created and saves: it already knows these values, since it registered the account. The API seals
+ * them to the operator's inbox key at once; the dock adds the item on its next unlock.
+ */
+export const vaultAgentSaveRequestSchema = z.object({
+  site: z.string().trim().min(1).max(2000).refine((value) => vaultAgentSaveSite(value) !== null, "Not a web address Space can save (https, no IP address or punycode name)."),
+  username: z.string().trim().min(1).max(320),
+  password: z.string().min(1).max(512).optional(),
+  label: z.string().trim().min(1).max(80)
+}).strict();
+
+/** space_vault_status: whether the operator lets agents and Nous use the Vault, and how many items are handed to them. */
+export const vaultAgentStatusResultSchema = z.object({
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), agentAccess: z.boolean(), delegatedItems: z.number().int().min(0)
+}).strict();
+/** space_vault_audit: this pane's recent Vault attempts, ids and result codes only. */
+export const vaultAgentAuditResultSchema = z.object({
+  status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(),
+  entries: z.array(z.object({
+    at: isoDate, action: z.enum(VAULT_AUDIT_ACTIONS), result: z.enum(["OK", ...VAULT_AGENT_STATUSES]), reason: code.nullable(), itemId: vaultItemIdSchema.nullable()
+  }).strict()).max(50)
+}).strict();
+
+/** The dock's one switch: agents and Nous may use the Vault (operator decision 2026-10-18). Off revokes their access. */
+export const vaultAgentAccessRequestSchema = z.object({ enabled: z.boolean() }).strict();
 
 // Operator requests (/api/space-vault/*). Bodies carry ciphertext and public keys only; the browser does every decrypt.
 const b64urlField = (min: number, max: number) => z.string().min(min).max(max).regex(/^[A-Za-z0-9_-]+$/);
@@ -270,10 +304,9 @@ export function vaultDelegationOperatorMessage(input: {
     items: input.items.map(({ handle, origins, fields, approvalMode, submit }) => ({ handle, origins: [...origins].sort(), fields: [...fields].sort(), approvalMode, submit })) }));
 }
 
-/** space_vault_list while agent fills are on: what an agent may know of a delegated item. */
+/** space_vault_list while agent access is on: what an agent may know of a delegated item. */
 export const vaultAgentListItemSchema = z.object({
-  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3),
-  approvalMode: z.enum(VAULT_APPROVAL_MODES)
+  handle: vaultItemIdSchema, label: z.string().max(80), origins: z.array(z.string().max(300)).max(10), fields: z.array(z.enum(VAULT_FIELD_ROLES)).max(3)
 }).strict();
 export const vaultAgentListResultSchema = z.object({
   status: z.literal("LISTED"), auditId: vaultAuditIdSchema.nullable(), items: z.array(vaultAgentListItemSchema).max(200)
@@ -282,20 +315,12 @@ export const vaultAgentListResultSchema = z.object({
 /** The operator's inbox key: generated passwords arrive sealed to it while the Vault is locked. */
 export const vaultInboxKeyRequestSchema = z.object({ publicKey: b64url(40, 80), privateKeyEnvelope: vaultSymmetricEnvelopeSchema }).strict();
 
-/** A password an agent generated in a fill, waiting for the dock to turn it into a PENDING item. */
+/** A login an agent saved or a password it generated in a fill, waiting for the dock to add it to the Vault on its next unlock. */
 export const vaultPendingSecretSchema = z.object({
   id: id("vault_pending"), kind: z.enum(["NEW_ACCOUNT", "CHANGE_PASSWORD"]), handle: vaultItemIdSchema, label: z.string().max(80), origin: canonicalOrigin,
-  sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema, paneId: z.string().max(200).nullable(), createdAt: isoDate
+  sealedUsername: vaultTransportEnvelopeSchema.nullable(), sealedPassword: vaultTransportEnvelopeSchema.nullable(), paneId: z.string().max(200).nullable(), createdAt: isoDate
 }).strict();
 export type VaultPendingSecret = z.infer<typeof vaultPendingSecretSchema>;
-
-/** An Assist request: one fill of these fields of this item, in this pane, until it expires. */
-export const vaultApprovalSchema = z.object({
-  id: id("vault_approval"), handle: vaultItemIdSchema, fields: z.array(z.enum(VAULT_FIELD_ROLES)).min(1).max(3), paneId: z.string().max(200),
-  status: z.enum(["PENDING", "APPROVED", "DENIED", "USED", "EXPIRED"]), createdAt: isoDate, expiresAt: isoDate, decidedAt: isoDate.nullable()
-}).strict();
-export type VaultApproval = z.infer<typeof vaultApprovalSchema>;
-export const vaultApprovalDecisionSchema = z.object({ decision: z.enum(["APPROVE", "DENY"]) }).strict();
 
 // Sign-up grants (operator decision 2026-10-18, NEW_ACCOUNT option B): the operator signs, with the Vault unlock key, the
 // exact sites where agents may create new accounts, a daily cap and an expiry. The broker certifies the grant and, on each

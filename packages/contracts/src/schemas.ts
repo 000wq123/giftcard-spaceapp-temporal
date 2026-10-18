@@ -16,6 +16,7 @@ import { copilotLaunchSettingsSchema } from "./copilot.js";
 import { mailCopilotPaneMetadataSchema } from "./mail-copilot.js";
 import { marketingCopilotPaneMetadataSchema } from "./marketing-copilot.js";
 import { freelanceCopilotPaneMetadataSchema } from "./freelance-copilot.js";
+import { designPaneMetadataSchema } from "./design.js";
 import { notificationSettingsSchema } from "./notifications.js";
 import { traceparentSchema } from "./observability.js";
 import { demoProjectIdSchema, demoVariantIdSchema } from "./demo-projects.js";
@@ -180,6 +181,7 @@ export const eventTypeSchema = z.enum([
   "MAIL_COPILOT_UPDATED",
   "MARKETING_COPILOT_UPDATED",
   "FREELANCE_COPILOT_UPDATED",
+  "DESIGN_UPDATED",
   "NOTIFICATION_CREATED",
   "NOTIFICATION_UPDATED",
   "NOUS_FOCUS_REQUESTED"
@@ -446,6 +448,7 @@ export const paneSchema = z.object({
   mailCopilotMetadata: mailCopilotPaneMetadataSchema.nullable().optional(),
   marketingCopilotMetadata: marketingCopilotPaneMetadataSchema.nullable().optional(),
   freelanceCopilotMetadata: freelanceCopilotPaneMetadataSchema.nullable().optional(),
+  designMetadata: designPaneMetadataSchema.nullable().optional(),
   paneName: z.string().min(1).max(60).nullable().optional(),
   mode: paneModeSchema,
   status: paneStatusSchema,
@@ -536,12 +539,12 @@ export const createPaneInputSchema = z
     split: paneSplitSchema.optional()
   })
   .superRefine((input, context) => {
-    // Copilot panes (Job, Mail, Marketing) run their agent in a CLI session, so they carry a runtime too.
-    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT") {
+    // Copilot panes (Job, Mail, Marketing, Freelance) and Design panes run their agent in a CLI session, so they carry a runtime too.
+    if (input.terminalRuntimeId && input.mode !== "TERMINAL" && input.mode !== "JOB_APPLY" && input.mode !== "MAIL_COPILOT" && input.mode !== "MARKETING_COPILOT" && input.mode !== "FREELANCE_COPILOT" && input.mode !== "DESIGN") {
       context.addIssue({
         code: "custom",
         path: ["terminalRuntimeId"],
-        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT or FREELANCE_COPILOT mode."
+        message: "Terminal runtime selection requires TERMINAL, JOB_APPLY, MAIL_COPILOT, MARKETING_COPILOT, FREELANCE_COPILOT or DESIGN mode."
       });
     }
     if (input.vncTarget && input.mode !== "VNC") {
@@ -625,6 +628,14 @@ export const roomPaneBatchItemSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("FREELANCE_COPILOT"),
+      terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
+      /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
+      accountProfileId: jobCopilotAccountProfileIdSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("DESIGN"),
       terminalRuntimeId: z.string().trim().min(1).max(160).optional(),
       /** The account that runtime's CLI starts on; the pane's CLI session keeps it. */
       accountProfileId: jobCopilotAccountProfileIdSchema.optional()
@@ -8743,6 +8754,9 @@ export type MarketingCopilotLaunchSettings = z.infer<typeof marketingCopilotLaun
 /** The same for Freelance Copilot panes (Settings → Freelance Copilot). */
 export const freelanceCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type FreelanceCopilotLaunchSettings = z.infer<typeof freelanceCopilotLaunchSettingsSchema>;
+/** The same for Design panes (Settings → Design); the designer defaults to Claude Code. */
+export const designLaunchSettingsSchema = copilotLaunchSettingsSchema;
+export type DesignLaunchSettings = z.infer<typeof designLaunchSettingsSchema>;
 
 export const userSettingsSchema = z.object({
   uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).default("modern"),
@@ -8801,6 +8815,7 @@ export const userSettingsSchema = z.object({
   mailCopilot: mailCopilotLaunchSettingsSchema.nullable().optional(),
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
+  design: designLaunchSettingsSchema.nullable().optional(),
   /** Notification channels (in-app, toast, sound, desktop, Telegram) and per-source overrides. */
   notifications: notificationSettingsSchema.nullable().optional(),
   /** Nous, the mind of SpaceApp: on or off and its hourly turn limit. */
@@ -8870,6 +8885,8 @@ export const updateUserSettingsInputSchema = z.object({
   marketingCopilot: marketingCopilotLaunchSettingsSchema.nullable().optional(),
   /** null forgets the default: the next Freelance Copilot pane asks again. */
   freelanceCopilot: freelanceCopilotLaunchSettingsSchema.nullable().optional(),
+  /** null forgets the default: the next Design pane asks again. */
+  design: designLaunchSettingsSchema.nullable().optional(),
   notifications: notificationSettingsSchema.nullable().optional(),
   nous: nousSettingsSchema.nullable().optional()
 }).strict();

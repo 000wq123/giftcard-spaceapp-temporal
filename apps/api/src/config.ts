@@ -52,8 +52,6 @@ export interface SpaceApiConfig {
   publicDistribution?: boolean;
   /** Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user gets an isolated CLI container. */
   multiUserEnabled?: boolean;
-  /** Vault agent fills (ADR-012); also need a passing root-owned custody report (vault/agent-fill-gate.ts). */
-  vaultAgentFillEnabled?: boolean;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -114,6 +112,8 @@ export interface SpaceApiConfig {
   memoryEmbeddingDimensions: number;
   memoryEmbeddingBaseUrl: string;
   memoryEmbeddingKeyFile: string | null;
+  /** The Design pane's Space Gateway key (`space-admin-action design-key`): image models only, a daily cost cap. */
+  designGatewayKeyFile: string;
   memoryEmbeddingKeyName: string | null;
   memoryEmbeddingTimeoutMs: number;
   memoryGraphEnabled: boolean;
@@ -263,7 +263,7 @@ function parseGatewayUrl(raw: string | undefined): string {
 }
 
 export const optionalModuleIds = [
-  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "channels", "telegram", "waitlist", "desktop-updates"
+  "games", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot", "design", "channels", "telegram", "waitlist", "desktop-updates"
 ] as const;
 export type OptionalModuleId = (typeof optionalModuleIds)[number];
 
@@ -307,7 +307,6 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
     publicDistribution: env.SPACE_PUBLIC_DISTRIBUTION === "true",
     multiUserEnabled: env.SPACE_MULTI_USER_ENABLED === "true",
-    vaultAgentFillEnabled: env.SPACE_VAULT_AGENT_FILL_ENABLED === "true",
     enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",
@@ -368,6 +367,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     memoryEmbeddingDimensions: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_DIMENSIONS, 1536), 4096),
     memoryEmbeddingBaseUrl: env.SPACE_MEMORY_EMBEDDING_BASE_URL || "https://api.openai.com/v1",
     memoryEmbeddingKeyFile: env.SPACE_MEMORY_EMBEDDING_KEY_FILE || null,
+    designGatewayKeyFile: env.SPACE_DESIGN_GATEWAY_KEY_FILE || "/opt/spaceapp/secrets/space-design.key",
     memoryEmbeddingKeyName: env.SPACE_MEMORY_EMBEDDING_KEY_NAME || null,
     memoryEmbeddingTimeoutMs: Math.min(parsePositiveInt(env.SPACE_MEMORY_EMBEDDING_TIMEOUT_MS, 10000), 30000),
     memoryGraphEnabled: env.SPACE_MEMORY_GRAPH_ENABLED === "true",

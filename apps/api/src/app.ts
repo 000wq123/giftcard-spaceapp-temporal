@@ -62,6 +62,8 @@ import { createMailCopilotSync } from "./mail-copilot/sync.js";
 import { InMemoryMailCopilotRepository, PostgresMailCopilotRepository, type MailCopilotRepository } from "@space/db";
 import { registerMarketingCopilot, type MarketingCopilotWiring } from "./marketing-copilot/wiring.js";
 import { registerFreelanceCopilot, type FreelanceCopilotWiring } from "./freelance-copilot/wiring.js";
+import { dotDesignRequest, registerDesign, type DesignWiring } from "./design/wiring.js";
+import { collectStorageReadiness } from "./storage-readiness.js";
 import { resumeRoomCliFromMenu, selectRoomCliMenuRow } from "./room-cli-menu.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
 import { createGatewayAdminService, type GatewayAdminService } from "./gateway/gateway-service.js";
@@ -118,9 +120,8 @@ import { InMemorySystemHealthRepository, PostgresSystemHealthRepository } from "
 import { YouTubeAccountStore, freelanceProfileKey, privatePaneProfileId, youtubeAccountProfileKey } from "./youtube-accounts.js";
 import type { PaneBrowserSessionResponse } from "@space/contracts";
 import { YouTubePlaybackStore, youtubeBrowserPlayback } from "./youtube-playback-state.js";
-import { CanonicalMemorySearch } from "./canonical-memory-search.js";
-import { CanonicalMemoryEmbeddings } from "@space/db";
-import { createMemoryEmbeddings } from "./memory-embedding-smoke.js";
+import type { MemoryEmbeddingBackfill } from "./memory-embedding-backfill.js";
+import { createMemoryEmbeddingIndexing } from "./memory-embedding-indexing.js";
 import cookie from "@fastify/cookie";
 import compress from "@fastify/compress";
 import helmet from "@fastify/helmet";
@@ -131,7 +132,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { execFile, spawn } from "./safe-child-process.js";
 import { createNativeCliModelCatalog, findNativeCliModel, inspectedNativeModelId, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, withOmpSessionModel } from "./cli-native-model-picker.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFile, chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -183,7 +184,6 @@ import {
   providerSwitchTargetsSchema,
   publicWaitlistRequestSchema,
   publicWaitlistResponseSchema,
-  storageReadinessSchema,
   voiceTranscriptionMaxBytes,
   type StorageReadiness,
   type HostMemoryDetails,
@@ -506,7 +506,7 @@ import {
   ReleasePublishingManager
 } from "./release-publishing.js";
 import { createAppVersionReader } from "./app-version.js";
-import { createMemoryEmbedding, runMemoryEmbeddingSmoke } from "./memory-embedding-smoke.js";
+import { createMemoryEmbedding } from "./memory-embedding-smoke.js";
 import { registerMemoryGraphRoutes } from "./memory-graph-routes.js";
 import { createMemoryGraphService, type MemoryGraphApiService } from "./memory-graph-service.js";
 import {
@@ -628,7 +628,9 @@ export interface CreateAppOptions {
   codexTurnStarter?: TurnStarter;
   browserEvidenceCapture?: BrowserEvidenceCaptureHandler;
   browserSessionManager?: BrowserSessionManager;
-  memoryEmbeddingGenerator?: (input: string) => Promise<number[]>;
+  memoryEmbeddingGenerator?: (input: string, purpose?: "document" | "query") => Promise<number[]>;
+  /** null turns the backfill off (tests); absent builds it from the config. */
+  memoryEmbeddingBackfill?: MemoryEmbeddingBackfill | null;
   spaceAgentAdapter?: SpaceAgentAdapter;
   /** Stage 7 tests: Auto shadow evidence without a database. */
   autoRouteShadowRepository?: AutoRouteShadowRepository;
@@ -726,6 +728,8 @@ export interface CreateAppOptions {
   mailCopilotGmailFetch?: typeof fetch;
   mailCopilotRepository?: MailCopilotRepository;
   vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
+  /** Tests replace the Design pane's repository, gateway client, template renderer and CLI kickoff. */
+  designRepository?: DesignWiring["repository"]; designGenerate?: DesignWiring["generate"]; designRender?: DesignWiring["render"]; designKickoff?: DesignWiring["kickoff"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */
@@ -826,8 +830,6 @@ const execFileAsync = promisify(execFile);
 
 const codexThreadSettingsConfirmationAttempts = 12;
 const codexThreadSettingsConfirmationIntervalMs = 250;
-
-const storageMinimumRecommendedFreeBytes = 20 * 1024 * 1024 * 1024;
 
 const emptyToolbarActionSchema = z.object({}).strict();
 
@@ -1280,51 +1282,6 @@ function createDefaultActivityLogService(config: SpaceApiConfig, store: SpaceSto
   return new ActivityLogService({ repository });
 }
 
-function usedPercent(sizeBytes: number, availableBytes: number): number {
-  if (sizeBytes <= 0) return 0;
-  return Math.round(((sizeBytes - availableBytes) / sizeBytes) * 1000) / 10;
-}
-
-async function collectStorageMount(targetPath: string) {
-  const [fsStats, pathStats] = await Promise.all([statfs(targetPath), stat(targetPath)]);
-  const sizeBytes = fsStats.blocks * fsStats.bsize;
-  const availableBytes = fsStats.bavail * fsStats.bsize;
-  return {
-    path: targetPath,
-    deviceId: String(pathStats.dev),
-    sizeBytes,
-    availableBytes,
-    usedPercent: usedPercent(sizeBytes, availableBytes)
-  };
-}
-
-async function collectStorageReadiness(): Promise<StorageReadiness> {
-  const [root, app] = await Promise.all([collectStorageMount("/"), collectStorageMount("/opt/spaceapp")]);
-  const dedicatedAppVolume = root.deviceId !== app.deviceId;
-  const freeSpaceBlocked = app.availableBytes < storageMinimumRecommendedFreeBytes;
-  const rootWarn = root.usedPercent >= 80;
-  const status = !dedicatedAppVolume || freeSpaceBlocked ? "BLOCKED" : rootWarn ? "WARN" : "VERIFIED";
-  const statusReason = !dedicatedAppVolume
-    ? "Dedicated /opt/spaceapp volume is not detected; production/browser-heavy launch requires isolated dedicated app storage with at least 20GB free."
-    : freeSpaceBlocked
-      ? "Dedicated /opt/spaceapp volume exists but available space is below the 20GB minimum recommendation."
-      : rootWarn
-        ? "Root filesystem is above the 80% warning threshold."
-        : "Storage readiness meets the current Space launch thresholds.";
-
-  return storageReadinessSchema.parse({
-    id: "space-storage",
-    status,
-    statusReason,
-    root,
-    app,
-    dedicatedAppVolume,
-    minimumRecommendedFreeBytes: storageMinimumRecommendedFreeBytes,
-    checkedAt: new Date().toISOString()
-  });
-}
-
-
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const apiStartedAt = new Date().toISOString();
@@ -1548,7 +1505,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const browserSessionManager: BrowserSessionManagerWithHostHealth = withBrowserPageLifecycle(options.browserSessionManager ??
     createConfiguredBrowserSessionManager({ store, config }), store);
   const memoryEmbeddingGenerator =
-    options.memoryEmbeddingGenerator ?? ((input: string) => createMemoryEmbedding(config, input));
+    options.memoryEmbeddingGenerator ?? ((input: string, purpose: "document" | "query" = "document") =>
+      createMemoryEmbedding(config, input, { taskType: purpose === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT" }));
   const codexGoals = options.codexGoals ?? createCodexGoalsAdapter(config.codexGoalsDbPath);
   const spawnedCodexAppServerControl =
     config.codexAppServerEnabled && config.codexAppServerAllowStdioSpawn && config.codexAppServerHome
@@ -1705,16 +1663,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     : [];
   const dotsRepository = store instanceof PostgresSpaceStore && config.databaseUrl
     ? PostgresDotsRepository.fromConnectionString(config.databaseUrl) : null;
-  const dotMemoryRepository = dotsRepository && config.databaseUrl ? PostgresDotMemoryRepository.fromConnectionString(config.databaseUrl) : null;
+  const dotMemoryRepository = dotsRepository && config.databaseUrl ? PostgresDotMemoryRepository.fromConnectionString(config.databaseUrl, config.memoryEmbeddingModel) : null;
   // Stage 8: the user's Dot settings and each Dot's feed across rooms.
   const dotHomeRepository = dotsRepository && config.databaseUrl ? PostgresDotHomeRepository.fromConnectionString(config.databaseUrl) : null;
   const roomOwnerDot = (roomId: string, dotId: string) => findRoomOwnerDot(store, dotsRepository ?? null, roomId, dotId);
   const dotMemoryService = dotsRepository && dotMemoryRepository ? createDotMemoryService({
     store, dots: dotsRepository, memories: dotMemoryRepository,
     // Embeddings only when semantic memory is verified; text search works without them.
-    embed: async (text) => {
+    embed: async (text, purpose) => {
       const [smoke, vector] = await Promise.all([store.getLatestMemoryEmbeddingSmoke(), store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions)]);
-      return isSemanticMemoryReady(smoke, vector) ? await memoryEmbeddingGenerator(text) : null;
+      return isSemanticMemoryReady(smoke, vector) ? await memoryEmbeddingGenerator(text, purpose) : null;
     },
     audit: async (request, action, metadata) => {
       if (request) await recordAudit(store, request, { action, targetType: "dot", targetId: String(metadata.dotId ?? ""), metadata });
@@ -1850,25 +1808,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       monthlyPath: config.spaceMemoryMonthlyPath,
       lockPath: config.spaceMemoryLockPath
     });
-  const canonicalSearch = config.runtimeStore === "postgres" && config.databaseUrl && config.memoryGraphEnabled &&
-    config.memoryEmbeddingProvider && config.memoryEmbeddingModel && config.memoryEmbeddingDimensions === 1536
-    ? new CanonicalMemorySearch({
-        canonical: canonicalMemory,
-        repository: CanonicalMemoryEmbeddings.fromConnectionString(config.databaseUrl),
-        provider: config.memoryEmbeddingProvider, model: config.memoryEmbeddingModel,
-        ready: async () => {
-          if (!config.memoryEmbeddingSmokeEnabled) return false;
-          const vector = await store.getMemoryVectorReadiness(config.memoryEmbeddingDimensions);
-          let smoke = await store.getLatestMemoryEmbeddingSmoke();
-          if (!smoke || Date.now() - Date.parse(smoke.checkedAt) > 24 * 60 * 60 * 1000) {
-            const result = await runMemoryEmbeddingSmoke(config, { pgvectorReady: vector.status === "VERIFIED" });
-            smoke = await store.recordMemoryEmbeddingSmoke({ ...result, actorUserId: null, traceId: "memory:canonical-index", checkedAt: result.finishedAt });
-          }
-          return isSemanticMemoryReady(smoke, vector);
-        },
-        embed: texts => createMemoryEmbeddings(config, texts)
-      })
-    : null;
+  const { canonicalSearch, backfill: memoryEmbeddingBackfill } = createMemoryEmbeddingIndexing({ config, store, canonicalMemory,
+    dotMemories: dotMemoryRepository, backfill: options.memoryEmbeddingBackfill });
   const memoryGraphService =
     options.memoryGraphService ??
     createMemoryGraphService({
@@ -5428,6 +5369,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     stopTaskTitleEvents();
     await taskTitles.close();
     await canonicalSearch?.close();
+    await memoryEmbeddingBackfill?.close();
     if (artifactRetentionTimer) clearInterval(artifactRetentionTimer);
     if (appDiagnosticsRetentionTimer) clearInterval(appDiagnosticsRetentionTimer);
     if (durableEventPollTimer) clearInterval(durableEventPollTimer);
@@ -5457,6 +5399,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (config.instanceJobs["space-control-ticks"]) await spaceControl.start();
     if (config.roomAgentMonitorEnabled && (options.startRoomAgentMonitor ?? !options.store)) roomAgentMonitor.start();
     canonicalSearch?.start();
+    memoryEmbeddingBackfill?.start();
     healthMonitor.start();
     if (options.agentToolsOptions?.rootWriterCommand) {
       try {
@@ -6805,10 +6748,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
     authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Freelance Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
 
-  const vault = registerVault(app, { config, auth, store, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault, notifications: notificationService });
+  const designService = !config.optionalModules.has("design") ? undefined : registerDesign(app, { store, eventBus, terminal: cliTerminalManager, databaseUrl: config.databaseUrl, repository: options.designRepository,
+    generate: options.designGenerate, render: options.designRender, kickoff: options.designKickoff, notifications: notificationService, roomOwner, artifactRoot: config.browserEvidenceArtifactRoot,
+    brandRoot: fileURLToPath(new URL("../../web/public/brand", import.meta.url)), gatewayUrl: config.gatewayUrl, gatewayKeyFile: config.designGatewayKeyFile,
+    routeOptions: defaultRouteRateLimitOptions, parseBody, parseQuery, log: app.log,
+    marketingPostExists: marketingCopilotService ? async (owner, postId) => Boolean(await marketingCopilotService.getPost(owner, postId).catch(() => null)) : undefined,
+    attachToMarketingPost: marketingCopilotService ? async (owner, postId, assets) => { await marketingCopilotService.attachAssets(owner, postId, assets); } : undefined,
+    assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "design", targetId, metadata }),
+    authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use the Design pane.", 401); return (await store.upsertUser(request.user)).id; } });
+
+  const vault = registerVault(app, { config, auth, store, browser: browserSessionManager, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault });
   registerCliBrowserBridgeRoutes(app, {
     options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity, vault, nous: nousRef,
-    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
+    routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, designService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
   });
 
   async function withYouTubeAccountLock<T>(paneId: string, operation: () => Promise<T>): Promise<T> {
@@ -7603,7 +7555,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     },
     goalTool: dotGoalService ? (sessionId, toolId, args) => dotGoalService.tool(sessionId, toolId, args) : undefined,
     computerBrowser: dotComputerService ? (session, owner, args) => dotComputerService.browser(session, owner, args) : undefined,
-    delegate: dotDelegationService ? (session, owner, args) => dotDelegationService.delegate(session, owner, args) : undefined,
+    delegate: dotDelegationService ? (session, owner, args) => dotDelegationService.delegate(session, owner, args) : undefined, designRequest: designService && dotDesignRequest(designService),
     memoryTool: dotMemoryService ? (session, owner, toolId, args) => dotMemoryService.tool(session, owner, toolId, args) : undefined,
     memoryScope: dotMemoryService ? (owner, dotId, memoryId) => dotMemoryService.scope(owner, dotId, memoryId) : undefined,
     publishDeliverable: dotDeliverablesService ? (owner, dotId, input) => dotDeliverablesService.publish(owner, dotId,
@@ -7680,7 +7632,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   nousRef.current = registerNous(app, { config, vault, autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents,
     roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, monitorEvents: roomAgentMonitorRepository,
     answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status() },
-    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider });
+    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider });
 
   registerVoiceAttachmentRoutes(app, { config, store, routeOptions: defaultRouteRateLimitOptions });
 
@@ -8035,7 +7987,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerMemoryRoutes(app, {
     config, store, eventBus, memoryEmbeddingGenerator, canonicalMemory, canonicalSearch, memoryGraphService,
-    routeOptions: defaultRouteRateLimitOptions
+    memoryEmbeddingBackfill, dotMemoryEmbeddings: dotMemoryRepository, routeOptions: defaultRouteRateLimitOptions
   });
   registerSharedTaskRoutes(app, {
     store, codexGoals, cliRuntimeVisibility, routeOptions: defaultRouteRateLimitOptions

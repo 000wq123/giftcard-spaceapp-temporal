@@ -38,7 +38,7 @@ export interface SpaceGatewayClient {
   importAuthJson(authJson: string): Promise<Connected>;
   startClaudeSignIn(): Promise<{ flowId: string; authorizationUrl: string }>;
   antigravityProfiles(): Promise<{ data: Array<{ profileId: string; email: string | null; inGateway: boolean }> }>;
-  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
+  addOpenAiApiKey(input: { provider?: "OPENAI_API" | "OPENROUTER" | "DEEPSEEK" | "CLAUDE" | "GOOGLE_AI"; apiKey?: string; useSpaceKey?: boolean; label?: string }): Promise<Connected>;
   importAntigravityProfile(profileId: string): Promise<Connected>;
   completeClaudeSignIn(flowId: string, code: string): Promise<Connected>;
   refreshUsage(accountId: string): Promise<{ status: string }>;

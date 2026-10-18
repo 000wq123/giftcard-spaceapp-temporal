@@ -2032,7 +2032,7 @@ export class CliTerminalManager {
     traceId: string,
     selection: { modelId?: string | null; reasoningEffort?: string; accountProfileId?: string | null; launchMode?: "FRESH" | "RESUME" } = {}
   ): Promise<PaneCliSession> {
-    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
+    if (pane.mode !== "TERMINAL" && pane.mode !== "JOB_APPLY" && pane.mode !== "MAIL_COPILOT" && pane.mode !== "MARKETING_COPILOT" && pane.mode !== "FREELANCE_COPILOT" && pane.mode !== "DESIGN") throw new SpaceConflictError(`Pane ${pane.id} is not a terminal pane.`);
     const runtimeId = pane.terminalRuntimeId ?? "cli:codex";
     const registry = await this.options.discoverRuntimes();
     const runtime = registry.data.find((candidate) => candidate.id === runtimeId);

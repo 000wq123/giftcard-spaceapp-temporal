@@ -5,7 +5,7 @@ import type { VaultItemRecord } from "@space/contracts";
 const mocks = vi.hoisted(() => ({
   vaultState: vi.fn(), vaultItems: vi.fn(), vaultItem: vi.fn(), vaultSaveItem: vi.fn(), vaultDeleteItem: vi.fn(), vaultRevoke: vi.fn(),
   vaultLock: vi.fn(), vaultAudit: vi.fn(), setUpVault: vi.fn(), unlockVault: vi.fn(), encryptVaultItem: vi.fn(), decryptVaultItem: vi.fn(),
-  vaultApprovals: vi.fn(), vaultDecideApproval: vi.fn(), vaultInboxKey: vi.fn(), importVaultPending: vi.fn(),
+  vaultSetAgentAccess: vi.fn(), vaultInboxKey: vi.fn(), importVaultPending: vi.fn(),
   vaultSignupGrants: vi.fn(), vaultCreateSignupGrant: vi.fn(), vaultRevokeSignupGrant: vi.fn(), signVaultSignupGrant: vi.fn(), delegateVaultItems: vi.fn(),
   gatewayAnthropicAdmin: vi.fn(), saveGatewayAnthropicAdminKey: vi.fn(), removeGatewayAnthropicAdminKey: vi.fn(), syncGatewayAnthropicBilling: vi.fn()
 }));
@@ -27,7 +27,7 @@ const record = (id: string, label: string, status: "ACTIVE" | "PENDING", history
 });
 const pending = record("vault_item:AAAAAAAAAAAAAAAAAAAAAA", "New shop account", "PENDING");
 const changed = record("vault_item:BBBBBBBBBBBBBBBBBBBBBB", "Mail", "ACTIVE", [{ fields: { PASSWORD: envelope }, replacedAt: "2026-10-17T12:00:00.000Z" }]);
-const state = (patch: Record<string, unknown> = {}) => ({ ownerUserId: "user:alice", enrolled: true, brokerAvailable: true, agentFill: "FLAG_OFF",
+const state = (patch: Record<string, unknown> = {}) => ({ ownerUserId: "user:alice", enrolled: true, brokerAvailable: true, agentAccess: false, delegatedItems: 0,
   vault: { vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, delegationGeneration: 0, hasRecovery: true, auditSeq: 3 }, ...patch });
 
 describe("VaultDock", () => {
@@ -39,7 +39,8 @@ describe("VaultDock", () => {
     mocks.vaultSaveItem.mockResolvedValue({ item: pending });
     mocks.unlockVault.mockResolvedValue({ ownerUserId: "user:alice", vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, vrk: new Uint8Array(32), passwordShare: new Uint8Array(32), signingKey: new Uint8Array(48) });
     mocks.vaultAudit.mockResolvedValue({ entries: [], nextBeforeSeq: null });
-    mocks.vaultApprovals.mockResolvedValue({ approvals: [] });
+    mocks.delegateVaultItems.mockResolvedValue({ generation: 1, count: 1 });
+    mocks.vaultSignupGrants.mockResolvedValue({ grants: [] });
     mocks.vaultInboxKey.mockResolvedValue({ privateKey: new Uint8Array(48), publicKey: new Uint8Array(32) });
     mocks.importVaultPending.mockResolvedValue(0);
     mocks.gatewayAnthropicAdmin.mockRejectedValue(new Error("Administrator permissions are required."));
@@ -81,7 +82,7 @@ describe("VaultDock", () => {
     mocks.vaultState.mockResolvedValue(state());
     mocks.vaultRevoke.mockResolvedValue({ generation: 1, epoch: 2 });
     render(<VaultDock />);
-    expect(await screen.findByText(/Locked · Agent fills are off/)).toBeTruthy();
+    expect(await screen.findByText(/Locked · Agents and Nous: off/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
     const pendingRow = (await screen.findByText("New shop account")).closest("li")!;
@@ -98,21 +99,18 @@ describe("VaultDock", () => {
     await waitFor(() => expect(mocks.vaultRevoke).toHaveBeenCalledTimes(1));
   });
 
-  it("brings in passwords agents created and lets the operator decide an agent's request", async () => {
-    mocks.vaultState.mockResolvedValue(state());
+  it("adds the logins agents saved on unlock and hands every login to agents while agent access is on", async () => {
+    mocks.vaultState.mockResolvedValue(state({ agentAccess: true, delegatedItems: 2 }));
     mocks.importVaultPending.mockResolvedValue(2);
-    mocks.vaultApprovals.mockResolvedValueOnce({ approvals: [{ id: "vault_approval:AAAAAAAAAAAAAAAAAAAAAA", handle: changed.metadata.id, fields: ["PASSWORD"], paneId: "pane:one", status: "PENDING",
-      createdAt: "2026-10-17T12:00:00.000Z", expiresAt: "2026-10-17T12:10:00.000Z", decidedAt: null }] }).mockResolvedValue({ approvals: [] });
-    mocks.vaultDecideApproval.mockResolvedValue({ decided: "APPROVE" });
     render(<VaultDock />);
     fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
-    expect(await screen.findByText(/2 passwords an agent created are waiting/)).toBeTruthy();
-    const requests = await screen.findByRole("region", { name: "Agent requests" });
-    expect(within(requests).getByText(/Mail: password/)).toBeTruthy();
-    fireEvent.click(within(requests).getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(mocks.vaultDecideApproval).toHaveBeenCalledWith("vault_approval:AAAAAAAAAAAAAAAAAAAAAA", "APPROVE"));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Agent requests" })).toBeNull());
+    expect(await screen.findByText("Added 2 logins that agents saved or changed.")).toBeTruthy();
+    // No per-use approvals any more: the unlock alone re-delegates every item.
+    await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA" }),
+      { records: [pending, changed], delegationGeneration: 0, epoch: 1 }));
+    expect(screen.queryByRole("region", { name: "Agent requests" })).toBeNull();
+    expect(await screen.findByText(/Unlocked · Agents and Nous: on \(2 logins\)/)).toBeTruthy();
   });
 
   it("locks itself when the tab is hidden, dropping the keys like Lock", async () => {
@@ -167,7 +165,7 @@ describe("VaultDock", () => {
     await waitFor(() => expect(mocks.vaultRevokeSignupGrant).toHaveBeenCalledWith(grant.id));
   });
 
-  it("keeps Add item simple: generator rules and agent defaults live in Settings, and the chosen option shows as chosen", async () => {
+  it("keeps Add item simple: generator rules live in Settings, with no approval or protected-browser steps", async () => {
     localStorage.clear();
     mocks.vaultState.mockResolvedValue(state());
     render(<VaultDock />);
@@ -177,38 +175,37 @@ describe("VaultDock", () => {
     expect(screen.getByRole("button", { name: "Settings" }).getAttribute("aria-pressed")).toBe("true");
     const generator = await screen.findByRole("region", { name: "Password generator" });
     fireEvent.change(within(generator).getByLabelText("Length"), { target: { value: "12" } });
-    const agents = screen.getByRole("region", { name: "Agent defaults" });
-    fireEvent.click(within(agents).getByRole("button", { name: "By rules" }));
-    expect(within(agents).getByRole("button", { name: "By rules" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(agents).getByRole("button", { name: "Ask me each time" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("region", { name: "Agent defaults" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Protected browsers" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Items" }));
     fireEvent.click(await screen.findByRole("button", { name: "Add item" }));
     // The form shows only the basics; no generator rules in it.
     expect(screen.queryByLabelText("Length")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
     expect((screen.getByLabelText("Password") as HTMLInputElement).value).toHaveLength(12);
-    fireEvent.click(screen.getByRole("switch", { name: "Let agents fill this login" }));
-    expect(screen.getByRole("button", { name: "By rules" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Without asking" }));
-    expect(screen.getByRole("button", { name: "Without asking" }).getAttribute("aria-pressed")).toBe("true");
-    expect(JSON.parse(localStorage.getItem("space:vault-defaults:v1")!)).toMatchObject({ approvalMode: "RULES", generator: { length: 12 } });
+    // A new login is usable by agents unless the operator hides it; no approval mode to pick.
+    expect((screen.getByRole("switch", { name: "Agents and Nous can use this login" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole("button", { name: "Without asking" })).toBeNull();
+    expect(JSON.parse(localStorage.getItem("space:vault-defaults:v1")!)).toMatchObject({ generator: { length: 12 } });
   });
 
-  it("hands the logins that allow agents to the broker from the Agent access card", async () => {
-    mocks.vaultState.mockResolvedValue(state());
-    mocks.delegateVaultItems.mockResolvedValue({ generation: 1, count: 1, expiresAt: "2026-11-17T10:00:00.000Z" });
+  it("turns agent access on with one switch, handing every login over, and off again", async () => {
+    let access = false;
+    mocks.vaultState.mockImplementation(async () => state({ agentAccess: access, delegatedItems: access ? 1 : 0 }));
+    mocks.vaultSetAgentAccess.mockImplementation(async (enabled: boolean) => { access = enabled; return { agentAccess: enabled }; });
     render(<VaultDock />);
     fireEvent.change(await screen.findByLabelText("Master password"), { target: { value: "a synthetic master" } });
     fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
     const card = await screen.findByRole("region", { name: "Agent access" });
-    expect(within(card).getByText(/1 login lets agents fill it/)).toBeTruthy();
-    expect(within(card).getByText(/Agent fills are still off/)).toBeTruthy();
-    await waitFor(() => expect(mocks.vaultItem).toHaveBeenCalledWith(changed.metadata.id));
-    fireEvent.click(within(card).getByRole("button", { name: "Hand to agents" }));
-    // Only the active login that allows agents goes; the pending one does not.
-    await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ vaultId: "vault:AAAAAAAAAAAAAAAAAAAAAA" }),
-      { records: [changed], delegationGeneration: 0 }));
-    expect(await within(card).findByText(/Handed 1 login to agents until/)).toBeTruthy();
+    expect(mocks.delegateVaultItems).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole("switch", { name: "Agents and Nous can use my Vault" }));
+    await waitFor(() => expect(mocks.vaultSetAgentAccess).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(mocks.delegateVaultItems).toHaveBeenCalledWith(expect.anything(), expect.anything(), { records: [pending, changed], delegationGeneration: 0, epoch: 1 }));
+    expect(await within(card).findByText(/1 login is ready for them/)).toBeTruthy();
+    fireEvent.click(within(card).getByRole("switch", { name: "Agents and Nous can use my Vault" }));
+    await waitFor(() => expect(mocks.vaultSetAgentAccess).toHaveBeenLastCalledWith(false));
+    await waitFor(() => expect(within(card).queryByText(/ready for them/)).toBeNull());
+    expect(mocks.delegateVaultItems).toHaveBeenCalledTimes(1);
   });
 
   it("generates a password in the editor and needs explicit acceptance of a risky address", async () => {
@@ -231,7 +228,7 @@ describe("VaultDock", () => {
     fireEvent.click(save);
     await waitFor(() => expect(mocks.encryptVaultItem).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       label: "Synthetic forum", origins: ["http://forum.example"], secrets: { PASSWORD: password.value },
-      policy: expect.objectContaining({ acceptedOriginRisks: ["http://forum.example"], agentUse: false })
+      policy: expect.objectContaining({ acceptedOriginRisks: ["http://forum.example"], agentUse: true, approvalMode: "FULL", submitAllowed: true })
     }), undefined));
     expect(mocks.vaultSaveItem).toHaveBeenCalled();
   });

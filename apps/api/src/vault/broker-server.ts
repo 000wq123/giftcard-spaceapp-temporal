@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { appendFileSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { vaultAgentFillGate, type VaultAgentFillGate } from "./agent-fill-gate.js";
 import { VAULT_BROKER_HOST_SOCKET_PATH } from "./broker-client.js";
 import { z } from "zod";
 import {
@@ -32,8 +31,8 @@ export const VAULT_CLIENT_GROUP = "space-vault-client";
 
 /**
  * M1, operator decision Option B (2026-10-18): the broker socket's own posture is the access control, so the broker checks it
- * itself, at start and before every agent use: a socket owned by the broker user, group space-vault-client, mode 0660, in a
- * root-owned directory nobody else may write to (so the socket cannot be swapped). No in-process peer check exists.
+ * itself at start: a socket owned by the broker user, group space-vault-client, mode 0660, in a root-owned directory nobody
+ * else may write to (so the socket cannot be swapped). No in-process peer check exists.
  */
 export function vaultSocketPosture(options: {
   path?: string; ownerUid?: number; group?: string; dirOwnerUid?: number; groupFile?: () => string;
@@ -93,23 +92,10 @@ const schemas = {
   signupRevoke: z.object({ ownerUserId: owner, vaultId, grantId: z.string().regex(/^vault_grant:[A-Za-z0-9_-]{16,64}$/) }).strict()
 };
 
-export async function createVaultBroker(options: {
-  ark: Uint8Array; stateDir: string; now?: () => Date;
-  /** The root-owned custody report, read by the broker itself (review 2026-10-17 M3); tests replace it. */
-  custody?: () => Promise<VaultAgentFillGate>;
-  /** Where the default custody check reads the report and whose it must be (root); tests point it at their own. */
-  custodyReport?: { path: string; ownerUid: number };
-  /** The default custody check's socket posture; tests point it at their own socket. */
-  socketPosture?: () => { ok: boolean; reason: string | null };
-}) {
+// The operator-signed delegation (and sign-up grant) is the whole authorization for a fill (operator decision 2026-10-18,
+// plan clipboard:Ml8zElMcc4Ac): no custody report is consulted any more.
+export async function createVaultBroker(options: { ark: Uint8Array; stateDir: string; now?: () => Date }) {
   const { ark, stateDir } = options;
-  // Fail closed unless both hold: the socket keeps its posture and the daily root custody report is fresh and passing.
-  const custody = options.custody ?? (async (): Promise<VaultAgentFillGate> => {
-    if (!(options.socketPosture ?? vaultBrokerSocketsPosture)().ok) return { enabled: false, reason: "CUSTODY_NOT_PROVEN" };
-    return vaultAgentFillGate(true, { now: (options.now ?? (() => new Date()))(), ...(options.custodyReport ?? {}) });
-  });
-  // Agent fills stop at the trust anchor too while custody is not proven; operator unlock and delegation do not need it.
-  const assertCustody = async () => { const gate = await custody(); if (!gate.enabled) throw new VaultBrokerRefusal("CUSTODY_NOT_PROVEN"); };
   const now = options.now ?? (() => new Date());
   if (ark.length !== 32) throw new Error("The ARK must be 32 bytes.");
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -207,7 +193,6 @@ export async function createVaultBroker(options: {
 
     async "POST /v1/use"(raw) {
       const input = schemas.use.parse(raw);
-      await assertCustody();
       const delegation = await verifyDelegation(input.certificate);
       if (delegation.ownerUserId !== input.ownerUserId || delegation.vaultId !== input.vaultId) throw new VaultBrokerRefusal("CERTIFICATE_REFUSED");
       if (delegation.generation < (floors[floorKey(input)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
@@ -234,7 +219,6 @@ export async function createVaultBroker(options: {
       const known = outstanding.get(claims.nonce);
       outstanding.delete(claims.nonce);
       if (!known || vaultCanonicalJson(known) !== vaultCanonicalJson(claims)) throw new VaultBrokerRefusal("CAPABILITY_USED");
-      await assertCustody();
       if (claims.generation < (floors[floorKey(claims)] ?? 0)) throw new VaultBrokerRefusal("GENERATION_RETIRED");
       const generationKey = await deriveDelegationKey(ark, claims, claims.generation);
       let fillKey: Uint8Array | null = null;
@@ -271,7 +255,6 @@ export async function createVaultBroker(options: {
     // a PENDING item for Keep or Discard) and to the caller's reply key for the fill. Nothing else leaves.
     async "POST /v1/signup"(raw) {
       const input = schemas.signup.parse(raw);
-      await assertCustody();
       let grant;
       try { grant = await verifyVaultCertificate(signing.publicKey, input.certificate, vaultSignupGrantCertificateSchema, now()); }
       catch (error) { throw new VaultBrokerRefusal(error instanceof VaultCryptoError && error.code === "EXPIRED" ? "EXPIRED" : "CERTIFICATE_REFUSED"); }

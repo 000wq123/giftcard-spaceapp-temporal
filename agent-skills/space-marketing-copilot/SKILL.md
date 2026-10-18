@@ -24,6 +24,11 @@ Sessions without these MCP tools (Claude panes run native tools only) call them 
 `echo '{"serverId":"space_marketingcopilot","toolName":"space_marketing_next","arguments":{"waitMs":60000}}' | space-capability call`
 (the same for `space_browser`).
 
+Graphics: ask the Design pane with `space_design_request` (server `space_design`) and pass
+`callback: {"kind":"MARKETING_POST","postId":"<the post>"}` with the channel's format (X `x`, LinkedIn `linkedin`, Product Hunt
+`ph-gallery`, YouTube `yt-thumb`, GitHub `github-social`, dev.to `devto-cover`, Blog `blog-hero`, Reddit `og`; Hacker News posts
+carry no image); the delivery attaches the graphic to the post. Wait with `space_design_request_wait` before you publish.
+
 Channel playbooks (format, norms, publish recipe, the URL to report): `references/channels.md`. Read the
 channel's section before the first post on it in a session. Campaign playbooks (release, Product Hunt launch,
 Show HN, weekly tip, demo video): `references/campaigns.md`.

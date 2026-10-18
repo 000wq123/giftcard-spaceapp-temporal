@@ -3434,7 +3434,7 @@ body:has(.health-resources) .room-toolbar-collapsed { visibility: hidden; }
   overflow-y: auto;
 }
 
-@media (max-width: 768px), (pointer: coarse) {
+@media (max-width: 767px), (pointer: coarse) {
   :is(body, .space-shell, html):has(:focus:is(input, textarea, [contenteditable="true"], .xterm-helper-textarea)) .health-indicator-rail .health-rail-expander {
     display: inline-grid !important;
   }

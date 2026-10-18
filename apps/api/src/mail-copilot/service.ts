@@ -656,7 +656,11 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
     async draft(owner: string, pane: Pane | null, input: MailComposeInput): Promise<{ draftId: string; messageId: string }> {
       await mailAccounts(owner, pane, input.account);
       const client = await clientFor(owner, input.account, "MAIL_ORGANIZE");
-      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text });
+      // A reply draft carries the threading headers too, or Gmail starts a new thread despite the threadId.
+      const original = input.inReplyToMessageId ? await client.message(input.inReplyToMessageId, "metadata").catch((error) => { throw gmailError(input.account, error); }) : null;
+      const headers = (original?.payload as { headers?: unknown } | undefined)?.headers;
+      const raw = buildMime({ from: input.account, to: input.to, cc: input.cc, bcc: input.bcc, subject: input.subject, text: input.text,
+        inReplyTo: header(headers, "Message-ID") || null, references: header(headers, "References") || null });
       try {
         const draft = await client.createDraft(raw, input.threadId);
         return { draftId: draft.id, messageId: draft.messageId };

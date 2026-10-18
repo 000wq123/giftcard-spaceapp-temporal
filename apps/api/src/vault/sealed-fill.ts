@@ -18,10 +18,6 @@ export interface SealedFillPage {
   sessionId: string;
   targetId: string;
   paneId: string;
-  /** Tabs the pane owns; a sealed fill needs exactly one. */
-  ownedPages: number;
-  /** The Chrome or its profile also serves another pane or account tab. */
-  sharedProfile: boolean;
 }
 export interface SealedFillBroker {
   /** Signature (broker delegation key) and validity window of a use capability. */
@@ -67,18 +63,18 @@ export function vaultFieldScript(role: Role, action: FieldAction, expectLength =
 })()`;
 }
 
-interface FrameTree { frameTree?: { frame?: { id?: string; url?: string } } }
+interface FrameTree { frameTree?: { frame?: { id?: string; url?: string; loaderId?: string } } }
 
-/** The pane's live top frame: its ids and exact origin, or why a sealed fill cannot run there. */
+/**
+ * The pane's live top frame: its ids, exact origin and document, or why a sealed fill cannot run there. A shared Chrome or a
+ * second tab no longer refuses (operator decision 2026-10-18): the API fences the filled browser until this document is gone.
+ */
 export async function readVaultTarget(page: SealedFillPage): Promise<VaultHostTarget> {
-  const none = (reason: string): VaultHostTarget => ({ eligible: false, reason, targetId: null, frameId: null, origin: null });
-  if (page.sharedProfile) return none("PROFILE_SHARED");
-  if (page.ownedPages !== 1) return none("SECOND_TARGET");
   const tree = await page.cdp.send<FrameTree>("Page.getFrameTree", {}, page.sessionId);
   const frame = tree.frameTree?.frame;
   const origin = frame?.url ? canonicalVaultOrigin(frame.url)?.origin ?? null : null;
-  if (!frame?.id || !origin) return none("NO_WEB_ORIGIN");
-  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin };
+  if (!frame?.id || !origin) return { eligible: false, reason: "NO_WEB_ORIGIN", targetId: null, frameId: null, origin: null, document: null };
+  return { eligible: true, reason: null, targetId: page.targetId, frameId: frame.id, origin, document: typeof frame.loaderId === "string" ? frame.loaderId.slice(0, 128) : null };
 }
 
 async function isolatedWorld(page: SealedFillPage, frameId: string): Promise<number> {
@@ -116,7 +112,7 @@ export async function runSealedFill(page: SealedFillPage, broker: SealedFillBrok
     return live.origin === claims.origin ? "OK" : "ORIGIN_CHANGED";
   };
   const before = await sameTarget();
-  if (before === "NOT_ELIGIBLE") return result("BLOCKED", "NOT_PROTECTED_TARGET");
+  if (before === "NOT_ELIGIBLE") return result("BLOCKED", "NO_WEB_ORIGIN");
   if (before !== "OK") return result("ORIGIN_MISMATCH", before);
 
   // Every field is found before any secret exists in this process.
@@ -173,6 +169,9 @@ async function typeIn(page: SealedFillPage, contextId: number, roles: Role[], va
   submit: boolean, sealedGenerated: VaultTransportEnvelope | null): Promise<VaultHostFillResult> {
   const filled: Role[] = [];
   const scrub = async () => { for (const role of filled) await field(page, contextId, role, "clear").catch(() => undefined); };
+  // A pane's Chrome has no focused window (Xvfb), where document.hasFocus() stays false; the fill emulates focus for its own duration.
+  const emulateFocus = (enabled: boolean) => page.cdp.send("Emulation.setFocusEmulationEnabled", { enabled }, page.sessionId).catch(() => undefined);
+  await emulateFocus(true);
   try {
     for (const role of roles) {
       const live = await sameTarget();
@@ -196,6 +195,7 @@ async function typeIn(page: SealedFillPage, contextId: number, roles: Role[], va
     return result("BLOCKED", "FILL_FAILED");
   } finally {
     values.clear();
+    await emulateFocus(false);
   }
 }
 
@@ -217,7 +217,7 @@ export async function runSealedSignup(page: SealedFillPage, broker: SealedFillBr
     return live.origin === request.origin ? "OK" : "ORIGIN_CHANGED";
   };
   const before = await sameTarget();
-  if (before === "NOT_ELIGIBLE") return result("BLOCKED", "NOT_PROTECTED_TARGET");
+  if (before === "NOT_ELIGIBLE") return result("BLOCKED", "NO_WEB_ORIGIN");
   if (before !== "OK") return result("ORIGIN_MISMATCH", before);
   const roles: Role[] = request.roles;
   const contextId = await isolatedWorld(page, request.frameId);

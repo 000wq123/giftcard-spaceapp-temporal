@@ -106,7 +106,7 @@ describe("Vault dock client", () => {
     expect(await verifyVaultMessage(key, message(["https://evil.example"]), grant.operatorSignature)).toBe(false);
   });
 
-  it("hands only the agent-allowed active logins to the broker, signed over exactly what it sends", async () => {
+  it("hands every active login not hidden from agents to the broker with submit and a standing expiry, signed over exactly what it sends", async () => {
     const { client, server, transport } = await harness();
     const { unlocked } = await setUpVault(client, "user:alice", "a master", fastKdf);
     const allowed = vaultItemRecordSchema.parse(await encryptVaultItem(unlocked, { label: "Shop", origins: ["https://shop.example"], secrets: { USERNAME: "synthetic@example.com", PASSWORD: SENTINEL },
@@ -117,7 +117,8 @@ describe("Vault dock client", () => {
     const done = await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: any) => { sent = body; return { generation: body.generation }; } } as never, unlocked,
       { records: [allowed, notAllowed, pending], delegationGeneration: 2 });
     expect(done).toMatchObject({ generation: 3, count: 1 });
-    expect(sent.items).toEqual([{ handle: allowed.metadata.id, origins: ["https://shop.example"], fields: ["USERNAME", "PASSWORD"], approvalMode: "FULL", submit: false }]);
+    expect(sent.items).toEqual([{ handle: allowed.metadata.id, origins: ["https://shop.example"], fields: ["USERNAME", "PASSWORD"], approvalMode: "FULL", submit: true }]);
+    expect(Date.parse(sent.expiresAt) - Date.now()).toBeGreaterThan(3000 * 86_400_000);
     expect(JSON.stringify(sent)).not.toContain(SENTINEL);
     expect(vaultDelegateRequestSchema.parse(sent)).toEqual(sent);
     const message = vaultDelegationOperatorMessage({ ownerUserId: "user:alice", vaultId: unlocked.vaultId, envelopeDigest: await vaultDigest(sent.fillEnvelopes), generation: 3,
@@ -127,7 +128,14 @@ describe("Vault dock client", () => {
     const fillKey = await openWithVaultPrivateKey(transport.privateKey, transport.publicKey, sent.sealedFillKey, scope);
     const field = await openVaultEnvelope(fillKey, sent.fillEnvelopes[allowed.metadata.id].PASSWORD, { ...scope, purpose: "FILL_FIELD", itemId: allowed.metadata.id, field: "PASSWORD", generation: 3 });
     expect(new TextDecoder().decode(field)).toBe(SENTINEL);
-    await expect(delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async () => ({ generation: 1 }) } as never, unlocked, { records: [notAllowed], delegationGeneration: 0 })).rejects.toThrow("No login");
+    // After a revoke while unlocked the vault's epoch has moved on: the dock signs the current one.
+    await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async (body: any) => { sent = body; return { generation: body.generation }; } } as never, unlocked,
+      { records: [allowed], delegationGeneration: 3, epoch: unlocked.epoch + 1 });
+    expect(sent.unlockEpoch).toBe(unlocked.epoch + 1);
+    expect(await verifyVaultMessage(vaultBase64url.decode(server.vault.unlockPublicKey), vaultDelegationOperatorMessage({ ownerUserId: "user:alice", vaultId: unlocked.vaultId,
+      envelopeDigest: await vaultDigest(sent.fillEnvelopes), generation: 4, unlockEpoch: unlocked.epoch + 1, expiresAt: sent.expiresAt, items: sent.items }), sent.operatorSignature)).toBe(true);
+    // An item hidden from agents (agentUse off) never goes; with nothing to hand over nothing is sent.
+    expect(await delegateVaultItems({ vaultBroker: client.vaultBroker, vaultDelegate: async () => { throw new Error("not sent"); } } as never, unlocked, { records: [notAllowed], delegationGeneration: 0 })).toBeNull();
   });
 
   it("changes the master password without changing the unlock key", async () => {
@@ -139,7 +147,7 @@ describe("Vault dock client", () => {
     await expect(unlockVault(client, "user:alice", "old master", fastKdf)).rejects.toBeInstanceOf(VaultCryptoError);
   });
 
-  it("turns passwords sealed to the inbox while locked into PENDING items, new or changed", async () => {
+  it("adds logins agents saved and applies passwords they changed while locked as ACTIVE items, the old password kept for undo", async () => {
     const { client } = await harness();
     const { unlocked } = await setUpVault(client, "user:alice", "master", fastKdf);
     const stored: Record<string, any> = {};
@@ -161,14 +169,16 @@ describe("Vault dock client", () => {
     stored[existing.metadata.id] = existing;
     const newHandle = "vault_item:BBBBBBBBBBBBBBBBBBBBBB";
     pending.push({ id: "vault_pending:AAAAAAAAAAAAAAAAAAAAAA", kind: "NEW_ACCOUNT", handle: newHandle, label: "Shop", origin: "https://shop.example", sealedUsername: await seal("synthetic-shop@example.com"), sealedPassword: await seal(`${SENTINEL}-new`), paneId: null, createdAt: "" },
-      { id: "vault_pending:CCCCCCCCCCCCCCCCCCCCCC", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null, sealedPassword: await seal(`${SENTINEL}-changed`), paneId: null, createdAt: "" });
-    expect(await importVaultPending(api, unlocked, key)).toBe(2);
-    expect(deleted).toHaveLength(2);
+      { id: "vault_pending:CCCCCCCCCCCCCCCCCCCCCC", kind: "CHANGE_PASSWORD", handle: existing.metadata.id, label: "Mail", origin: "https://mail.example", sealedUsername: null, sealedPassword: await seal(`${SENTINEL}-changed`), paneId: null, createdAt: "" },
+      { id: "vault_pending:DDDDDDDDDDDDDDDDDDDDDD", kind: "NEW_ACCOUNT", handle: "vault_item:DDDDDDDDDDDDDDDDDDDDDD", label: "Forum", origin: "https://forum.example", sealedUsername: await seal("synthetic-forum"), sealedPassword: null, paneId: null, createdAt: "" });
+    expect(await importVaultPending(api, unlocked, key)).toBe(3);
+    expect(deleted).toHaveLength(3);
     const created = vaultItemRecordSchema.parse(stored[newHandle]);
-    expect(created.metadata.status).toBe("PENDING");
+    expect(created.metadata).toMatchObject({ status: "ACTIVE", policy: { agentUse: true, approvalMode: "FULL", submitAllowed: true } });
     expect(await decryptVaultItem(unlocked, created)).toEqual({ USERNAME: "synthetic-shop@example.com", PASSWORD: `${SENTINEL}-new` });
+    expect(await decryptVaultItem(unlocked, vaultItemRecordSchema.parse(stored["vault_item:DDDDDDDDDDDDDDDDDDDDDD"]))).toEqual({ USERNAME: "synthetic-forum" });
     const changedItem = vaultItemRecordSchema.parse(stored[existing.metadata.id]);
-    expect(changedItem.metadata.status).toBe("PENDING");
+    expect(changedItem.metadata.status).toBe("ACTIVE");
     expect((await decryptVaultItem(unlocked, changedItem)).PASSWORD).toBe(`${SENTINEL}-changed`);
     expect((await decryptVaultItem(unlocked, changedItem, changedItem.history[0]!.fields)).PASSWORD).toBe("SYNTHETIC-old");
   });

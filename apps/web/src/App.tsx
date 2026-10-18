@@ -173,7 +173,7 @@ import {
 } from "./features/browser-pane/events.js";
 import { AppVersionMeta, DemoVersionMeta } from "./features/app-version/AppVersionMeta.js";
 import type { CopilotLaunchChoice } from "./features/copilot-kit/CopilotLaunchDialog.js";
-import { FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
+import { DESIGN_KIND, FREELANCE_COPILOT_KIND, JOB_COPILOT_KIND, MAIL_COPILOT_KIND, MARKETING_COPILOT_KIND, type CopilotKind } from "./features/copilot-kit/copilot-kind.js";
 import { resolveCopilotLaunch } from "./features/copilot-kit/copilot-runtimes.js";
 import { rememberNewPaneAccount } from "./features/cli-accounts/cli-account-memory.js";
 import { forwardCopilotStreamEvents } from "./features/copilot-kit/copilot-stream.js";
@@ -674,6 +674,7 @@ const LazyMailCopilotSettingsCard = lazyWithPreload(() =>
 );
 const LazyMarketingCopilotSettingsCard = lazyWithPreload(() => import("./features/marketing-copilot-pane/MarketingCopilotSettingsCard.js").then((module) => ({ default: module.MarketingCopilotSettingsCard })), { idle: true });
 const LazyFreelanceCopilotSettingsCard = lazyWithPreload(() => import("./features/freelance-copilot-pane/FreelanceCopilotSettingsCard.js").then((module) => ({ default: module.FreelanceCopilotSettingsCard })), { idle: true });
+const LazyDesignSettingsCard = lazyWithPreload(() => import("./features/design-pane/DesignSettingsCard.js").then((module) => ({ default: module.DesignSettingsCard })), { idle: true });
 const sideSurfaceLoadingFallback = <div className="dock-muted-text" role="status">Loading panel…</div>;
 /** The Settings dock's cards, in the dock's order; their declarations above keep the idle preload order. */
 const agentSettingsCards: AgentSettingsCards = {
@@ -696,7 +697,7 @@ const agentSettingsCards: AgentSettingsCards = {
   Dots: LazyDotsSettingsCard,
   JobCopilot: LazyJobCopilotSettingsCard,
   MailCopilot: LazyMailCopilotSettingsCard,
-  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard
+  MarketingCopilot: LazyMarketingCopilotSettingsCard, FreelanceCopilot: LazyFreelanceCopilotSettingsCard, Design: LazyDesignSettingsCard
 };
 
 const toolbarMenuLoadingFallback = <span className="sr-only" role="status">Loading menu…</span>;
@@ -4894,7 +4895,7 @@ export function App() {
         },
         create: {
           isCodexEnabled, cliPaneCreationPending, toggleChatLauncher, toggleCliLauncher, addRootAdminPane, addPane, addFilesPane,
-          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addLivePane
+          addDatabasesPane, addDemosPane, addT3CodePane, addJobApplyPane, addMailCopilotPane, addMarketingCopilotPane: () => addCopilotPane(MARKETING_COPILOT_KIND), addFreelanceCopilotPane: () => addCopilotPane(FREELANCE_COPILOT_KIND), addDesignPane: () => addCopilotPane(DESIGN_KIND), addLivePane
         },
         tools: { desktopWidgets, openStickyNote, isBrowserFullscreen, snip: snipTool, captureRoomScreen, reloadRoomWindow, vpn: toolbarVpn },
         workspace: {
@@ -5135,7 +5136,7 @@ export function App() {
       else if (action.id === "add-t3code") void addT3CodePane(count);
       else if (action.id === "add-jobs") void addJobApplyPane(count);
       else if (action.id === "add-mail") void addMailCopilotPane(count);
-      else if (action.id === "add-marketing" || action.id === "add-freelance") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : FREELANCE_COPILOT_KIND, count);
+      else if (action.id === "add-marketing" || action.id === "add-freelance" || action.id === "add-design") void addCopilotPane(action.id === "add-marketing" ? MARKETING_COPILOT_KIND : action.id === "add-design" ? DESIGN_KIND : FREELANCE_COPILOT_KIND, count);
       else if (action.id === "add-harness") void addHarnessPane(count);
       else action.onClick();
     }
