@@ -1,14 +1,17 @@
-import { readFile } from "node:fs/promises";
-import { cpus, freemem, loadavg, totalmem } from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import {
   NOUS_EFFORT, NOUS_MODEL_ID, freelanceLeadDecisionSchema, listMemoryQuerySchema, freelanceMessageReviewDecisionSchema, jobApplyReviewDecideSchema, mailCopilotReviewDecideSchema,
-  mailRuleDecisionSchema, marketingPostReviewDecisionSchema, nousSettingsSchema,
-  type AuthUser, type NousCopilot, type NousDecision, type NousOverview, type NousSettings, type Pane, type RoomAgentEvent, type SpaceNotification
+  mailRuleDecisionSchema, marketingPostReviewDecisionSchema, nousSettingsSchema, ownerWorkingTimeZone,
+  type AuthUser, type NousCopilot, type PaneCliSession, type NousDecision, type NousOverview, type NousSettings, type Pane, type RoomAgentEvent, type SpaceNotification
 } from "@space/contracts";
-import { InMemoryNousRepository, PostgresNousRepository, PostgresSpaceStore, type NousRepository, type RoomAgentMonitorRepository } from "@space/db";
-import { createCanonicalSpaceMemoryBridge, type CanonicalMemoryBridge, type SpaceStore } from "@space/runtime";
+import { InMemoryNousAwayRepository, InMemoryPaneReportsRepository, PostgresNousAwayRepository, PostgresPaneReportsRepository, InMemoryNousFollowupsRepository, InMemoryNousPaneChecksRepository, InMemoryNousPlanMarksRepository, InMemoryNousRepository, PostgresNousFollowupsRepository, PostgresNousPaneChecksRepository, PostgresNousPlanMarksRepository, PostgresNousRepository, PostgresSpaceStore, type ControlRepository, type NousRepository, type PaneReport, type RoomAgentMonitorRepository } from "@space/db";
+import { createNousFollowups } from "./followups.js";
+import { createNousPaneNotices } from "./pane-notices.js";
+import type { NousOpsDeps } from "./ops-views.js";
+import type { VaultModule } from "../vault/wiring.js";
+import { nousPlanActivity, nousStalledPlansLine, renderNousPlanActivity } from "./stalled-plans.js";
+import { createCanonicalSpaceMemoryBridge, makeSpaceId, type CanonicalMemoryBridge, type SpaceStore } from "@space/runtime";
 import { cookieName, verifySession } from "../auth.js";
 import type { FreelanceCopilotService } from "../freelance-copilot/service.js";
 import type { JobApplyService } from "../job-apply/service.js";
@@ -21,15 +24,37 @@ import type { RoomPaneObservation } from "../room-pane-control.js";
 import type { DashboardAgentsSample } from "../room-routes.js";
 import { pickClaudeProfile } from "../chess/chess-players.js";
 import { CHESS_MOVE_SOCKET } from "../chess/chess-cli.js";
-import { NOUS_MCP_PATH, postToWorker, registerNousMcpRoute, signNousToken } from "./mcp.js";
-import { nextPlanStep, paneLabel, renderNousWorld, type NousServerLoad } from "./digest.js";
+import { NOUS_MCP_PATH, postToWorkerWhenUp, registerNousMcpRoute, signNousToken } from "./mcp.js";
+import { nextPlanStep, paneLabel, renderNousWorld } from "./digest.js";
+import { createServerLoad, paneRootsFrom, renderServerLoad, type ServerLoadDeps } from "./server-load.js";
+import { createHeldDispatch } from "./held-dispatch.js";
 import { registerNousRoutes } from "./routes.js";
 import { registerNousAttachments } from "./attachment-routes.js";
+import { ownerClockLine } from "../owner-clock.js";
+import { createNousPaneWatch, paneCheckedText, paneRoundLine, paneWatchEntries, paneWatchOverview, renderPanesNotChecked } from "./pane-watch.js";
 import { nousScorecard, NOUS_SCORECARD_WINDOW_DAYS } from "./progress.js";
+import { createPaneLastAnswer, type PaneLastAnswerDeps } from "./last-answer.js";
 import { createNousService, NousUnavailableError, type NousRunner, type NousService } from "./service.js";
 import { createNousTools, nousToolDefinitions, type NousCopilotDeps, type NousCopilotItem } from "./tools.js";
 import { createCopilotControl, type CopilotInvoke } from "./copilot-control.js";
+import { createNousMutes } from "./mutes.js";
 import { createNousFocus, type NousFocusEventBus } from "./focus.js";
+import { createNousAway } from "./away.js";
+import { createPaneReports, PANE_HEARTBEAT_MS, paneReportLine, paneReportsText, planReportLine, type PaneReports } from "../pane-reports.js";
+
+/** Rooms and CLI panes by state for the dock's live stats; a room whose panes could not be read counts as a room only. */
+export function nousLiveCounts(samples: Array<{ sample: DashboardAgentsSample | null }>): NonNullable<NousOverview["live"]> {
+  const agents = { running: 0, waiting: 0, idle: 0, total: 0 };
+  for (const { sample } of samples) for (const pane of sample?.data ?? []) {
+    if (pane.isClosed || pane.mode !== "TERMINAL") continue;
+    const status = sample!.activity[pane.id];
+    agents.total += 1;
+    if (status === "working") agents.running += 1;
+    else if (status === "waiting") agents.waiting += 1;
+    else agents.idle += 1;
+  }
+  return { rooms: samples.length, agents };
+}
 
 const SETTINGS_CACHE_MS = 15_000;
 const HEARTBEAT_MS = 30 * 60_000;
@@ -52,12 +77,22 @@ export interface NousWiringOptions {
   releaseTrain(input: ReleaseTrainInput, by: ReleaseTrainActor & { operatorApproved?: boolean }): Promise<string>;
   notifications: Pick<NotificationService, "raise" | "resolve" | "list" | "setStatus">;
   copilots: { mail?: MailCopilotService; marketing?: MarketingCopilotService; freelance?: FreelanceCopilotService; job?: JobApplyService };
+  /** The SYSTEM_HEALTH sampler and the CLI sessions' root processes, for the server's load state (server-load.ts). */
+  health?: ServerLoadDeps["health"];
+  /** Read-only ops views for Nous's tools (services, token usage, Space Gateway; plan clipboard:8s0ZNiO3q5ZT S5). */
+  ops?: NousOpsDeps;
+  vault?: VaultModule;
+  sessionPids?(sessions: readonly PaneCliSession[]): Promise<ReadonlyMap<string, number>>;
+  /** Space Control's records, for the texts held for a calm server (held-dispatch.ts). */
+  controlRepository?: ControlRepository;
   /** The owner's own API as Space Control calls it, for space_copilot_control. */
   invoke?: CopilotInvoke;
   /** The app's event stream, for space_focus_pane (ids only). */
   eventBus?: NousFocusEventBus;
   /** The room monitor's events, for Nous's scorecard (how fast waiting panes get unblocked). */
   monitorEvents?: Pick<RoomAgentMonitorRepository, "listEvents">;
+  /** The CLI host's process per session, to read a Claude pane's last answer (space_read_pane reply "last"). */
+  activeSessionPids?: PaneLastAnswerDeps["activeSessionPids"];
   /** Claude Code accounts with their remaining usage, to start each turn on one that has room. */
   claudeUsageProvider(): Promise<{ data: Parameters<typeof pickClaudeProfile>[0] }>;
   repository?: NousRepository;
@@ -66,6 +101,7 @@ export interface NousWiringOptions {
   canonicalMemory?: CanonicalMemoryBridge;
 }
 
+// 80 steps: a sweep over every pane (operator request 2026-10-17) hit error_max_turns at 40; TURN_MS still bounds the cost.
 const TURN_MS = 20 * 60_000;
 
 /**
@@ -76,8 +112,8 @@ function workerRunner(options: NousWiringOptions): NousRunner {
   return async ({ owner, turnId, system, prompt }, signal) => {
     if (options.config.instance !== "stable") throw new NousUnavailableError("Nous runs only on the stable instance: its Claude Code turns run in stable's worker.");
     const claudeProfile = await options.claudeUsageProvider().then((usage) => pickClaudeProfile(usage.data)).catch(() => null);
-    const result = await postToWorker<{ text?: unknown; isError?: unknown }>(CHESS_MOVE_SOCKET, "/nous-turn", {
-      model: NOUS_MODEL_ID, effort: NOUS_EFFORT, claudeProfile, system, prompt, maxTurns: 40, timeoutMs: TURN_MS,
+    const result = await postToWorkerWhenUp<{ text?: unknown; isError?: unknown }>(CHESS_MOVE_SOCKET, "/nous-turn", {
+      model: NOUS_MODEL_ID, effort: NOUS_EFFORT, claudeProfile, system, prompt, maxTurns: 80, timeoutMs: TURN_MS,
       mcpUrl: `${options.apiBaseUrl}${NOUS_MCP_PATH}`,
       mcpToken: signNousToken(options.auth.sessionSecret, { owner, turnId, expiresAt: Date.now() + TURN_MS + 60_000 })
     }, signal);
@@ -89,8 +125,10 @@ export interface NousWiring {
   service: NousService;
   /** On, autonomous here, and its model working. */
   active(owner: string): Promise<boolean>;
-  /** A room monitor event (every kind, every room). */
+  /** A room monitor event (every kind, every room); a new FINISHED or WAITING event also stores the pane's report (every instance). */
   monitorEvent(event: RoomAgentEvent): void;
+  /** Each CLI pane's progress reports (plan clipboard:ot6-jLKOWDNC). */
+  paneReports: PaneReports;
   /** A new notification from any source but the Room Agent's monitor and Nous itself. */
   notification(notification: SpaceNotification): void;
   /** The Room Agent's auto-answer leaves this event to Nous (all but the mechanical "continue" after an API error). */
@@ -99,14 +137,6 @@ export interface NousWiring {
 
 const ownerOf = (room: { ownerUserId?: string | null }) => room.ownerUserId ?? "user:operator";
 
-/** The host's load; memory from MemAvailable (free memory alone counts the page cache as used). */
-async function serverLoad(): Promise<NousServerLoad> {
-  const [load1 = 0, load5 = 0] = loadavg();
-  const available = await readFile("/proc/meminfo", "utf8").then((text) => Number(/^MemAvailable:\s+(\d+)\s+kB/m.exec(text)?.[1]) * 1024).catch(() => Number.NaN);
-  const total = totalmem();
-  const used = 1 - (Number.isFinite(available) ? available : freemem()) / total;
-  return { load1, load5, cpus: cpus().length, memoryUsedPercent: Math.round(used * 100) };
-}
 const oneLine = (text: string, max: number) => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat; };
 
 /** The signed-in ADMIN or OPERATOR. */
@@ -185,8 +215,32 @@ function copilotDeps(options: NousWiringOptions, ownerPanes: (owner: string, mod
 /** Builds Nous, registers its routes and returns the hooks the monitor, the notifications and the auto-answer call. */
 export function registerNous(app: FastifyInstance, options: NousWiringOptions): NousWiring {
   const { store } = options;
+  const mutes = createNousMutes();
   const databaseUrl = store instanceof PostgresSpaceStore && options.config.databaseUrl ? options.config.databaseUrl : null;
   const repository = options.repository ?? (databaseUrl ? PostgresNousRepository.fromConnectionString(databaseUrl) : new InMemoryNousRepository());
+  // When each open plan's percentage last changed (plan clipboard:8s0ZNiO3q5ZT S4).
+  const planMarks = databaseUrl ? PostgresNousPlanMarksRepository.fromConnectionString(databaseUrl) : new InMemoryNousPlanMarksRepository();
+  // Pane watch (plan clipboard:MAongwnxq9Ro): when Nous last checked each pane, so it never forgets one.
+  const paneChecks = databaseUrl ? PostgresNousPaneChecksRepository.fromConnectionString(databaseUrl) : new InMemoryNousPaneChecksRepository();
+  const paneWatch = createNousPaneWatch({ repository: paneChecks });
+  // Away mode (plan clipboard:B7eTUHTJYg3X): the operator's away sessions and what Nous did meanwhile.
+  const awayRepository = databaseUrl ? PostgresNousAwayRepository.fromConnectionString(databaseUrl) : new InMemoryNousAwayRepository();
+  const away = createNousAway({ repository: awayRepository, notifications: options.notifications,
+    // Only plans carry a title: the note's first line is its name.
+    saveNote: async (owner, title, text) => store.upsertClipboardItem({ ownerUserId: owner, source: "AGENT_NOTE", text: `${title}\n\n${text}` }),
+    log: { warn: (details, message) => app.log.warn(details, message) } });
+  // Pane reports (plan clipboard:ot6-jLKOWDNC): a turn's last answer is stored when the monitor sees the turn end, on every instance.
+  const paneReportsRepository = databaseUrl ? PostgresPaneReportsRepository.fromConnectionString(databaseUrl) : new InMemoryPaneReportsRepository();
+  const lastAnswer = options.activeSessionPids ? createPaneLastAnswer({ store, activeSessionPids: options.activeSessionPids }) : null;
+  const paneReports = createPaneReports({ repository: paneReportsRepository, store, lastAnswer: async (pane) => lastAnswer ? lastAnswer(pane) : null,
+    screen: async (pane) => (await options.inspectPane(pane)).text ?? null, log: { warn: (details, message) => app.log.warn(details, message) },
+    onReport: (owner, report) => {
+      // A pane's report counts as a check of it (pane watch, plan clipboard:MAongwnxq9Ro): reporting panes are not overdue.
+      void paneWatch.read(owner, report.roomId, report.paneId).catch(() => undefined);
+      if (report.source === "AGENT") void reportNotice(owner, report).catch((error) => app.log.warn({ err: error }, "Nous could not take a pane report."));
+    } });
+  // Nous's own alerts go through Away, which holds the ATTENTION ones while the operator is away.
+  const nousNotifications = { ...options.notifications, raise: away.raise };
   const runner = options.runner ?? workerRunner(options);
 
   const settingsCache = new Map<string, { value: NousSettings; expires: number }>();
@@ -198,15 +252,23 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     return value;
   }
 
+  const serverLoad = options.health ? createServerLoad({ health: options.health, paneRoots: paneRootsFrom(store, options.sessionPids ?? (async () => new Map())) }) : null;
   const liveRooms = async (owner: string) => (await store.listRooms(owner)).filter((room) => !room.archivedAt && room.kind !== "CLI_RECOVERY");
   async function ownerPanes(owner: string, mode: Pane["mode"]): Promise<Pane[]> {
     const panes = await Promise.all((await liveRooms(owner)).map((room) => Promise.resolve(store.listPanes(room.id))));
     return panes.flat().filter((pane) => pane.mode === mode && !pane.isClosed);
   }
 
+  /** HH:MM in the owner's working time zone. */
+  async function ownerClock(owner: string): Promise<(iso: string) => string> {
+    const zone = ownerWorkingTimeZone(await Promise.resolve(store.getUserSettings(owner)).catch(() => null));
+    const hhmm = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    return (iso: string) => hhmm.format(new Date(iso));
+  }
+
   async function world(owner: string): Promise<{ text: string; overview: NousOverview }> {
     const rooms = await liveRooms(owner);
-    const [samples, notifications, plans, open, running, trains, decisions, notes, server] = await Promise.all([
+    const [samples, notifications, plans, open, running, trains, decisions, notes, server, clock, heldLine, reports, planReports, allowed] = await Promise.all([
       Promise.all(rooms.map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) }))),
       options.notifications.list(owner, { status: "OPEN", limit: 80 }).then((items) => items.filter((item) => item.source !== "NOUS" && item.severity !== "INFO")),
       Promise.resolve(store.listClipboardItems(owner, { source: "PLAN", includeCompleted: false, page: 1, pageSize: 100 })).then((result) => result.items),
@@ -215,9 +277,33 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       options.releaseTrain({ op: "status", product: "run-spaceapp" }, { roomId: "", pane: null, paneSelf: false }).catch(() => "The release trains could not be read now."),
       repository.listDecisions(owner, { statuses: ["OPEN"], limit: 20 }),
       repository.listNotes(owner),
-      serverLoad().catch(() => null)
+      serverLoad ? serverLoad.read().catch(() => null) : null,
+      ownerClockLine(store, owner).catch(() => null),
+      held ? held.summary(owner).catch(() => null) : null,
+      paneReports.latest(owner).catch(() => []),
+      paneReports.latestPlans(owner).catch(() => []),
+      settings(owner).catch(() => null)
     ]);
-    const text = renderNousWorld({ rooms: samples, notifications, plans, tasks: [...running, ...open], trains, decisions, notes, now: new Date().toISOString(), server });
+    const activity = renderNousPlanActivity(await nousPlanActivity({ owner, plans, samples, marks: planMarks }).catch(() => []));
+    // The operator's cards (plan clipboard:8FfXWclYUfOH): a card whose pane is gone is resolved, only when every room could be read.
+    const paneNames = new Map(samples.flatMap(({ sample }) => (sample?.data ?? []).filter((pane) => !pane.isClosed).map((pane) => [pane.id, paneLabel(pane)] as const)));
+    if (samples.every(({ sample }) => sample)) await paneNotices.reconcile(owner, new Set(paneNames.keys())).catch(() => 0);
+    const cards = await paneNotices.summary(owner, { room: (id) => rooms.find((room) => room.id === id)?.name ?? null, pane: (id) => (id && paneNames.get(id)) || null }).catch(() => "");
+    const muted = mutes.list(owner).map(([roomId, mute]) => `- ${rooms.find((room) => room.id === roomId)?.name ?? roomId} until ${mute.until.slice(0, 16)} UTC: ${mute.reason}`);
+    const clockOf = await ownerClock(owner);
+    const reportByPane = new Map(reports.map((report) => [report.paneId, report]));
+    const reportByPlan = new Map(planReports.map((report) => [report.planId, report]));
+    const working = new Map(samples.flatMap(({ sample }) => (sample?.data ?? []).filter((pane) => pane.mode === "TERMINAL" && sample!.activity[pane.id] === "working")
+      .map((pane) => [pane.id, { since: sample!.details[pane.id]?.since ?? null }] as const)));
+    const watch = paneWatchEntries(samples, await paneWatch.list(owner).catch(() => []), Date.now());
+    const watchByPane = new Map(watch.map((entry) => [entry.pane.id, entry]));
+    const text = [renderNousWorld({ rooms: samples, notifications, plans, tasks: [...running, ...open], trains, decisions, notes, now: new Date().toISOString(), server, held: heldLine,
+      ...(allowed ? { allowances: { promote: allowed.mayPromote, warm: allowed.mayApproveWarm } } : {}),
+      paneChecked: (paneId) => paneCheckedText(watchByPane.get(paneId), clockOf), panesNotChecked: renderPanesNotChecked(watch, clockOf),
+      paneReport: (paneId) => paneReportLine(reportByPane.get(paneId), clockOf, working.get(paneId)),
+      planReport: (planId) => planReportLine(reportByPlan.get(planId), clockOf) }), activity, cards,
+      muted.length ? ["## Muted rooms (their finished and waiting panes do not wake you)", ...muted].join("\n") : ""]
+      .filter(Boolean).join("\n\n");
     const roomName = new Map(rooms.map((room) => [room.id, room.name]));
     const handsKinds = /SIGN_IN|HANDOFF|USAGE_LIMIT|ACCOUNT|CAPTCHA|LOGIN/i;
     const overview: NousOverview = {
@@ -226,9 +312,15 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       needsHands: notifications.filter((item) => item.source === "BROWSER_HANDOFF" || handsKinds.test(item.kind))
         .map((item) => ({ id: item.id, source: item.source, title: item.title, room: item.roomId ? roomName.get(item.roomId) ?? null : null })),
       trains,
-      planMap: notes.find((note) => note.key === "plan-map")?.text ?? null
+      planMap: notes.find((note) => note.key === "plan-map")?.text ?? null,
+      live: nousLiveCounts(samples),
+      panes: paneWatchOverview(watch).map((card) => {
+        const report = reportByPane.get(card.paneId);
+        return { ...card, report: report ? { at: report.at, status: report.status, source: report.source, summary: report.summary } : null };
+      })
     };
-    return { text, overview };
+    // The operator's working time zone comes first, so Nous writes every time in it (plan clipboard:ubQLgcTtQWA_ step 5).
+    return { text: clock ? `${clock}\n\n${text}` : text, overview };
   }
 
   /** The action of a decision the operator approved; the server runs exactly this, as the operator. */
@@ -319,12 +411,28 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
 
   // The tools ask through the service, which needs the tools: the service is set right below.
   const late: { service?: NousService } = {};
+  const paneNotices = createNousPaneNotices({ notifications: nousNotifications });
+  // Follow-ups (plan clipboard:8s0ZNiO3q5ZT S3): reminders back into the inbox; checked every minute while Nous runs here.
+  const followupsRepository = databaseUrl ? PostgresNousFollowupsRepository.fromConnectionString(databaseUrl) : new InMemoryNousFollowupsRepository();
+  const followups = createNousFollowups({ repository: followupsRepository, notice: (owner, key, line) => late.service!.notice(owner, key, line) });
+  const held = options.controlRepository && serverLoad ? createHeldDispatch({ repository: options.controlRepository, level: async () => (await serverLoad.read()).level,
+    deliver: (item) => options.roomTools.execute("send_to_pane", { panes: [item.paneId], text: item.text, when: "after_turn" },
+      { roomId: item.roomId, agentPaneId: "", actorId: item.owner, requestId: makeSpaceId("nous_held"), traceId: makeSpaceId("trace") }),
+    notice: async (owner, key, line) => { await late.service?.notice(owner, key, line); } }) : null;
   const tools = createNousTools({
+    followups,
+    mutes,
+    paneNotices,
+    paneWatch,
+    paneReports: async (owner, pane, limit) => paneReportsText(paneLabel(pane), await paneReports.list(owner, pane.id, limit), await ownerClock(owner)),
+    ...(options.ops ? { ops: options.ops } : {}),
+    ...(options.vault ? { vault: options.vault } : {}),
     world: async (owner) => (await world(owner)).text,
     rooms: liveRooms,
     listPanes: async (roomId) => store.listPanes(roomId),
     inspectPane: options.inspectPane,
     roomTool: (name, args, ctx) => options.roomTools.execute(name, args, ctx),
+    ...(held && serverLoad ? { held: { level: async () => (await serverLoad.read()).level, hold: held.hold } } : {}),
     plans: {
       list: async (owner, includeCompleted) => (await store.listClipboardItems(owner, { source: "PLAN", includeCompleted, page: 1, pageSize: 100 })).items,
       get: async (owner, id) => store.getClipboardItem(owner, id),
@@ -363,11 +471,13 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
     setNote: (owner, key, text) => repository.setNote(owner, key, text),
     answerPrompt: (pane, input, traceId) => options.answerCli(pane, input, traceId),
     allowances: async (owner) => { const value = await settings(owner); return { promote: value.mayPromote, warm: value.mayApproveWarm }; },
-    ask: (input) => late.service!.ask(input),
+    ask: (input, askOptions) => late.service!.ask(input, askOptions),
     withdraw: async (owner, id, reason) => Boolean(await late.service!.withdraw(owner, id, reason)),
     copilots: copilotDeps(options, ownerPanes),
     progress: (owner) => progress(owner),
-    ...(options.eventBus ? { focus: createNousFocus({ eventBus: options.eventBus }) } : {})
+    ...(lastAnswer ? { lastAnswer } : {}),
+    ...(options.eventBus ? { focus: createNousFocus({ eventBus: options.eventBus }) } : {}),
+    away
   });
   const service = late.service = createNousService({
     repository, runner, tools, world, settings,
@@ -376,36 +486,94 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       settingsCache.set(owner, { value: saved, expires: Date.now() + SETTINGS_CACHE_MS });
       return saved;
     },
-    notifications: options.notifications,
+    notifications: nousNotifications,
     executeAction,
     autonomous: options.autonomous,
+    away,
     log: { warn: (details, message) => app.log.warn(details, message) }
   });
 
   const active = async (owner: string) => options.autonomous && await service.active(owner).catch(() => false);
+  /** An agent's report that changes the picture (not plain progress) is one inbox line per pane; agents' test rooms stay out. */
+  async function reportNotice(owner: string, report: PaneReport): Promise<void> {
+    if (!options.autonomous || (report.status === "PROGRESS" && !report.ticket)) return;
+    const [room, pane] = await Promise.all([store.getRoom(report.roomId), store.getPane(report.paneId)]);
+    if (room.kind === "AGENT_PROOF") return;
+    const kind = report.status === "FAILED" ? "ERROR" : ["BLOCKED", "NEEDS_DECISION", "WAITING"].includes(report.status) ? "WAITING" : "FINISHED";
+    if (!(await active(owner)) || mutes.silences(owner, room.id, kind)) return;
+    await service.notice(owner, `report:${pane.id}`, `Room "${room.name}" pane ${paneLabel(pane)} reported ${report.status.toLowerCase().replace(/_/g, " ")} (pane data): "${oneLine(report.summary, 200)}"`
+      + `${report.needs ? ` · needs: ${oneLine(report.needs, 120)}` : ""}${report.ticket ? ` · ticket ${report.ticket}` : ""}`);
+  }
   const roomOwner = async (roomId: string) => ownerOf(await Promise.resolve(store.getRoom(roomId)));
 
+  /** Pane reports' heartbeat (every instance): working panes silent for 10 minutes; agents' test rooms are left out. */
+  async function paneHeartbeats(): Promise<void> {
+    const now = Date.now();
+    for (const owner of new Set((await store.listRooms()).map(ownerOf))) {
+      const newest = new Map((await paneReports.latest(owner)).map((report) => [report.paneId, report]));
+      for (const room of (await liveRooms(owner)).filter((entry) => entry.kind !== "AGENT_PROOF")) {
+        const sample = await options.readActivity(room.id).catch(() => null);
+        for (const pane of sample?.data ?? []) {
+          const since = sample!.details[pane.id]?.since;
+          const last = newest.get(pane.id) ?? null;
+          if (pane.isClosed || pane.mode !== "TERMINAL" || sample!.activity[pane.id] !== "working" || (since && now - Date.parse(since) < PANE_HEARTBEAT_MS)
+            || (last && now - Date.parse(last.at) < PANE_HEARTBEAT_MS)) continue;
+          await paneReports.heartbeat(room, pane, last).catch((error) => warn(error, "Pane heartbeat failed."));
+        }
+      }
+    }
+  }
+
   let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let paneBeat: ReturnType<typeof setInterval> | null = null;
+  let followupTick: ReturnType<typeof setInterval> | null = null;
+  let heldTimer: ReturnType<typeof setInterval> | null = null;
   app.addHook("onReady", async () => {
+    (paneBeat = setInterval(() => void paneHeartbeats().catch((error) => warn(error, "Pane heartbeats failed.")), 60_000)).unref?.();
     const failed = await service.recover().catch(() => 0);
     if (failed > 0) app.log.info({ failed }, "Nous turns interrupted by the restart were closed.");
     if (!options.autonomous) return;
+    for (const owner of new Set((await store.listRooms()).map(ownerOf))) await service.resume(owner).catch(() => false);
     heartbeat = setInterval(() => {
       void (async () => {
         const owners = new Set((await store.listRooms()).map(ownerOf));
         for (const owner of owners) {
           if (!(await active(owner))) continue;
-          const plans = (await store.listClipboardItems(owner, { source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 })).total;
-          if (plans > 0) await service.notice(owner, "heartbeat", `Heartbeat: ${plans} open plan${plans === 1 ? "" : "s"}; check what stalled.`);
+          const samples = await Promise.all((await liveRooms(owner)).map(async (room) => ({ room, sample: await options.readActivity(room.id).catch(() => null) })));
+          // Pane watch (plan clipboard:MAongwnxq9Ro): one "Pane round due" line per heartbeat (every 30 minutes) while panes are due.
+          const round = paneRoundLine(paneWatchEntries(samples, await paneWatch.list(owner).catch(() => []), Date.now()));
+          if (round) await service.notice(owner, "pane-round", round);
+          const plans = (await store.listClipboardItems(owner, { source: "PLAN", includeCompleted: false, page: 1, pageSize: 100 })).items;
+          // While Away (plan clipboard:B7eTUHTJYg3X) the round runs every 30 minutes even with no plan and an empty inbox.
+          const awaySession = await away.current(owner).catch(() => null);
+          if (!plans.length && !awaySession) continue;
+          const load = serverLoad ? await serverLoad.read().catch(() => null) : null;
+          // Stalled plans (plan clipboard:8s0ZNiO3q5ZT S4): the heartbeat names plans unchanged 6+ hours whose pane is idle.
+          const stalled = nousStalledPlansLine(await nousPlanActivity({ owner, plans, samples, marks: planMarks }).catch(() => []));
+          await service.notice(owner, "heartbeat", `Heartbeat: ${plans.length} open plan${plans.length === 1 ? "" : "s"}; ${stalled ?? "check what stalled."}${load ? ` ${renderServerLoad(load).split("\n")[0]}` : ""}`);
         }
       })().catch((error) => app.log.warn({ err: error }, "Nous heartbeat failed."));
     }, HEARTBEAT_MS);
     heartbeat.unref?.();
+    followupTick = setInterval(() => {
+      void followups.tick().catch((error) => app.log.warn({ err: error }, "Nous follow-ups failed."));
+      void away.tick().catch((error) => app.log.warn({ err: error }, "Nous away check failed."));
+    }, 60_000);
+    followupTick.unref?.();
+    if (held) (heldTimer = setInterval(() => void held.tick().catch((error) => app.log.warn({ err: error }, "Nous held dispatch failed.")), 60_000)).unref?.();
   });
   app.addHook("onClose", async () => {
     if (heartbeat) clearInterval(heartbeat);
+    if (paneBeat) clearInterval(paneBeat);
+    if (followupTick) clearInterval(followupTick);
+    if (heldTimer) clearInterval(heldTimer);
     service.stopAll();
     await repository.dispose();
+    await followupsRepository.dispose();
+    await planMarks.dispose();
+    await paneChecks.dispose();
+    await awayRepository.dispose();
+    await paneReportsRepository.dispose();
   });
 
   const definitions = nousToolDefinitions({ copilots: Boolean(copilotDeps(options, ownerPanes)) });
@@ -420,21 +588,28 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
   const attachments = registerNousAttachments(app, { config: options.config, routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request), parseQuery: options.parseQuery });
   registerNousMcpRoute(app, { secret: options.auth.sessionSecret, service, tools: definitions, routeOptions: options.routeOptions, attachments });
   registerNousRoutes(app, service, { routeOptions: options.routeOptions, owner: (request) => nousOwner(options, request),
-    assertPerson: (request) => assertPerson(options, request), parseBody: options.parseBody, parseQuery: options.parseQuery, progress, attachments });
+    assertPerson: (request) => assertPerson(options, request), parseBody: options.parseBody, parseQuery: options.parseQuery, progress, attachments, away });
 
   const warn = (error: unknown, message: string) => app.log.warn({ err: error }, message);
   return {
     service,
     active,
+    paneReports,
     monitorEvent(event) {
+      const report = (event.kind === "FINISHED" || event.kind === "WAITING") && event.status === "OPEN" && event.paneId
+        ? paneReports.fromEvent(event).catch((error: unknown) => { warn(error, "Pane report failed."); return null; }) : null;
       if (!options.autonomous || (event.kind !== "FINISHED" && event.status !== "OPEN" && event.status !== "ESCALATED")) return;
       void (async () => {
+        if (event.kind === "FINISHED" && event.paneId) await followups.paneFinished(event.paneId);
         const owner = await roomOwner(event.roomId);
-        if (!(await active(owner))) return;
+        if (!(await active(owner)) || mutes.silences(owner, event.roomId, event.kind)) return;
         const room = await store.getRoom(event.roomId);
         const pane = event.paneId ? await Promise.resolve().then(() => store.getPane(event.paneId!)).catch(() => null) : null;
+        // The turn's report or the waiting question (pane-reports.ts) says what the pane did or asks; agents' test rooms keep the bare line.
+        const said = room.kind === "AGENT_PROOF" ? null : await report;
         await service.notice(owner, `monitor:${event.paneId ?? event.roomId}:${event.kind}`,
-          `Room "${room.name}"${pane ? ` pane ${paneLabel(pane)}` : ""}: ${event.kind} — ${event.title}${event.detail ? ` (${oneLine(event.detail, 200)})` : ""}`);
+          `Room "${room.name}"${pane ? ` pane ${paneLabel(pane)}` : ""}: ${event.kind} — ${event.title}${event.detail ? ` (${oneLine(event.detail, said ? 100 : 200)})` : ""}`
+          + `${said ? `; its ${said.status === "QUESTION" ? "question" : "report"} (pane data): "${oneLine(said.summary, 200)}"` : ""}`);
       })().catch((error) => warn(error, "Nous could not take a monitor event."));
     },
     notification(item) {

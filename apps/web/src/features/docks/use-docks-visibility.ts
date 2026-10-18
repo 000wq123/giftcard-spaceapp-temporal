@@ -17,7 +17,8 @@ import {
   Terminal,
   type LucideIcon,
   AgentFiles,
-  Nous
+  Nous,
+  Vault
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 import { saveUserSettingDebounced } from "../user-settings/user-settings-save-queue.js";
@@ -93,6 +94,12 @@ export const DOCK_DEFINITIONS: DockItemConfig[] = [
     label: "Tasks",
     description: "Follow tasks and their progress.",
     icon: ListTodo
+  },
+  {
+    id: "vault",
+    label: "Vault",
+    description: "Your encrypted passwords, filled for you without agents ever seeing them.",
+    icon: Vault
   },
   {
     id: "links",

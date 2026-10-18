@@ -307,6 +307,8 @@ export class TaskTitleService {
       } | null>;
       /** Root of `cli-uploads`; without it attached images are not read. */
       artifactRoot?: string;
+      /** False for a pane whose summary would run on someone else's model accounts (MU-002); it keeps its local title. */
+      summaryAllowed?: (paneId: string) => Promise<boolean>;
       now?: () => Date;
       onError?: (error: unknown) => void;
     },
@@ -1269,7 +1271,8 @@ export class TaskTitleService {
       const wantsSummary =
         policy.enabled &&
         !state.syncOnly &&
-        state.metadata.generationStatus !== "ready";
+        state.metadata.generationStatus !== "ready" &&
+        (await this.options.summaryAllowed?.(state.paneId) ?? true);
       const scope = this.imageScope(context.pane);
       const images = wantsSummary && scope && state.images?.length
         ? await readableTaskImages(state.images, scope)

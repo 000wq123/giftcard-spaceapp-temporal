@@ -65,3 +65,7 @@ export * from "./dot-connectors.js";
 export * from "./repository-providers.js";
 export * from "./space-instance.js";
 export * from "./instance-releases.js";
+export * from "./vault.js";
+export * from "./vault-crypto.js";
+export * from "./vault-password.js";
+export * from "./vault-fill.js";

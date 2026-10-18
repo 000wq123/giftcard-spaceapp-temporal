@@ -100,7 +100,7 @@ describe("single-attempt turns after a worker shutdown", () => {
     hangingProcess(() => controller.abort(new Error("CANCELLED")));
     await expect(runCliAgentTurn(input, { env: { SPACE_ENABLE_CLI_CHAT_TURNS: "true" }, completionStore: store, abortSignal: controller.signal }))
       .rejects.toThrow("CANCELLED");
-    expect(state().run).toMatchObject({ status: "INTERRUPTED", errorCode: "ROOM_AGENT_STOPPED", errorMessage: "CLI chat turn was stopped by the operator." });
+    expect(state().run).toMatchObject({ status: "INTERRUPTED", errorCode: "ROOM_AGENT_STOPPED", errorMessage: "Stopped." });
   });
 
   it("records an unknown OpenCode outcome after the prompt was sent and the worker shut down", async () => {

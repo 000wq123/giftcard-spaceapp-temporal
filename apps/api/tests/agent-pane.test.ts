@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentPaneSessionSchema, type DummyTurnInput, type TurnStartResult } from "@space/contracts";
+import { resolveOpenCodeTitleFallbackControl } from "@space/opencode-control";
 import { attachedRequestRules } from "../src/attachment-context.js";
 import { InMemorySpaceStore } from "@space/runtime";
 import { createApp, type CreateAppOptions } from "../src/app.js";
@@ -632,6 +633,21 @@ describe("Space API native agent panes", () => {
 
     expect(session.modelCatalog.map((model) => model.id)).toEqual(["gpt-5.6-sol"]);
     expect(session.modelOptions.every((option) => !option.id.includes("gpt-5.2"))).toBe(true);
+  });
+
+  it("never reads stable's OpenCode access file or reaches its shared server for Chat on dev", async () => {
+    for (const instance of ["stable", "dev"] as const) {
+      vi.mocked(resolveOpenCodeTitleFallbackControl).mockClear();
+      const store = new InMemorySpaceStore();
+      const room = store.createRoom({ name: `OpenCode Chat on ${instance}`, initialPaneCount: 1 }, "trace:room");
+      const pane = store.listPanes(room.id)[0]!;
+      const { app, cookie } = await authedApp({ store, config: { ...enabledConfig(), instance } });
+      const loaded = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/agent-session`, headers: { cookie } });
+      const provider = agentPaneSessionSchema.parse(loaded.json()).modelProviders.find((entry) => entry.providerId === "opencode");
+      // The fallback control is the reader of the shared server's access file; dev must never call it.
+      expect([instance, vi.mocked(resolveOpenCodeTitleFallbackControl).mock.calls.length > 0]).toEqual([instance, instance === "stable"]);
+      if (instance === "dev") expect(provider?.statusReason).toBe("OpenCode Chat is unavailable on dev: it runs only on the stable instance.");
+    }
   });
 
   it("shows enabled OpenCode inside Chat panes", async () => {

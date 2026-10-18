@@ -1,19 +1,22 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NousAttachment, NousDecision, NousMessage, NousState } from "@space/contracts";
 import { formatUserTime } from "../src/features/date-time-settings/date-time-settings.js";
 import { NousDock } from "../src/features/nous/NousDock.js";
 import { NousSettingsCard } from "../src/features/nous/NousSettingsCard.js";
+import { OPEN_VIBE_MUSIC_EVENT } from "../src/features/room-toolbar/useToolbarPopovers.js";
+import { NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
 import { liveRuntime } from "../src/live/live-runtime.js";
 import { installSpaceRuntime } from "../src/runtime/SpaceRuntime.js";
 
 const at = "2026-10-17T08:00:00.000Z";
 const state = (patch: Partial<NousState> = {}): NousState => ({
-  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false }, model: "claude-opus-5-5", effort: "xhigh", running: null,
+  status: "IDLE", settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] }, model: "claude-opus-5-5", effort: "xhigh", running: null,
   turnsThisHour: 2, lastError: null, openDecisions: 1, inbox: 0, ...patch
 });
+const away = { id: "nous_away:a1", startedAt: "2026-10-17T16:29:00.000Z", until: null, reason: "Going to sleep", mandate: "Keep the plans moving", grant: [] as Array<"PROMOTE" | "TEST_PANES"> };
 const message = (kind: NousMessage["kind"], content: string, id: string): NousMessage =>
   ({ id: `nous_msg:${id}`, ownerUserId: "user:operator", turnId: null, kind, status: "DONE", content, meta: {}, createdAt: at, updatedAt: at });
 const decision: NousDecision = {
@@ -42,7 +45,7 @@ const attachment = (id: string, kind: NousAttachment["kind"], filename: string, 
 
 function serve(overrides: {
   state?: NousState; messages?: NousMessage[]; decisions?: NousDecision[]; files?: Record<string, NousAttachment[]>;
-  upload?: (file: File) => Response;
+  upload?: (file: File) => Response; live?: unknown; panes?: unknown;
 } = {}) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
   let uploads = 0;
@@ -69,9 +72,16 @@ function serve(overrides: {
       data: [plan("clipboard:planDock0001", "Nous dock plans"), plan("clipboard:planNamed001", "Named plan", { executionStatus: "PLANNED", progressPercentage: 0 })],
       pagination: { page: 1, pageSize: 100, totalItems: 2, totalPages: 1 }
     });
-    if (url === "/api/nous/overview") return Response.json({ overview: { plans: [{ id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "3. Dock (PENDING)" }], needsHands: [], trains: "No release trains.", planMap: "Nous blocks the release plan." } });
+    if (url === "/api/nous/overview") return Response.json({ overview: { plans: [{ id: "clipboard:plan01", title: "Nous", progress: 40, status: "IN_PROGRESS", room: "Main", pane: "Andy", nextStep: "3. Dock (PENDING)" }], needsHands: [], trains: "No release trains.", planMap: "Nous blocks the release plan.",
+      ...(overrides.live ? { live: overrides.live } : {}), ...(overrides.panes ? { panes: overrides.panes } : {}) } });
+    if (url === "/api/system-health") return Response.json({ sampledAt: at, metrics: [
+      { id: "cpu", label: "CPU", group: "cpu", unit: "PERCENT", value: 37, detail: "", sampledAt: at },
+      { id: "memory", label: "Memory", group: "memory", unit: "PERCENT", value: 61, detail: "", sampledAt: at }
+    ], services: [], requests: { windowSeconds: 300, requestCount: 0, errorCount: 0, errorRatePercent: null, p95Ms: null, sampledAt: at }, uptimeSeconds: 1, coreCount: 20 });
+    if (url.endsWith("/feedback")) return Response.json({ decision: { ...decision, status: "APPROVED", answeredAt: at, couldHaveDecided: body.couldHaveDecided } });
     if (url.endsWith("/answer")) return Response.json({ decision: { ...decision, status: "APPROVED", outcome: "Approved the run-spaceapp release train at its candidate commit." } });
     if (url === "/api/nous/settings") return Response.json({ settings: { enabled: body.enabled, maxTurnsPerHour: 20 } });
+    if (url === "/api/nous/away") return Response.json({ away: body.away ? { ...away, grant: body.grant ?? [] } : null });
     return Response.json({});
   }));
   return calls;
@@ -90,7 +100,7 @@ describe("Nous dock", () => {
     const calls = serve();
     render(<NousDock canRun />);
     expect(await screen.findByText("Όλα κινούνται.")).toBeTruthy();
-    expect(screen.getByText(/The mind of SpaceApp · Claude opus 5.5 · xhigh/i)).toBeTruthy();
+    expect(screen.getByText("Claude Opus 5.5 · xhigh")).toBeTruthy();
     expect(screen.getByRole("img", { name: "Nous, the mind of SpaceApp" })).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Message Nous"), { target: { value: "Φέρε όλα τα πλάνα στο 100%" } });
     fireEvent.keyDown(screen.getByLabelText("Message Nous"), { key: "Enter" });
@@ -115,7 +125,6 @@ describe("Nous dock", () => {
     fireEvent.click(within(await screen.findByRole("article", { name: named.title })).getByRole("button", { name: "Take me there" }));
     window.removeEventListener("space:nous-focus", onFocus);
     expect(seen).toEqual([{ roomId: "room:work000001", paneId: "pane:emma0000001", ownerUserId: null, immediate: true }]);
-    expect(screen.getByRole("switch", { name: "Nous brings me to panes that need me" })).toHaveProperty("checked", true);
   });
 
   it("brings a critical decision with its recommendation and the action Space runs on approval", async () => {
@@ -130,25 +139,66 @@ describe("Nous dock", () => {
     await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE" }));
   });
 
-  it("turns working on the operator's behalf on and shows the plans", async () => {
-    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false } }) });
+  it("always approves a kind of decision with one click, never a release, and Settings asks again (operator request 2026-10-18)", async () => {
+    const media: NousDecision = { ...decision, id: "nous_decision:media0000001", category: "EXTERNAL", title: "Put Dana's image in the Media dock?",
+      action: { type: "SPACE_CONTROL", roomId: "room:cleo0001", actions: [{ kind: "resource", operation: "media.publish", id: "artifact:abc123" }] } };
+    const calls = serve({ decisions: [decision, media] });
     render(<NousDock canRun />);
-    fireEvent.click(await screen.findByRole("switch", { name: "Nous works on my behalf" }));
+    const card = await screen.findByRole("article", { name: media.title });
+    expect(within(screen.getByRole("article", { name: decision.title })).queryByRole("button", { name: "Always approve" })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Always approve" }));
+    await waitFor(() => expect(calls.find((call) => call.url.endsWith("/answer"))?.body).toEqual({ answer: "APPROVE", always: true }));
+    cleanup();
+
+    const rule = { key: "SPACE_CONTROL:resource media.publish", label: "run in Space Control: resource media.publish", at };
+    const settingsCalls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [rule] } }) });
+    render(<NousSettingsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: `Ask me again: ${rule.label}` }));
+    await waitFor(() => expect(settingsCalls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ alwaysApprove: [] }));
+  });
+
+  it("turns working on the operator's behalf on with its power switch and shows the plans", async () => {
+    const calls = serve({ state: state({ status: "OFF", settings: { enabled: false, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] } }) });
+    render(<NousDock canRun />);
+    const power = await screen.findByRole("switch", { name: "Nous works on my behalf" });
+    await waitFor(() => expect((power as HTMLInputElement).disabled).toBe(false));
+    expect(screen.getByText("Off")).toBeTruthy();
+    // The other switches live only in Settings.
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
+    fireEvent.click(power);
     await waitFor(() => expect(calls.find((call) => call.url === "/api/nous/settings")?.body).toEqual({ enabled: true }));
-    fireEvent.click(screen.getByRole("switch", { name: "Nous may promote dev to stable" }));
-    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayPromote: true }));
     fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     expect(await screen.findByRole("progressbar", { name: "Nous progress" })).toBeTruthy();
     expect(screen.getByText("Nous blocks the release plan.")).toBeTruthy();
   });
 
   it("shows the same switches in Settings and saves each one alone", async () => {
-    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false } }) });
+    const calls = serve({ state: state({ settings: { enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] } }) });
     render(<NousSettingsCard />);
     const warm = await screen.findByRole("switch", { name: "Nous may approve Warm changes" });
     await waitFor(() => expect((screen.getByRole("switch", { name: "Nous works on my behalf" }) as HTMLInputElement).checked).toBe(true));
     fireEvent.click(warm);
     await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/settings").at(-1)?.body).toEqual({ mayApproveWarm: true }));
+  });
+
+  it("starts Away from Settings, widens its grant there and shows the dock line (plan clipboard:B7eTUHTJYg3X)", async () => {
+    const calls = serve({ state: state({ away: null }) });
+    render(<NousSettingsCard />);
+    const awaySwitch = await screen.findByRole("switch", { name: "Nous Away mode" });
+    await waitFor(() => expect((awaySwitch as HTMLInputElement).disabled).toBe(false));
+    expect(screen.queryByRole("switch", { name: "Nous Away grant PROMOTE" })).toBeNull();
+    fireEvent.click(awaySwitch);
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/away").at(-1)?.body).toEqual({ away: true }));
+    expect(await screen.findByText(`Away since ${formatUserTime(away.startedAt)}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Nous Away grant PROMOTE" }));
+    await waitFor(() => expect(calls.filter((call) => call.url === "/api/nous/away").at(-1)?.body).toEqual({ away: true, grant: ["PROMOTE"] }));
+    await waitFor(() => expect((screen.getByRole("switch", { name: "Nous Away grant PROMOTE" }) as HTMLInputElement).checked).toBe(true));
+  });
+
+  it("shows when the operator went away in the dock's status line", async () => {
+    serve({ state: state({ away }) });
+    render(<NousDock canRun />);
+    expect((await screen.findByRole("status")).textContent).toBe(`On: watching every room · Away since ${formatUserTime(away.startedAt)}`);
   });
 
   it("maximizes to the whole window and leaves with Escape", async () => {
@@ -206,7 +256,81 @@ describe("Nous dock", () => {
     await waitFor(() => expect(calls.find((call) => call.url === "/api/nous/decisions/nous_decision%3Aabcdef123456/answer")?.body).toEqual({ answer: "DECLINE" }));
     const done = screen.getByRole("article", { name: "Delete the old proof rooms?" });
     expect(within(done).getByText(`Approved ${formatUserTime(answered.answeredAt)} · Deleted 3 rooms.`)).toBeTruthy();
-    expect(within(done).queryByRole("button")).toBeNull();
+    // No answer buttons any more: only the feedback toggle.
+    expect(within(done).getAllByRole("button").map((button) => button.textContent)).toEqual(["You could have decided this"]);
+  });
+
+  it("full screen: its controls at the far right, live stats instead of release trains, a launcher for music and widgets (plan clipboard:wr9yNPJwkDrp)", async () => {
+    serve({ live: { rooms: 3, agents: { running: 2, waiting: 1, idle: 4, total: 7 } } });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Nous fullscreen" }));
+    const tools = document.querySelector(".nous-workspace-tools")!;
+    expect(within(tools as HTMLElement).getByRole("button", { name: "Clear the conversation" })).toBeTruthy();
+    expect(within(tools as HTMLElement).getByRole("button", { name: /fullscreen/i })).toBeTruthy();
+    expect(document.querySelector(".nous-stage-head button")).toBeNull();
+
+    const stats = await screen.findByRole("region", { name: "Live stats" });
+    expect(screen.queryByText("Release trains")).toBeNull();
+    expect(screen.queryByText("No release trains.")).toBeNull();
+    const count = (label: string) => within(stats.querySelector(".nous-live-counts") as HTMLElement).getByText(label).nextElementSibling?.textContent;
+    await waitFor(() => expect(count("Rooms")).toBe("3"));
+    expect([count("Running"), count("Idle"), count("Waiting"), count("On a plan")]).toEqual(["2", "4", "1", "1"]);
+    expect(within(stats).getByText("Andy · Nous")).toBeTruthy();
+    await waitFor(() => expect(within(stats).getByRole("listitem", { name: "CPU: 37%" })).toBeTruthy());
+    expect(within(stats).getByRole("listitem", { name: "Memory: 61%" })).toBeTruthy();
+    expect(within(stats).getByRole("listitem", { name: "Agents running of all: 2/7" })).toBeTruthy();
+
+    const launcher = screen.getByRole("toolbar", { name: "Open over Nous" });
+    const music = vi.fn();
+    window.addEventListener(OPEN_VIBE_MUSIC_EVENT, music);
+    fireEvent.click(within(launcher).getByRole("button", { name: "Music" }));
+    window.removeEventListener(OPEN_VIBE_MUSIC_EVENT, music);
+    expect(music).toHaveBeenCalledTimes(1);
+    const changed = vi.fn();
+    window.addEventListener("space:desktop-widgets:changed", changed);
+    fireEvent.click(within(launcher).getByRole("button", { name: "Widgets" }));
+    fireEvent.click(within(screen.getByRole("menu", { name: "Widgets" })).getByRole("menuitemcheckbox", { name: /Clock/ }));
+    window.removeEventListener("space:desktop-widgets:changed", changed);
+    expect(changed).toHaveBeenCalled();
+
+    // YouTube: the shell floats an open YouTube pane of the room; without one the launcher says so (never opens a pane).
+    const answer = (opened: boolean) => () => window.dispatchEvent(new CustomEvent("space:youtube-float-result", { detail: { opened } }));
+    const none = answer(false);
+    window.addEventListener("space:open-youtube-float", none);
+    fireEvent.click(within(launcher).getByRole("button", { name: "YouTube" }));
+    window.removeEventListener("space:open-youtube-float", none);
+    expect(within(launcher).getByRole("status").textContent).toBe("Open a YouTube pane in this room first");
+    const some = answer(true);
+    window.addEventListener("space:open-youtube-float", some);
+    fireEvent.click(within(launcher).getByRole("button", { name: "YouTube" }));
+    window.removeEventListener("space:open-youtube-float", some);
+    expect(within(launcher).queryByRole("status")).toBeNull();
+  });
+
+  it("shows a card per pane with Nous's last check, verdict and next check, due panes first; a click goes to the pane (plan clipboard:MAongwnxq9Ro)", async () => {
+    const card = (paneId: string, pane: string, extra: Record<string, unknown>) => ({ paneId, roomId: "room:bruno0001", room: "Bruno", pane, state: "idle",
+      checkedAt: null, verdict: null, note: null, nextCheckAt: null, dueAt: at, overdue: false, ...extra });
+    serve({ panes: [card("pane:andy0001", "Andy", { checkedAt: at, verdict: "OPERATOR_TEST", note: "The operator's login test",
+      report: { at, status: "TURN_END", source: "AUTO", summary: "Slice 3 deployed on dev" } }), card("pane:bob00001", "Bob", { overdue: true })] });
+    render(<NousDock canRun />);
+    fireEvent.click(await screen.findByRole("button", { name: "Panes" }));
+    const list = await screen.findByRole("list", { name: "Panes, 1 due" });
+    const cards = within(list).getAllByRole("listitem");
+    expect(cards.map((item) => item.getAttribute("aria-label"))).toEqual(["Bruno · Bob, due", "Bruno · Andy"]);
+    expect(within(cards[0]!).getByText("Never checked")).toBeTruthy();
+    expect(within(cards[0]!).getByText("Due now")).toBeTruthy();
+    expect(within(cards[1]!).getByText("Keep open")).toBeTruthy();
+    expect(within(cards[1]!).getByText(`Checked ${formatUserTime(at)}`)).toBeTruthy();
+    expect(within(cards[1]!).getByText("The operator's login test")).toBeTruthy();
+    // The pane's newest report (plan clipboard:ot6-jLKOWDNC).
+    expect(within(cards[1]!).getByText(`Reported ${formatUserTime(at)} · turn end: Slice 3 deployed on dev`)).toBeTruthy();
+    expect(within(cards[0]!).queryByText(/^Reported /)).toBeNull();
+    const focused: NousFocusDetail[] = [];
+    const onFocus = (event: Event) => focused.push((event as CustomEvent<NousFocusDetail>).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    fireEvent.click(cards[1]!);
+    window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    expect(focused).toEqual([{ roomId: "room:bruno0001", paneId: "pane:andy0001", ownerUserId: null, immediate: true }]);
   });
 
   it("maximizes into a command center: Nous on the left, tool steps folded in the conversation, a board of what waits", async () => {
@@ -231,6 +355,20 @@ describe("Nous dock", () => {
     expect(screen.getByRole("region", { name: "Plan" })).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("region", { name: "Plan" })).toBeNull();
+  });
+
+  it("lets the operator tell Nous it could have decided an answered decision itself", async () => {
+    const answered: NousDecision = { ...decision, id: "nous_decision:fb0000000001", title: "Rename the proof room?", status: "APPROVED", answeredAt: at, outcome: "Renamed." };
+    const calls = serve({ decisions: [answered, decision] });
+    render(<NousDock canRun />);
+    const card = await screen.findByRole("article", { name: answered.title });
+    const toggle = within(card).getByRole("button", { name: "You could have decided this" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    expect(calls.find((call) => call.url === "/api/nous/decisions/nous_decision%3Afb0000000001/feedback")).toMatchObject({ method: "POST", body: { couldHaveDecided: true } });
+    // Open decisions have no feedback yet.
+    expect(within(screen.getByRole("article", { name: decision.title })).queryByRole("button", { name: "You could have decided this" })).toBeNull();
   });
 
   it("keeps a readable column in fullscreen for the conversation, decisions and overview", () => {

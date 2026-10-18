@@ -264,6 +264,7 @@ import type { OnScreenKeyboardInput } from "./features/osk-keyboard/OnScreenKeyb
 import { useVibeMusicMount } from "./features/vibe-music/vibe-music-session.js";
 import { StickyNoteLayer, StickyNoteWindow, useStickyNoteWindows } from "./features/clipboard-dock/StickyNoteWindow.js";
 import { usePaneOpener } from "./features/pane-card/pane-opener.js";
+import { useYouTubeFloatRequest } from "./features/pane-card/use-youtube-float-request.js";
 import {
   DesktopWidgetsLayer,
   useDesktopWidgets,
@@ -315,6 +316,7 @@ import {
 } from "./warm-room-startup.js";
 import { reuseVersionedItems, useStableCallback } from "./render-performance.js";
 import { lazyWithPreload } from "./lazy-with-preload.js";
+import { LazyTaskDock, LazyVaultDock } from "./features/docks/lazy-docks.js";
 import { useUserPreferenceWriteThrough, useUserPreferences } from "./features/user-settings/useUserPreferences.js";
 import { readStoredBoolean } from "./stored-boolean.js";
 import { readStoredSessionString } from "./session-string-storage.js";
@@ -322,6 +324,7 @@ import { useSnipTool } from "./features/snip-tool/useSnipTool.js";
 import { useToolbarPopovers } from "./features/room-toolbar/useToolbarPopovers.js";
 import { buildRoomToolbarActions } from "./features/room-toolbar/room-toolbar-actions.js";
 import { CollapsedRoomRail, type WorkspaceNavigationBinding } from "./features/room-toolbar/CollapsedRoomRail.js";
+import { roomActionFilter, roomRailVisibility } from "./features/rooms-dock/room-share-view.js";
 import { RoomTitleBar } from "./features/room-toolbar/RoomTitleBar.js";
 import { useRoomRename } from "./features/room-toolbar/useRoomRename.js";
 import { useMinimizedPaneBar } from "./features/pane-float/useMinimizedPaneBar.js";
@@ -558,10 +561,6 @@ const LazyNousDock = lazyWithPreload(() =>
   import("./features/nous/NousDock.js").then((module) => ({ default: module.NousDock })), { idle: true });
 const LazyClipboardDock = lazyWithPreload(() =>
   import("./features/clipboard-dock/ClipboardDock.js").then((module) => ({ default: module.ClipboardDock })),
-  { idle: true }
-);
-const LazyTaskDock = lazyWithPreload(() =>
-  import("./features/task-dock/TaskDock.js").then((module) => ({ default: module.TaskDock })),
   { idle: true }
 );
 const LazyUiThemeSettingsCard = lazyWithPreload(() =>
@@ -871,7 +870,7 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)").matches
   );
-  const modernColorMode = uiTheme === "codex" || uiTheme === "motion" || uiTheme === "aurora" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
+  const modernColorMode = uiTheme === "codex" || uiTheme === "motion" || uiTheme === "aurora" || uiTheme === "jarvis" || uiTheme === "aira" ? "dark" : resolveModernColorMode(modernAppearance, systemPrefersDark);
   useEffect(() => {
     document.documentElement.dataset.interfaceTheme = uiTheme;
     document.documentElement.dataset.uiBackground = uiBackground;
@@ -2326,22 +2325,23 @@ export function App() {
       : (defaultFirstRoom?.id ?? null);
     activateRoom(nextRoomId, { preserveOutgoing: selectedRoomStillExists });
     if (nextRoomId) {
-      // User-approved 2026-08-14: background warm starts IMMEDIATELY (in
-      // parallel with the active room load, after any service restart the
-      // refresh is the trigger) and never blocks the bootstrap — the shell
-      // becomes interactive without waiting for warm hydration.
-      const startBackgroundWarm = () => {
+      // Give the active room its existing attachment/PREFILL barriers before
+      // background terminals compete for its initial render and session reads.
+      const startBackgroundWarm = async () => {
+        if (!(me.settings?.warmRoomEnabled ?? warmRoomEnabled)) return;
         const activeRoom = roomPayload.data.find((room) => room.id === nextRoomId);
         if (activeRoom?.kind === "AGENT_PROOF") {
           return;
         }
+        await waitForRoomTerminalPrefillBarrier(nextRoomId);
+        if (!appMountedRef.current) return;
         const candidateRooms = roomPayload.data.filter((room) => room.kind !== "AGENT_PROOF");
         const validRoomIds = new Set(candidateRooms.map((room) => room.id));
         const hydrationRoomIds = selectWarmHydrationRoomIds({
           roomIds: candidateRooms.map((room) => room.id),
           activeRoomId: nextRoomId,
           mruRoomIds: readRoomMru(runtime.platform.sessionStorage, validRoomIds),
-          maxWarmRooms: warmRoomLimits(warmConnectedPaneLimit).maxRooms
+          maxWarmRooms: warmRoomLimits(me.settings?.warmRoomConnectedPaneLimit ?? warmConnectedPaneLimit).maxRooms
         });
         const hydrateRoomIfNotEmpty = async (roomId: string) => {
           try {
@@ -2365,22 +2365,13 @@ export function App() {
           hydrateRoomIfNotEmpty,
           undefined,
           WARM_ROOM_STARTUP_HYDRATION_CONCURRENCY
-        ).catch(() => undefined).finally(() => {
-          if (!appMountedRef.current) return;
-          const otherRoomIds = candidateRooms
-            .map((room) => room.id)
-            .filter((roomId) => roomId !== nextRoomId);
-          void runWithConcurrency(
-            otherRoomIds.map((roomId) => () => hydrateRoomIfNotEmpty(roomId)),
-            4
-          ).catch(() => undefined);
-        });
+        ).catch(() => undefined);
       };
-      startBackgroundWarm();
       await loadRoomRuntime(nextRoomId);
       if (!appMountedRef.current) return;
       await waitForRoomTerminalBarrier(nextRoomId);
       if (!appMountedRef.current) return;
+      void startBackgroundWarm();
     } else {
       setPanes([]);
       setSelectedPaneId(null);
@@ -3926,6 +3917,7 @@ export function App() {
       return next;
     });
   }, []);
+  useYouTubeFloatRequest({ panes, activeRoomId: activeRoom?.id ?? null, floatingIds: floatingYouTubePaneIds, toggle: toggleYouTubeFloating });
   const visiblePanes = useMemo(() => {
     const unfiltered = panes.filter((pane) => (shellMode === "mobile" || !pane.isMinimized) && !floatingYouTubePaneIds.has(pane.id));
     return activeRoomCategoryFilter
@@ -4109,7 +4101,9 @@ export function App() {
       if (event.type === "PANE_UPDATED" && event.payload.roomPaneLayoutChanged === true) {
         void requestRoomCatalogRefreshRef.current();
       }
-      if (event.type === "ROOM_WATCHDOG_ALERT") {
+      // A replayed alert is history: every room switch or reconnect replays the room's last 50 events, which brought a
+      // dismissed alert back again and again. Its URGENT notification stays in the Notifications dock.
+      if (event.type === "ROOM_WATCHDOG_ALERT" && !replaying) {
         notices.addWatchdogAlert({ id: event.id, message: event.message, timestamp: event.createdAt });
       }
       for (const category of roomRefreshCategoriesForEvent(event.type)) {
@@ -4238,14 +4232,14 @@ export function App() {
       if (handledBrowserHandoffEventIdsRef.current.size > 500) handledBrowserHandoffEventIdsRef.current.clear();
       void api.browserHandoff(event.paneId)
         .then(async ({ handoff }) => {
-          if (handoff.status !== "REQUESTED") return;
+          if (handoff?.status !== "REQUESTED") return;
           activateRoom(handoff.roomId);
           await loadRoomRuntimeRef.current(handoff.roomId);
           setSelectedPaneId(handoff.paneId);
           setPendingBrowserHandoffPaneId(handoff.paneId);
         })
         .catch((error: unknown) => {
-          // A closed pane (409) or a handoff that no longer exists (404) never comes back; only retry transient failures.
+          // A closed (409) or deleted (404) pane never comes back; only retry transient failures.
           if (error instanceof SpaceApiError && (error.status === 404 || error.status === 409)) return;
           handledBrowserHandoffEventIdsRef.current.delete(event.id);
         });
@@ -4978,12 +4972,12 @@ export function App() {
     hiddenStorageKey: roomToolbarStorageKeys.hidden,
     orderStorageKey: roomToolbarStorageKeys.order
   });
-  const roomToolbarRenderedActions = shellMode === "mobile"
+  const roomToolbarRenderedActions = (shellMode === "mobile"
     ? roomToolbar.visibleActions.filter((action) => action.id !== "pane-layout" && action.id !== "pane-span-all")
-    : roomToolbar.visibleActions;
-  const availableRoomActions = shellMode === "mobile"
+    : roomToolbar.visibleActions).filter(roomActionFilter(presentationRoom));
+  const availableRoomActions = (shellMode === "mobile"
     ? roomToolbar.orderedActions.filter((action) => action.id !== "pane-layout" && action.id !== "pane-span-all" && action.id !== "sticky-note" && !action.id.startsWith("widget-"))
-    : roomToolbar.orderedActions;
+    : roomToolbar.orderedActions).filter(roomActionFilter(presentationRoom));
   const roomToolbarTouchContext = useTouchContextMenu(
     (source) => source instanceof Element && !source.closest(".desktop-menu-drag-handle, .cli-launcher-drag-handle")
       ? source.closest<HTMLElement>("button[data-action-id]")
@@ -5074,7 +5068,7 @@ export function App() {
       setIsServerActionsMenuOpen(false);
       if (isAdminMode && ["health", "streaming"].includes(activeSideSurface)) setIsDesktopSideSurfaceOpen(false);
     }
-  }] as IconToolbarAction[] : []));
+  }] as IconToolbarAction[] : [])).filter(roomActionFilter(presentationRoom));
   const workspaceNavigationActions: IconToolbarAction[] = [...desktopToolbarActions, {
     id: "workspace-room", label: "Room", title: "Room settings", ariaLabel: "Room", icon: PanelTopOpen,
     onClick: () => undefined
@@ -5948,7 +5942,7 @@ export function App() {
         activeCliPaneId={activePane?.mode === "TERMINAL" ? activePane.id : null}
         onInsert={insertTaskItem}
       />
-    ) : surface === "links" ? (
+    ) : surface === "vault" ? <LazyVaultDock /> : surface === "links" ? (
       <LinksPanel onOpen={link => {
         if (onNavigate && link.openMode !== "NEW_TAB" && !isYouTubeUrl(link.url)) {
           setWorkspaceUserLink(link);
@@ -6186,7 +6180,7 @@ export function App() {
             className={
               uiTheme === "codex"
                 ? "modern-theme-page codex-theme-page"
-                : uiTheme === "motion" || uiTheme === "aurora" || uiTheme === "liquid-glass"
+                : uiTheme === "motion" || uiTheme === "aurora" || uiTheme === "liquid-glass" || uiTheme === "jarvis" || uiTheme === "aira"
                   ? `modern-theme-page ${uiTheme}-theme-page`
                   : "modern-theme-page"
             }
@@ -6287,6 +6281,10 @@ export function App() {
       layerShellVisiblePanes.find((pane) => pane.id === layerSelectedPaneId) ??
       layerShellVisiblePanes[0] ??
       null;
+    // Every hidden pane of the displayed full-screen room sizes its CLI ahead of a switch (operator-approved 2026-10-18).
+    const layerFullscreenPresizeIds = new Set(
+      isInteractive && layerFullscreenLayout && shellMode !== "mobile" ? layerVisiblePanes.map((pane) => pane.id) : []
+    );
     const layerDensity = isActive ? paneDensity : paneDensityFor(shellMode, layerVisiblePanes.length);
     const layerColumnCount = isActive
       ? paneGridColumnCount
@@ -6589,6 +6587,7 @@ export function App() {
                       onToggleColumnSpan={paneCardOnToggleColumnSpan}
                       onSplit={paneCardOnSplit}
                       isFullscreenLayout={layerFullscreenLayout}
+                      presizeInFullscreen={layerFullscreenPresizeIds.has(pane.id)}
                       fullscreenIndex={Math.max(0, layerVisiblePanes.findIndex((candidate) => candidate.id === pane.id))}
                       fullscreenCount={layerVisiblePanes.length}
                       onFullscreenNavigate={paneCardOnFullscreenNavigate}
@@ -7176,7 +7175,7 @@ export function App() {
       {!isRoomToolbarHidden || showOverlaySideSurface || systemAnalyticsTab ? null : (
         <CollapsedRoomRail
           popovers={toolbarPopovers}
-          railVisibility={lowerRailVisibility}
+          railVisibility={roomRailVisibility(lowerRailVisibility, presentationRoom)}
           touchContext={lowerRailTouchContext}
           navigation={workspaceNavigation}
           roomNavigation={{ previousRoom, nextRoom, selectRoom }}

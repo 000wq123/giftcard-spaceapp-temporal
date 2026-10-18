@@ -10,7 +10,7 @@ export const controlScreenshotViewports = ["desktop", "desktop-hd", "laptop", "t
 export const controlCaptureAspects = { "16:9": "desktop-hd", "1:1": "square", "4:5": "portrait", "9:16": "story", full: "desktop" } as const;
 // The engine's DOCKS, SETTINGS_SECTIONS and HEALTH_SECTIONS (scripts/tests/space-media-capture.test.mjs keeps them equal).
 export const controlCaptureDocks = ["rooms", "notifications", "room-agent", "shared-chat", "media", "streaming", "source-control", "agent-files",
-  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions"] as const;
+  "clipboard", "tasks", "links", "settings", "health", "cli", "agent-sessions", "nous", "nous-fullscreen"] as const;
 export const controlCaptureSettingsSections = ["appearance", "docks", "panes", "widgets", "notifications", "dots", "plugins", "agent-capabilities",
   "default-provider", "voice-input", "releases", "cli-pane-controls", "date-time", "image-previews", "prompt-variables", "room-cache", "git-worktrees",
   "diagnostics", "job-copilot", "mail-copilot", "marketing-copilot", "freelance-copilot"] as const;
@@ -292,7 +292,7 @@ export const controlInspectSectionCatalog: ControlInspectSectionItem[] = [
   { section: "CLIPBOARD", description: "Operator private clipboard entries (notes, plans, copied content).", scope: "operator" },
   { section: "FILES", description: "Uploaded and published workspace files and documents.", scope: "room" },
   { section: "MEDIA", description: "Images, videos, and screenshots attached to the room.", scope: "room" },
-  { section: "SKILLS", description: "Installed and registered agent skills with markdown guides.", scope: "installation" },
+  { section: "SKILLS", description: "Installed and registered agent skills, one page (offset, limit, query filter) of metadata; skills.read returns a skill's text.", scope: "installation" },
   { section: "SETTINGS", description: "Complete sanitized app settings across CLI, providers, tools, task titles, plugins, voice, and appearance.", scope: "installation" },
   { section: "ROOMS", description: "List of all user rooms with metadata and pane counts.", scope: "workspace" },
   { section: "SYSTEM_HEALTH", description: "Realtime health metrics, CPU/memory, active services, and API error rates.", scope: "installation" },

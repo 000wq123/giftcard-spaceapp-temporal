@@ -186,6 +186,8 @@ export const apiConfigRegistry = {
   publicDistribution: field(["SPACE_PUBLIC_DISTRIBUTION"], "public", "derived"),
   // Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user has an isolated CLI container.
   multiUserEnabled: field(["SPACE_MULTI_USER_ENABLED"], "public", "boolean"),
+  // Vault agent fills (ADR-012); off until the custody preflight passes on a host with per-user CLI containers.
+  vaultAgentFillEnabled: field(["SPACE_VAULT_AGENT_FILL_ENABLED"], "public", "boolean"),
 } satisfies Partial<Record<ApiConfigKey, ConfigField>>;
 
 // Completeness is enforced by config-registry.test.ts, not by the type

@@ -21,8 +21,10 @@ export function createRoomShareAccess(deps: { store: ShareStore; enabled: boolea
     enabled,
     shareOf,
     explicitPaneOwner,
-    /** Rooms shared with a USER, shown beside their own. */
-    sharedRooms: async (userId: string): Promise<Room[]> => enabled && store.listSharedRooms ? await store.listSharedRooms(userId) : [],
+    /** Rooms shared with a USER, shown beside their own, each with the user's permission. */
+    sharedRooms: async (userId: string): Promise<Room[]> => enabled && store.listSharedRooms
+      ? await Promise.all((await store.listSharedRooms(userId)).map(async (room) => ({ ...room, sharePermission: await shareOf(room.id, userId) ?? undefined })))
+      : [],
     /** A pane opened by someone other than the room's owner belongs to whoever opened it. */
     async notePaneCreator(pane: Pane, userId: string): Promise<void> {
       if (!enabled || !store.setPaneOwner) return;

@@ -194,6 +194,23 @@ export function claudeCostUsd(usage: ClaudeCostUsage | null, model: string | nul
 }
 
 /**
+ * List cost of one token type of an Anthropic usage report cell (`usage_report/messages`), or null for an unknown model,
+ * an unpriced speed or another item. A `200k-1M` cell uses the model's long card.
+ */
+export function claudeReportCostUsd(model: string, item: string, tokens: number, cell: { longContext: boolean; fast: boolean }): number | null {
+  const price = anthropicPrice(model);
+  if (!price) return null;
+  const multiplier = cell.fast ? price.fast ?? null : 1;
+  if (multiplier === null) return null;
+  const card = cell.longContext && price.long ? price.long : price;
+  const cacheRead = card === price ? price.cacheRead ?? price.input * 0.1 : card.input * 0.1;
+  const rate = item === "uncached_input_tokens" ? card.input : item === "cache_read_input_tokens" ? cacheRead
+    : item === "cache_creation.ephemeral_5m_input_tokens" ? card.input * 1.25 : item === "cache_creation.ephemeral_1h_input_tokens" ? card.input * 2
+      : item === "output_tokens" ? card.output : null;
+  return rate === null ? null : (tokens * rate * multiplier) / 1e6;
+}
+
+/**
  * Gemini API Standard list prices per 1M tokens (ai.google.dev/gemini-api/docs/pricing, 2026-10-15; several double on
  * 2027-01-01). `long` is the card for prompts above 200k tokens.
  */

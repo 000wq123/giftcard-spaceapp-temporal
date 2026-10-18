@@ -22,6 +22,7 @@ import { mailCopilotEventNotifies, notifyMailCopilotEvent } from "./mail-copilot
 import { createMailCopilotKickoff } from "./mail-copilot/kickoff.js";
 import { registerCouncil } from "./council/wiring.js";
 import { registerNous, type NousWiring } from "./nous/wiring.js";
+import { createRoomAgentEventRouting } from "./room-agent-event-routing.js";
 import type { NousRunner } from "./nous/service.js";
 import { createRoomAgentMonitor } from "./room-agent-monitor.js";
 import { createDotDeliverablesService, registerDotDeliverableRoutes } from "./dot-deliverables.js";
@@ -61,7 +62,7 @@ import { createMailCopilotSync } from "./mail-copilot/sync.js";
 import { InMemoryMailCopilotRepository, PostgresMailCopilotRepository, type MailCopilotRepository } from "@space/db";
 import { registerMarketingCopilot, type MarketingCopilotWiring } from "./marketing-copilot/wiring.js";
 import { registerFreelanceCopilot, type FreelanceCopilotWiring } from "./freelance-copilot/wiring.js";
-import { selectRoomCliMenuRow } from "./room-cli-menu.js";
+import { resumeRoomCliFromMenu, selectRoomCliMenuRow } from "./room-cli-menu.js";
 import { createGatewayCliAccounts } from "./gateway/gateway-cli-accounts.js";
 import { createGatewayAdminService, type GatewayAdminService } from "./gateway/gateway-service.js";
 import { registerGatewayAdminRoutes } from "./gateway/gateway-routes.js";
@@ -88,8 +89,9 @@ import { cliProfileUsageSchema, type CliProfileUsage } from "@space/contracts";
 import { createCliAccountBalancer, type CliAccountBalancer } from "./cli-account-balancer.js";
 import { createCliAccountAutoSwitch } from "./cli-account-auto-switch.js";
 import { controlTokenHeader, verifyControlToken } from "./space-control-token.js";
+import { harnessAgentPrincipal, isHarnessAgentSessionId } from "./harness-agent-tokens.js";
 import { PANE_CATALOG_VERSION, paneCountsSchema, PANE_TYPES, isAgentRuntimeReady } from "@space/contracts";
-import { controlSkills, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
+import { controlSkills, controlSkillsPage, controlResourceRoutes, controlPublishInput } from "./space-control-resources.js";
 import { captureControlSettingsSnapshot, restoreControlSettingsSnapshot, executeControlPluginAction } from "./space-control-settings.js";
 import { createSpaceControl, supportsControlRuntime } from "./space-control.js";
 import { createControlScreenshotCapture } from "./space-control-capture.js";
@@ -101,6 +103,7 @@ import { registerSourceControlRoutes } from "./source-control/routes.js";
 import { WorktreeService } from "./worktrees/worktree-service.js";
 import { registerWorktreeRoutes } from "./worktrees/worktree-routes.js";
 import { GitControlError } from "./source-control/errors.js";
+import { registerVault, type VaultOverrides } from "./vault/wiring.js";
 import { InMemoryControlRepository, PostgresControlRepository } from "@space/db";
 import { createRoomRoutedActions } from "./room-routed-actions.js";
 import { createRoomPaneCommands } from "./room-pane-commands.js";
@@ -126,7 +129,7 @@ import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { execFile, spawn } from "./safe-child-process.js";
-import { createNativeCliModelCatalog, findNativeCliModel, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning } from "./cli-native-model-picker.js";
+import { createNativeCliModelCatalog, findNativeCliModel, inspectedNativeModelId, nativeCliCatalogBufferBytes, nativeCliConfirmedModel, nativeCliConfirmedReasoning, switchNativeCliModel, switchNativeCliReasoning, withOmpSessionModel } from "./cli-native-model-picker.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -520,7 +523,7 @@ import { registerProviderRoutes } from "./provider-routes.js";
 import { registerLinkInspectRoutes } from "./link-inspect-routes.js";
 import { registerCliAccountRoutes } from "./cli-account-routes.js";
 import { registerCliRuntimeRoutes, registerCliRuntimeSettingsRoutes } from "./cli-runtime-routes.js";
-import { registerPaneCliTerminalRoutes, registerPaneCliModelRoutes } from "./pane-cli-routes.js";
+import { registerPaneCliRoutes } from "./pane-cli-route-group.js";
 import {
   cliModelReasoningEffortSchema, CodexRuntimeModelSettingsUnconfirmedError, canonicalCodexAdvertisedModelId,
   type CodexRuntimeModelSettings
@@ -722,7 +725,7 @@ export interface CreateAppOptions {
   mailCopilotGoogle?: MailCopilotGoogleAccess;
   mailCopilotGmailFetch?: typeof fetch;
   mailCopilotRepository?: MailCopilotRepository;
-  marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
+  vault?: VaultOverrides; marketingCopilotRepository?: MarketingCopilotWiring["repository"]; marketingCopilotKickoff?: MarketingCopilotWiring["kickoff"]; marketingCopilotScheduler?: boolean; marketingCopilotMetrics?: boolean; freelanceCopilotRepository?: FreelanceCopilotWiring["repository"]; freelanceCopilotKickoff?: FreelanceCopilotWiring["kickoff"]; freelanceCopilotScheduler?: boolean; freelanceCopilotMailboxes?: FreelanceCopilotWiring["mailboxes"];
   /** Tests replace the pane CLI kickoff of a Mail Copilot run. */
   mailCopilotKickoff?: (pane: Pane, run: MailCopilotRun) => Promise<void>;
   /** false: no Gmail history polling (tests call the sync themselves). */
@@ -1189,7 +1192,7 @@ function createDemoProjectsService(input: {
   const repository =
     config.runtimeStore === "postgres" && config.databaseUrl
       ? PostgresDemoProjectsRepository.fromConnectionString(config.databaseUrl, {
-          max: Math.min(config.databasePoolMax, 2),
+          max: 2,
           idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
           connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
         })
@@ -1221,7 +1224,6 @@ function createDefaultStore(config: SpaceApiConfig): SpaceStore {
       mcpServerConfigs: config.mcpServerConfigs ?? [],
       mcpConfigError: config.mcpConfigError ?? null
     }, {
-      max: config.databasePoolMax,
       idleTimeoutMillis: config.databasePoolIdleTimeoutMs,
       connectionTimeoutMillis: config.databasePoolConnectionTimeoutMs
     });
@@ -2329,7 +2331,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     ? PostgresTaskTitleRepository.fromConnectionString(config.databaseUrl)
     : new InMemoryTaskTitleRepository();
   const taskTitleProviders = new TaskTitleProviders({store,config,repository:taskTitleRepository,opencodeStateRoot:options.opencodeStateRoot,usage:toolbarUsageProvider});
-  const taskTitles = new TaskTitleService({nativeTitles:new NativeTaskTitles(async session=>(await cliTerminalManager.activeSessionPids([session])).get(session.sessionId)??null),store,repository:taskTitleRepository,providers:taskTitleProviders,codex:codexParity,eventBus,opencodeStateRoot:options.opencodeStateRoot,
+  const taskTitles = new TaskTitleService({summaryAllowed:cliUserHosting.ownerModels.pane,nativeTitles:new NativeTaskTitles(async session=>(await cliTerminalManager.activeSessionPids([session])).get(session.sessionId)??null),store,repository:taskTitleRepository,providers:taskTitleProviders,codex:codexParity,eventBus,opencodeStateRoot:options.opencodeStateRoot,
     harness:{read:(paneId,sessionId)=>readHarnessTaskTitle(config,paneId,sessionId),rename:async(paneId,sessionId,title)=>renameHarnessTaskTitle(config,paneId,sessionId,title,(await store.getPane(paneId)).taskMetadata?.harnessSessionId)},
     resolveCodexThread:session=>resolvePaneCodexThreadId({store,session,traceId:makeSpaceId("trace"),findThreadId:options.findCodexThreadId}),
     readCodexName:async(sessionId,threadId)=>{
@@ -2693,7 +2695,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     });
   };
   const loadNativeCliModels = createNativeCliModelCatalog();
-  const readPaneNativeModelSettings = async (session: PaneCliSession): Promise<PaneCliModelSettings> => {
+  const readScreenNativeModelSettings = async (session: PaneCliSession): Promise<PaneCliModelSettings> => {
     const runtime = findRuntime(await cliRuntimeRegistryCache.read(), session.runtimeId);
     if (!runtime?.detectedCommandPath || !isDirectOperatorParityRuntime(session.runtimeId)) {
       throw new SpaceConflictError("This CLI does not expose a model catalog.");
@@ -2717,6 +2719,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       isTurnActive: roomTerminalState(screen.text) === "RUNNING"
     };
   };
+  const readPaneNativeModelSettings = (session: PaneCliSession) => withOmpSessionModel(readScreenNativeModelSettings(session), session, cliTerminalManager, store);
   /** Switches a native-picker CLI to an advertised model and effort with screen readback, then
    * records it on the session and the pane (the pane's next session starts on it). Callers serialize. */
   const applyNativePaneModel = async (input: {
@@ -2906,7 +2909,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return control;
   };
   const openCodeChatControlPromises = new Map<string, Promise<OpenCodeServerControl>>();
+  // Dev runs as stable's user: it must never read stable's OpenCode access files or reach stable's shared server.
+  const assertChatOpenCodeHere = () => { if (config.instance === "dev") throw new SpaceFeatureDisabledError("OPENCODE_SESSION_CONTROL_UNAVAILABLE", "OpenCode Chat is unavailable on dev: it runs only on the stable instance."); };
   const resolveChatOpenCodeCatalogControl = async (): Promise<OpenCodeServerControl> => {
+    assertChatOpenCodeHere();
     const stateRoot = options.opencodeStateRoot ?? opencodeDirectParityRoot + "/state";
     const sharedControl = await resolveOpenCodeTitleFallbackControl(stateRoot);
     if (sharedControl && await openCodeServerIsHealthy(sharedControl)) return sharedControl;
@@ -2916,6 +2922,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     );
   };
   const resolveChatPaneOpenCodeControl = async (spaceAgentSessionId: string): Promise<OpenCodeServerControl> => {
+    assertChatOpenCodeHere();
     if (!/^agent_session:[A-Za-z0-9_-]+$/.test(spaceAgentSessionId)) {
       throw new SpaceFeatureDisabledError(
         "OPENCODE_SESSION_CONTROL_UNAVAILABLE",
@@ -3612,6 +3619,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (session.runtimeId === "cli:claude") base.modes = ["default", "plan", "accept edits", "bypass permissions", "auto"];
     if (session.runtimeId === "cli:omp" || session.runtimeId === "cli:droid") base.modes = ["build", "plan"];
     if (session.runtimeId === "cli:qoder") base.modes = ["yolo", "auto mode", "don't ask", "default", "accept edits", "plan"];
+    base.modelId = await inspectedNativeModelId(session, readPaneNativeModelSettings, cliTerminalManager) ?? base.modelId;
     base.nativeMode = roomTerminalMode(session.runtimeId, screen.text, base.modes);
     roomCliObservationCache.set(pane.id, { expires: Date.now() + 15_000, data: base });
     return base;
@@ -3952,9 +3960,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           }
         }
         const ready = await cliTerminalManager.ensurePaneControlReady(pane, traceId);
-        const result = await commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: ready.sessionId,
-          command: "/resume", ...(source ? { selection: source.title } : {}), when: "AFTER_TURN" }, traceId);
-        return { ...result, phase: "NATIVE_RESUME_MENU", verification: "Inspect the selected native task before reporting resume complete." };
+        return resumeRoomCliFromMenu({ paneId: pane.id, ready, source, command: (selection) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id,
+          expectedSessionId: ready.sessionId, command: "/resume", ...(selection ? { selection } : {}), when: "AFTER_TURN" }, traceId) });
       }
       const session = await store.getActivePaneCliSession(pane.id) ?? (await store.listPaneCliSessions(pane.id,1))[0];
       const ref = taskId ?? session?.cliTaskId;
@@ -4712,10 +4719,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
           });
         }
         if(action.operation.startsWith("ops.")){
-          const toolNames={"ops.status":"space_status","ops.logs":"space_logs","ops.test":"space_scoped_test","ops.verify":"space_live_verify","ops.deploy":"space_deploy_commit","ops.proof":"space_authenticated_ui_proof"} as const;
-          const tool=toolNames[action.operation as keyof typeof toolNames];
-          if(!tool)throw new SpaceConflictError("Unknown protected operation.");
-          return controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId:`space_ops:${tool}`,arguments:action.input,
+          const toolIds={"ops.status":"space-readonly:space_status","ops.logs":"space-readonly:space_logs","ops.test":"space_ops:space_scoped_test","ops.verify":"space_ops:space_live_verify","ops.deploy":"space_ops:space_deploy_commit","ops.proof":"space-readonly:space_authenticated_ui_proof"} as const; // The API's MCP registry (SPACE_MCP_SERVERS_JSON) serves the read-only ops tools as space-readonly.
+          const toolId=toolIds[action.operation as keyof typeof toolIds];
+          if(!toolId)throw new SpaceConflictError("Unknown protected operation.");
+          return controlInvoke(actor.id,"POST","/api/mcp/tools/execute",{roomId,toolId,arguments:action.input,
             ...(action.approvalReason?{approvalReason:action.approvalReason}:{})});
         }
         if(action.operation==="asteroids.control"){
@@ -4802,7 +4809,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     inspectExtra:async(actor,input)=>{
       await controlUser(actor.id);
       if(input.section==="ROOMS")return store.listRooms();
-      if(input.section==="SKILLS")return {installed:await controlSkills(input.query),registered:input.query?undefined:await store.listSkills()};
+      if(input.section==="SKILLS")return controlSkillsPage(await store.listSkills(),input);
       if(input.section==="QUOTA"){
         if(input.paneId){const pane=await store.getPane(input.paneId);if(pane.roomId!==input.roomId)throw new SpaceConflictError("Pane is outside this room.");return controlQuota(pane);}
         const antiUsage = await antigravityUsageProvider().catch(()=>({data:[]}));
@@ -5016,7 +5023,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     codexLbBaseUrl: config.codexLbBaseUrl,
     codexLbKeyFile: config.codexLbKeyFile,
     modelSelection: roomAgentModelSelection,
-    chat: roomAgentChat,
+    chat: roomAgentChat, chatAllowed: cliUserHosting.ownerModels.room,
     snapshotProvider: roomAgentSnapshots,
     monitorRepository: roomAgentMonitorRepository,
     refreshControlReceipts:async(roomId)=>{
@@ -5064,25 +5071,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       });
     })().catch((error: unknown) => app.log.warn({ err: error, eventId: event.id }, "Notification producer failed."));
   });
+  const roomAgentEventRouting = createRoomAgentEventRouting({ roomOwner, nousActive: async (owner) => Boolean(await nousRef.current?.active(owner)),
+    notifications: notificationService, telegram: roomAgentMonitorRepository, log: { warn: (details, message) => app.log.warn(details, message) } });
   const roomAgentMonitorOnEvent = async (event: RoomAgentEvent) => {
     nousRef.current?.monitorEvent(event);
-    // What needs the operator also goes to Telegram when the integration is on (one message per event).
-    if (event.status === "ESCALATED") {
-      await roomAgentMonitorRepository.enqueueTelegramNotice(event).catch((error) => app.log.warn({ err: error, eventId: event.eventId }, "Room Agent Telegram notice failed."));
-    }
-    // Attention events are notifications too (badges, toast, desktop); the monitor keeps its own Telegram path above.
-    void (async () => {
-      const owner = await roomOwner(event.roomId);
-      if (!owner) return;
-      const dedupeKey = `room-agent-event:${event.eventId}`;
-      if (event.severity === "ATTENTION" && (event.status === "OPEN" || event.status === "ESCALATED")) {
-        await notificationService.raise({ ownerUserId: owner, roomId: event.roomId, paneId: event.paneId, source: "ROOM_AGENT", kind: event.kind, severity: "ATTENTION",
-          title: event.title, body: (event.decision ?? event.detail ?? "").slice(0, 2000), link: { roomId: event.roomId, surface: "room-agent", ...(event.paneId ? { paneId: event.paneId } : {}) },
-          dedupeKey, payload: { eventId: event.eventId, status: event.status }, telegram: false });
-      } else if (event.status !== "OPEN") {
-        await notificationService.resolve(owner, dedupeKey);
-      }
-    })().catch((error: unknown) => app.log.warn({ err: error, eventId: event.eventId }, "Room Agent notification failed."));
+    // Telegram and notifications for what needs the operator, or nothing while Nous works on the owner's behalf.
+    await roomAgentEventRouting.route(event);
     const recorded = await store.recordRoomEvent({ roomId: event.roomId, paneId: event.paneId, turnId: null, traceId: makeSpaceId("trace"),
       type: "ROOM_AGENT_UPDATED", message: event.title, payload: { kind: "MONITOR_EVENT", eventId: event.eventId, eventKind: event.kind,
         severity: event.severity, status: event.status } });
@@ -5554,7 +5548,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertRoomAccess: (roomId, user) => assertRoomAccess(roomId, user),
     paneRoomId: async (paneId) => (await getPaneById(store, paneId)).roomId,
     artifactRoomId: async (artifactId) => (await store.getArtifact(artifactId)).roomId,
-    shareOf: roomShares.shareOf, paneOwner: roomShares.explicitPaneOwner, closeOwnerlessFeatures: config.multiUserEnabled === true
+    shareOf: roomShares.shareOf, paneOwner: roomShares.explicitPaneOwner
   });
 
   const publicBrowserOrigins = t3PublicOrigins(config.browserEvidenceTargetOrigin);
@@ -5577,12 +5571,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (requestRoutePath(request)==="/api/cli/control/mcp") {
       const claims=verifyControlToken(config.internalApiToken,request.headers[controlTokenHeader]);
       if(!claims)return sendApiError(reply,401,"CONTROL_TOKEN_INVALID","An active Space control token is required.");
-      const session=await store.getPaneCliSession(claims.cliSessionId);
-      if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as any)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
-        return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
-      const grant=await controlRepository.get("grant","shared",claims.roomId);
-      const actorId=(grant?.value as {actorId?:string}|undefined)?.actorId;
-      if(!actorId)return sendApiError(reply,403,"CONTROL_NOT_GRANTED","The operator has not enabled room control access.");
+      // A Harness agent acts for its open Harness pane (harness-agent-tokens.ts); every other token for its CLI session.
+      if(isHarnessAgentSessionId(claims.cliSessionId)){
+        if(!await harnessAgentPrincipal(store,claims))return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","The Harness pane is no longer eligible for control.");
+      }else{
+        const session=await store.getPaneCliSession(claims.cliSessionId);
+        if(!session||!supportsControlRuntime({mode:"TERMINAL",terminalRuntimeId:session.runtimeId} as any)||!session.isActive||session.purpose!=="NORMAL"||session.roomId!==claims.roomId||session.paneId!==claims.paneId||["EXITED","ERROR"].includes(session.status))
+          return sendApiError(reply,403,"CONTROL_SESSION_INACTIVE","CLI session is no longer eligible for control.");
+      }
+      const actorId=((await controlRepository.get("grant","shared",claims.roomId))?.value as {actorId?:string}|undefined)?.actorId;
+      if(!actorId)return sendApiError(reply,403,"CONTROL_NOT_GRANTED","The operator has not enabled CLI control in this room. The operator turns it on by asking this room's Room Agent or Nous to allow CLI control (access.cli) and confirming.");
+      if(!await cliUserHosting.controlActorAllowed(claims.paneId,actorId))return sendApiError(reply,403,"CONTROL_PANE_NOT_GRANTED","CLI control acts as the operator who allowed it, so it is not available in a pane another account opened.");
       request.user=await controlUser(actorId);controlCliRooms.set(request,claims.roomId);return;
     }
     if (isCliBrowserBridgeRequest(request)) {
@@ -5960,6 +5959,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.addHook("onClose", async () => { await sourceControlService.close(); });
 
   registerHarnessRoutes(app, config, store, {
+    agentTokens: { config },
     authorizeUpgrade: (upgradeRequest) => !isOtherSiteUpgradeRequest(upgradeRequest.headers, publicBrowserOrigins) &&
       Boolean(verifySession(cookieValueFromHeader(upgradeRequest.headers.cookie, cookieName), auth.sessionSecret))
   });
@@ -6553,10 +6553,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     return codexCliModeDefaultsService.read();
   });
 
-  registerPaneCliTerminalRoutes(app, {
+  registerPaneCliRoutes(app, {
     config, store, observability, cliRuntimeRegistryCache, cliTerminalManager, cliRuntimeVisibility, assertRootAdmin,
     assertPaneCliRuntimeEnabled, cliPaneReopener, routeOptions: defaultRouteRateLimitOptions,
-    websocketRouteOptions: defaultWebsocketRateLimitOptions, cliAccountBalancer
+    websocketRouteOptions: defaultWebsocketRateLimitOptions, cliAccountBalancer, repository: controlRepository,
+    assertRoomAccess, paneOwner: roomShares.explicitPaneOwner, assertCliHttpMutationControl,
+    waitForCodexThreadSettings, readPaneNativeModelSettings, applyNativePaneModel, readPaneCliModelSettings,
+    resolveOpenCodeServerControl, readPaneOpenCodeModelSettings, applyOpenCodePaneSelection, roomOpenCodeTasks,
+    assertNoManagedModelMutation, roomPaneController
   });
 
   const planExecutionTarget = async (owner: string, paneId: string, expectedSessionId?: string) => {
@@ -6611,14 +6615,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     publish: async event => {
       eventBus.publish(await store.publishManagedPlanExecutionEvent(event));
     }
-  });
-
-  registerPaneCliModelRoutes(app, {
-    config, store, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
-    waitForCodexThreadSettings, readPaneNativeModelSettings, applyNativePaneModel, readPaneCliModelSettings,
-    resolveOpenCodeServerControl, readPaneOpenCodeModelSettings, applyOpenCodePaneSelection, roomOpenCodeTasks,
-    assertNoManagedModelMutation, roomPaneController, assertRootAdmin, assertPaneCliRuntimeEnabled,
-    routeOptions: defaultRouteRateLimitOptions
   });
 
   const browserControlActivity = registerPaneStreamRoutes(app, {
@@ -6809,8 +6805,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     assertPaneAccess: async (request, pane) => { await assertRoomAccess(pane.roomId, request.user); }, audit: (request, action, targetId, metadata) => recordAudit(store, request, { action, targetType: "freelance_copilot", targetId, metadata }),
     authenticatedOwner: async (request) => { if (!request.user || !verifySession(request.cookies[cookieName], auth.sessionSecret)) throw new GitControlError("UNAUTHENTICATED", "Sign in to use Freelance Copilot.", 401); return (await store.upsertUser(request.user)).id; } });
 
+  const vault = registerVault(app, { config, auth, store, routeOptions: defaultRouteRateLimitOptions, overrides: options.vault, notifications: notificationService });
   registerCliBrowserBridgeRoutes(app, {
-    options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity,
+    options, config, store, eventBus, browserSessionManager, cliRuntimeVisibility, controlActivity: browserControlActivity, vault, nous: nousRef,
     routeOptions: defaultRouteRateLimitOptions, paneBrowserAccounts, marketingCopilotService, freelanceCopilotService, jobApplyService: config.optionalModules.has("job-copilot") ? jobApplyService : undefined, mailCopilotService: config.optionalModules.has("mail-copilot") ? mailCopilotService : undefined
   });
 
@@ -7019,7 +7016,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       metadata: { roomId: resolution.claims.roomId, cliPaneId: resolution.claims.paneId, cliSessionId: resolution.claims.cliSessionId, sessionId: resolution.session.sessionId }
     })
   });
-  cliBrowserCdpProxy.register(app, defaultRouteRateLimitOptions);
+  cliBrowserCdpProxy.register(app, defaultRouteRateLimitOptions); vault.protection.onProtected((paneId) => cliBrowserCdpProxy.closeForPane(paneId, "VAULT_PROTECTED", "This browser is protected for the Vault."));
 
   paneBrowserAccounts.current = registerPaneBrowserRoutes(app, {
     config, readGeminiAccountProfileDetails, store, browserSessionManager, routeOptions: defaultRouteRateLimitOptions, cliBrowserCdpProxy,
@@ -7653,7 +7650,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   registerRoomAgentRoutes(app, {
     store, controlRepository, controlUser, roomAgentService, chat: roomAgentChat, routeOptions: defaultRouteRateLimitOptions,
-    monitor: { repository: roomAgentMonitorRepository, forget: (roomId) => roomAgentMonitor.forget(roomId),
+    monitor: { repository: roomAgentMonitorRepository, forget: (roomId) => roomAgentMonitor.forget(roomId), sentToNous: roomAgentEventRouting.sentToNous,
       changed: async (event) => roomAgentMonitorOnEvent(event),
       // The operator's own answer needs no guardrail: it is the operator's approval.
       answer: async (event, input) => {
@@ -7680,10 +7677,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const { livePersonalMemory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, readDashboardAgents });
   registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory, notifications: notificationService });
-  nousRef.current = registerNous(app, { config, autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents,
+  nousRef.current = registerNous(app, { config, vault, autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents,
     roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, monitorEvents: roomAgentMonitorRepository,
-    answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId),
-    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService }, invoke: controlInvoke, eventBus, apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider });
+    answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status() },
+    copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider });
 
   registerVoiceAttachmentRoutes(app, { config, store, routeOptions: defaultRouteRateLimitOptions });
 

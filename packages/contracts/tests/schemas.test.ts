@@ -1509,6 +1509,14 @@ describe("Space contracts", () => {
       }).content
     ).toHaveLength(32 * 1024);
     expect(redactPersistedTranscriptContent("before\0after")).toBe("beforeafter");
+    // Space Control tokens (space-control-token.ts) are self-identifying; redact them even when a CLI (Codex, Claude
+    // Code, Oh My Pi) echoes the SPACE_CONTROL_TOKEN= env name — "_TOKEN=" has no \b, so the labeled pattern misses it.
+    const controlTokenValue = "spacecontrol.v1.eyJyIjoicm9vbSJ9.ZmFrZV9zaWduYXR1cmVfdmFsdWVfbm90X3JlYWw";
+    expect(redactPersistedTranscriptContent(`SPACE_CONTROL_TOKEN=${controlTokenValue}`)).toBe("SPACE_CONTROL_TOKEN=[REDACTED]");
+    expect(redactPersistedTranscriptContent(`the token is ${controlTokenValue} ok`)).toBe("the token is [REDACTED] ok");
+    expect(redactPersistedTranscriptContent(controlTokenValue)).not.toContain(controlTokenValue.split(".")[2]);
+    // The bare version marker in prose is not a token and stays.
+    expect(redactPersistedTranscriptContent("see spacecontrol.v1 docs")).toBe("see spacecontrol.v1 docs");
     const websocket = paneCliWebSocketTokenSchema.parse({
       paneId: session.paneId,
       sessionId: session.sessionId,

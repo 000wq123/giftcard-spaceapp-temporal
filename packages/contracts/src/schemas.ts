@@ -187,6 +187,8 @@ export const eventTypeSchema = z.enum([
 
 export const roomKindSchema = z.enum(["WORKSPACE", "AGENT_PROOF", "CLI_RECOVERY"]);
 
+export const roomSharePermissionSchema = z.enum(["VIEW", "COLLABORATE"]);
+
 export const roomSchema = z.object({
   id: idSchema,
   name: z.string().min(1).max(120),
@@ -201,7 +203,9 @@ export const roomSchema = z.object({
   archivedAt: isoDateTimeSchema.nullable(),
   paneCap: z.number().int().min(1).max(16),
   traceId: requestIdSchema,
-  ownerUserId: idSchema.nullable().optional()
+  ownerUserId: idSchema.nullable().optional(),
+  /** Only on a room shared with the caller (MU-007: the web hides write controls of a VIEW share). */
+  sharePermission: roomSharePermissionSchema.optional()
 });
 
 export const createRoomInputSchema = z.object({
@@ -649,10 +653,15 @@ export const roomPanesResultSchema = z.object({
 const persistedTranscriptTokenPattern = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
 const persistedTranscriptLabeledSecretPattern =
   /\b(api[_-]?key|secret|token|password)\s*[:=]\s*([^\s,;]+)/gi;
+// Space Control tokens (space-control-token.ts) are self-identifying: prefix.payload.sig in base64url. Redact them by
+// shape so they vanish even when a CLI echoes the bare value or the SPACE_CONTROL_TOKEN= name (the _TOKEN= label has no
+// \b before "token", so the labeled pattern above misses it). Codex, Claude Code and Oh My Pi all carry this token.
+const persistedTranscriptControlTokenPattern = /\bspacecontrol\.v\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
 export function redactPersistedTranscriptContent(value: string): string {
   return value
     .replaceAll("\0", "")
+    .replace(persistedTranscriptControlTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptTokenPattern, "[REDACTED]")
     .replace(persistedTranscriptLabeledSecretPattern, (match, label: string, secretValue: string) =>
       secretValue === "[REDACTED]" ? match : `${label}:[REDACTED]`
@@ -3437,7 +3446,7 @@ export const updateBrowserHandoffRequestInputSchema = z
   });
 
 export const browserHandoffRequestResponseSchema = z.object({
-  handoff: browserHandoffRequestSchema
+  handoff: browserHandoffRequestSchema.nullable()
 });
 
 export const browserTimelineEventTypeSchema = z.enum([
@@ -8736,10 +8745,10 @@ export const freelanceCopilotLaunchSettingsSchema = copilotLaunchSettingsSchema;
 export type FreelanceCopilotLaunchSettings = z.infer<typeof freelanceCopilotLaunchSettingsSchema>;
 
 export const userSettingsSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).default("modern"),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).default("modern"),
   modernAppearance: z.enum(["system", "light", "dark"]).default("system"),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).default("space"),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).default("spaceapp"),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).default("spaceapp"),
   // Liquid Glass material, iOS 27 style: 0 is ultra clear, 100 fully tinted.
   liquidGlassTint: z.number().int().min(0).max(100).default(50),
   roomTheme: z.string().default("graphite"),
@@ -8802,10 +8811,10 @@ export const userSettingsSchema = z.object({
 export const defaultUserSettings = userSettingsSchema.parse({});
 
 export const updateUserSettingsInputSchema = z.object({
-  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass"]).optional(),
+  uiTheme: z.enum(["modern", "classic", "codex", "motion", "aurora", "liquid-glass", "jarvis", "aira"]).optional(),
   modernAppearance: z.enum(["system", "light", "dark"]).optional(),
   modernIconPack: z.enum(["lucide", "material-rounded", "motion", "aurora", "space"]).optional(),
-  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "none"]).optional(),
+  uiBackground: z.enum(["spaceapp", "aurora", "liquid-glass", "jarvis", "aira", "none"]).optional(),
   liquidGlassTint: z.number().int().min(0).max(100).optional(),
   roomTheme: z.string().optional(),
   dateTime: patchSchema(dateTimeSettingsSchema).optional(),
@@ -8925,7 +8934,6 @@ export const setUserDisabledInputSchema = z.object({
 }).strict();
 // Room sharing (multi-user step 3, plan clipboard:evAaFYqrgDfd), only with SPACE_MULTI_USER_ENABLED=true: a room's
 // owner shares it with VIEW (read only) or COLLABORATE (own panes in the room); only a pane's owner types into it.
-export const roomSharePermissionSchema = z.enum(["VIEW", "COLLABORATE"]);
 export const roomShareSchema = z.object({
   roomId: idSchema,
   userId: idSchema,

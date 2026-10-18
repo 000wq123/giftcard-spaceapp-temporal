@@ -5572,6 +5572,66 @@ body[data-color-mode="light"] .icon-action-manager {
 :root[data-ui-background="liquid-glass"][data-color-mode="light"] .room-runtime-stack::before {
   background-image: url("/brand/liquid-glass-planet-light.webp");
 }
+/* Jarvis HUD and Aira Core backgrounds (any theme): a static scene (::before: the core over a full-area field)
+   and one turning layer (::after) sized like the core, so motion stays a compositor rotate/scale. */
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack {
+  --space-core-size: min(900px, 90vmin);
+  --space-core-shift: 0px;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack[data-has-empty-state="true"] {
+  --space-core-size: min(520px, 56vmin);
+  --space-core-shift: clamp(60px, 10vh, 100px);
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::before {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  will-change: auto;
+}
+:root[data-ui-background="jarvis"] .room-runtime-stack::before {
+  background:
+    url("/brand/jarvis-core.svg") center calc(50% - var(--space-core-shift)) / var(--space-core-size) no-repeat,
+    url("/brand/jarvis-hud.svg") center / cover no-repeat;
+}
+:root[data-ui-background="aira"] .room-runtime-stack::before {
+  background:
+    url("/brand/aira-core.svg") center calc(50% - var(--space-core-shift)) / var(--space-core-size) no-repeat,
+    url("/brand/aira-field.svg") center / cover no-repeat;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(50% - var(--space-core-shift));
+  width: var(--space-core-size);
+  height: var(--space-core-size);
+  translate: -50% -50%;
+  background: url("/brand/jarvis-rings.svg") center / contain no-repeat;
+  pointer-events: none;
+  z-index: -1;
+  will-change: rotate, scale;
+  animation: space-core-spin 90s linear infinite;
+}
+:root[data-ui-background="aira"] .room-runtime-stack::after {
+  background-image: url("/brand/aira-orbits.svg");
+  animation: space-core-spin 120s linear infinite reverse, space-core-breathe 7s ease-in-out infinite alternate;
+}
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"])[data-color-mode="light"] .room-runtime-stack::before,
+:root:is([data-ui-background="jarvis"], [data-ui-background="aira"])[data-color-mode="light"] .room-runtime-stack::after {
+  opacity: 0.5;
+}
+@keyframes space-core-spin {
+  to { rotate: 360deg; }
+}
+@keyframes space-core-breathe {
+  from { scale: 0.96; }
+  to { scale: 1.04; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:is([data-ui-background="jarvis"], [data-ui-background="aira"]) .room-runtime-stack::after {
+    animation: none;
+  }
+}
 /* Aurora Neon icon pack (aurora-icons.tsx): soft glow, darker ink stops in light mode. */
 svg.space-aurora-icon {
   filter: drop-shadow(0 0 2.5px rgba(167, 139, 250, 0.45));
@@ -9849,20 +9909,6 @@ svg.space-aurora-icon {
   padding: 0.65rem;
   font-size: 0.82rem;
   line-height: 1.5;
-}
-
-.cli-runtime-disable-confirm {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  line-height: 1.4;
-  cursor: pointer;
-}
-
-.cli-runtime-disable-confirm input {
-  margin: 0;
-  accent-color: #c9604d;
 }
 
 .cli-runtime-disable-actions {
@@ -17716,6 +17762,53 @@ svg.space-aurora-icon {
 
 .clipboard-completed-toggle {
   font-size: 0.78rem;
+}
+
+/* One-line share of every plan that is completed, above the list. */
+.clipboard-plan-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--dock-border, #343638);
+  border-radius: var(--dock-radius-sm, 7px);
+  background: var(--dock-raised, #1b1d1f);
+  font-size: 0.72rem;
+}
+
+.clipboard-plan-stats-label,
+.clipboard-plan-stats-count {
+  color: var(--dock-muted, #a2a7ad);
+  white-space: nowrap;
+}
+
+.clipboard-plan-stats .clipboard-plan-progress-bar {
+  flex: 1 1 auto;
+  min-width: 2rem;
+}
+
+/* The selected source filter carries the red active frame and side pill of the rail's active icons. */
+.clipboard-dock .dock-kit-chip[aria-pressed="true"],
+.clipboard-dock .dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
+  position: relative;
+  border: 1.5px solid var(--active-icon-border, #ff4d5e);
+  background: var(--active-icon-background, rgba(92, 15, 28, 0.42));
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(255, 77, 94, 0.28);
+}
+
+.clipboard-dock .dock-kit-chip[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--rail-active-pill, var(--active-icon-border, #ff4d5e));
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 
 .clipboard-drag-handle {

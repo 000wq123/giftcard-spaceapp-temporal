@@ -83,9 +83,11 @@ export async function changeReleaseTrain(repo: ControlRepository, input: Release
         if (!by.pane) throw new SpaceConflictError("Name the pane that leaves the release.");
         next.contributors = next.contributors.filter((item) => item.paneId !== by.pane!.paneId || (input.commit && item.commit !== input.commit.toLowerCase()));
       } else if (op === "candidate") {
-        if (live.status !== "OPEN") throw new SpaceConflictError(`${product} ${live.version} is already publishing.`);
+        // A train marked publishing before the operator's approval existed (stable 2026-10-17) reopens with its new candidate.
+        if (live.status !== "OPEN" && live.approvedSha === live.sourceSha) throw new SpaceConflictError(`${product} ${live.version} is already publishing.`);
         if (!input.sourceSha) throw new SpaceConflictError("Give the sourceSha the candidate is built from.");
         next.sourceSha = input.sourceSha.toLowerCase();
+        next.status = "OPEN";
       } else if (op === "approve") {
         if (!by.operatorApproved) throw new SpaceConflictError("Only the operator approves a release, through Nous (a RELEASE decision in the Nous dock).");
         if (live.status !== "OPEN" || !live.sourceSha) throw new SpaceConflictError("Record the candidate (op candidate with sourceSha) before the operator approves it.");

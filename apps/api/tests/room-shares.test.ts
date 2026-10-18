@@ -83,6 +83,9 @@ describe("room sharing (multi-user step 3)", () => {
       expect((await as(alice, "PUT", `/api/rooms/${room.id}/shares`, { email: " Bob@Space.local ", permission: "VIEW" })).json())
         .toMatchObject({ userId: "user:bob", permission: "VIEW", createdBy: "user:alice" });
       expect(await roomIds()).toContain(room.id);
+      // The web hides the write controls of a VIEW share (MU-007); the owner's own list carries no permission.
+      expect((await as(bob, "GET", "/api/rooms")).json().data.find((item: { id: string }) => item.id === room.id)).toMatchObject({ sharePermission: "VIEW" });
+      expect((await as(alice, "GET", "/api/rooms")).json().data.find((item: { id: string }) => item.id === room.id).sharePermission).toBeUndefined();
       expect((await as(bob, "GET", `/api/rooms/${room.id}/room-agent`)).statusCode).not.toBe(404);
       expect((await as(bob, "GET", `/api/events?roomId=${room.id}`)).statusCode).toBe(200);
       const viewWrites = [
@@ -167,7 +170,7 @@ describe("room sharing (multi-user step 3)", () => {
     }
   });
 
-  it("closes the features without an owner to a USER while the flag is on (operator decision 2026-10-17)", async () => {
+  it("closes the features without an owner to a USER, with the flag on or off (operator decisions 2026-10-17, MU-001)", async () => {
     const closed = ["/api/memory", "/api/skills", "/api/council/runs", "/api/admin/audit", "/api/admin/storage", "/api/audit/entries",
       "/api/activity-log", "/api/shared-chat/messages", "/api/control/v1/capabilities", "/api/agent/sessions", "/api/app-diagnostics",
       "/api/swarm", "/api/reviews", "/api/cli/tasks", "/api/codex/history", "/api/tasks", "/api/providers", "/api/files/list"];
@@ -177,14 +180,11 @@ describe("room sharing (multi-user step 3)", () => {
         const alice = await session({ id: "user:alice", email: "alice@space.local", role: "USER" });
         const room = (await app.inject({ method: "POST", url: "/api/rooms", headers: alice.headers, payload: { name: "Alice room", initialPaneCount: 0 } })).json();
         const answers = await Promise.all(closed.map(async (url) => `${url} ${(await app.inject({ method: "GET", url, headers: alice.headers })).statusCode}`));
-        if (enabled) {
-          expect(answers).toEqual(closed.map((url) => `${url} 404`));
-          // Deny by default also covers writes outside the allowed families (security review 2026-10-17).
-          for (const [method, url] of [["PATCH", "/api/tasks/codex-goals/thread-1"], ["POST", "/api/providers"], ["PATCH", `/api/swarm/tasks/x?roomId=${room.id}`]] as const) {
-            expect((await app.inject({ method, url, headers: alice.headers, payload: {} })).statusCode, `${method} ${url}`).toBe(404);
-          }
+        expect(answers).toEqual(closed.map((url) => `${url} 404`));
+        // Deny by default also covers writes outside the allowed families (security review 2026-10-17).
+        for (const [method, url] of [["PATCH", "/api/tasks/codex-goals/thread-1"], ["POST", "/api/providers"], ["PATCH", `/api/swarm/tasks/x?roomId=${room.id}`]] as const) {
+          expect((await app.inject({ method, url, headers: alice.headers, payload: {} })).statusCode, `${method} ${url}`).toBe(404);
         }
-        else expect((await app.inject({ method: "GET", url: "/api/audit/entries", headers: alice.headers })).statusCode).toBe(200);
         // Swarm and Review of the user's own room stay open.
         expect((await app.inject({ method: "GET", url: `/api/swarm?roomId=${room.id}`, headers: alice.headers })).statusCode).toBe(200);
         expect((await app.inject({ method: "GET", url: `/api/reviews/state?roomId=${room.id}`, headers: alice.headers })).statusCode).not.toBe(404);

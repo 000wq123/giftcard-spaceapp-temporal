@@ -84,9 +84,9 @@ page could not show, and `blockedWrites` (writes the capture browser stopped).
 
 ## Appearance
 
-Preview (account untouched): `--theme modern|classic|codex|motion|aurora|liquid-glass` (`codex` is shown as
+Preview (account untouched): `--theme modern|classic|codex|motion|aurora|liquid-glass|jarvis|aira` (`codex` is shown as
 Graphite), `--mode system|light|dark` (only the Modern theme has a light mode), `--icons lucide|material-rounded|motion|aurora|space`,
-`--background spaceapp|aurora|liquid-glass|none`, `--tint 0-100` (Glass Planet), `--room-theme graphite|forest|copper|steel|contrast|motion`,
+`--background spaceapp|aurora|liquid-glass|jarvis|aira|none`, `--tint 0-100` (Glass Planet), `--room-theme graphite|forest|copper|steel|contrast|motion`,
 `--zoom 50-200`.
 
 ### Persistent appearance (only on the operator's request)

@@ -997,9 +997,32 @@ export async function createOpenCodeSession(
     if (!response.ok) return null;
     const payload = (await response.json()) as { id?: unknown; data?: unknown };
     const id = v2 ? jsonRecord(payload.data).id : payload.id;
-    return typeof id === "string" && id.length > 0 ? id : null;
+    if (typeof id !== "string" || id.length === 0) return null;
+    if (v2) await waitForOpenCodeV2Mcp(control, directory);
+    return id;
   } catch {
     return null;
+  }
+}
+
+/**
+ * OpenCode 2 connects a directory's MCP servers on first use, and a prompt sent before they connect runs without
+ * their tools (2.0.32). A TUI starts them when it opens; a session that only the API prompts waits here instead.
+ */
+async function waitForOpenCodeV2Mcp(control: OpenCodeServerControl, directory: string): Promise<void> {
+  // shortcut: a server with no MCP servers configured waits the whole 5 s once per new session; read /api/config if
+  // such servers become common.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await openCodeV2Fetch(control, `/api/mcp?${openCodeLocationQuery(directory)}`);
+      if (!response.ok) return;
+      const servers = jsonRecord(await response.json()).data;
+      if (Array.isArray(servers) && servers.length > 0
+        && servers.every((server) => jsonRecord(jsonRecord(server).status).status !== "pending")) return;
+    } catch {
+      return; // Best effort: the session exists, and a later prompt gets the tools.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 

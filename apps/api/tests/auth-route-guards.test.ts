@@ -257,10 +257,12 @@ describe("room and pane ownership for USER accounts", () => {
         // The refusal never reveals the room behind a pane or an artifact.
         if (!probe.url.includes(roomId) && !JSON.stringify(probe.payload ?? {}).includes(roomId)) expect(response.body).not.toContain(roomId);
       }
-      // The owner reaches the same routes (the artifact file itself is not on disk in this fixture).
+      // The owner reaches the same room routes (the artifact file itself is not on disk in this fixture); plugins and
+      // Space Control stay closed to every USER (MU-001).
       for (const probe of probes.filter((item) => item.method === "GET" && !item.url.startsWith("/api/artifacts/"))) {
         const response = await app.inject({ method: probe.method, url: probe.url, headers: alice.headers });
-        expect(response.statusCode, `${probe.method} ${probe.url} -> ${response.body}`).toBe(200);
+        const closed = /^\/api\/(plugins|control)\//.test(probe.url);
+        expect(response.statusCode, `${probe.method} ${probe.url} -> ${response.body}`).toBe(closed ? 404 : 200);
       }
       const ownFile = await app.inject({ method: "GET", url: `/api/artifacts/${artifact.id}/file`, headers: alice.headers });
       expect(ownFile.json().error.message).not.toContain(artifact.id);

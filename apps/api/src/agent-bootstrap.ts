@@ -67,7 +67,8 @@ function cliAgentFilesLine(channel: SpaceAgentBootstrapInput["channel"]): string
     "- Agent Files delivery: ONLY create and publish an Agent File if the user EXPLICITLY requested file delivery/creation in their prompt. NEVER publish files, reports, test logs, benchmarks, diffs, or screenshots automatically as proof of work.",
     "  When explicitly requested by the user: run `space-publish-file <absolute-path> [more-paths...]` before the final response.",
     "  Publish only final deliverables. Never publish credentials, secrets, user inputs, temporary files, caches, logs, or whole source trees.",
-    "  Confirm the command returned an Agent Files artifact id. If it fails, report the exact gate and do not claim the file is downloadable."
+    "  Confirm the command returned an Agent Files artifact id. If it fails, report the exact gate and do not claim the file is downloadable.",
+    "- Media dock: when the user EXPLICITLY asks to put an image or video in this room's Media dock, run `space-publish-file --media <absolute-path>` (PNG, JPEG, WebP, MP4, MOV, WebM). It needs no CLI control grant; never ask the operator to allow CLI control for it."
   ].join("\n");
 }
 
@@ -96,6 +97,8 @@ export function buildSpaceAgentBootstrapPrompt(input: SpaceAgentBootstrapInput):
     input.channel === "CLI" ? "- Space-only operations: use space-capability info <server> [tool] or space-capability call with JSON on stdin when needed. No MCP catalog or server startup is required for native tasks." : null,
     agentFilesLine,
     input.channel === "CLI" ? "- Timed or recurring work: `node /opt/spaceapp/scripts/space-task.mjs add --title T --prompt P --every 2h|--daily HH:MM|--at <time>` puts it in the operator's Tasks dock, and Space types it into this pane when due. Never use a session-only cron or timer for it." : null,
+    // Pane reports to Nous (plan clipboard:ot6-jLKOWDNC): Nous knows every pane's progress without reading screens.
+    input.channel === "CLI" ? "- Progress to Nous (skill space-progress): `node /opt/spaceapp/scripts/space-progress.mjs <started|progress|blocked|needs-decision|waiting|done|failed> \"one line\" [--plan clipboard:<id> --step N --percent N --ticket q-... --needs \"options and your recommendation\" --report-file <path>]` (or space_progress_report). Report at task start, after each finished plan step, when blocked or needing a decision, when you submit a merge-queue ticket, and when done or failed (what changed, tests, ticket, next, what is still needed). Space records each turn's end on its own; never put secrets in a report." : null,
     "- Secret policy: never write raw provider credentials, cookies, browser profile data, private keys, or unredacted tokens to docs, chat, logs, memory, or transcripts.",
     skillBridgeLine,
     mcpBridgeLine,

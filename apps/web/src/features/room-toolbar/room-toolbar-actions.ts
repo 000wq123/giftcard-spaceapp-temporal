@@ -608,6 +608,15 @@ export function buildRoomToolbarActions(context: RoomToolbarActionsContext): Ico
         disabled: !activeRoom || panes.length >= 16
       }]
     : []),
+  // The Vault is a dock, not a pane: Create opens it (never closes it) and adds nothing to the room.
+  {
+    id: "add-vault",
+    label: "Vault",
+    title: "Open the Vault",
+    ariaLabel: "Open the Vault",
+    icon: sideSurfaceMeta.vault.icon,
+    onClick: () => { if (!(isSideSurfaceOpen && activeSideSurface === "vault")) toggleSideSurface("vault"); }
+  },
   ...(!isPaneHidden("t3code")
     ? [{
         id: "add-t3code",

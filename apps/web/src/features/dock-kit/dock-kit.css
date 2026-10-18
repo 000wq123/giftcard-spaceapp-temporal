@@ -376,8 +376,9 @@
   white-space: nowrap;
 }
 
-.dock-kit-chip[aria-pressed="true"],
-.dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
+/* Doubled class: room themes restyle every button (.space-shell[data-room-theme] button), which hid the chosen chip. */
+.dock-kit-chip.dock-kit-chip[aria-pressed="true"],
+.dock-kit-chip.dock-kit-chip[aria-pressed="true"]:hover:not(:disabled) {
   border-color: var(--dock-accent);
   background: var(--dock-accent-soft);
   color: var(--dock-accent);

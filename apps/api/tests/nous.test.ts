@@ -7,12 +7,17 @@ import { createApp } from "../src/app.js";
 import { createCsrfToken, signSession, signSessionWithTtl } from "../src/auth.js";
 import { createNotificationService } from "../src/notifications/service.js";
 import Fastify from "fastify";
-import { registerNousMcpRoute, signNousToken, verifyNousToken } from "../src/nous/mcp.js";
+import { postToWorkerWhenUp, registerNousMcpRoute, signNousToken, verifyNousToken } from "../src/nous/mcp.js";
+import { createServer } from "node:http";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
-import { renderNousWorld, serverBusy } from "../src/nous/digest.js";
-import { createNousService, nousHistory, NousUnavailableError, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
+import { renderNousWorld } from "../src/nous/digest.js";
+import { createNousService, nousHistory, NOUS_PERSONA, NousUnavailableError, type NousRunner, type NousServiceDeps } from "../src/nous/service.js";
 import { createNousTools, nousControlRisk, nousToolDefinitions, type NousToolDeps, type NousToolOutcome } from "../src/nous/tools.js";
-import { registerNous } from "../src/nous/wiring.js";
+import { createNousMutes } from "../src/nous/mutes.js";
+import { nousLiveCounts, registerNous } from "../src/nous/wiring.js";
 import { createRoomAgentAutopilot } from "../src/room-agent-autopilot.js";
 
 describe("Nous's guardrails", () => {
@@ -63,10 +68,29 @@ const ctx = { owner: "user:operator", turnId: "nous_turn:t1", callId: "toolu_1",
 describe("Nous's world", () => {
   it("shows the server's load and tells Nous to wait when the server is busy", () => {
     const base = { rooms: [], notifications: [], plans: [], tasks: [], trains: "", decisions: [], notes: [], now: "2026-10-17T10:30:00.000Z" };
-    expect(serverBusy({ load1: 9.5, load5: 6, cpus: 8, memoryUsedPercent: 60 })).toBe(true);
-    expect(serverBusy({ load1: 3, load5: 3, cpus: 8, memoryUsedPercent: 95 })).toBe(true);
-    expect(renderNousWorld({ ...base, server: { load1: 2.1, load5: 1.8, cpus: 8, memoryUsedPercent: 61 } })).toContain("Server: load 2.1 (5 min 1.8) on 8 CPUs, memory 61% in use.");
-    expect(renderNousWorld({ ...base, server: { load1: 12, load5: 10, cpus: 8, memoryUsedPercent: 70 } })).toContain("BUSY: start no new work in panes now");
+    // The thresholds and the smoothing are tested in nous-server-load.test.ts; the world shows the state's line.
+    const server = { level: "CALM" as const, reasons: [], cpuPercent: 40, load1: 2.1, load5: 1.8, cores: 8, memAvailableBytes: 20 * 1024 ** 3, memTotalBytes: 32 * 1024 ** 3,
+      swapPercent: 10, samples: 30, topCpu: [], topMemory: [], sampledAt: "2026-10-17T10:30:00.000Z" };
+    expect(renderNousWorld({ ...base, server })).toContain("Server: CALM · CPU 40% · load 2.1/1.8 on 8 cores · RAM available 20 of 32 GiB · swap 10% (5 min average).");
+    expect(renderNousWorld({ ...base, server: { ...server, level: "BUSY", reasons: ["CPU 80%"], cpuPercent: 80 } })).toContain("BUSY: start no new work in panes now");
+  });
+
+  it("shows the operator's allowances, so Nous promotes when it may (stable 2026-10-18: it asked for promotes it was allowed to run)", () => {
+    const base = { rooms: [], notifications: [], plans: [], tasks: [], trains: "", decisions: [], notes: [], now: "2026-10-18T01:30:00.000Z" };
+    expect(renderNousWorld({ ...base, allowances: { promote: true, warm: false } }))
+      .toContain("Operator allowances (only the operator changes them, in Settings): May promote dev to stable ON · May approve Warm changes off.");
+    expect(renderNousWorld(base)).not.toContain("Operator allowances");
+    expect(NOUS_PERSONA).toContain("unless the world shows \"May promote dev to stable ON\"");
+  });
+
+  it("keeps its notes, newest first, when the world is too large", () => {
+    const base = { rooms: [], notifications: [], plans: [], tasks: [], trains: "x".repeat(60_000), decisions: [], now: "2026-10-17T10:30:00.000Z" };
+    const notes = [{ key: "plan-map", text: "A blocks B", updatedAt: "2026-10-17T10:00:00.000Z" },
+      ...Array.from({ length: 6 }, (_, index) => ({ key: `old-${index}`, text: "y".repeat(3_900), updatedAt: `2026-10-16T0${index}:00:00.000Z` }))];
+    const world = renderNousWorld({ ...base, notes: [...notes, { key: "operator-language", text: "Greek", updatedAt: "2026-10-15T00:00:00.000Z" }] });
+    expect(world.length).toBeLessThanOrEqual(40_000);
+    expect(world).toContain("## Your notes\n### operator-language\nGreek\n### plan-map\nA blocks B");
+    expect(world).toMatch(/Older notes not shown \(fold them into newer ones, or delete them\): old-1, old-0$/);
   });
 });
 
@@ -132,6 +156,13 @@ describe("Nous's tools", () => {
 
   it("promotes and answers Warm prompts only when the operator's settings allow it", async () => {
     expect(classifyNousOutgoing("then run space-queue promote --wait", { promote: true, warm: false })).toBeNull();
+    // Showing a secret is the operator's call; forbidding it is not.
+    for (const text of ["Show the next.spaceapp.dev preview password on your screen for the operator.", "Print the API key, then stop.", "cat the token file and echo the secret"]) {
+      expect(classifyNousOutgoing(text)?.reasons, text).toContain("showing a secret on screen");
+    }
+    for (const text of ["Never print the token.", "Do not show the password anywhere.", "Rotate the shared OpenCode server password now.", "Don't echo any secrets."]) {
+      expect(classifyNousOutgoing(text)?.reasons ?? [], text).not.toContain("showing a secret on screen");
+    }
     expect(classifyNousOutgoing("space-queue promote --wait then --hotfix", { promote: true, warm: false })?.reasons).toEqual(["stable queue control or a hotfix"]);
     expect(classifyNousPrompt("Run space-queue promote --wait?\n❯ 1. Yes", { promote: true, warm: false })).toBeNull();
     expect(classifyNousPrompt("Edit apps/web/src/features/rooms/use-warm-rooms.ts?\n❯ 1. Yes", { promote: false, warm: true })).toBeNull();
@@ -143,6 +174,12 @@ describe("Nous's tools", () => {
     expect(answered).toMatchObject({ ok: true, display: expect.stringContaining("allowed by the operator's settings") });
     expect(f.deps.answerPrompt).toHaveBeenCalledWith(expect.objectContaining({ id: "pane:andy0001" }), { sessionId: "session:1", answer: "1", fingerprint: "fp-1" }, "trace:1");
     expect(f.roomTool).not.toHaveBeenCalled();
+    // A promote that only forbids a hotfix goes (stable 2026-10-17); one that asks for queue control is held and told how to word it.
+    await allowed.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Run space-queue promote --wait. Never --hotfix." }, ctx);
+    expect(f.roomTool).toHaveBeenCalledWith("send_to_pane", expect.objectContaining({ panes: ["pane:andy0001"] }), expect.anything());
+    const held = await allowed.execute("space_send_to_pane", { room: "Main", panes: ["Andy"], text: "Run space-queue promote --wait, then space-queue resume." }, ctx);
+    expect(held).toMatchObject({ ok: false, refused: true });
+    expect(held.result).toContain("To promote on the operator's allowance");
   });
 
   it("closes finished panes and creates rooms as the operator asked, through the Room Agent's tools", async () => {
@@ -156,6 +193,32 @@ describe("Nous's tools", () => {
     expect((await f.tools.execute("space_create_room", { name: "main" }, ctx)).ok).toBe(false);
   });
 
+  it("mutes a room's finished and waiting panes for at most 24 hours, and nothing else", async () => {
+    let clock = Date.parse("2026-10-17T15:00:00.000Z");
+    const mutes = createNousMutes(() => clock);
+    const f = toolFixture();
+    f.deps.mutes = mutes;
+    const muted = await f.tools.execute("space_nous_mute_room", { room: "Main", reason: "the operator's test room", hours: 2 }, ctx);
+    expect(muted).toMatchObject({ ok: true, display: "Muted Main until 10-17 17:00 UTC" });
+    for (const kind of ["FINISHED", "WAITING"]) expect(mutes.silences("user:operator", "room:main0001", kind)).toBe(true);
+    for (const kind of ["STUCK", "ERROR", "OVERLAP", "SIGN_IN", "USAGE_LIMIT"]) expect(mutes.silences("user:operator", "room:main0001", kind)).toBe(false);
+    expect(mutes.silences("user:someone", "room:main0001", "FINISHED")).toBe(false);
+    expect((await f.tools.execute("space_nous_mute_room", { room: "Main", reason: "x", hours: 48 }, ctx)).ok).toBe(false);
+    clock += 2 * 3_600_000;
+    expect(mutes.list("user:operator")).toEqual([]);
+    mutes.mute("user:operator", "room:main0001", "test", 1);
+    expect((await f.tools.execute("space_nous_unmute_room", { room: "Main" }, ctx)).ok).toBe(true);
+    expect(mutes.silences("user:operator", "room:main0001", "FINISHED")).toBe(false);
+  });
+
+  it("points a minimized pane's read at its transcript", async () => {
+    const f = toolFixture();
+    f.deps.lastAnswer = async () => "full report";
+    expect((await f.tools.execute("space_read_pane", { room: "Main", pane: "Andy" }, ctx)).result).not.toContain("minimized");
+    f.deps.listPanes = async (roomId) => [pane("pane:andy0001", roomId, "Andy", { isMinimized: true })];
+    expect((await f.tools.execute("space_read_pane", { room: "Main", pane: "Andy" }, ctx)).result).toContain('reply "last"');
+  });
+
   it("asks the operator only with an action inside their own rooms", async () => {
     const f = toolFixture();
     const base = { category: "RELEASE", title: "Promote dev to stable", body: "All plans are done.", recommendation: "Promote." };
@@ -164,6 +227,15 @@ describe("Nous's tools", () => {
     const asked = await f.tools.execute("space_ask_operator", { ...base, action: { type: "PANE_TEXT", mode: "PROMPT", roomId: "room:main0001", paneId: "pane:andy0001", text: "run space-queue promote" } }, ctx);
     expect(asked.ok).toBe(true);
     expect(f.ask).toHaveBeenCalledWith(expect.objectContaining({ ownerUserId: "user:operator", category: "RELEASE" }));
+    // A plain terminal (no CLI runtime) cannot take the action's text: refused at ask time, not after the operator's yes.
+    f.deps.listPanes = async (roomId) => [pane("pane:andy0001", roomId, "Andy", { terminalRuntimeId: null } as unknown as Partial<Pane>)];
+    const plain = await f.tools.execute("space_ask_operator", { ...base, title: "Plain", action: { type: "PANE_TEXT", mode: "PROMPT", roomId: "room:main0001", paneId: "pane:andy0001", text: "go" } }, ctx);
+    expect(plain).toMatchObject({ ok: false, display: "Space cannot type into Andy" });
+    // Names in refs become ids (the notification links them); a room that is not the operator's drops.
+    await f.tools.execute("space_ask_operator", { ...base, title: "Named", refs: { roomId: "Main", paneId: "Andy", planId: "clipboard:plan01" } }, ctx);
+    expect(f.ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: { planId: "clipboard:plan01", roomId: "room:main0001", paneId: "pane:andy0001" } }));
+    await f.tools.execute("space_ask_operator", { ...base, title: "Elsewhere", refs: { roomId: "Vault", paneId: "Andy" } }, ctx);
+    expect(f.ask).toHaveBeenLastCalledWith(expect.objectContaining({ refs: {} }));
   });
 
   it("never offers approving or publishing a release as a tool", () => {
@@ -178,7 +250,7 @@ describe("Nous's Space Control (operator request 2026-10-17)", () => {
   it("runs pane, room and layout work itself, and holds deletes, publishing and critical text for a decision", async () => {
     const f = toolFixture();
     await f.tools.execute("space_inspect", { room: "Main", arguments: { section: "STATE" } }, ctx);
-    expect(f.roomTool).toHaveBeenLastCalledWith("space_control", { tool: "space_inspect", arguments: { section: "STATE" } }, expect.objectContaining({ roomId: "room:main0001" }));
+    expect(f.roomTool).toHaveBeenLastCalledWith("space_control", { tool: "space_inspect", arguments: expect.objectContaining({ section: "STATE" }) }, expect.objectContaining({ roomId: "room:main0001" }));
 
     const close = [{ kind: "pane", operation: "close", target: { paneIds: ["pane:andy0001"], state: "ALL" }, when: "NOW" }];
     expect((await f.tools.execute("space_execute", { room: "Main", actions: close }, ctx)).ok).toBe(true);
@@ -260,6 +332,47 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
     return { app, store, room, andy, bob, execute, resolve, memories, wiring, run };
   }
 
+  it("starts the world with the operator's working time zone (plan clipboard:ubQLgcTtQWA_)", async () => {
+    const f = await wired();
+    try {
+      f.store.updateUserSettings(owner, { dateTime: { timeZone: "Asia/Bangkok" } });
+      const [world] = await f.run(["space_world", {}]);
+      expect(world!.result).toMatch(/^The operator's working time zone is Asia\/Bangkok; their local time now is .+ GMT\+7\. Write every time to them in this zone\.\n\n# The world now/);
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("sets, lists and cancels follow-ups on the owner's panes (plan clipboard:8s0ZNiO3q5ZT S3)", async () => {
+    const f = await wired();
+    try {
+      const [added, wrongPane, listed] = await f.run(["space_nous_followup", { op: "add", note: "Read Andy's report", room: "Main", pane: "Andy" }],
+        ["space_nous_followup", { op: "add", note: "x", room: "Main", pane: "Zed" }], ["space_nous_followup", { op: "list" }]);
+      expect(added).toMatchObject({ ok: true, display: "Set a follow-up when Andy finishes" });
+      expect(wrongPane).toMatchObject({ ok: false, display: "Could not find Zed" });
+      const id = /\[(nous_followup:[^\]]+)\]/.exec(listed!.result)![1]!;
+      const [cancelled] = await f.run(["space_nous_followup", { op: "cancel", followup: id }]);
+      expect(cancelled).toMatchObject({ ok: true, display: "Cancelled a follow-up" });
+      // An over-long note is clipped, not refused.
+      const [long] = await f.run(["space_nous_followup", { op: "add", note: "n".repeat(1_500), inMinutes: 30 }]);
+      expect(long).toMatchObject({ ok: true });
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("shows when each open plan's percentage last changed and its pane (plan clipboard:8s0ZNiO3q5ZT S4)", async () => {
+    const f = await wired();
+    try {
+      const [created, world] = await f.run(["space_plan_create", { title: "Ship follow-ups", text: "Add space_nous_followup.", minimumModel: "claude-opus-5-5" }], ["space_world", {}]);
+      expect(created!.ok).toBe(true);
+      expect(world!.result).toContain("## Plan activity (when each open plan's % last changed, and its pane)");
+      expect(world!.result).toMatch(/- "Ship follow-ups" 0%: unchanged 0 h \(since .+ UTC\); no open pane/);
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("records plans and notes in the clipboard, and changes only agents' notes", async () => {
     const f = await wired();
     try {
@@ -318,6 +431,9 @@ describe("Nous wired to Space (operator request 2026-10-17)", () => {
         ["space_memory_recall", { query: "Nous files" }]);
       expect(saved!.result).toBe("Saved (memory:1).");
       expect(recalled!.result).toContain("Dana reports Nous bugs only.");
+      // Tags the memory would refuse are cleaned instead of failing the save.
+      const [cleaned] = await f.run(["space_memory_save", { title: "Warm approval", body: "Approved.", tags: ["space_memory:52c6", "plan/step 5", "Warm", "warm", "  "] }]);
+      expect(cleaned).toMatchObject({ ok: true });
     } finally {
       await f.app.close();
     }
@@ -380,7 +496,45 @@ function serviceFixture(steps: Step[], overrides: Partial<NousServiceDeps> = {},
 }
 const owner = "user:operator";
 
+describe("Nous's live stats (plan clipboard:wr9yNPJwkDrp)", () => {
+  it("counts rooms and their open CLI panes by state; an unreadable room counts as a room only", () => {
+    const cli = (id: string, extra: Partial<Pane> = {}) => pane(id, "room:main0001", id, extra);
+    const sample = { data: [cli("pane:a0000001"), cli("pane:b0000001"), cli("pane:c0000001"), cli("pane:d0000001"), cli("pane:e0000001", { isClosed: true }),
+      cli("pane:f0000001", { mode: "BROWSER" } as Partial<Pane>)], activity: { "pane:a0000001": "working", "pane:b0000001": "waiting", "pane:c0000001": "done" },
+      details: {}, sampledAt: new Date().toISOString() } as never;
+    expect(nousLiveCounts([{ sample }, { sample: null }])).toEqual({ rooms: 2, agents: { running: 1, waiting: 1, idle: 2, total: 4 } });
+  });
+});
+
+describe("Nous's worker call", () => {
+  it("waits for a restarting worker instead of failing the turn, and never retries a call the worker answered", async () => {
+    const socket = join(mkdtempSync(join(tmpdir(), "nous-worker-")), "worker.sock");
+    let calls = 0;
+    const server = createServer((_request, response) => { calls += 1; response.writeHead(calls === 1 ? 200 : 500, { "content-type": "application/json" }); response.end(JSON.stringify(calls === 1 ? { text: "ok" } : { error: "busy" })); });
+    setTimeout(() => server.listen(socket), 30);
+    try {
+      expect(await postToWorkerWhenUp<{ text: string }>(socket, "/nous-turn", {}, new AbortController().signal, 20, 20)).toEqual({ text: "ok" });
+      await expect(postToWorkerWhenUp(socket, "/nous-turn", {}, new AbortController().signal, 20, 20)).rejects.toThrow("busy");
+      expect(calls).toBe(2);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe("Nous's turns", () => {
+  it("answers the operator's newest message again after a restart cut the turn, and only then", async () => {
+    const f = serviceFixture([async () => ({ text: "Η Hetzner περιμένει.", isError: false })]);
+    await f.repository.addMessage({ ownerUserId: owner, turnId: null, kind: "OPERATOR", status: "DONE", content: "τι έγινε με την Hetzner?" });
+    await f.repository.addMessage({ ownerUserId: owner, turnId: "nous_turn:cut", kind: "TOOL", status: "RUNNING", content: "Reading Bob" });
+    await f.service.recover();
+    expect(await f.service.resume(owner)).toBe(true);
+    await f.service.idle(owner);
+    expect((await f.repository.listMessages(owner, 10)).at(-1)).toMatchObject({ kind: "ANSWER", content: "Η Hetzner περιμένει." });
+    expect(await f.service.resume(owner)).toBe(false);
+    expect(f.requests).toHaveLength(1);
+  });
+
   it("runs one Claude Code turn whose tool calls come back through the turn's MCP calls", async () => {
     const f = serviceFixture([async (input, service) => {
       expect(service.turnRunning(owner, input.turnId)).toBe(true);
@@ -449,6 +603,8 @@ describe("Nous's turns", () => {
     await f.service.saveSettings(owner, { enabled: true });
     await f.service.send(owner, "Τι κάνεις;");
     expect(await f.repository.listNotes(owner)).toEqual([expect.objectContaining({ key: "operator-language", text: "The operator writes Greek: always write to them in Greek." })]);
+    await f.service.idle(owner);
+    expect(f.requests.at(-1)!.prompt.endsWith("The operator writes Greek: always write to them in Greek.")).toBe(true);
     const dev = serviceFixture([], { autonomous: false }, false);
     await dev.service.saveSettings(owner, { enabled: true });
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -507,6 +663,33 @@ describe("Nous's turns", () => {
     expect(f.resolve).toHaveBeenCalledWith(owner, `nous:decision:${decision.id}`);
     await f.service.idle(owner);
     expect((await f.repository.listMessages(owner, 20)).some((message) => message.kind === "DECISION" && message.content.includes("approved"))).toBe(true);
+  });
+
+  it("approves a kind the operator chose to always approve, never a release or a delete, and a PATCH only removes kinds (operator request 2026-10-18)", async () => {
+    const f = serviceFixture([]);
+    const publish = (title: string, id: string) => ({ ownerUserId: owner, category: "EXTERNAL" as const, title, body: "", options: [], recommendation: "Yes.", refs: {},
+      action: { type: "SPACE_CONTROL" as const, roomId: "room:main0001", actions: [{ kind: "resource", operation: "media.publish", id }] } });
+    const first = await f.service.ask(publish("Put Dana's image in the Media dock", "artifact:one0001"));
+    await f.service.answer(owner, first.id, { answer: "APPROVE", always: true });
+    expect((await f.service.state(owner)).settings.alwaysApprove).toEqual([expect.objectContaining({ key: "SPACE_CONTROL:resource media.publish" })]);
+    f.raise.mockClear();
+
+    const next = await f.service.ask(publish("Put Kate's image in the Media dock", "artifact:two0002"));
+    expect(next).toMatchObject({ status: "APPROVED", answer: expect.stringContaining("Always approve"), outcome: "Sent to Andy in Main." });
+    expect(f.executeAction).toHaveBeenCalledTimes(2);
+    expect(f.raise).not.toHaveBeenCalled();
+    // The same kind as a release, or a delete Nous called EXTERNAL, still asks; neither can be always approved.
+    expect(await f.service.ask({ ...publish("Publish the release media", "artifact:three003"), category: "RELEASE" })).toMatchObject({ status: "OPEN" });
+    const del = await f.service.ask({ ...publish("Remove the old image", "artifact:four0004"),
+      action: { type: "SPACE_CONTROL", roomId: "room:main0001", actions: [{ kind: "resource", operation: "files.delete", id: "artifact:four0004" }] } });
+    await expect(f.service.answer(owner, del.id, { answer: "APPROVE", always: true })).rejects.toThrow("stays yours");
+    expect(del.status).toBe("OPEN");
+
+    await f.service.saveSettings(owner, { alwaysApprove: [...(await f.service.state(owner)).settings.alwaysApprove, { key: "SPACE_CONTROL:resource files.delete", label: "delete", at: first.createdAt }] });
+    expect((await f.service.state(owner)).settings.alwaysApprove.map((rule) => rule.key)).toEqual(["SPACE_CONTROL:resource media.publish"]);
+    await f.service.saveSettings(owner, { alwaysApprove: [] });
+    expect(await f.service.ask(publish("Put Bruno's image in the Media dock", "artifact:five0005"))).toMatchObject({ status: "OPEN" });
+    await f.service.idle(owner);
   });
 
   it("takes the operator's 'You could have decided this' only on an answered decision (plan clipboard:L7RgHsveHbcR)", async () => {
@@ -625,11 +808,11 @@ describe("Nous API", () => {
     expect((await app.inject({ method: "GET", url: "/api/nous/progress", headers: operator })).json().progress)
       .toMatchObject({ version: 1, baselineDate: "2026-10-17", baselineOverall: 44.7, window: { turns: 1 } });
     const settings = await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { enabled: true } });
-    expect(settings.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false });
+    expect(settings.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: false, mayApproveWarm: false, alwaysApprove: [] });
     // Each toggle changes only itself: all three end up on.
     await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { mayPromote: true } });
     const all = await app.inject({ method: "PATCH", url: "/api/nous/settings", headers: operator, payload: { mayApproveWarm: true } });
-    expect(all.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: true, mayApproveWarm: true });
+    expect(all.json().settings).toEqual({ enabled: true, maxTurnsPerHour: 20, mayPromote: true, mayApproveWarm: true, alwaysApprove: [] });
 
     const proof = await app.inject({ method: "POST", url: "/api/nous/decisions/nous_decision:abcdef123456/answer", headers: headers("user:operator-proof"), payload: { answer: "APPROVE" } });
     expect(proof.statusCode).toBe(403);

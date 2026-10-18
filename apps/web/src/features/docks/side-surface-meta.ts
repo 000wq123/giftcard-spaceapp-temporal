@@ -16,7 +16,8 @@ import {
   Terminal,
   type LucideIcon,
   AgentFiles,
-  Nous
+  Nous,
+  Vault
 } from "../ui-theme/app-icons.js";
 import type { SideSurface } from "./dock-types.js";
 
@@ -32,6 +33,7 @@ export const sideSurfaceMeta: Record<SideSurface, { icon: LucideIcon; label: str
   "agent-files": { icon: AgentFiles, label: "Agent Files", surfaceLabel: "Agent Files" },
   clipboard: { icon: Clipboard, label: "clipboard", surfaceLabel: "Clipboard" },
   tasks: { icon: ListTodo, label: "tasks", surfaceLabel: "Tasks" },
+  vault: { icon: Vault, label: "vault", surfaceLabel: "Vault" },
   links: { icon: LinkIcon, label: "links", surfaceLabel: "Links" },
   settings: { icon: Settings, label: "settings dock", surfaceLabel: "Settings dock" },
   health: { icon: Activity, label: "health dock", surfaceLabel: "Health dock" },

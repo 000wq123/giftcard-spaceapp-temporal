@@ -101,6 +101,7 @@ import {
   findRecentNullAgentMessageDiagnostic,
   type CodexCliTurnActivity
 } from "./codex-rollout-diagnostics.js";
+import { codexStateDbMissing, findCodexThreadInSessions } from "./codex-sessions.js";
 
 const execFileAsync = promisify(execFile);
 const codexThreadUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -129,6 +130,8 @@ const codexModelNavigationRepaintSettleMs = 25;
 const qwenAuthBootstrapSettleMs = 250;
 const cliHostOutputBatchDelayMs = 20;
 const cliHostOutputBatchMaxBytes = 32 * 1024;
+const cliInputPersistenceMaxFrames = 64;
+const cliInputPersistenceMaxBytes = 64 * 1024;
 const cliTerminalControlLeaseTtlSeconds = 30;
 const cliTerminalControlHeartbeatIntervalMs = 10_000;
 const cliTerminalControlReconnectGraceSeconds = 5;
@@ -267,6 +270,17 @@ const cliComposerReadyPatterns: Readonly<Record<string, RegExp>> = {
   "cli:grok": /│\s*❯/
 };
 
+// TUIs that redraw a ticking line every second (OpenCode's animation, Hermes' "─ ready │ … │ 5m 17s" status bar):
+// the 200-chunk DB tail soon holds those deltas alone, so their room screen is read from the host's larger replay.
+const hostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set(["cli:opencode", "cli:hermes"]);
+// Without an API transport (the last browser detached) nothing copies host output into the DB, so its tail stops
+// mid-turn: Qoder pane Cody kept a 14 s spinner for 2.5 h after it had finished. Those sessions read the host too.
+const detachedHostReplayRoomScreenRuntimes: ReadonlySet<string> = new Set([...hostReplayRoomScreenRuntimes, "cli:qoder"]);
+// Codex rewrites only its spinner, one shimmer letter and the timer about 40 times a second, so the tail loses
+// "Working (… esc to interrupt)" within ~6 s (Codex 0.145.0, 1.1.6 lab, 2026-10-18). Where its native turn tracking is
+// off (public installs) the dashboard reads Codex from this screen, so there it comes from the host as well.
+const codexHostReplayRoomScreen = (runtimeId: string, config: SpaceApiConfig) => runtimeId === "cli:codex" && !config.enableCodexTurns;
+
 /** Whether the runtime's composer is open in this output; null when Space knows no marker for the runtime. */
 export function cliComposerReady(runtimeId: string, output: string): boolean | null {
   if (runtimeId === "cli:gemini") return geminiInputReady(output);
@@ -308,6 +322,7 @@ interface CliTerminalSocketContext {
   requestId: string;
   connectionOrder: number;
   detached: boolean;
+  inputPersistenceFailed?: boolean;
 }
 
 interface CliTerminalResolvedControl {
@@ -358,9 +373,12 @@ interface ManagedCliSession {
   pendingHiddenTailTimer: ReturnType<typeof setTimeout> | null;
   nextTranscriptSequence: number;
   persistQueue: Promise<void>;
+  pendingInputPersistence: Array<{ byteLength: number; completion: Promise<void> }>;
   controlQueue: Promise<void>;
   controlOutput: string;
   controlOutputRevision: number;
+  /** When live output last asked the terminal for a color (OSC 4/10/11/12 "?"). */
+  colorQueryAtMs?: number;
   codexModelControlGeometry?: boolean;
   roomScreenCols: number;
   roomScreenRows: number;
@@ -725,6 +743,8 @@ interface FindSafeCodexThreadIdInput {
   paneId: string;
   sessionId: string;
   cwd: string | null;
+  /** The session's start; without a state database only a rollout started after it can be this pane's thread. */
+  startedAt?: string;
 }
 
 export type CodexThreadFinder = (input: FindSafeCodexThreadIdInput) => Promise<string | null>;
@@ -863,7 +883,22 @@ function chunkTerminalOutput(data: string): string[] {
   return chunks.length ? chunks : [data];
 }
 
-function sanitizeCliTerminalInput(runtimeId: string, data: string): string {
+const cliColorQuery = /\u001b\](?:4;\d{1,3}|1[0-2]);\?/;
+const cliColorReply = /\u001b\](?:4;\d{1,3}|1[0-2]);rgb:[0-9a-f]{1,4}(?:\/[0-9a-f]{1,4}){2}(?:\u0007|\u001b\\)/gi;
+const cliColorReplyWindowMs = 1000;
+
+/**
+ * xterm.js answers every color query it parses, including the ones in a transcript it replays on attach or writes
+ * when a hidden pane is shown, long after the CLI stopped waiting. Droid waits 500 ms once at start; a late reply
+ * lands in its prompt as "11;rgb:0909/0b0b/0c0c". A reply passes only shortly after a live query.
+ */
+export function dropStaleCliColorReplies(data: string, queryAtMs: number | undefined, nowMs: number): string {
+  return queryAtMs !== undefined && nowMs - queryAtMs <= cliColorReplyWindowMs ? data : data.replace(cliColorReply, "");
+}
+
+export function sanitizeCliTerminalInput(runtimeId: string, data: string): string {
+  // Droid reads a typed "π" as macOS Option+P (its Plan view) but never a pasted one, so Greek typists could not write π.
+  if (runtimeId === "cli:droid" && data === "π") return "\u001b[200~π\u001b[201~";
   return isCodexDirectParityRuntime(runtimeId) ? data.replaceAll("\0", "") : data;
 }
 
@@ -991,10 +1026,10 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   if (
     runtimeDescriptor?.paneModelLaunchEnv &&
     context.modelId &&
-    context.modelId !== runtimeDescriptor.defaultModelId
+    (context.modelId !== runtimeDescriptor.defaultModelId || runtimeDescriptor.launchesDefaultModel)
   ) {
-    // Codex/Antigravity parity: a pane's own model pick starts the CLI on that model. The wrapper
-    // validates the id and maps it to the CLI's native --model/--effort flags.
+    // Codex/Antigravity parity: a pane's own model pick (or a default Space owns) starts the CLI on
+    // that model. The wrapper validates the id and maps it to the CLI's native --model/--effort flags.
     env.SPACE_CLI_MODEL_ID = context.modelId;
     if (context.reasoningEffort) env.SPACE_CLI_REASONING_EFFORT = context.reasoningEffort;
   }
@@ -1023,8 +1058,8 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
   } else {
     env.SPACE_BROWSER_BRIDGE_ENABLED = cliBrowserBridgeEnabled(config) ? "unavailable" : "false";
   }
-  // Space Control for CLI panes: Codex (phase one) and Claude Code (operator decision 2026-10-14).
-  const controlToken=context.runtimeId==="cli:codex"||context.runtimeId==="cli:claude"?issueControlToken(config.internalApiToken,context):null;
+  // Space Control for CLI panes: Codex (phase one), Claude Code (operator decision 2026-10-14), Oh My Pi, Hermes, Droid and Qoder (operator requests 2026-10-17).
+  const controlToken=["cli:codex","cli:claude","cli:omp","cli:hermes","cli:droid","cli:qoder"].includes(context.runtimeId ?? "")?issueControlToken(config.internalApiToken,context):null;
   if(controlToken){env.SPACE_CONTROL_TOKEN=controlToken;env.SPACE_CONTROL_ENDPOINT=`${cliAgentFilesApiBaseUrl(config)}/api/cli/control/mcp`;}
   const cliAgentFilesToken = context.purpose === "LOGIN" ? null : issueCliAgentFilesToken(config, context);
   if (cliAgentFilesToken) {
@@ -1044,7 +1079,7 @@ export function buildCliEnvironment(config: SpaceApiConfig, context: CliEnvironm
 export function buildCliSpawnArgs(
   runtime: AgentRuntime,
   session?: CliSpawnSession | null,
-  options: { codexChoosesDefaults?: boolean } = {}
+  options: { codexChoosesDefaults?: boolean; devInstance?: boolean; publicDistribution?: boolean } = {}
 ): string[] {
   const runtimeDescriptor = findCliRuntimeDescriptor(runtime.id);
   if (session?.purpose === "LOGIN") {
@@ -1056,6 +1091,9 @@ export function buildCliSpawnArgs(
     }
     return [runtimeDescriptor.loginAction];
   }
+  // Dev shares stable's OpenCode server and store, and its database is a copy of stable's: a recorded native session
+  // or the newest one in the directory (`--continue`) can be a stable pane's task, so dev always starts a new one.
+  if (options.devInstance && runtime.id === "cli:opencode" && session?.launchMode === "RESUME") return [];
   if (
     session?.launchMode === "RESUME" &&
     runtime.id === "cli:opencode" &&
@@ -1111,6 +1149,9 @@ export function buildCliSpawnArgs(
     return [...runtimeDescriptor.nativeResumeArgs];
   }
   if (runtime.id === "cli:codex" || runtime.commandName === "codex") {
+    // A public install pins Codex in its image, so Codex's own "Update available" menu only blocks a pane's start
+    // (Codex 0.145.0, 1.1.6 lab); updates come with SpaceApp releases there.
+    const pinned = options.publicDistribution ? ["--config", "check_for_update_on_startup=false"] : [];
     const threadId = session?.codexForkThreadId ?? session?.codexThreadId;
     if (threadId) {
       const isFork = Boolean(session?.codexForkThreadId);
@@ -1130,11 +1171,11 @@ export function buildCliSpawnArgs(
           args.push("--config", `model_reasoning_effort=${reasoningEffort}`);
         }
       }
-      args.push("--no-alt-screen", threadId);
+      args.push(...pinned, "--no-alt-screen", threadId);
       return args;
     }
     // Public installs have no Codex app-server to ask: without a pane selection Codex starts on its own default.
-    if (options.codexChoosesDefaults && !session?.modelId) return ["--no-alt-screen"];
+    if (options.codexChoosesDefaults && !session?.modelId) return [...pinned, "--no-alt-screen"];
     if (
       !session?.modelId ||
       !codexModelIdPattern.test(session.modelId) ||
@@ -1151,6 +1192,7 @@ export function buildCliSpawnArgs(
       session.modelId,
       "--config",
       `model_reasoning_effort=${session.reasoningEffort}`,
+      ...pinned,
       "--no-alt-screen"
     ];
   }
@@ -1228,7 +1270,10 @@ export async function findSafeCodexThreadId(input: FindSafeCodexThreadIdInput): 
     const ids = rows.map((row) => (typeof row.id === "string" ? row.id : "")).filter((id) => codexThreadUuidPattern.test(id));
     return ids.length === 1 ? ids[0] ?? null : null;
   } catch {
-    return null;
+    // A public install's API sees only Codex's sessions/ (1.1.7): the thread comes from the rollouts themselves.
+    const sinceMs = Date.parse(input.startedAt ?? "");
+    if (!Number.isFinite(sinceMs) || !(await codexStateDbMissing(codexHome))) return null;
+    return findCodexThreadInSessions({ codexHome, cwd: input.cwd, sinceMs });
   }
 }
 
@@ -1273,13 +1318,15 @@ export async function findAvailableCodexThreadId(input: {
   paneId: string;
   sessionId: string;
   cwd: string | null;
+  startedAt?: string;
   findThreadId?: CodexThreadFinder;
 }): Promise<string | null> {
   const findThreadId = input.findThreadId ?? findSafeCodexThreadId;
   const codexThreadId = await findThreadId({
     paneId: input.paneId,
     sessionId: input.sessionId,
-    cwd: input.cwd
+    cwd: input.cwd,
+    ...(input.startedAt ? { startedAt: input.startedAt } : {})
   });
   if (!codexThreadId) return null;
   const ownership = await input.store.getPaneCliCodexThreadOwnership(codexThreadId);
@@ -1870,6 +1917,7 @@ export class CliTerminalManager {
         return this.failLoginSession(sessionId, "CANCELLED", managed, true);
       }
       await this.flushHostOutput(managed);
+      await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
       if (transcript) {
         await this.appendTranscript(managed, "system", transcript.content, transcript.traceId);
       }
@@ -2076,13 +2124,14 @@ export class CliTerminalManager {
     const managed = this.sessions.get(sessionId);
     if (!managed) {
       const session = await this.options.store.getPaneCliSession(sessionId);
-      if (session?.runtimeId === "cli:opencode" && session.purpose === "NORMAL") {
+      if (session && (detachedHostReplayRoomScreenRuntimes.has(session.runtimeId) || codexHostReplayRoomScreen(session.runtimeId, this.options.config)) && session.purpose === "NORMAL") {
         const geometry = session.terminalGeometry;
-        if (!geometry) return { text: "", revision: 0 };
         // A closed observer WebSocket need not leave an API-managed transport.
         // Read the independent host without spawning or taking browser control.
-        return readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
-          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => ({ text: "", revision: 0 }));
+        const snapshot = geometry ? await readRoomHostScreenSnapshot(this.hostForRuntime(session.runtimeId, sessionId), await this.buildHostIdentity(session),
+          geometry.cols, geometry.rows, unwrap, geometry.generationId).catch(() => null) : null;
+        // Hermes and Qoder keep the DB tail as their fallback: an empty screen would read as idle.
+        if (snapshot || session.runtimeId === "cli:opencode") return snapshot ?? { text: "", revision: 0 };
       }
     }
     if (managed?.runtimeId === "cli:opencode" && !managed.roomScreenGeometryKnown) return { text: "", revision: managed.controlOutputRevision };
@@ -2097,7 +2146,7 @@ export class CliTerminalManager {
     // composer from the DB tail. Its existing host has a larger bounded replay.
     // This observer is separate from browser attachment/replay ownership.
     let text: string | null = null;
-    if (managed?.runtimeId === "cli:opencode" && managed.purpose === "NORMAL") {
+    if (managed && (hostReplayRoomScreenRuntimes.has(managed.runtimeId) || codexHostReplayRoomScreen(managed.runtimeId, this.options.config)) && managed.purpose === "NORMAL" && managed.roomScreenGeometryKnown) {
       text = await readRoomHostScreen(this.hostForRuntime(managed.runtimeId, sessionId), managed.identity, cols, rows, unwrap, managed.generationId).catch(() => null);
     }
     const hostReadFailed = managed?.runtimeId === "cli:opencode" && text === null;
@@ -2225,6 +2274,7 @@ export class CliTerminalManager {
     const interruptKey = terminalData === "\u001b" || terminalData === "\u0003";
     if (terminalData.length > 0 && !interruptKey) await this.waitForInputReady(managed, waitForComposer);
     await this.flushHostOutput(managed);
+    await Promise.all((managed.pendingInputPersistence ?? []).map((pending) => pending.completion));
 
     const sendToHost = (candidate: ManagedCliSession) => {
       const host = this.hostForRuntime(candidate.runtimeId, candidate.sessionId);
@@ -2704,6 +2754,7 @@ export class CliTerminalManager {
           () => this.handleClientMessage(managed, socket, client, raw)
         ),
         detach: async () => {
+          await Promise.all(managed.pendingInputPersistence.map((pending) => pending.completion));
           await this.detachClient(managed, socket, client);
           if (managed.sockets.size === 0) await this.detachTransport(managed);
         }
@@ -2920,7 +2971,9 @@ export class CliTerminalManager {
     const processLaunch = inspected ? undefined : buildCliProcessLaunch(
       this.options.config,
       runtime,
-      buildCliSpawnArgs(runtime, spawnSession, { codexChoosesDefaults: this.options.config.publicDistribution === true })
+      buildCliSpawnArgs(runtime, spawnSession, {
+        codexChoosesDefaults: this.options.config.publicDistribution === true, publicDistribution: this.options.config.publicDistribution === true, devInstance: this.options.config.instance === "dev"
+      })
     );
     const attachInput: CliHostAttachInput = {
       identity,
@@ -3023,6 +3076,7 @@ export class CliTerminalManager {
       pendingHiddenTailTimer: null,
       nextTranscriptSequence: (transcript.at(-1)?.sequence ?? -1) + 1,
       persistQueue: Promise.resolve(),
+      pendingInputPersistence: [],
       controlQueue: Promise.resolve(),
       controlOutput: "",
       controlOutputRevision: 0,
@@ -3110,6 +3164,7 @@ export class CliTerminalManager {
       paneId: session.paneId,
       sessionId: session.sessionId,
       cwd: session.cwd ?? codexDirectParityCwd,
+      startedAt: session.startedAt,
       findThreadId: this.options.findCodexThreadId
     });
     if (!codexThreadId) return session;
@@ -3707,7 +3762,7 @@ export class CliTerminalManager {
     client: CliTerminalSocketContext,
     raw: WebSocket.RawData
   ): Promise<void> {
-    if (client.detached) return;
+    if (client.detached || client.inputPersistenceFailed) return;
     if (managed.closed) {
       this.send(socket, { type: "error", code: "CLI_SESSION_CLOSED", message: "CLI session is closed." });
       return;
@@ -3741,12 +3796,40 @@ export class CliTerminalManager {
     if (parsed.data.type === "input") {
       const message = parsed.data;
       if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
-      const terminalData = sanitizeCliTerminalInput(managed.runtimeId, message.data);
+      const sanitizedInput = sanitizeCliTerminalInput(managed.runtimeId, message.data);
+      const terminalData = message.display === "hidden" ? dropStaleCliColorReplies(sanitizedInput, managed.colorQueryAtMs, Date.now()) : sanitizedInput;
       if (!terminalData) return;
       const receivedAtMs = Date.now();
       const diagnosticSinceMs = receivedAtMs - 1000;
       const hiddenInput = message.display === "hidden";
-      await this.flushHostOutput(managed);
+      const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
+      const byteLength = Buffer.byteLength(terminalData, "utf8");
+      const deferPersistence = managed.purpose === "NORMAL" && !supersedesSchedule && !message.turnMarker &&
+        byteLength <= cliInputPersistenceMaxBytes;
+      const pendingInputs = managed.pendingInputPersistence ?? (managed.pendingInputPersistence = []);
+      if (deferPersistence) {
+        // Keep normal typing independent of storage latency, but bound the
+        // accepted input waiting to be saved if storage stalls.
+        while (pendingInputs.length > 0 && (
+          pendingInputs.length >= cliInputPersistenceMaxFrames ||
+          pendingInputs.reduce((bytes, pending) => bytes + pending.byteLength, 0) + byteLength > cliInputPersistenceMaxBytes
+        )) {
+          await pendingInputs[0]!.completion;
+          if (client.inputPersistenceFailed) return;
+          if (!await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
+        }
+      } else {
+        const waitedForInput = pendingInputs.length > 0;
+        await Promise.all(pendingInputs.map((pending) => pending.completion));
+        if (client.inputPersistenceFailed) return;
+        if (waitedForInput && !await this.authorizeHostMutation(managed, socket, client, message.leaseId, "input")) return;
+      }
+      const outputPersistence = this.flushHostOutput(managed);
+      if (deferPersistence) {
+        void outputPersistence.catch(() => this.failInputPersistence(socket, client));
+      } else {
+        await outputPersistence;
+      }
       const writeInput = () => this.withFreshHostAttachment(managed, () =>
         this.hostForRuntime(managed.runtimeId, managed.sessionId).input(
           managed.identity,
@@ -3757,7 +3840,6 @@ export class CliTerminalManager {
       );
       // Only authorized operator submissions/stops supersede queued controls.
       // Run the actual native write in the same critical section as invalidation.
-      const supersedesSchedule = managed.purpose === "NORMAL" && /[\r\n\x03\x1b]/.test(terminalData);
       const inputResult = supersedesSchedule && this.options.withOperatorMutation
         ? await this.options.withOperatorMutation(managed.paneId, writeInput)
         : await writeInput();
@@ -3781,8 +3863,21 @@ export class CliTerminalManager {
         this.scheduleCodexThreadBind(managed, diagnosticSinceMs);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN") {
-        await this.appendTranscript(managed, "stdin", terminalData);
+        if (deferPersistence) {
+          // Capture the output preceding this input now. Draining the entire
+          // output queue later could move subsequent output ahead of it.
+          const flushThrough = managed.hostOutputQueue.at(-1);
+          const transcriptPersistence = this.enqueuePersistence(managed, async () => {
+            if (flushThrough) await this.persistHostOutputThrough(managed, flushThrough);
+            await this.appendTranscriptNow(managed, "stdin", terminalData, "req:cli-terminal");
+          }, managed.persistQueue, false);
+          this.trackInputPersistence(managed, socket, client, byteLength, [outputPersistence, transcriptPersistence]);
+        } else {
+          await this.appendTranscript(managed, "stdin", terminalData);
+        }
         if (/[\r\n]/.test(terminalData)) this.options.onTaskInput?.(managed.paneId);
+      } else if (deferPersistence) {
+        this.trackInputPersistence(managed, socket, client, byteLength, [outputPersistence]);
       }
       if (!hiddenInput && managed.purpose !== "LOGIN" && terminalData.trim()) {
         this.scheduleCodexNullAgentMessageCheck(managed, diagnosticSinceMs, terminalData);
@@ -3826,6 +3921,11 @@ export class CliTerminalManager {
       return;
     }
     if (!await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
+    const pendingInputs = managed.pendingInputPersistence ?? [];
+    const waitedForInput = pendingInputs.length > 0;
+    await Promise.all(pendingInputs.map((pending) => pending.completion));
+    if (client.inputPersistenceFailed) return;
+    if (waitedForInput && !await this.authorizeHostMutation(managed, socket, client, parsed.data.leaseId, "interrupt")) return;
     await this.flushHostOutput(managed);
     if (managed.purpose === "LOGIN") {
       await this.failLoginSession(managed.sessionId, "CANCELLED", managed, true);
@@ -3842,6 +3942,31 @@ export class CliTerminalManager {
     };
     if (this.options.withOperatorMutation) await this.options.withOperatorMutation(managed.paneId, stop);
     else await stop();
+  }
+
+  private failInputPersistence(socket: WebSocket, client: CliTerminalSocketContext): void {
+    if (client.inputPersistenceFailed) return;
+    client.inputPersistenceFailed = true;
+    // Storage errors can contain input or SQL parameters; never send them to
+    // the terminal. A failed writer cannot keep accepting unsaved input.
+    this.closeWithError(socket, new Error("CLI terminal input could not be saved. Reconnect before sending more input."));
+  }
+
+  private trackInputPersistence(
+    managed: ManagedCliSession,
+    socket: WebSocket,
+    client: CliTerminalSocketContext,
+    byteLength: number,
+    operations: Promise<void>[]
+  ): void {
+    const pendingInputs = managed.pendingInputPersistence;
+    const pending = { byteLength, completion: Promise.resolve() };
+    pendingInputs.push(pending);
+    pending.completion = Promise.all(operations.map((operation) =>
+      operation.catch(() => this.failInputPersistence(socket, client))
+    )).then(() => {
+      pendingInputs.splice(pendingInputs.indexOf(pending), 1);
+    });
   }
 
   private async withFreshHostAttachment<T>(managed: ManagedCliSession, operation: () => Promise<T>): Promise<T> {
@@ -4162,6 +4287,7 @@ export class CliTerminalManager {
     if (!data) return;
     managed.controlOutput = `${managed.controlOutput}${data}`.slice(-16_000);
     managed.controlOutputRevision += 1;
+    if (cliColorQuery.test(data)) managed.colorQueryAtMs = Date.now();
     this.scheduleQwenAuthBootstrap(managed);
     if (!managed.codexModelControlReady && isCodexDirectParityRuntime(managed.runtimeId)) {
       managed.startupOutput = `${managed.startupOutput}${data}`.slice(-16_000);

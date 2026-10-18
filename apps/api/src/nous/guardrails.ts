@@ -9,6 +9,9 @@ import { classifyPaneApproval } from "../room-agent-guardrails.js";
  */
 const PROMOTE = /space-queue\s+promote\b/i;
 const QUEUE_CONTROL = /space-queue\s+(?:default-target|resume|approve|pause)\b|--target\s+stable\b|--hotfix\b/i;
+// Naming a release command only to forbid it is a mention: stable 2026-10-17 held three work instructions for "never --target
+// stable" and "never --hotfix". The negation must stand right before it, so "no matter what, run --hotfix" still counts.
+const NEGATED_RELEASE = /\b(?:never|not|no|don['’]t|do not|without)\s+(?:(?:use|pass|run|add)\s+)?(?:--target\s+stable|--hotfix|space-queue\s+(?:promote|default-target|resume|approve|pause))\b/gi;
 const outgoingRules: Array<[NousDecisionCategory, string, RegExp]> = [
   ["RELEASE", "promoting dev to stable", PROMOTE],
   ["RELEASE", "stable queue control or a hotfix", QUEUE_CONTROL],
@@ -18,6 +21,8 @@ const outgoingRules: Array<[NousDecisionCategory, string, RegExp]> = [
   ["RELEASE", "a direct deploy", /space-deploy-commit|space_deploy_commit|space-queue-deploy\.sh/i],
   ["DESTRUCTIVE", "a recursive delete", /\brm\s+(?:-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|--recursive)\b|find\s[^\n]*-delete\b/i],
   ["DESTRUCTIVE", "a git history rewrite", /git\s+(?:reset\s+--hard|clean\s+-[a-z]*[fdx]|branch\s+-D|stash\s+(?:drop|clear)|filter-(?:branch|repo)|push\s+(?:-f|--force))/i],
+  // A request to show a secret, not a prohibition ("never print the token"): stable 2026-10-17, Nous asked a pane to show a password.
+  ["DESTRUCTIVE", "showing a secret on screen", /(?<!(?:\bnot|\bnever|n't|\bno)\s+(?:\S+\s+){0,2})\b(?:show|print|display|reveal|cat|echo|output)\b(?:[^\n.]|\.(?!\s)){0,60}\b(?:passwords?|passwd|passphrases?|tokens?|secrets?|api[ -]?keys?|private keys?|credentials?)\b/i],
   ["DESTRUCTIVE", "destroying data", /\bdrop\s+(?:table|database|schema)\b|\btruncate\s+(?:table\s+)?\w|\bdelete\s+from\b|\bdropdb\b/i],
   // shortcut: words, not intent; a send or payment phrased differently passes. Copilots keep their own server-side send gates.
   ["EXTERNAL", "sending or publishing to third parties", /\b(?:send|post|publish|submit|reply|forward|tweet)\b[^\n.]{0,60}\b(?:e-?mails?|mails?|posts?|tweets?|proposals?|applications?|comments?|replies|messages?)\b[^\n.]{0,40}\b(?:to|on)\b/i],
@@ -31,7 +36,8 @@ const NONE: NousAllowances = { promote: false, warm: false };
 
 /** Text Nous wants to send to a pane as a prompt. */
 export function classifyNousOutgoing(text: string, allow: NousAllowances = NONE): NousCriticalVerdict | null {
-  const hits = outgoingRules.filter(([, reason, pattern]) => pattern.test(text) && !(allow.promote && reason === "promoting dev to stable"));
+  const asked = text.replace(NEGATED_RELEASE, "");
+  const hits = outgoingRules.filter(([, reason, pattern]) => pattern.test(asked) && !(allow.promote && reason === "promoting dev to stable"));
   if (!hits.length) return null;
   return { category: hits[0]![0], reasons: [...new Set(hits.map(([, reason]) => reason))] };
 }

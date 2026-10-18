@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousSendInputSchema, nousSettingsInputSchema } from "@space/contracts";
+import { nousAwayInputSchema, nousDecisionAnswerInputSchema, nousDecisionFeedbackInputSchema, nousDecisionIdSchema, nousSendInputSchema, nousSettingsInputSchema } from "@space/contracts";
+import type { NousAwayControl } from "./away.js";
 import type { NousAttachments } from "./attachments.js";
 import type { NousScorecard } from "./progress.js";
 import type { NousService } from "./service.js";
@@ -17,6 +18,8 @@ export interface NousRouteDependencies {
   progress(owner: string): Promise<NousScorecard>;
   /** Files the operator sends with a message (plan clipboard:hQg9iKGYDqx7); without it messages carry text only. */
   attachments?: NousAttachments;
+  /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X). */
+  away?: Pick<NousAwayControl, "fromSettings">;
 }
 
 const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
@@ -41,7 +44,10 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
     if (ids.length && !deps.attachments) return reply.code(422).send({ error: { code: "ATTACHMENTS_UNAVAILABLE", message: "Files cannot be sent to Nous here." } });
     // The files' block rides on the operator's message, so every turn that sees the message sees its files.
     const prepared = ids.length ? await deps.attachments!.prepare(owner, ids) : null;
-    const message = await service.send(owner, [input.content, prepared?.block].filter(Boolean).join("\n\n"));
+    // Only a person at the dock (never a proof or automation session) can start Away from the chat.
+    let person = true;
+    try { deps.assertPerson(request); } catch { person = false; }
+    const message = await service.send(owner, [input.content, prepared?.block].filter(Boolean).join("\n\n"), { person });
     if (prepared) await deps.attachments!.link(owner, message.id, prepared.attachments.map((attachment) => attachment.id));
     return reply.code(202).send({ message, attachments: prepared?.attachments ?? [] });
   });
@@ -58,6 +64,13 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
   app.patch("/api/nous/settings", routeOptions, async (request) => {
     const owner = await deps.owner(request);
     return { settings: await service.saveSettings(owner, parseBody(nousSettingsInputSchema, request.body)) };
+  });
+
+  app.post("/api/nous/away", routeOptions, async (request, reply) => {
+    const owner = await deps.owner(request);
+    deps.assertPerson(request);
+    if (!deps.away) return reply.code(422).send({ error: { code: "NOUS_AWAY_UNAVAILABLE", message: "Away mode is not available here." } });
+    return { away: await deps.away.fromSettings(owner, parseBody(nousAwayInputSchema, request.body)) };
   });
 
   app.get("/api/nous/overview", routeOptions, async (request) => ({ overview: await service.overview(await deps.owner(request)) }));

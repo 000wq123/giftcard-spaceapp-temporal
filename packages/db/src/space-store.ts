@@ -14,7 +14,7 @@ import type { PaneBatchClaim } from "@space/contracts";
 import type { TaskTitleState } from "@space/contracts";
 import pg from "pg";
 import { accessSync, constants } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, parse } from "node:path";
 import { createHash } from "node:crypto";
 import { defaultToolRoutingState, toolRoutingStateSchema, type ToolRoutingStateV1 } from "@space/contracts";
 import {
@@ -565,6 +565,8 @@ function createSinglePgPool(
 ): pg.Pool {
   const pool = new Pool({
     connectionString,
+    // Names the process in pg_stat_activity unless the URL or PGAPPNAME already does.
+    fallback_application_name: `space:${parse(process.argv[1] ?? "node").name}`,
     max: poolOptions.max ?? defaultMax,
     idleTimeoutMillis: poolOptions.idleTimeoutMillis ?? 30_000,
     connectionTimeoutMillis: poolOptions.connectionTimeoutMillis ?? 5_000,
@@ -597,7 +599,80 @@ export function prefersSpaceSocket(connectionString: string): boolean {
   }
 }
 
+/** Default cap of the one pool a process keeps per connection string (stable hit max_connections=100 on 2026-10-18). */
+export const SHARED_SPACE_PG_POOL_MAX = 20;
+const SHARED_SPACE_PG_POOL_IDLE_MS = 10_000;
+const sharedSpacePgPools = new Map<string, { pool: pg.Pool; requested: number; handles: number }>();
+
+/** A positive integer from the environment, bounded like the API config (apps/api/src/config.ts), else the fallback. */
+function envPoolSetting(name: string, fallback: number, ceiling: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? Math.min(value, ceiling) : fallback;
+}
+
+function sharedPoolCap(): number {
+  return envPoolSetting("SPACE_DATABASE_SHARED_POOL_MAX", SHARED_SPACE_PG_POOL_MAX, 100);
+}
+
+/**
+ * Every caller in the process gets a handle on one shared pool per connection string instead of its own pool.
+ * Each handle adds its `max` to the pool's cap, up to SPACE_DATABASE_SHARED_POOL_MAX (SHARED_SPACE_PG_POOL_MAX
+ * when unset), so a process with one small repository keeps a small pool; idle connections close after
+ * SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS (10 s when unset) and the caller's other pool options are not used.
+ * Ending a handle ends the pool only when it is the last one. A client held across other queries (a session
+ * advisory lock around work) takes createDedicatedSpacePgPool so it cannot starve the shared pool.
+ */
 export function createSpacePgPool(
+  connectionString: string,
+  poolOptions: PostgresPoolOptions = {},
+  defaultMax = 10
+): pg.Pool {
+  const socketPath = poolOptions.socketPath ?? process.env.SPACE_PG_SOCKET_PATH ?? DEFAULT_SPACE_PG_SOCKET_PATH;
+  const key = `${socketPath}\n${connectionString}`;
+  const want = poolOptions.max ?? defaultMax;
+  let entry = sharedSpacePgPools.get(key);
+  if (!entry) {
+    entry = {
+      pool: createDedicatedSpacePgPool(connectionString, {
+        socketPath,
+        max: want,
+        idleTimeoutMillis: envPoolSetting("SPACE_DATABASE_POOL_IDLE_TIMEOUT_MS", SHARED_SPACE_PG_POOL_IDLE_MS, 300_000)
+      }),
+      requested: 0,
+      handles: 0
+    };
+    sharedSpacePgPools.set(key, entry);
+  }
+  const shared = entry;
+  shared.requested += want;
+  shared.handles += 1;
+  // pg-pool reads options.max on every checkout, so the cap follows the handles that are open.
+  shared.pool.options.max = Math.min(sharedPoolCap(), shared.requested);
+  let ended = false;
+  return new Proxy(shared.pool, {
+    get(target, prop) {
+      if (prop === "end") {
+        return async () => {
+          if (ended) return;
+          ended = true;
+          shared.requested -= want;
+          shared.handles -= 1;
+          if (shared.handles > 0) {
+            shared.pool.options.max = Math.min(sharedPoolCap(), Math.max(1, shared.requested));
+            return;
+          }
+          if (sharedSpacePgPools.get(key) === shared) sharedSpacePgPools.delete(key);
+          if (!target.ending && !target.ended) await target.end();
+        };
+      }
+      const val = Reflect.get(target, prop, target);
+      return typeof val === "function" ? val.bind(target) : val;
+    }
+  });
+}
+
+/** A pool of its own, not shared with the rest of the process. */
+export function createDedicatedSpacePgPool(
   connectionString: string,
   poolOptions: PostgresPoolOptions = {},
   defaultMax = 10
@@ -4281,7 +4356,7 @@ export class PostgresSpaceStore implements SpaceStore {
         room = existing.rows[0] ? mapRoom(existing.rows[0]) : null;
       }
       if (!room) {
-        room = await this.createStarterRoom(client, traceId);
+        room = await this.createStarterRoom(client, traceId, row.ownerUserId);
         await client.query(
           `
             UPDATE space_owner_setup

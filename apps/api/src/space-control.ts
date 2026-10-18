@@ -8,16 +8,16 @@ import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, cont
   controlActionCatalog, controlInspectSectionCatalog, controlSecurityPolicy, controlUnavailableResources, controlVoicePreferencePatchSchema,
   resolvePaneByName, MAX_ROOMS, pickNextAvailableRoomName,
   type ControlAction, type ControlExecute, type ControlInspect, type ControlLayout, type ControlOperation, type ControlResult, type ControlTarget,
-  type ControlSchedule, type ControlWatch, type Pane, type AuthUser, type Event } from "@space/contracts";
+  type ControlSchedule, type ControlWatch, type Pane, type Event } from "@space/contracts";
 import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
-import { resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
+import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { ControlCaptureParams } from "./space-control-capture.js";
 
 /** `dotId` attributes operations and schedules to the Space Dot acting for this user. */
-export interface ControlActor {id:string; role:AuthUser["role"]; dotId?:string}
+export type { ControlActor } from "./space-control-settings.js";
 export interface ControlClientCommand {id:string; actorId:string; roomId:string; action:ControlAction; expiresAt:number; clientId:string; createdAt?:number; result?:{ok:boolean;evidence:Record<string,unknown>}}
 function required<T>(value:T|undefined|null,message:string):T {if(value===undefined||value===null)throw new SpaceConflictError(message);return value;}
 function hash(value:unknown){return createHash("sha256").update(JSON.stringify(value)).digest("hex");}
@@ -145,6 +145,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       // A holder of this process; the lock is held elsewhere (another process) or was just released when there is none.
       const holder=current?{source:current.source,paneIds:current.paneIds??[],requestId:current.requestId??null,actorId:current.actorId??null,heldMs:Date.now()-current.since}:null;
       const blocked={source:owner.source,paneIds:owner.paneIds??[],requestId:owner.requestId??null,actorId:owner.actorId??null,waitedMs:Date.now()-waitingSince};
+      // The repository's execution timer: this mutation held the lock itself past the timeout (it keeps running, unlocked).
+      const overran=msg.includes("holding lock");
       const alertEvent: Event = {
         id: makeSpaceId("event"),
         roomId,
@@ -153,8 +155,11 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         workflowId: null,
         traceId: makeSpaceId("trace"),
         type: "ROOM_WATCHDOG_ALERT",
-        message: `Room watchdog detected lock timeout on room "${roomId}" for ${describe(owner)}; `
-          + `${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"no holder recorded in this process"}. Aborted blocked mutation to prevent room freeze.`,
+        message: overran
+          ? `Room watchdog: ${describe(owner)} held the lock on room "${roomId}" for ${holder?.heldMs??blocked.waitedMs} ms; `
+            + "the lock was released so the room's other work can go on."
+          : `Room watchdog detected lock timeout on room "${roomId}" for ${describe(owner)}; `
+            + `${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"no holder recorded in this process"}. Aborted blocked mutation to prevent room freeze.`,
         payload: {
           kind: "ROOM_LOCK_TIMEOUT_ABORT",
           roomId,
@@ -270,11 +275,12 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
     const accountVerificationStatus = (extraState?.accountVerificationStatus as string | undefined) ?? (pane.terminalRuntimeId === "cli:gemini" ? (accountProfileId ? "UNVERIFIED" : "UNKNOWN") : undefined);
     const verificationEvidence = (extraState?.verificationEvidence as Record<string, unknown> | undefined) ?? undefined;
 
-    let hasUserInput = false;
-    if (cli?.sessionId) {
+    // The task title service records every submitted prompt in the pane's task metadata. Transcript retention keeps
+    // only a session's newest 200 chunks, so a long turn pushes the prompt's stdin out of the tail read below.
+    let hasUserInput = Boolean(pane.taskMetadata);
+    if (!hasUserInput && cli?.sessionId) {
       try {
-        const chunks = await store.listPaneCliTranscriptChunks(cli.sessionId, 10);
-        hasUserInput = Array.isArray(chunks) && chunks.some((c: any) => c.stream === "stdin");
+        hasUserInput = (await store.listPaneCliTranscriptChunks(cli.sessionId, 10)).some((chunk) => chunk.stream === "stdin");
       } catch {
         hasUserInput = false;
       }
@@ -1665,7 +1671,7 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
         run: async () => {
           if (!effectiveRoomId) return { skipped: true, reason: "No active room" };
           const res = (await inspect(actor, { roomId: effectiveRoomId, section: "STATE", offset: 0, limit: 25 })) as any;
-          return { totalOpenPanes: res.totalOpenPanes ?? res.openPanes?.length ?? 0, paneCap: res.paneCap ?? 16 };
+          return { totalOpenPanes: (res.panes ?? []).filter((pane: any) => !pane.isClosed).length, paneCap: res.room?.paneCap ?? 16 };
         }
       },
       {

@@ -19,6 +19,7 @@ import {
   createTerminalReconnectCoordinator,
   createTerminalReplayWriteQueue,
   encodeSgrMouseWheel,
+  wheelDeltaPx,
   isNonMutatingTerminalProtocolResponse,
   isRetryableCliReconnectError,
   reasonixShortcutSequence,
@@ -143,6 +144,14 @@ describe("Space terminal panes", () => {
     expect(trace(travel)).toEqual(trace([travel.reduce((sum, value) => sum + value, 0)]));
     expect(trace([4, -4, 3, -3])).toEqual({ lines: 0, pendingPx: 0 });
     expect(trace([17, 1, -1, -17])).toEqual({ lines: 0, pendingPx: 0 });
+  });
+
+  it("turns wheel travel into one Claude wheel report per terminal line", () => {
+    const lines = (deltaY: number, deltaMode: number) => accumulateTouchScrollLines(0, wheelDeltaPx(deltaY, deltaMode, 18, 360), 18).lines;
+    expect(lines(100, 0)).toBe(5);
+    expect(lines(-3, 1)).toBe(-3);
+    expect(lines(1, 2)).toBe(20);
+    expect(lines(4, 0)).toBe(0);
   });
 
   it("scrolls xterm by touch lines within buffer boundaries", () => {
@@ -478,6 +487,14 @@ describe("Space terminal panes", () => {
     expect(isTerminalScreenRunningText("● working · 15s")).toBe(true);
     expect(isTerminalScreenRunningText("ctrl+c to interrupt")).toBe(true);
     expect(isTerminalScreenRunningText("Thinking for 2m 48s (esc to cancel)")).toBe(true);
+    // Captured busy screens: Qoder/Qwen keep their placeholder visible, Cursor says "ctrl+c to stop".
+    expect(isTerminalScreenRunningText(" ⠸ Generating... (esc to cancel, 1s)   ? for shortcuts\n──────\n YOLO Shift+Tab to Auto Mode\n──────\n *   Type your message or @path/to/file", "cli:qoder")).toBe(true);
+    expect(isTerminalScreenRunningText("──────\n YOLO Shift+Tab to Auto Mode\n──────\n *   Type your message or @path/to/file", "cli:qoder")).toBe(false);
+    expect(isTerminalScreenRunningText("  ⬢ Generating..  ctrl+c to stop\n → Add a follow-up", "cli:cursor")).toBe(true);
+    expect(isTerminalScreenRunningText(" ⠋ Executing...  (Press ESC to stop)\n Auto… Claude Opus 5.5 API credits (High)\n│ > Enter to steer · Ctrl+Enter to queue │", "cli:droid")).toBe(true);
+    // Oh My Pi 18.12.1: an idle prompt names "thinking effort"; a turn puts a spinner and its time on the rail.
+    expect(isTerminalScreenRunningText(" π > ◔ GPT-6 Sol > 🌳 …c8ec ▶─3%────┃──1.1M─\n╰─                     ⇧⇥ to change thinking effort", "cli:omp")).toBe(false);
+    expect(isTerminalScreenRunningText("  ⎋ Running requested shell command\n ⠋ 3s > ◔ GPT-6 Sol > 🌳 …c8ec ▶─3%────┃──1.1M─\n╰─", "cli:omp")).toBe(true);
     expect(isTerminalScreenRunningText("Running command: npm run build")).toBe(true);
     expect(isTerminalScreenRunningText("Running test...")).toBe(true);
     expect(isTerminalScreenRunningText("❯ ask anything")).toBe(false);

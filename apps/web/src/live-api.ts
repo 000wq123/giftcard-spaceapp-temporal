@@ -5,6 +5,7 @@ import type { LiveRoomContext } from "@space/contracts";
 import type { MaintenancePlanRequest, MaintenanceApplyRequest, MaintenanceAutopilotStatus, MaintenanceAutopilotScheduleUpdate } from "@space/contracts";
 import { singleFlightRequest } from "./single-flight-request.js";
 import type { TaskTitleSettings, TaskTitleCandidateStatus } from "@space/contracts";
+import type { VaultApproval, VaultPendingSecret, VaultSignupGrant, VaultSignupGrantRequest, VaultAuditRecord, VaultItemMetadata, VaultItemRecord, VaultItemRecordInput, VaultKdfParams, VaultRecovery, VaultSymmetricEnvelope, VaultTransportEnvelope } from "@space/contracts";
 import type {
   DemoAccountsResponse,
   DemoConnection,
@@ -192,6 +193,8 @@ import type {
   NousMessage,
   NousAttachment,
   NousOverview,
+  NousAway,
+  NousAwayGrant,
   NousSettings,
   NousState,
   ListSharedChatMessagesQuery,
@@ -294,6 +297,8 @@ import type {
   GatewaySettingsUpdateRequest,
   GatewayStatus,
   GatewayClaudeApiKeyUse,
+  GatewayAnthropicAdminStatus,
+  GatewayAnthropicBillingReport,
   CodexUsageAccountList,
   AntigravityUsageAccountList,
   ClaudeUsageAccountList,
@@ -915,6 +920,15 @@ function reportCoreApiResponse(response: Response, payload: unknown, requestStar
   }
 }
 
+export interface VaultStateResponse {
+  ownerUserId: string;
+  enrolled: boolean;
+  brokerAvailable: boolean;
+  /** "ENABLED" or why agent fills are off (FLAG_OFF, CUSTODY_NOT_PROVEN, ...). */
+  agentFill: string;
+  vault: { vaultId: string; epoch: number; delegationGeneration: number; kdf: VaultKdfParams; unlockKeyVersion: number; hasRecovery: boolean; auditSeq: number } | null;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     ...((init?.headers as Record<string, string> | undefined) ?? {})
@@ -1502,6 +1516,34 @@ export const api = {
   auditVerify: () => request<AuditVerifyResponse>("/api/audit/verify"),
   clearSharedChat: () =>
     request<{ deletedCount: number }>("/api/shared-chat/messages", { method: "DELETE" }),
+  // Vault (plan clipboard:vEYtT6-bEN0J): ciphertext, public keys and metadata only; the dock decrypts locally.
+  vaultState: () => request<VaultStateResponse>("/api/space-vault/state"),
+  vaultBroker: () => request<{ publicKey: string; keyVersion: number }>("/api/space-vault/broker"),
+  vaultEnroll: (body: unknown) => request<{ vaultId: string; epoch: number }>("/api/space-vault/enroll", { method: "POST", body: JSON.stringify(body) }),
+  vaultUnlockChallenge: () => request<{ challenge: string; epoch: number; expiresAt: string; vaultId: string; passwordEnvelope: VaultSymmetricEnvelope; kdf: VaultKdfParams; unlockKeyVersion: number }>(
+    "/api/space-vault/unlock/challenge", { method: "POST", body: "{}" }),
+  vaultUnlock: (body: { challenge: string; replyPublicKey: string; signature: string }) =>
+    request<{ sealedServerShare: VaultTransportEnvelope; epoch: number }>("/api/space-vault/unlock", { method: "POST", body: JSON.stringify(body) }),
+  vaultLock: () => request<{ epoch: number }>("/api/space-vault/lock", { method: "POST", body: "{}" }),
+  vaultItems: () => request<{ items: VaultItemMetadata[] }>("/api/space-vault/items"),
+  vaultItem: (id: string) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(id)}`),
+  vaultSaveItem: (item: VaultItemRecordInput) => request<{ item: VaultItemRecord }>(`/api/space-vault/items/${encodeURIComponent(item.metadata.id)}`, { method: "PUT", body: JSON.stringify(item) }),
+  vaultDeleteItem: (id: string) => request<{ deleted: true }>(`/api/space-vault/items/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultRotatePassword: (body: unknown) => request<{ epoch: number }>("/api/space-vault/password", { method: "POST", body: JSON.stringify(body) }),
+  vaultSetRecovery: (recovery: VaultRecovery) => request<{ recovery: true }>("/api/space-vault/recovery", { method: "PUT", body: JSON.stringify(recovery) }),
+  vaultInbox: () => request<{ inbox: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope } | null }>("/api/space-vault/inbox"),
+  vaultSetInbox: (body: { publicKey: string; privateKeyEnvelope: VaultSymmetricEnvelope }) => request<{ inbox: true }>("/api/space-vault/inbox", { method: "PUT", body: JSON.stringify(body) }),
+  vaultPending: () => request<{ pending: VaultPendingSecret[] }>("/api/space-vault/pending"),
+  vaultDeletePending: (id: string) => request<{ deleted: true }>(`/api/space-vault/pending/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultApprovals: () => request<{ approvals: VaultApproval[] }>("/api/space-vault/approvals"),
+  vaultDecideApproval: (id: string, decision: "APPROVE" | "DENY") => request<{ decided: string }>(`/api/space-vault/approvals/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision }) }),
+  vaultRevoke: () => request<{ generation: number; epoch: number }>("/api/space-vault/revoke", { method: "POST", body: "{}" }),
+  vaultDelegate: (body: unknown) => request<{ generation: number }>("/api/space-vault/delegations", { method: "POST", body: JSON.stringify(body) }),
+  vaultSignupGrants: () => request<{ grants: VaultSignupGrant[] }>("/api/space-vault/signup-grants"),
+  vaultCreateSignupGrant: (body: VaultSignupGrantRequest) => request<{ grant: VaultSignupGrant }>("/api/space-vault/signup-grants", { method: "POST", body: JSON.stringify(body) }),
+  vaultRevokeSignupGrant: (id: string) => request<{ revoked: true }>(`/api/space-vault/signup-grants/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  vaultAudit: (beforeSeq?: number) => request<{ entries: Array<{ id: string; seq: number; event: VaultAuditRecord; createdAt: string }>; nextBeforeSeq: number | null }>(
+    `/api/space-vault/audit?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ""}`),
   councilModels: () => request<CouncilModelsResponse>("/api/council/models"),
   councilRuns: () => request<{ runs: CouncilRunSummary[] }>("/api/council/runs"),
   councilRun: (id: string) => request<{ run: CouncilRun }>(`/api/council/runs/${encodeURIComponent(id)}`),
@@ -1528,10 +1570,14 @@ export const api = {
   clearNousMessages: () => request<{ cleared: number }>("/api/nous/messages", { method: "DELETE" }),
   stopNous: () => request<{ stopped: boolean }>("/api/nous/stop", { method: "POST" }),
   updateNousSettings: (input: Partial<NousSettings>) => request<{ settings: NousSettings }>("/api/nous/settings", { method: "PATCH", body: JSON.stringify(input) }),
+  /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X): start or end it, or change its grant. */
+  setNousAway: (input: { away: boolean; grant?: NousAwayGrant[] }) => request<{ away: NousAway | null }>("/api/nous/away", { method: "POST", body: JSON.stringify(input) }),
   nousOverview: () => request<{ overview: NousOverview }>("/api/nous/overview"),
   nousDecisions: () => request<{ decisions: NousDecision[] }>("/api/nous/decisions"),
   answerNousDecision: (id: string, input: NousDecisionAnswerInput) =>
     request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/answer`, { method: "POST", body: JSON.stringify(input) }),
+  nousDecisionFeedback: (id: string, couldHaveDecided: boolean) =>
+    request<{ decision: NousDecision }>(`/api/nous/decisions/${encodeURIComponent(id)}/feedback`, { method: "POST", body: JSON.stringify({ couldHaveDecided }) }),
   taskItems: (query: { q?: string; status?: TaskStatus; page?: number; pageSize?: number } = {}) => {
     const params = new URLSearchParams();
     if (query.q) params.set("q", query.q);
@@ -1854,6 +1900,12 @@ export const api = {
   }),
   gatewayStatus: () => request<GatewayStatus>("/api/admin/gateway/status"),
   gatewayClaudeApiKeyUse: () => request<GatewayClaudeApiKeyUse>("/api/admin/gateway/claude-api-key"),
+  gatewayAnthropicAdmin: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin"),
+  saveGatewayAnthropicAdminKey: (adminKey: string) =>
+    request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin", { method: "PUT", body: JSON.stringify({ adminKey }) }),
+  removeGatewayAnthropicAdminKey: () => request<{ removed: boolean }>("/api/admin/gateway/anthropic-admin", { method: "DELETE" }),
+  syncGatewayAnthropicBilling: () => request<GatewayAnthropicAdminStatus>("/api/admin/gateway/anthropic-admin/sync", { method: "POST", body: JSON.stringify({}) }),
+  gatewayAnthropicBilling: (days: number) => request<GatewayAnthropicBillingReport>(`/api/admin/gateway/anthropic-billing?days=${days}`),
   gatewayAccounts: () => request<GatewayAccountList>("/api/admin/gateway/accounts"),
   setGatewayAccountPaused: (accountId: string, paused: boolean) =>
     request<GatewayAccount>(`/api/admin/gateway/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
@@ -2719,6 +2771,12 @@ export const api = {
       method: "POST",
       headers: cliTerminalControlHeaders(paneId)
     }),
+  submitLocalCliDraft: (paneId: string, input: { submissionId: string; expectedSessionId: string; text: string; imagePaths?: string[] }) =>
+    request<{ submissionId: string; sessionId: string; status: "SENT" | "UNCERTAIN" | "REJECTED"; reason?: string }>(`/api/panes/${encodeURIComponent(paneId)}/cli/local-composer/submissions`, {
+      method: "POST", headers: cliTerminalControlHeaders(paneId), body: JSON.stringify(input)
+    }),
+  localCliSubmission: (paneId: string, submissionId: string) =>
+    request<{ submissionId: string; sessionId: string | null; status: "SENT" | "UNCERTAIN" | "REJECTED" | "NOT_FOUND"; reason?: string }>(`/api/panes/${encodeURIComponent(paneId)}/cli/local-composer/submissions/${encodeURIComponent(submissionId)}`),
   uploadCliFiles: (input: { paneId: string; source: PaneCliUploadSource; files: File[] }) => {
     const params = new URLSearchParams({ source: input.source });
     const form = new FormData();

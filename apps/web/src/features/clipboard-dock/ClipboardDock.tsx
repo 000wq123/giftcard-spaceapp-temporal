@@ -50,6 +50,7 @@ import {
 
 let cachedClipboardItems: ClipboardItem[] | null = null;
 let cachedClipboardTotal = 0;
+let cachedPlanStats = { total: 0, completed: 0 };
 
 interface ClipboardDockProps {
   canInsert: boolean;
@@ -132,6 +133,7 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
   const { confirm, confirmDialog } = useDockConfirm();
   const [items, setItems] = useState<ClipboardItem[]>(() => cachedClipboardItems ?? []);
   const [totalItems, setTotalItems] = useState(() => cachedClipboardTotal);
+  const [planStats, setPlanStats] = useState(() => cachedPlanStats);
   const [hasLoaded, setHasLoaded] = useState(() => cachedClipboardItems !== null);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>(() => {
@@ -192,6 +194,11 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
       pageSize: 100
     };
     try {
+      // Every plan, whatever the filter: completed = all plans − open plans (counts only).
+      const planCounts = Promise.all([
+        api.clipboardItems({ source: "PLAN", includeCompleted: true, page: 1, pageSize: 1 }),
+        api.clipboardItems({ source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 })
+      ]);
       let visible: ClipboardItem[];
       let total: number;
       if (sourceFilter === "NOTES") {
@@ -214,8 +221,12 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
         visible = payload.data;
         total = payload.pagination.totalItems;
       }
+      const [allPlans, openPlans] = await planCounts;
+      const plans = { total: allPlans.pagination.totalItems, completed: allPlans.pagination.totalItems - openPlans.pagination.totalItems };
       setItems(visible);
       setTotalItems(total);
+      setPlanStats(plans);
+      cachedPlanStats = plans;
       setLoadError(null);
       if (!search.trim() && sourceFilter === "ALL" && !showCompleted) {
         cachedClipboardItems = visible;
@@ -384,6 +395,20 @@ export function ClipboardDock({ canInsert, activePaneLabel, onInsert, onOpenStic
               action={{ label: "Write a note", icon: Plus, onClick: () => setIsAdding(true) }} />
           )
         ) : null}
+
+        {planStats.total ? (() => {
+          const percent = Math.round((planStats.completed / planStats.total) * 100);
+          return (
+            <div className="clipboard-plan-stats" role="group" aria-label="Plan completion">
+              <span className="clipboard-plan-stats-label">Plans completed</span>
+              <div className="clipboard-plan-progress-bar" role="progressbar" aria-label="Plans completed" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+                <div className={`clipboard-plan-progress-fill${percent === 100 ? " is-completed" : ""}`} style={{ width: `${percent}%` }} />
+              </div>
+              <span className="clipboard-plan-stats-count">{planStats.completed} / {planStats.total}</span>
+              <span className="clipboard-plan-pct">{percent}%</span>
+            </div>
+          );
+        })() : null}
 
         <div className="clipboard-list dock-kit-list" role="list" aria-label="Clipboard items" hidden={!items.length}>
           {items.map((item) => {

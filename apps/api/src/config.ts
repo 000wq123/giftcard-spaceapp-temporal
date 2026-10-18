@@ -52,6 +52,8 @@ export interface SpaceApiConfig {
   publicDistribution?: boolean;
   /** Invites and per-user sign-in (plan clipboard:VrMJ14wJPmVs); off until each user gets an isolated CLI container. */
   multiUserEnabled?: boolean;
+  /** Vault agent fills (ADR-012); also need a passing root-owned custody report (vault/agent-fill-gate.ts). */
+  vaultAgentFillEnabled?: boolean;
   enableDummyTurns: boolean;
   enableCodexTurns: boolean;
   agentPaneEnabled: boolean;
@@ -305,6 +307,7 @@ export function getApiConfig(env: NodeJS.ProcessEnv): SpaceApiConfig {
     workflowsEnabled: !(env.SPACE_PUBLIC_DISTRIBUTION === "true" && env.SPACEAPP_WORKFLOWS_ENABLED === "false"),
     publicDistribution: env.SPACE_PUBLIC_DISTRIBUTION === "true",
     multiUserEnabled: env.SPACE_MULTI_USER_ENABLED === "true",
+    vaultAgentFillEnabled: env.SPACE_VAULT_AGENT_FILL_ENABLED === "true",
     enableDummyTurns: valid.SPACE_ENABLE_DUMMY_TURNS === "true",
     enableCodexTurns: valid.SPACE_ENABLE_CODEX_TURNS === "true",
     agentPaneEnabled: valid.SPACE_AGENT_PANE_ENABLED === "true",

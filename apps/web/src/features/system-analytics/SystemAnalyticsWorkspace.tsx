@@ -37,6 +37,7 @@ import { SpaceToggle } from "../ui-controls/SpaceToggle.js";
 import { modelColumns, sortModels, type ModelSortKey } from "./model-sort.js";
 import { formatUsd, groupModelTokens, recordedTotal, sumCost, sumTokenCounts } from "./token-totals.js";
 import { ShareBar, TokenCompositionBar, TokenTimelineChart } from "./TokenUsageCharts.js";
+import { AnthropicBillingPanel } from "./AnthropicBillingPanel.js";
 
 const tokenRoutes: Array<{ value: SystemAnalyticsTokenRoute; label: string }> = [
   { value: "all", label: "All" },
@@ -424,6 +425,7 @@ export function SystemAnalyticsWorkspace({
           </div>
           <p>Total tokens = recorded input + output (input includes cache reads and writes). Reasoning is shown separately and is not added again. Each token counts once: calls through Space Gateway are counted from the gateway, direct calls from the CLI's own files. API value is what the same tokens would cost on the provider's API. Unreported usage is excluded. Periods end now.</p>
         </section>
+        <AnthropicBillingPanel range={range} refreshToken={refreshToken} />
         {models.timeline && <article className="system-analytics-panel" aria-label="Tokens over time">
           <header><ChartColumn aria-hidden="true" /><div><strong>Tokens over time</strong><small>Last {usagePeriod.toLowerCase()} · each token counted once</small></div></header>
           <TokenTimelineChart timeline={models.timeline} range={range} />

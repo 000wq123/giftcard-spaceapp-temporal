@@ -16,6 +16,7 @@ import { workspaceRoomActivity } from "../ui-theme/workspace-room-filter.js";
 import type { AdminUsers } from "./useAdminUsers.js";
 import { ensureProjectFolder } from "./room-catalog.js";
 import { RoomSharing } from "./RoomSharing.js";
+import { isViewOnlyRoom } from "./room-share-view.js";
 import type { AdminRoomFilterMode, RoomsDock } from "./useRoomsDock.js";
 import "./rooms-dock.css";
 
@@ -310,7 +311,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
                 : roomRuntimes[room.id]?.panes.filter((pane) => !pane.isClosed).length ?? "—")}
             </span>
           </button>
-          <button
+          {room.sharePermission ? null : <button
             type="button"
             className="room-dock-expand-btn"
             aria-expanded={isExpanded}
@@ -322,7 +323,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
             }}
           >
             <MoreHorizontal aria-hidden="true" />
-          </button>
+          </button>}
         </div>
         {isExpanded && (
           <div className="room-dock-expansion" onClick={(e) => e.stopPropagation()}>
@@ -659,7 +660,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           />
         </RecoverableSurface>
       ) : null}
-      <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
+      {isViewOnlyRoom(presentationRoom) ? null : <div className="room-pane-composer-slot" inert={preparingRoomId ? true : undefined}>
         <RoomPaneComposer
           activePaneCount={presentationPanes.length}
           onApply={addRoomPanes}
@@ -668,7 +669,7 @@ export function RoomsDockPanel({ dock, adminUsers, entries, isRoomListFiltered, 
           isWorktreeEnabled={presentationRoom ? isRoomWorktreeEnabled(presentationRoom.id) : false}
           defaultCollapsed={true}
         />
-      </div>
+      </div>}
       {roomDeleteConfirmDialog}
     </div>
   );

@@ -1,7 +1,6 @@
 import {
   NOTIFICATION_SOURCE_LABELS, eventSchema, notificationChannelEnabled, notificationRaiseInputSchema, resolveNotificationSettings,
-  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationStreamPayload, type PushDeviceRegistration, type SpaceNotification, type UserSettings
-} from "@space/contracts";
+  type Event, type NotificationListQuery, type NotificationRaiseInput, type NotificationSource, type NotificationStatus, type NotificationStreamPayload, type PushDeviceRegistration, type SpaceNotification, type UserSettings, needsOperatorHands } from "@space/contracts";
 import type { SpaceNotificationsRepository } from "@space/db";
 import { makeSpaceId, type SpaceEventBus } from "@space/runtime";
 import type { FcmSender } from "./fcm.js";
@@ -55,26 +54,32 @@ export function createNotificationService(deps: NotificationServiceDeps) {
   }
 
   return {
-    /** Records the notification (or refreshes the open one with its dedupe key), publishes it, queues Telegram and pushes to the owner's devices when the owner wants it. */
-    async raise(rawInput: NotificationRaiseInput): Promise<SpaceNotification> {
+    /**
+     * Records the notification (or refreshes the open one with its dedupe key), publishes it, queues Telegram and pushes to the
+     * owner's devices when the owner wants it. `realert`: a refreshed record is unread again and goes out once more (Nous's
+     * per-pane card when its list changed, plan clipboard:8FfXWclYUfOH). `held`: recorded and listed, but no Telegram or push
+     * (Nous's own alerts while the operator is away, plan clipboard:B7eTUHTJYg3X).
+     */
+    async raise(rawInput: NotificationRaiseInput, options: { realert?: boolean; held?: boolean } = {}): Promise<SpaceNotification> {
       const input = notificationRaiseInputSchema.parse(rawInput);
-      const { notification, created } = await deps.repository.raise(input);
+      const { notification, created } = await deps.repository.raise({ ...input, reopen: options.realert === true });
       await publish(created ? "NOTIFICATION_CREATED" : "NOTIFICATION_UPDATED", notification);
-      if (created) {
+      if (created || options.realert) {
         const settings = await deps.userSettings(input.ownerUserId).catch(() => null);
         const channels = resolveNotificationSettings(settings?.notifications);
-        // Only the operator can take a browser handoff, so Nous never holds it back.
-        const held = input.severity === "ATTENTION" && input.source !== "NOUS" && input.source !== "BROWSER_HANDOFF" && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false));
+        // What only the operator's hands can do (handoff, CAPTCHA, sign-in, NEEDS_USER) never waits for Nous.
+        const held = options.held === true
+          || (input.severity === "ATTENTION" && input.source !== "NOUS" && !needsOperatorHands(input.source, input.kind) && Boolean(await deps.nous?.held(input.ownerUserId).catch(() => false)));
         const telegram = !held && (input.telegram ?? (notificationChannelEnabled(channels, input.source, "telegram") && input.severity !== "INFO"));
         if (telegram && !settings?.suppressNotifications) {
-          await deps.repository.enqueueTelegram(notification, { source: NOTIFICATION_SOURCE_LABELS[notification.source] })
+          await deps.repository.enqueueTelegram(notification, { source: NOTIFICATION_SOURCE_LABELS[notification.source] }, created ? undefined : notification.updatedAt)
             .catch((error) => deps.log?.warn({ err: error, notificationId: notification.id }, "Notification Telegram enqueue failed."));
         }
         // Like Telegram: what needs the user, per the channel and source switches; the producer's Telegram override is Telegram's own.
         if (deps.push && !held && !settings?.suppressNotifications && input.severity !== "INFO" && notificationChannelEnabled(channels, input.source, "push")) {
           void sendPush(deps.push, notification).catch((error: unknown) => deps.log?.warn({ err: error, notificationId: notification.id }, "Notification push failed."));
         }
-        deps.nous?.raised(notification);
+        if (created) deps.nous?.raised(notification);
       }
       return notification;
     },

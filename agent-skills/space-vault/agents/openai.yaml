@@ -1,0 +1,4 @@
+interface:
+  display_name: "Space Vault"
+  short_description: "Sign in, register or change a password in this pane's browser from the operator's Vault without seeing any credential."
+  default_prompt: "Use $space-vault: open the site's page first, then call space_vault_list and space_vault_request_fill (or space_vault_generate_fill for a new account or password change) with the item handle only; on BLOCKED hand the sign-in to the operator."

@@ -1161,6 +1161,12 @@ export class DemoStore {
       case "codexLbSpeedDefaults":
       case "updateCodexLbSpeedDefault": return Promise.resolve(structuredClone(this.fixture.codexLbSpeedDefaults));
       case "gatewayStatus": return Promise.resolve(this.demoGatewayStatus());
+      // The demo holds no Anthropic admin key: the card says so and nothing leaves the page.
+      case "gatewayAnthropicAdmin":
+      case "syncGatewayAnthropicBilling":
+      case "saveGatewayAnthropicAdminKey": return Promise.resolve({ configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] });
+      case "removeGatewayAnthropicAdminKey": return Promise.resolve({ removed: false });
+      case "gatewayAnthropicBilling": return Promise.resolve({ status: { configured: false, keyHint: null, savedAt: null, lastSyncAt: null, lastError: null, upstream: [] }, days: [] });
       case "gatewaySettings": return Promise.resolve(structuredClone(this.demoGatewaySettings));
       case "updateGatewaySettings":
         this.demoGatewaySettings = { ...this.demoGatewaySettings, ...(args[0] as object), updatedAt: DEMO_FIXED_AT };

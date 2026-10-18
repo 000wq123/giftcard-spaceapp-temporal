@@ -13,8 +13,8 @@ export interface OwnedResourceRefusal {
   message: string;
 }
 
-// With multi-user on, a USER reaches only these route families (deny by default; operator decision 2026-10-17, security
-// review 2026-10-17). Each is confined to the user's rooms by the check below or keeps its own owner check; everything
+// A USER reaches only these route families, with or without multi-user (deny by default; operator decisions 2026-10-17,
+// security review MU-001). Each is confined to the user's rooms by the check below or keeps its own owner check; everything
 // else (Space Memory, Shared Chat, audit, Council, Space Control, /api/admin, providers, settings, files, Codex history,
 // CLI tasks, Nous, ...) has no owner yet and answers 404. Swarm and Review are read-only and only for a named room.
 // `/api/nous` is intentionally absent from this allowlist, preserving its ownerless-feature denial.
@@ -24,6 +24,8 @@ const userRoutes: ReadonlyArray<{ prefix: string; methods?: readonly string[]; n
   { prefix: "/api/clipboard-items" }, { prefix: "/api/task-items" }, { prefix: "/api/links" }, { prefix: "/api/notifications" },
   { prefix: "/api/user-settings" }, { prefix: "/api/dots" }, { prefix: "/api/live" }, { prefix: "/api/voice" }, { prefix: "/api/databases" },
   { prefix: "/api/job-apply" }, { prefix: "/api/mail-copilot" }, { prefix: "/api/marketing-copilot" }, { prefix: "/api/freelance-copilot" },
+  // The Vault is personal: every route's owner is the session user itself (vault/wiring.ts), never a room's.
+  { prefix: "/api/space-vault" },
   { prefix: "/api/cli/runtimes", methods: ["GET"] }, { prefix: "/api/cli/runtime-settings", methods: ["GET"] },
   { prefix: "/api/cli/client-events", methods: ["POST"] }, { prefix: "/api/model-capabilities", methods: ["GET"] },
   { prefix: "/api/swarm", methods: ["GET"], namesRoom: true }, { prefix: "/api/reviews", methods: ["GET"], namesRoom: true }
@@ -46,8 +48,6 @@ export function createOwnedResourceGuard(deps: {
   shareOf?: (roomId: string, userId: string) => Promise<RoomSharePermission | null>;
   /** The user who opened a pane in a room they do not own; null: the room's owner. */
   paneOwner?: (paneId: string) => Promise<string | null>;
-  /** SPACE_MULTI_USER_ENABLED: features without an owner answer 404. */
-  closeOwnerlessFeatures?: boolean;
 }) {
   return async (request: FastifyRequest, routePath: string): Promise<OwnedResourceRefusal | null> => {
     // A refusal names only the id the caller sent, never the room a pane or artifact belongs to.
@@ -61,7 +61,7 @@ export function createOwnedResourceGuard(deps: {
       }
     };
     const params = fields(request.params);
-    if (deps.closeOwnerlessFeatures && routePath.startsWith("/api/")) {
+    if (routePath.startsWith("/api/")) {
       const namesRoom = typeof fields(request.query).roomId === "string";
       const allowed = userRoutes.some((route) => under(routePath, route.prefix) &&
         (!route.methods || route.methods.includes(request.method)) && (!route.namesRoom || namesRoom));

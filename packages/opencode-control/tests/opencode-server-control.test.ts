@@ -723,6 +723,8 @@ describe("opencode-control against an OpenCode 2 server", () => {
   // Shapes recorded from OpenCode 2.0.31 (2026-10-16): /api routes, HTTP Basic with the fixed user name "opencode".
   let server: ReturnType<typeof createServer>;
   let busy = false;
+  // A directory's MCP servers as 2.0.32 lists them on its first calls: none yet, then pending, then connected.
+  const mcpListings: unknown[][] = [[], [{ name: "space_dispatcher", status: { status: "pending" } }], [{ name: "space_dispatcher", status: { status: "connected" } }]];
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];
   const control: OpenCodeServerControl = { ...controlFixture, nativeSessionId: "ses_v2turn", serverUsername: "space-opencode", directory: "/work" };
   const messages = [
@@ -746,6 +748,7 @@ describe("opencode-control against an OpenCode 2 server", () => {
         if (route === "GET /api/info") return json(200, { version: "2.0.31", pid: 1 });
         if (route === "GET /api/session/active") return json(200, { data: busy ? { ses_v2turn: { type: "running" } } : {} });
         if (route === "POST /api/session") return json(200, { data: { id: "ses_v2new", title: "t" } });
+        if (route === "GET /api/mcp") return json(200, { location: { directory: "/work" }, data: mcpListings.length > 1 ? mcpListings.shift() : mcpListings[0] });
         if (route === "GET /api/session/ses_v2turn") return json(200, { data: { id: "ses_v2turn", title: "Native title", time: { updated: 7 }, model: { id: "big-pickle", providerID: "opencode", variant: "default" } } });
         if (route === "PATCH /api/session/ses_v2turn") return json(200, { data: { id: "ses_v2turn" } });
         if (route === "GET /api/session/ses_v2turn/message") return json(200, { data: messages, cursor: {} });
@@ -776,6 +779,8 @@ describe("opencode-control against an OpenCode 2 server", () => {
     expect(await openCodeSessionExists(control, "ses_v2turn")).toBe(true);
     expect(await createOpenCodeSession(control, "Space chat", "/work")).toBe("ses_v2new");
     expect(calls.find((call) => call.method === "POST" && call.path === "/api/session")?.body).toEqual({ title: "Space chat", location: { directory: "/work" } });
+    // The new session's MCP servers are connected before it is handed out, so its first prompt has their tools.
+    expect(calls.filter((call) => call.path === "/api/mcp?location%5Bdirectory%5D=%2Fwork")).toHaveLength(3);
     expect(await fetchOpenCodeCurrentModel(control, "ses_v2turn")).toEqual({ id: "big-pickle", providerID: "opencode", variant: "default" });
     expect(await fetchOpenCodeSessionTitle(control, "ses_v2turn")).toEqual({ title: "Native title", updatedAt: 7 });
     await updateOpenCodeSessionTitle(control, "ses_v2turn", "Renamed");

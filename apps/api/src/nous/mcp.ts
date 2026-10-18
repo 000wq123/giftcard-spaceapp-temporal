@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type { FastifyInstance } from "fastify";
@@ -79,6 +80,22 @@ export function registerNousMcpRoute(app: FastifyInstance, deps: {
 }
 
 /** POSTs one request to the worker's Unix socket (where CLI processes run) and returns its JSON; aborting closes it. */
+/**
+ * A deploy restarts the worker (stable 2026-10-17: a turn failed with ENOENT on its socket): a call that could not connect
+ * waits for it, at most `tries` times. Nothing reached the worker, so nothing runs twice.
+ */
+export async function postToWorkerWhenUp<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal, waitMs = 10_000, tries = 6): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await postToWorker<T>(socketPath, path, body, signal);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= tries || signal.aborted || (code !== "ENOENT" && code !== "ECONNREFUSED")) throw error;
+      await delay(waitMs, undefined, { signal });
+    }
+  }
+}
+
 export function postToWorker<T>(socketPath: string, path: string, body: unknown, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) { reject(new Error("The turn was stopped.")); return; }

@@ -12,6 +12,7 @@ export type SideSurface =
   | "agent-files"
   | "clipboard"
   | "tasks"
+  | "vault"
   | "links"
   | "settings"
   | "health"

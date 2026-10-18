@@ -10,6 +10,7 @@ import {
   ingestNotificationStreamPayload, peekNotificationStore, refreshNotifications, resetNotificationStore, setNotificationDeliveryHandler, setNotificationNavigator
 } from "../src/features/notifications/notification-store.js";
 import { workspaceRoomActivity } from "../src/features/ui-theme/workspace-room-filter.js";
+import { NOUS_FOCUS_EVENT, type NousFocusDetail } from "../src/features/nous-focus/nous-focus-events.js";
 
 const apiMock = vi.hoisted(() => ({
   notificationsPending: vi.fn(), notifications: vi.fn(), notification: vi.fn(), markNotificationRead: vi.fn(), ackNotification: vi.fn(), readAllNotifications: vi.fn(), testNotification: vi.fn(),
@@ -181,6 +182,40 @@ describe("Space notifications (web)", () => {
     await waitFor(() => expect(apiMock.ackNotification).toHaveBeenCalledWith("notification:a"));
     fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(apiMock.readAllNotifications).toHaveBeenCalled());
+  });
+
+  it("groups a pane's notifications under Nous's card, opens that pane through Nous focus and delivers a new list once more (plan clipboard:8FfXWclYUfOH)", async () => {
+    const card = (alertAt: string) => notification("nous", { source: "NOUS", kind: "NEEDS_HANDS", title: "Upwork needs you", body: "• Pass the Cloudflare check",
+      dedupeKey: "nous:pane:pane:mail", link: { roomId: "room:1", paneId: "pane:mail" }, payload: { alertAt } });
+    const items = [card("2026-10-17T14:00:00.000Z"), notification("a"), notification("c", { paneId: "pane:other", title: "Other pane" })];
+    apiMock.notificationsPending.mockResolvedValue(pending(items));
+    apiMock.notifications.mockResolvedValue({ notifications: items });
+    const navigate = vi.fn();
+    setNotificationNavigator(navigate);
+    render(<NotificationCenterDock />);
+    const list = (await screen.findAllByRole("list"))[0]!;
+    await waitFor(() => expect(list.querySelectorAll(":scope > li")).toHaveLength(2));
+    fireEvent.click(within(list).getByRole("button", { name: "Show 1 more from this pane" }));
+    expect(within(screen.getByRole("list", { name: "More from this pane" })).getByRole("button", { name: "Unread: Mail Copilot: Anna Papadopoulou" })).toBeTruthy();
+
+    const focused: NousFocusDetail[] = [];
+    const onFocus = (event: Event) => focused.push((event as CustomEvent<NousFocusDetail>).detail);
+    window.addEventListener(NOUS_FOCUS_EVENT, onFocus);
+    fireEvent.click(within(list).getByRole("button", { name: "Unread: Nous: Upwork needs you" }));
+    window.removeEventListener(NOUS_FOCUS_EVENT, onFocus);
+    expect(focused).toEqual([{ roomId: "room:1", paneId: "pane:mail", ownerUserId: null, immediate: true }]);
+    expect(navigate).not.toHaveBeenCalled();
+    await waitFor(() => expect(apiMock.markNotificationRead).toHaveBeenCalledWith("notification:nous"));
+
+    const delivered = vi.fn();
+    setNotificationDeliveryHandler(delivered);
+    await refreshNotifications();
+    expect(delivered).not.toHaveBeenCalled();
+    const relisted = [card("2026-10-17T14:05:00.000Z"), ...items.slice(1)];
+    apiMock.notificationsPending.mockResolvedValue(pending(relisted));
+    apiMock.notifications.mockResolvedValue({ notifications: relisted });
+    await refreshNotifications();
+    expect(delivered).toHaveBeenCalledWith([expect.objectContaining({ id: "notification:nous" })]);
   });
 
   it("saves the channel settings and raises a test notification from the settings card", async () => {

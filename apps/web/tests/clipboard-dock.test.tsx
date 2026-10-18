@@ -238,15 +238,11 @@ describe("ClipboardDock", () => {
 
   it("shows a newly saved agent note while the dock stays open", async () => {
     vi.useFakeTimers();
-    mocks.clipboardItems
-      .mockResolvedValueOnce({
-        data: [],
-        pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 0 }
-      })
-      .mockResolvedValue({
-        data: [item],
-        pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 }
-      });
+    let listLoads = 0;
+    // The first list load is empty; plan counts (pageSize 1) are not list loads.
+    mocks.clipboardItems.mockImplementation(async (query: { pageSize: number }) => query.pageSize === 1 || listLoads++ > 0
+      ? { data: [item], pagination: { page: 1, pageSize: 100, totalItems: 1, totalPages: 1 } }
+      : { data: [], pagination: { page: 1, pageSize: 100, totalItems: 0, totalPages: 0 } });
 
     render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
     await act(async () => {
@@ -259,6 +255,20 @@ describe("ClipboardDock", () => {
     });
     expect(screen.getByText(item.text)).toBeTruthy();
     vi.useRealTimers();
+  });
+
+  it("shows the share of every plan that is completed above the list", async () => {
+    mocks.clipboardItems.mockImplementation(async (query: { source?: string; includeCompleted?: boolean; pageSize: number }) => ({
+      data: query.pageSize === 1 ? [planItem] : [item],
+      pagination: { page: 1, pageSize: query.pageSize, totalItems: query.source !== "PLAN" ? 1 : query.includeCompleted ? 4 : 1, totalPages: 1 }
+    }));
+    render(<ClipboardDock canInsert activePaneLabel="Model Task" onInsert={vi.fn()} />);
+
+    const stats = await screen.findByRole("group", { name: "Plan completion" });
+    expect(within(stats).getByText("3 / 4")).toBeTruthy();
+    expect(within(stats).getByText("75%")).toBeTruthy();
+    expect(within(stats).getByRole("progressbar", { name: "Plans completed" }).getAttribute("aria-valuenow")).toBe("75");
+    expect(mocks.clipboardItems).toHaveBeenCalledWith({ source: "PLAN", includeCompleted: false, page: 1, pageSize: 1 });
   });
 
   it("filters saved plans and renders the PLAN badge and title", async () => {

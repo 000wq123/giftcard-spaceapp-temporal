@@ -41,7 +41,7 @@ function lockFixture(timeouts: number[]) {
   const actor = { id: "operator:one", role: "ADMIN" as const };
   const execute = (requestId: string, actions: unknown[]) =>
     service.execute(actor, controlExecuteSchema.parse({ roomId: room.id, requestId, actions })).catch(() => undefined);
-  return { room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, release, execute };
+  return { room, closed: closed!, holder: holder!, blocked: blocked!, controller, send, alerts, release, execute, service };
 }
 
 describe("Room Watchdog and Anti-Freeze Protection", () => {
@@ -117,6 +117,24 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
       await holding;
     } finally {
       c.release();
+      warn.mockRestore();
+    }
+  });
+
+  it("says the mutation itself overran when it held the room lock past the timeout, never that it blocked itself", async () => {
+    // A schedule whose pane inspection hangs (2026-10-17: a scheduled continue held room Vault for 30 s).
+    const c = lockFixture([60]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    c.controller.inspect.mockImplementationOnce(async () => { await new Promise(() => {}); return undefined as never; });
+    try {
+      const command = controlExecuteSchema.parse({ roomId: c.room.id, requestId: "request:schedule",
+        actions: [{ kind: "pane", operation: "continue", target: { paneIds: [c.blocked.id] } }] });
+      await expect(c.service.schedules({ id: "operator:one", role: "ADMIN" }, c.room.id, "create", undefined,
+        new Date(Date.now() + 60_000).toISOString(), command)).rejects.toThrow(/lock timed out/);
+      expect(c.alerts).toHaveLength(1);
+      expect(c.alerts[0]!.message).toMatch(new RegExp(`^Room watchdog: control held the lock on room "${c.room.id}" for \\d+ ms; the lock was released`));
+      expect(c.alerts[0]!.message).not.toContain("held by");
+    } finally {
       warn.mockRestore();
     }
   });

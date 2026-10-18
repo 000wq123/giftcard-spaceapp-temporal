@@ -709,6 +709,8 @@ export function dotDeveloperContext(dot: Pick<DotProfile, "name" | "preferences"
     dotWorkspace ? `Your private workspace: ${dotWorkspace}. Keep drafts, downloads, scratch code and files you produce for the user there${project ? " unless they belong in the project" : ""}.` : null,
     "For web work, call computer.browser to open your own browser (isolated profile, not signed in to the user's accounts) instead of the user's Browser panes.",
     "Remember durable facts and preferences the user shares with dot_memory.remember (your own by default); never store secrets or credentials.",
+    // Operator 2026-10-18: a Dot chat is not a CLI pane, so Nous progress reports (skill space-progress) do not apply.
+    "This is a plain chat with the user, not a Space CLI pane: never send or mention progress reports to Nous (space-progress), just answer.",
     dotMemoryContext(memories)
   ].filter(Boolean).join("\n");
 }

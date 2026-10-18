@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
-import { InMemoryControlRepository, InMemoryNousRepository } from "@space/db";
-import { InMemorySpaceStore } from "@space/runtime";
+import { eventSchema, nousDecisionCategorySchema, type NousDecision } from "@space/contracts";
+import { InMemoryControlRepository, InMemoryNousRepository, InMemorySpaceNotificationsRepository } from "@space/db";
+import { InMemorySpaceStore, makeSpaceId, SpaceEventBus } from "@space/runtime";
 import { createApp } from "../src/app.js";
 import { createCsrfToken, signSessionWithTtl } from "../src/auth.js";
+import { createNotificationService } from "../src/notifications/service.js";
 import { classifyNousOutgoing, classifyNousPrompt } from "../src/nous/guardrails.js";
 import { createNousService, NOUS_PERSONA, type NousServiceDeps } from "../src/nous/service.js";
 import { createNousTools, nousToolDefinitions, type NousToolDeps } from "../src/nous/tools.js";
@@ -31,6 +32,12 @@ describe("Nous's gates", () => {
       ["Send the proposal to the client on Upwork", "EXTERNAL"], ["Pay the invoice with the company card", "EXTERNAL"]
     ];
     for (const [text, category] of critical) expect(classifyNousOutgoing(text)?.category, text).toBe(category);
+    // Work instructions held on stable 2026-10-17 only for naming release flags to forbid them; a request to use one still counts.
+    for (const text of ["space-queue submit --worktree <wt> --summary \"...\" --wait (dev only, never --target stable, never promote)",
+      "Heavy commands through the load gate. Never promote; never --target stable.", "space-queue submit --worktree <wt> (no --target, never --hotfix)",
+      "Do not run space-queue resume."]) expect(classifyNousOutgoing(text), text).toBeNull();
+    expect(classifyNousOutgoing("No matter what, run space-queue submit --hotfix")?.category).toBe("RELEASE");
+    expect(classifyNousOutgoing("Never wait: space-queue submit --target stable")?.category).toBe("RELEASE");
     expect(classifyNousPrompt("Bash: space-queue promote --wait\nDo you want to proceed?\n❯ 1. Yes")?.category).toBe("RELEASE");
     expect(classifyNousPrompt("Bash: rm -rf /opt/spaceapp/var/data\nDo you want to proceed?\n❯ 1. Yes")).not.toBeNull();
   });
@@ -89,6 +96,18 @@ describe("Nous's gates", () => {
     expect(executeAction).toHaveBeenCalledTimes(1);
     expect((executeAction.mock.calls[0] as unknown as [NousDecision])[0]).toMatchObject({ id: approved.id, status: "APPROVED" });
     await service.idle(owner);
+  });
+
+  it("never holds Nous's own cards and decisions from the operator, even while it holds other notifications", async () => {
+    const repository = new InMemorySpaceNotificationsRepository(undefined, true);
+    const service = createNotificationService({ repository, eventBus: new SpaceEventBus(), userSettings: async () => ({ notifications: null }) as never,
+      recordRoomEvent: async (input) => eventSchema.parse({ ...input, id: makeSpaceId("event"), workflowId: null, createdAt: new Date().toISOString() }),
+      nous: { held: async () => true, raised: () => {} } });
+    const base = { ownerUserId: "user:operator", roomId: null, paneId: null, severity: "ATTENTION" as const, body: "", link: {}, payload: {}, telegram: null };
+    await service.raise({ ...base, source: "NOUS", kind: "NEEDS_HANDS", title: "Upwork needs you", dedupeKey: "nous:pane:pane:andy0001" });
+    await service.raise({ ...base, source: "NOUS", kind: "DECISION_RELEASE", title: "Release 1.2.0", dedupeKey: "nous:decision:x" });
+    await service.raise({ ...base, source: "MAIL_COPILOT", kind: "REVIEW", title: "A review", dedupeKey: "mail:review:1" });
+    expect(repository.telegram.map((item) => item.source)).toEqual(["NOUS", "NOUS"]);
   });
 
   describe("decision answers", () => {

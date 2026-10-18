@@ -56,11 +56,22 @@ export function createCliUserHosting(options: {
   const sockets = readCliUserHostSockets(config.cliHostSocketsFile);
   const paneHostUser = async (paneId: string): Promise<string | null> =>
     (await store.getPaneOwner?.(paneId)) ?? (await store.getRoom((await paneById(paneId)).roomId)).ownerUserId ?? null;
+  const defaultHostAllowed = async (userId: string) => ["ADMIN", "OPERATOR"].includes((await store.getControlActor(userId))?.role ?? "");
+  // Core model runs (task summaries, Room Agent chat) use the owner's accounts, so never for a USER (MU-002).
+  const ownerModelsAllowed = async (userId: string | null) => !userId || await defaultHostAllowed(userId);
   return {
-    terminal: {
-      userHostSockets: sockets,
-      paneHostUser,
-      defaultHostAllowed: async (userId: string) => ["ADMIN", "OPERATOR"].includes((await store.getControlActor(userId))?.role ?? "")
+    terminal: { userHostSockets: sockets, paneHostUser, defaultHostAllowed },
+    ownerModels: {
+      pane: async (paneId: string) => ownerModelsAllowed(await paneHostUser(paneId)),
+      room: async (roomId: string) => ownerModelsAllowed((await store.getRoom(roomId)).ownerUserId ?? null)
+    },
+    /**
+     * MU-009: a CLI control token acts as the room's grant actor (the ADMIN who allowed CLI control), so only in a pane
+     * whose CLI is theirs or the operator side's; never a pane a USER opened (a member in a shared room) or a USER's room.
+     */
+    controlActorAllowed: async (paneId: string, actorId: string) => {
+      const opener = await paneHostUser(paneId);
+      return !opener || opener === actorId || await defaultHostAllowed(opener);
     },
     onUserCliHost: async (paneId: string) => Boolean(sockets?.[(await paneHostUser(paneId)) ?? ""]),
     userRegistry: createUserRuntimeRegistries(config, sockets)

@@ -18,7 +18,7 @@ developer you sell. Plan: clipboard PLAN `clipboard:EFWug5E7pVln`.
 | Server | Tools |
 |---|---|
 | `space_freelancecopilot` | `space_freelance_state`; loop `space_freelance_next`, `space_freelance_report`; leads `space_freelance_leads_list`, `space_freelance_lead_read`, `space_freelance_lead_add`, `space_freelance_lead_update`, `space_freelance_client_ready`; messages `space_freelance_message_draft`, `space_freelance_message_update`, `space_freelance_message_incoming`; operator `space_freelance_review_request`, `space_freelance_review_wait`, `space_freelance_question_ask`, `space_freelance_question_wait`; sending `space_freelance_send_begin`, `space_freelance_send_done`, `space_freelance_send_failed`; accounts `space_freelance_accounts_list`, `space_freelance_account_update`, `space_freelance_profile`; bookmarks `space_freelance_bookmarks_list`, `space_freelance_bookmark_save` (a profile, dashboard or sent proposal the operator will want to reopen), `space_freelance_bookmark_open`; mail `space_freelance_mail_recent`, `space_freelance_mail_read`, `space_freelance_mail_wait_for_code`, `space_freelance_mail_find_link`; `space_freelance_memory_recall`, `space_freelance_memory_remember`; `space_freelance_rules_list`, `space_freelance_rule_propose`; `space_freelance_note`. |
-| `space_browser` | `space_browser_start` (this pane), `space_browser_navigate`, `space_browser_tabs`, `space_browser_screenshot` (evidence), `space_browser_request_handoff` (kind `LOGIN`, `MFA`, `CAPTCHA`), `space_browser_handoff_status`. |
+| `space_browser` | `space_browser_start` (this pane), `space_browser_navigate`, `space_browser_tabs`, `space_browser_screenshot` (evidence), `space_browser_request_handoff` (kind `LOGIN`, `MFA`, `CAPTCHA`), `space_browser_handoff_status`, `space_browser_accounts` (the Google accounts, profileId and email, and the one the pane uses now). |
 | `space_playwright_pane` | Element-level work on the same pane browser: `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_file_upload`, `browser_press_key`, `browser_wait_for`. It refuses while the operator holds control. |
 
 Sessions without these MCP tools (Claude panes run native tools only) call them on demand:
@@ -48,6 +48,15 @@ proposal and follow-up playbook), `references/scams.md` (what to skip and report
    account `NEEDS_OPERATOR` with what is needed in `notes` and hand the browser over
    (`space_browser_request_handoff`). Never invent identity data, never create a second account on a platform.
    A challenge page (Cloudflare "Verify you are human" or "Just a moment...", a Turnstile, hCaptcha or reCAPTCHA box, Fiverr "Press & Hold", a Vercel or other security check) is handed off at first sight: no reload, no retry, no second try. The reason starts with the site, the page and what to click (`Upwork: Cloudflare check on the login page, tick the box`); it becomes the operator's notification title.
+
+## Bookmarks and Google accounts (operator rule 2026-10-18)
+
+Each platform's sign-in lives in the Freelance profile of one Google account. Open a platform page only through its
+bookmark (`space_freelance_bookmark_open`): a bookmark of another account reopens the pane browser in that account's
+Freelance profile with the page. Never reach a platform with `space_browser_navigate` or a typed address, which opens
+it in whatever account the pane has now. Save every platform bookmark with its account (`space_freelance_bookmark_save`
+with `profileId` and `accountLabel` from `space_browser_accounts`). When you do not know the account, check which
+address the platform's mail goes to (work@example.invalid aliases, Gmail) and ask the operator once; never guess.
 
 ## Routes (where the pane browser leaves from)
 

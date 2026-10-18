@@ -156,6 +156,7 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const { repository } = options;
   const starting = new Map<string, Promise<boolean>>();
+  const deciding = new Map<string, Promise<{ decision: MailCopilotReviewDecision["decision"]; sent: { messageId: string; threadId: string } | null }>>();
 
   async function record(owner: string, input: MailCopilotEventInput & MailEventContext & { type: MailCopilotEventType; status?: "PENDING" | "TAKEN" | "DONE" | null }): Promise<MailCopilotEvent> {
     const event = await repository.createEvent({
@@ -846,7 +847,22 @@ export function createMailCopilotService(options: MailCopilotServiceOptions) {
         message: `Review: ${input.summary}`, payload: { reviewId, draft: input.draft, reasoning: input.reasoning ?? null } });
       return { reviewId };
     },
+    /**
+     * One decision and one Gmail send per review (stable 2026-10-17: one approval went to Hetzner twice, 9 s apart): a decided
+     * review answers its recorded decision, and a decision already running is shared by the calls that arrive meanwhile.
+     * shortcut: the in-flight guard is per process; the API runs one, a second process would need a database claim.
+     */
     async decideReview(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+      const key = `${owner}\u0000${input.reviewId}`;
+      const running = deciding.get(key);
+      if (running) return running;
+      const decision = this.decideReviewOnce(owner, pane, input).finally(() => deciding.delete(key));
+      deciding.set(key, decision);
+      return decision;
+    },
+    async decideReviewOnce(owner: string, pane: Pane, input: MailCopilotReviewDecision) {
+      const decided = (await repository.listEvents(owner, { types: ["REVIEW_DECIDED"], limit: 300 })).find((event) => event.payload.reviewId === input.reviewId);
+      if (decided) return { decision: decided.payload.decision as MailCopilotReviewDecision["decision"], sent: (decided.payload.sent ?? null) as { messageId: string; threadId: string } | null };
       const review = (await repository.listEvents(owner, { types: ["REVIEW_REQUESTED"], limit: 300 })).find((event) => event.payload.reviewId === input.reviewId);
       if (!review) throw new SpaceNotFoundError("The review was not found.");
       const draft = review.payload.draft as MailComposeInput;

@@ -36,6 +36,7 @@ import { startWarmupRunner } from "./warmup/warmup-runner.js";
 import { createGatewayServer } from "./server.js";
 import { DRAIN_MESSAGE } from "./supervisor.js";
 import { registerStatsRoute } from "./stats.js";
+import { registerAnthropicAdminRoutes, startAnthropicBillingSync, type AnthropicBillingSync } from "./admin/anthropic-admin.js";
 
 async function readVersion(): Promise<string> {
   try {
@@ -101,6 +102,7 @@ async function main() {
   let clientVersion = () => "0.150.1";
   const modelPlans = new CodexModelPlans({ pool: codexPool, clientVersion: () => clientVersion() });
   const webSockets = new CodexWebSocketRegistry();
+  let anthropicBilling: AnthropicBillingSync | null = null;
   const server = createGatewayServer({
     repository, version: await readVersion(), credentialKeyPresent: () => credentialKeyPresent, logger: false, lan: config.lan,
     live: {
@@ -138,6 +140,7 @@ async function main() {
         // Under the supervisor a reload starts a new worker that reads the settings, then hands over without dropping streams.
         reload: typeof process.send === "function" ? () => { setTimeout(() => process.kill(process.ppid, "SIGHUP"), 200).unref(); return true; } : undefined });
       registerStatsRoute(app, { repository, cache: compressionCache, compressionMode: async () => (await settings()).compressionMode });
+      registerAnthropicAdminRoutes(app, { repository, cipher: () => cipher, internalToken: config.internalToken, sync: () => anthropicBilling });
     }
   });
   await server.app.listen({ host: config.host, port: config.port });
@@ -176,16 +179,17 @@ async function main() {
     startAntigravityUsagePoller({ repository, pool: antigravityPool, intervalMs: config.usagePollIntervalMs, onError: onUsageError })
   ];
 
+  anthropicBilling = startAnthropicBillingSync({ repository, cipher: () => cipher, claudePool, intervalMs: 5 * 60_000,
+    onError: (code) => process.stderr.write(`space-gateway Anthropic billing sync failed: ${code}\n`) });
+  void anthropicBilling.runOnce();
+
   const warmup = startWarmupRunner({ repository, pool: codexPool, modelPlans, logs, settings,
     onError: (error) => process.stderr.write(`space-gateway limit warm-up failed: ${error instanceof Error ? error.message : "unknown"}\n`) });
 
   const retention = setInterval(() => {
     void (async () => {
       await checkKey();
-      const current = await settings();
-      const cutoff = new Date(Date.now() - current.requestLogRetentionDays * 86_400_000).toISOString();
-      const removed = await repository.pruneRequestLogs(cutoff);
-      if (removed > 0) process.stdout.write(`space-gateway retention removed ${removed} request logs\n`);
+      // Request logs are token usage and are never deleted (operator rule 2026-10-18).
       await repository.pruneStickyBindings(new Date().toISOString());
     })().catch((error: unknown) => process.stderr.write(`space-gateway retention failed: ${error instanceof Error ? error.message : "unknown"}\n`));
   }, config.retentionIntervalMs);
@@ -200,6 +204,7 @@ async function main() {
     clearInterval(retention);
     for (const poller of usagePollers) poller.stop();
     warmup.stop();
+    anthropicBilling?.stop();
     const deadline = setTimeout(() => {
       process.stderr.write("space-gateway drain timeout reached; closing remaining connections\n");
       server.app.server.closeAllConnections();

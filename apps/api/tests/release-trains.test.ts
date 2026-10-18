@@ -71,6 +71,13 @@ describe("release trains", () => {
     await expect(changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).rejects.toThrow("has not approved");
     await changeReleaseTrain(repo, op({ op: "approve" }), { ...agent(null), operatorApproved: true });
     expect(await changeReleaseTrain(repo, op({ op: "publishing" }), self(jack))).toMatchObject({ status: "PUBLISHING", approvedSha: "d2648a67c9" });
+    await expect(changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).rejects.toThrow("already publishing");
+
+    // A train marked publishing before approvals existed (stable 1.1.6) reopens with a new candidate, so the operator can approve it.
+    const record = (await repo.get("release_train", "space", "run-spaceapp"))!;
+    const { approvedSha: _approved, ...legacy } = record.value as Record<string, unknown>;
+    await repo.write({ kind: "release_train", actorId: "space", key: "run-spaceapp", roomId: "room:release1", version: record.version, value: legacy }, record.version);
+    expect(await changeReleaseTrain(repo, op({ op: "candidate", sourceSha: "e3759a78b0" }), self(jack))).toMatchObject({ status: "OPEN", sourceSha: "e3759a78b0" });
   });
 
   it("serves panes of their own room through the ADMIN route, as the pane itself", async () => {

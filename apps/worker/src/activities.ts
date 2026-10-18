@@ -2105,7 +2105,7 @@ async function runCodexAppServerTurnImplementation(
       // They must not persist an operator STOP that prevents the next attempt.
       const retryingWorker = ["WORKER_SHUTDOWN", "TIMED_OUT"].includes(
         abortSignal.reason instanceof Error ? abortSignal.reason.message : String(abortSignal.reason));
-      if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Room Agent turn was stopped by the operator.", options.completionStore);
+      if (!retryingWorker) await recordSpaceAgentRunInterrupted(parsed, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     if (isRetryableRoomActionBridgeError(error)) throw error;
@@ -2268,7 +2268,7 @@ async function runOpenCodeAgentTurnImplementation(
   } catch (error) {
     if (abortSignal?.aborted) {
       // Single attempt: unlike the Codex turn, no later attempt re-enters this turn.
-      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Room Agent turn was stopped by the operator.", options.completionStore);
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failure = classifyOpenCodeExecutorFailure(error);
@@ -2593,7 +2593,7 @@ async function runCliAgentTurnImplementation(
     });
   } catch (error) {
     if (abortSignal?.aborted) {
-      await recordSingleAttemptTurnAborted(parsed, abortSignal, "CLI chat turn was stopped by the operator.", options.completionStore);
+      await recordSingleAttemptTurnAborted(parsed, abortSignal, "Stopped.", options.completionStore);
       throw abortSignal.reason instanceof Error ? abortSignal.reason : error;
     }
     const failureMessage = error instanceof Error ? error.message.slice(0, 500) : "The CLI chat turn failed.";

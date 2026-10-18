@@ -7,7 +7,8 @@ import { createSpacePgPool, type PgPoolLike } from "./space-store.js";
 
 export interface SpaceNotificationsRepository {
   /** Inserts, or refreshes the open notification with the same dedupe key; `created` says which. */
-  raise(input: NotificationRaiseInput & { id?: string }): Promise<{ notification: SpaceNotification; created: boolean }>;
+  /** `reopen`: refreshing an open or read record makes it unread again (a re-alert). */
+  raise(input: NotificationRaiseInput & { id?: string; reopen?: boolean }): Promise<{ notification: SpaceNotification; created: boolean }>;
   get(owner: string, id: string): Promise<SpaceNotification | null>;
   list(owner: string, query: NotificationListQuery): Promise<SpaceNotification[]>;
   pending(owner: string): Promise<NotificationsPending>;
@@ -19,7 +20,8 @@ export interface SpaceNotificationsRepository {
   unresolvedBySource(source: NotificationSource): Promise<SpaceNotification[]>;
   prune(before: string): Promise<number>;
   /** Queues the notification for the paired Telegram bot through the completion outbox; false when Telegram is off. */
-  enqueueTelegram(notification: SpaceNotification, labels: { source: string }): Promise<boolean>;
+  /** One Telegram message per notification; a re-alert passes its own `alertKey` so it is sent again. */
+  enqueueTelegram(notification: SpaceNotification, labels: { source: string }, alertKey?: string): Promise<boolean>;
   /** Registers or refreshes a push (FCM) token for the user; a token registered by another user moves to this one. */
   registerPushDevice(owner: string, device: PushDeviceRegistration): Promise<void>;
   /** Removes one of the user's push tokens; false when it was not theirs. */
@@ -59,11 +61,12 @@ export class InMemorySpaceNotificationsRepository implements SpaceNotificationsR
   private readonly items = new Map<string, SpaceNotification>();
   readonly telegram: SpaceNotification[] = [];
   constructor(private readonly now: () => string = () => new Date().toISOString(), private readonly telegramEnabled = false) {}
-  async raise(input: NotificationRaiseInput & { id?: string }) {
+  async raise(input: NotificationRaiseInput & { id?: string; reopen?: boolean }) {
     const at = this.now();
     const existing = input.dedupeKey ? [...this.items.values()].find((item) => item.ownerUserId === input.ownerUserId && item.dedupeKey === input.dedupeKey && (item.status === "OPEN" || item.status === "READ")) : undefined;
     if (existing) {
-      const refreshed = { ...existing, title: clip(input.title, 200), body: clip(input.body, 2000), severity: input.severity, link: input.link, payload: input.payload, updatedAt: at };
+      const refreshed = { ...existing, title: clip(input.title, 200), body: clip(input.body, 2000), severity: input.severity, link: input.link, payload: input.payload, updatedAt: at,
+        ...(input.reopen ? { status: "OPEN" as const, readAt: null } : {}) };
       this.items.set(existing.id, refreshed);
       return { notification: { ...refreshed }, created: false };
     }
@@ -127,11 +130,12 @@ const fromRow = (row: Row): SpaceNotification => ({ ...row, createdAt: iso(row.c
 export class PostgresSpaceNotificationsRepository implements SpaceNotificationsRepository {
   constructor(private readonly pool: PgPoolLike) {}
   static fromConnectionString(url: string) { return new PostgresSpaceNotificationsRepository(createSpacePgPool(url, { max: 2 })); }
-  async raise(input: NotificationRaiseInput & { id?: string }): Promise<{ notification: SpaceNotification; created: boolean }> {
+  async raise(input: NotificationRaiseInput & { id?: string; reopen?: boolean }): Promise<{ notification: SpaceNotification; created: boolean }> {
     if (input.dedupeKey) {
-      const existing = await this.pool.query<Row>(`UPDATE space_notifications SET title = $3, body = $4, severity = $5, link = $6::jsonb, payload = $7::jsonb, updated_at = now()
+      const existing = await this.pool.query<Row>(`UPDATE space_notifications SET title = $3, body = $4, severity = $5, link = $6::jsonb, payload = $7::jsonb, updated_at = now(),
+          status = CASE WHEN $8 THEN 'OPEN' ELSE status END, read_at = CASE WHEN $8 THEN NULL ELSE read_at END
         WHERE owner_user_id = $1 AND dedupe_key = $2 AND status IN ('OPEN', 'READ') RETURNING ${columns}`,
-        [input.ownerUserId, input.dedupeKey, clip(input.title, 200), clip(input.body, 2000), input.severity, JSON.stringify(input.link), JSON.stringify(input.payload)]);
+        [input.ownerUserId, input.dedupeKey, clip(input.title, 200), clip(input.body, 2000), input.severity, JSON.stringify(input.link), JSON.stringify(input.payload), input.reopen === true]);
       if (existing.rows[0]) return { notification: fromRow(existing.rows[0]), created: false };
     }
     const notification = build(input, new Date().toISOString());
@@ -183,7 +187,7 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
     const result = await this.pool.query("DELETE FROM space_notifications WHERE created_at < $1", [before]);
     return (result as { rowCount?: number | null }).rowCount ?? 0;
   }
-  async enqueueTelegram(notification: SpaceNotification, labels: { source: string }) {
+  async enqueueTelegram(notification: SpaceNotification, labels: { source: string }, alertKey?: string) {
     const result = await this.pool.query(`INSERT INTO telegram_notification_outbox (
         delivery_id, integration_generation, source_key, source_type, room_id, pane_id, turn_id, room_name, pane_title,
         agent_label, task_title, final_response, completed_at, status, available_at, created_at, updated_at)
@@ -194,7 +198,7 @@ export class PostgresSpaceNotificationsRepository implements SpaceNotificationsR
       WHERE i.id = 'global' AND i.connection_status = 'CONNECTED' AND i.is_enabled = true
         AND i.enabled_at IS NOT NULL AND now() >= i.enabled_at
       ON CONFLICT (source_key) DO NOTHING`,
-    [`telegram_delivery:${randomUUID()}`, `space-notification:${notification.id}`, clip(labels.source, 120), clip(notification.title, 120), clip(notification.body || notification.title, 4000),
+    [`telegram_delivery:${randomUUID()}`, `space-notification:${notification.id}${alertKey ? `:${alertKey}` : ""}`, clip(labels.source, 120), clip(notification.title, 120), clip(notification.body || notification.title, 4000),
       notification.roomId, notification.paneId]);
     return ((result as { rowCount?: number | null }).rowCount ?? 0) > 0;
   }

@@ -217,6 +217,9 @@ describe("job apply agent routes", () => {
         payload: { company: "PlanetScale", role: "Software Engineer - Postgres", ats: "greenhouse", url: "https://job-boards.greenhouse.io/planetscale/jobs/4251150009" } });
       expect(shared.statusCode).toBe(200);
       expect(shared.json().application).toMatchObject({ status: "QUEUED", paneId: null });
+      // Only queueing is open to other panes; the operator's tracker, profile and mail stay with the Job Copilot pane's agent.
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/applications", headers: foreign })).statusCode).toBe(409);
+      expect((await app.inject({ method: "GET", url: "/api/cli/job-apply/profile", headers: foreign })).statusCode).toBe(409);
 
       // The Job Copilot pane's queue lists its own row and the shared one, in queue order.
       const queue = await app.inject({ method: "GET", url: `/api/panes/${encodeURIComponent(pane.id)}/job-apply/queue`, headers });

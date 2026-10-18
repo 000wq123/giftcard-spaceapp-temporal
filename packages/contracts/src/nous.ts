@@ -122,6 +122,24 @@ export const nousDecisionSchema = z.object({
 }).strict();
 export type NousDecision = z.infer<typeof nousDecisionSchema>;
 
+/**
+ * A decision's kind for "Always approve" (operator request 2026-10-18): what its action does without its target, so the next
+ * decision of that kind runs on its own. Null for what stays the operator's every time: releases, irreversible actions, text for
+ * a pane (its words carry the risk) and questions without an action.
+ */
+export function nousDecisionKind(decision: Pick<NousDecision, "category" | "action">): { key: string; label: string } | null {
+  const action = decision.action;
+  if (!action || decision.category === "RELEASE" || decision.category === "DESTRUCTIVE") return null;
+  if (action.type === "COPILOT") {
+    return { key: `COPILOT:${action.copilot}:${action.item}:${action.decision}`, label: `${action.decision} the ${action.copilot.toLowerCase()} copilot's ${action.item.toLowerCase()}s` };
+  }
+  if (action.type !== "SPACE_CONTROL") return null;
+  const ops = [...new Set(action.actions.map((entry) => [entry.kind, entry.operation].filter((part) => typeof part === "string").join(" ")))].sort();
+  return { key: `SPACE_CONTROL:${ops.join(",")}`, label: `run in Space Control: ${ops.join(", ")}` };
+}
+export const nousStandingApprovalSchema = z.object({ key: z.string().min(1).max(2_000), label: z.string().min(1).max(2_000), at: isoDateTime }).strict();
+export type NousStandingApproval = z.infer<typeof nousStandingApprovalSchema>;
+
 /** Saved in the owner's user settings (`nous`); off until the operator turns it on. */
 export const nousSettingsSchema = z.object({
   enabled: z.boolean().default(false),
@@ -129,9 +147,35 @@ export const nousSettingsSchema = z.object({
   /** The operator lets Nous promote dev to stable without asking, batched (operator decision 2026-10-17, off by default). */
   mayPromote: z.boolean().default(false),
   /** The operator lets Nous approve changes to the protected Warm code (operator decision 2026-10-17, off by default). */
-  mayApproveWarm: z.boolean().default(false)
+  mayApproveWarm: z.boolean().default(false),
+  /** Kinds of decisions the operator approved with "Always approve" in the dock; a PATCH can only remove them. */
+  alwaysApprove: z.array(nousStandingApprovalSchema).max(50).default([])
 }).strict();
 export type NousSettings = z.infer<typeof nousSettingsSchema>;
+
+/**
+ * Nous Away mode (operator request 2026-10-17, plan clipboard:B7eTUHTJYg3X): what the operator's away grant lets Nous decide
+ * alone. PROMOTE: promote dev to stable, only right after live:verify:dev passed; TEST_PANES: restart or close the operator's own
+ * test panes. Never under any grant: npm or GitHub publishing, payments, deletes, sends to third parties, Warm code, pane-host or
+ * browser-host restarts.
+ */
+export const nousAwayGrantSchema = z.enum(["PROMOTE", "TEST_PANES"]);
+export type NousAwayGrant = z.infer<typeof nousAwayGrantSchema>;
+export const nousAwaySchema = z.object({
+  id: z.string().min(1).max(120),
+  startedAt: isoDateTime,
+  until: isoDateTime.nullable(),
+  reason: z.string().max(500),
+  mandate: z.string().max(2_000),
+  grant: z.array(nousAwayGrantSchema)
+}).strict();
+export type NousAway = z.infer<typeof nousAwaySchema>;
+/** Settings → Assistants & AI → Nous: the operator starts or ends Away, and widens or narrows its grant. */
+export const nousAwayInputSchema = z.object({
+  away: z.boolean(),
+  grant: z.array(nousAwayGrantSchema).max(2).optional(),
+  until: isoDateTime.optional()
+}).strict();
 
 /** OFF: not turned on; PAUSED_MODEL: the model failed and Nous waits (the other notifications go out again meanwhile). */
 export const nousStatusSchema = z.enum(["OFF", "IDLE", "THINKING", "PAUSED_MODEL"]);
@@ -146,7 +190,9 @@ export const nousStateSchema = z.object({
   turnsThisHour: z.number().int().min(0),
   lastError: z.string().max(1_000).nullable(),
   openDecisions: z.number().int().min(0),
-  inbox: z.number().int().min(0)
+  inbox: z.number().int().min(0),
+  /** The open away session; absent or null while the operator is here. */
+  away: nousAwaySchema.nullable().optional()
 }).strict();
 export type NousState = z.infer<typeof nousStateSchema>;
 
@@ -185,8 +231,11 @@ export const nousSettingsInputSchema = patchSchema(nousSettingsSchema).strict();
 
 export const nousDecisionAnswerInputSchema = z.object({
   answer: z.enum(["APPROVE", "DECLINE", "ANSWER"]),
-  text: z.string().trim().min(1).max(2_000).optional()
-}).strict().refine((input) => input.answer !== "ANSWER" || Boolean(input.text), { message: "An answer needs text.", path: ["text"] });
+  text: z.string().trim().min(1).max(2_000).optional(),
+  /** APPROVE only: approve this kind of decision from now on too. */
+  always: z.boolean().optional()
+}).strict().refine((input) => input.answer !== "ANSWER" || Boolean(input.text), { message: "An answer needs text.", path: ["text"] })
+  .refine((input) => !input.always || input.answer === "APPROVE", { message: "Only an approval can be always.", path: ["always"] });
 export type NousDecisionAnswerInput = z.infer<typeof nousDecisionAnswerInputSchema>;
 
 /** "You could have decided this" on an answered decision, from the operator in the Nous dock. */
@@ -201,6 +250,19 @@ export const nousOverviewSchema = z.object({
   }).strict()),
   needsHands: z.array(z.object({ id: z.string(), source: z.string(), title: z.string(), room: z.string().nullable() }).strict()),
   trains: z.string(),
-  planMap: z.string().nullable()
+  planMap: z.string().nullable(),
+  /** The dock's live stats (plan clipboard:wr9yNPJwkDrp): the owner's rooms and their CLI panes by state, from the world's activity samples. */
+  live: z.object({
+    rooms: z.number().int().min(0),
+    agents: z.object({ running: z.number().int().min(0), waiting: z.number().int().min(0), idle: z.number().int().min(0), total: z.number().int().min(0) }).strict()
+  }).strict().optional(),
+  /** The dock's Panes cards (plan clipboard:MAongwnxq9Ro): every open pane with Nous's last check, verdict and next check. */
+  panes: z.array(z.object({
+    paneId: z.string(), roomId: z.string(), room: z.string(), pane: z.string(), state: z.string().nullable(),
+    checkedAt: z.string().nullable(), verdict: z.enum(["OK_WORKING", "WAITING_OPERATOR", "WAITING_DATE", "NEEDS_ACTION", "BLOCKED", "OPERATOR_TEST"]).nullable(),
+    note: z.string().nullable(), nextCheckAt: z.string().nullable(), dueAt: z.string(), overdue: z.boolean(),
+    /** The pane's newest report (plan clipboard:ot6-jLKOWDNC); its summary is the pane's own words. */
+    report: z.object({ at: z.string(), status: z.string(), source: z.enum(["AGENT", "AUTO"]), summary: z.string() }).strict().nullable().optional()
+  }).strict()).optional()
 }).strict();
 export type NousOverview = z.infer<typeof nousOverviewSchema>;

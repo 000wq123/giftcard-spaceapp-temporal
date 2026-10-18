@@ -477,6 +477,7 @@ it("builds Dot developer context from preferences without granting authority", (
   expect(own).toContain("Reply in the language the user writes in.");
   expect(own).toContain("Your private workspace: /opt/spaceapp/var/dots/workspaces/abc.");
   expect(own).toContain("computer.browser");
+  expect(own).toContain("never send or mention progress reports to Nous");
   expect(own).not.toContain("Your personality");
   const nova = dotDeveloperContext({ name: "Nova", appearance: { character: "star", accent: "amber" }, preferences: {} }, null);
   expect(nova).toContain("Your personality: Warm encourager.");

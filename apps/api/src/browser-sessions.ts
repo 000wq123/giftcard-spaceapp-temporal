@@ -40,6 +40,9 @@ import {
   type PaneBrowserSession,
   type PaneBrowserSessionResponse
 } from "@space/contracts";
+import type { VaultHostFillResult, VaultHostTarget } from "@space/contracts";
+import { VAULT_BROKER_HOST_SOCKET_PATH, createSocketVaultBroker, sealedFillBroker } from "./vault/broker-client.js";
+import { readVaultTarget, runSealedFill, type SealedFillPage } from "./vault/sealed-fill.js";
 import { SpaceConflictError, SpaceFeatureDisabledError, SpaceNotFoundError, makeSpaceId, nowIso, redactMemoryText, type SpaceStore } from "@space/runtime";
 import { BrowserControlHeldError } from "./browser-errors.js";
 import type { SpaceApiConfig } from "./config.js";
@@ -238,6 +241,8 @@ interface BrowserRuntime {
   pageProfiles: Map<string, string>;
   /** Serializes joining, switching and leaving account Chromes. */
   accountWork: Promise<unknown>;
+  /** Set by a Vault sealed fill: this page keeps no console or network entries from then on (ADR-012). */
+  vaultProtected?: boolean;
 }
 
 /** Another Google account's Chrome (shared with the panes that use that account) holding some of a pane's tabs. */
@@ -351,6 +356,9 @@ export interface BrowserSessionManager {
   cancelCapture?(pane: Pane, jobId: string, traceId: string, context?: BrowserHostActorContext): Promise<BrowserCaptureJob>;
   recoverCaptureJobs?(): Promise<{ failedSegments: number; requeuedJobs: string[] }>;
   diagnostics?(pane: Pane, includeNetwork: boolean, limit: number): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }>;
+  /** Vault sealed fill (ADR-012); only the Browser Host process implements them. */
+  vaultTarget?(pane: Pane): Promise<VaultHostTarget>;
+  vaultFill?(pane: Pane, request: unknown, traceId: string): Promise<VaultHostFillResult>;
   /** Verifies the account's profile with Google; launches it only when `launch` is true and no pane is using it. */
   checkGoogleAccount?(identity: GoogleAccountBrowserIdentity, launch: boolean, context?: BrowserHostActorContext): Promise<GoogleAccountBrowserCheckResult>;
   /**
@@ -2598,6 +2606,7 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
         }
         return;
       }
+      if (runtime.vaultProtected) return;
       if (event.method === "Runtime.consoleAPICalled" || event.method === "Runtime.exceptionThrown") {
         pushBounded(runtime.consoleEntries, normalizeConsoleEvent(event), 500);
         return;
@@ -3545,6 +3554,24 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
     return browserTimelineEventSummarySchema.array().parse([...consoleEvents, ...networkEvents].slice(-limit));
   }
 
+  // Vault sealed fill (ADR-012): one owned tab in a Chrome no other pane or account tab shares.
+  function vaultPage(pane: Pane, runtime: BrowserRuntime): SealedFillPage {
+    return { cdp: runtime.client, sessionId: runtime.cdpSessionId, targetId: runtime.targetId, paneId: pane.id, ownedPages: runtime.ownedPages.size,
+      sharedProfile: runtime.profile.members.size > 1 || runtime.accountTabs.size > 0 || runtime.pageProfiles.size > 0 };
+  }
+  // H2 Option A: the Browser Host talks to the broker over its own socket, never through the API.
+  const vaultBroker = sealedFillBroker(createSocketVaultBroker(VAULT_BROKER_HOST_SOCKET_PATH));
+  async function vaultTargetForPane(pane: Pane): Promise<VaultHostTarget> {
+    return readVaultTarget(vaultPage(pane, await ensureRuntime(await requireActiveSession(pane))));
+  }
+  async function vaultFillForPane(pane: Pane, request: unknown): Promise<VaultHostFillResult> {
+    const runtime = await ensureRuntime(await requireActiveSession(pane));
+    runtime.vaultProtected = true;
+    runtime.consoleEntries.length = 0;
+    runtime.networkEntries.length = 0;
+    return runSealedFill(vaultPage(pane, runtime), vaultBroker, request);
+  }
+
   async function diagnosticsForPane(pane: Pane, includeNetwork: boolean, limit: number) {
     const session = await requireActiveSession(pane);
     const runtime = await ensureRuntime(session);
@@ -3721,6 +3748,8 @@ export function createBrowserSessionManager(options: { store: SpaceStore; config
       return responseFor(await dispatchRuntimeInput(pane, input, context), false);
     },
     diagnostics: diagnosticsForPane,
+    vaultTarget: vaultTargetForPane,
+    vaultFill: (pane, request) => vaultFillForPane(pane, request),
     async adoptPaneGoogleProfile(source, context) {
       if (context && (context.holderType !== "OPERATOR" || context.holderId !== source.ownerUserId)) {
         throw new SpaceConflictError("Only the account owner can move a pane's Google sign-in.");

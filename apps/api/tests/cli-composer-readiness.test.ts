@@ -28,6 +28,16 @@ it("knows when each terminal CLI's composer is open, and not while it starts or 
   expect(roomTerminalState(" ⎋ Working…\n ⠇ 2s > ◒ GPT-6 Sol > 🌳 main")).toBe("RUNNING");
 });
 
+// Spinner lines from Claude panes on stable 2026-10-17, read as UNKNOWN because a narrow pane cut "esc to interrupt".
+it("reads Claude Code's spinner as a running turn even when a narrow pane cuts its hint, and its finished line as idle", () => {
+  for (const line of ["· Simmering…  5s · thinking with xhigh effort)", "✢ Nesting…     2", "* Whatchamacalliting… (1m 5s · ↓ 2.2k tokens)",
+    "● Perambulating…           3"]) {
+    expect(roomTerminalState(`${line}\n\n${idle["cli:claude"]}`), line).toBe("RUNNING");
+  }
+  expect(roomTerminalState("\n\n* Fluttering…  5  11s · ↓ 12.7k tokens)")).toBe("RUNNING");
+  expect(roomTerminalState(`✻ Cooked for 13s\n\n${idle["cli:claude"]}`)).toBe("IDLE");
+});
+
 function manager(runtimeId: string, controlOutput: string, timeoutMs: number) {
   const session = { sessionId: `cli_session:${runtimeId}`, purpose: "NORMAL", isActive: true, status: "RUNNING", runtimeId };
   const managed = { runtimeId, inputReady: false, closed: false, startupOutput: "", controlOutput };

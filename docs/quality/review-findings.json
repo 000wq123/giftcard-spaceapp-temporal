@@ -1634,9 +1634,9 @@
       "dependency": 3,
       "status": "confirmed",
       "reproduction": "node scripts/domain-boundaries.mjs without the 2026-10-11 baseline entries",
-      "evidence": "docs/quality/domain-boundaries.json notes",
-      "disposition": "Baselined (not fixed) because the feature is under active development by another session; the ratchet still rejects any further cycle. Break by moving shared provider types into a leaf module.",
-      "resolution": "open"
+      "evidence": "docs/quality/domain-boundaries.json notes; node scripts/domain-boundaries.mjs (3 cyclic components, no source-control edges)",
+      "disposition": "Baselined (not fixed) because the feature is under active development by another session; the ratchet still rejects any further cycle. Break by moving shared provider types into a leaf module. Fixed 2026-10-18: the HTTP transport and URL policy moved to the leaf apps/api/src/source-control/provider-transport.ts (providers.ts re-exports it), so the adapters and git-credentials.ts no longer import providers.ts; the 13 edges left the baseline.",
+      "resolution": "fixed"
     },
     {
       "id": "REL-001",
@@ -3087,12 +3087,12 @@
       "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
       "dependency": null,
       "reproduction": null,
-      "evidence": null,
+      "evidence": "apps/api/tests/room-shares.test.ts (closed features, flag on and off); apps/api/tests/auth-route-guards.test.ts",
       "observation": "With SPACE_MULTI_USER_ENABLED off, a USER account (for example a Google sign-in) still reads installation-wide data: /api/admin/audit, /api/audit/entries, /api/activity-log, /api/agent/sessions, /api/cli/tasks, /api/codex/*, /api/tasks and /api/providers",
       "severity": "P2",
       "status": "confirmed",
-      "disposition": "With the flag on, a USER reaches only allowlisted routes (86285eb498). Closing them for USER accounts with the flag off changes today's single-owner installs; decided with the multi-user switch-on.",
-      "resolution": "open"
+      "disposition": "A USER reaches only the allowlisted route families, with the multi-user flag on or off (operator decision 2026-10-17); everything else answers 404. Admin routes answer a USER 404 instead of 403.",
+      "resolution": "fixed"
     },
     {
       "id": "MU-002",
@@ -3107,12 +3107,12 @@
       "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
       "dependency": null,
       "reproduction": null,
-      "evidence": null,
+      "evidence": "apps/api/tests/cli-user-hosts.test.ts, task-title-service.test.ts, room-agent-chat.test.ts (MU-002 cases)",
       "observation": "Core one-shot CLI runs (task titles, Room Agent, Council, chess) use the owner's model accounts and Space Gateway even for a USER's panes",
       "severity": "P2",
       "status": "confirmed",
-      "disposition": "No owner secret reaches the user, but the user's prompts are processed and billed on the owner's accounts. Needs per-user routing of core model calls before multi-user is offered to untrusted teams.",
-      "resolution": "open"
+      "disposition": "2026-10-18: core model runs that bill the owner's accounts no longer run for a USER: task summaries skip a USER's panes (they keep their local title) and the Room Agent conversation in a USER's room answers ROOM_AGENT_CHAT_UNAVAILABLE (cli-user-hosts ownerModels). Council and games are not reachable by a USER. Running them on the user's own keys needs a one-shot operation on the user's CLI host; not built.",
+      "resolution": "fixed"
     },
     {
       "id": "MU-003",
@@ -3127,12 +3127,12 @@
       "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
       "dependency": null,
       "reproduction": null,
-      "evidence": null,
+      "evidence": "packages/db/tests/room-shares-postgres.test.ts",
       "observation": "rooms.owner_user_id is still nullable; a room without an owner belongs to the operator",
       "severity": "P2",
       "status": "confirmed",
-      "disposition": "The central check never shows such a room to a USER. Making it NOT NULL needs every room creator checked (operator decision 2026-10-17: in step 6, before the switch-on).",
-      "resolution": "open"
+      "disposition": "Operator decision 2026-10-17: migration 0219 gives every WORKSPACE room without an owner the first administrator and adds CHECK rooms_workspace_owner_required; Agent Proof and CLI Recovery rooms stay as they are (no proof or Warm change). The Getting Started room re-created for the owner now carries the owner.",
+      "resolution": "fixed"
     },
     {
       "id": "MU-004",
@@ -3147,12 +3147,12 @@
       "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
       "dependency": null,
       "reproduction": null,
-      "evidence": null,
+      "evidence": "agent-workspace/reports/20261018-lab-recheck/summary.json; launcher tests/multi-user.test.mjs",
       "observation": "run-spaceapp backup does not include a user's own CLI container volumes (CLI logins and settings, memory, files); keys are never in backups",
       "severity": "P3",
       "status": "confirmed",
-      "disposition": "A restore brings back accounts, rooms and shares; each user signs in to their CLIs again. Planned with the multi-user launcher release.",
-      "resolution": "open"
+      "disposition": "Fixed in the launcher branch feat/multi-user-cli-containers (0fb9462, 8f5542a): a backup keeps each user's CLI settings and Space Memory (never keys or logins); restore puts them back for users that exist and 'user restore <id>' for users added again. Lab-verified on public-host 2026-10-18. Ships with the multi-user launcher in a release train.",
+      "resolution": "partial"
     },
     {
       "id": "MU-005",
@@ -3193,6 +3193,66 @@
       "status": "product-decision",
       "disposition": "The operator's account model (plan step 3): OPERATOR is a trusted co-administrator; invite untrusted members as USER.",
       "resolution": "product-decision"
+    },
+    {
+      "id": "MU-007",
+      "reviewerSection": "Three-user rehearsal on Linux, Windows 11 and macOS",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-17",
+      "reviewedShas": {
+        "source": "a883f90eed"
+      },
+      "verifiedSourceSha": null,
+      "affected": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": null,
+      "evidence": "agent-workspace/reports/20261017-multiuser-isolation/rehearsal-windows.json",
+      "observation": "A user with a VIEW share still sees 'Add panes to <room>' and Create in the shared room",
+      "severity": "P3",
+      "status": "confirmed",
+      "disposition": "Room write controls are hidden for a VIEW share (on dev since 2026-10-17: Add panes, Create, Rename room, pane layout, sticky notes, room settings). The pane cards' own buttons (close, minimize, menu) are HELD (operator decision via Nous 2026-10-18): the approved change 3b92892529 touches the Warm path and needs real-browser room-switch evidence, but the room-switch capture fails on dev after warm hydration (the Debug switch and the App diagnostics action menu are covered). SPACE_MULTI_USER_ENABLED is off, so no user sees this today; the server refuses those writes.",
+      "resolution": "partial"
+    },
+    {
+      "id": "MU-008",
+      "reviewerSection": "MU-002 follow-up",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-18",
+      "reviewedShas": {
+        "source": "77d9269628"
+      },
+      "verifiedSourceSha": "280707eff2",
+      "affected": "apps/api/src/room-agent.ts (dispatchRequest: /api/rooms/:id/room-agent/messages, /api/rooms/:id/commands)",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": "apps/api/tests/room-agent-chat.test.ts (MU-008 case)",
+      "evidence": "apps/api/tests/room-agent-chat.test.ts; room-agent, multi-user and auth-route-guards suites 147/147",
+      "observation": "The Room Agent's tools and its routed commands (mentions, control phrases, quick commands) act with the operator's identity; in a USER's own room they need a review of what that identity allows",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "280707eff2 (2026-10-18): review: the direct paths (mentions, control phrases, quick and typed commands) act as the requesting user, not the operator, but reach Space Control (404 for a USER everywhere else) and room commands, which record no pane owner (a pane a member opens in a shared room would run in the room owner's container) and check no pane ownership; the conversation also ran for a member in a room the operator shares. Missions, stop/control, the monitor and auto-answer switches and event answers were already ADMIN-only. Fix: dispatchRequest refuses an actor whose role is USER with ROOM_AGENT_UNAVAILABLE before any executor or model; the operator's rooms are unchanged. The Room Agent tools are reached only through those paths or by Nous (operator). CLI control tokens are MU-009.",
+      "resolution": "fixed"
+    },
+    {
+      "id": "MU-009",
+      "reviewerSection": "MU-008 follow-up",
+      "observationSource": "Plan clipboard:evAaFYqrgDfd step 6, 2026-10-18",
+      "reviewedShas": {
+        "source": "11786e207a"
+      },
+      "verifiedSourceSha": "80967e68aa",
+      "affected": "apps/api/src/app.ts (/api/cli/control/mcp control-token authentication), apps/api/src/cli-user-hosts.ts (controlActorAllowed)",
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "reproduction": "apps/api/tests/space-control-auth.test.ts (MU-009 case)",
+      "evidence": "apps/api/tests/space-control-auth.test.ts, cli-user-hosts.test.ts; control-auth, harness tokens, room shares, multi-user and auth-route-guards suites green",
+      "observation": "The CLI control MCP acts as the room's grant actor (normally the operator) for every eligible CLI pane in the room, including a pane a member opened in a shared room (running in the member's own container) or a USER's pane in a room the operator granted",
+      "severity": "P2",
+      "status": "confirmed",
+      "disposition": "80967e68aa (2026-10-18): /api/cli/control/mcp refuses the token with 403 CONTROL_PANE_NOT_GRANTED unless the pane's opener (its recorded owner, else the room's owner) is unset, the grant actor, or an ADMIN/OPERATOR account. A member's pane in a shared room and a USER's own room no longer get the operator's identity. The operator's rooms (owner user:operator or none) and panes are unchanged.",
+      "resolution": "fixed"
     }
   ]
 }
