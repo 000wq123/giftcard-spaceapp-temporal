@@ -42,6 +42,7 @@ import {
   SPACEAPP_UPGRADE_POLICY,
   upgradePath,
   userSlug,
+  BACKUP_ID_PATTERN,
   writeCredential,
   writeRuntimeFiles,
   writeSetupToken
@@ -1995,11 +1996,16 @@ async function userCommand(args, { root, config, stdin, stdout, stderr, execute,
   }
   if (action === "restore" && userId && rest.length === 0) {
     assertRegisteredUser(config, userId);
-    const directory = join(root, "backups", await selectLatestBackupId(root));
-    if (await restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) === 0) {
-      throw new Error(`The latest backup has no CLI settings or Space Memory of ${userId}.`);
+    // "restore" first saves a backup of the install it replaces, so the newest backup with this user's state is the
+    // one to use, not simply the newest backup (lab recheck 2026-10-18).
+    const backups = (await readdir(join(root, "backups")).catch(() => [])).filter((id) => BACKUP_ID_PATTERN.test(id)).sort().reverse();
+    for (const id of backups) {
+      const directory = join(root, "backups", id);
+      if (!await stat(userArchive(directory, userId, "memory")).then(() => true, () => false)) continue;
+      if (await restoreUserState({ root, config, directory, userId, stdin, stdout, stderr, execute }) === 0) break;
+      return 0;
     }
-    return 0;
+    throw new Error(`No backup has the CLI settings or Space Memory of ${userId}.`);
   }
   if (action === "remove" && userId && rest.length === 0) {
     // The container goes; its volumes (the user's CLI logins, memory and files) stay until uninstall --purge-data.

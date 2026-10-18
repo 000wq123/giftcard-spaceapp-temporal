@@ -177,6 +177,10 @@ test("a backup keeps each user's CLI settings and Space Memory, never their keys
   assert.match(fixture.stdout.value(), /Then their CLI settings and Space Memory: .* user restore user:Bob12345/);
   assert.deepEqual(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)), []);
   await run(["user", "add", "user:Bob12345"], fixture.options);
+  // A restore first saves a backup of the install it replaces: "user restore" skips that newer backup without the user.
+  const { mkdir: mkdirp, writeFile: write } = await import("node:fs/promises");
+  await mkdirp(join(root, "backups", "spaceapp-backup-20261017T090000000Z"), { recursive: true });
+  await write(join(root, "backups", "spaceapp-backup-20261017T090000000Z", "manifest.json"), "{}");
   assert.equal(await run(["user", "restore", "user:Bob12345"], fixture.options), 0);
   assert.equal(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)).length, 2);
   await assert.rejects(run(["user", "restore", "user:Nobody99"], fixture.options));

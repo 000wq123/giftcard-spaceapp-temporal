@@ -95,7 +95,7 @@ export function profileRuntimeSettings(profile) {
 }
 const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
+export const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
   bundled: Object.freeze(["opencode"]),
   ownerInstalled: Object.freeze(["codex", "gemini", "qwen", "kimi", "grok", "autohand", "cursor", "copilot", "claude"]),
