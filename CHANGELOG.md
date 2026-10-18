@@ -11,6 +11,21 @@ Source: sanitized Space app @ 732e9f3a78 (4428 files). Adds install telemetry
 for owners who opt in and the remaining fixes from the independent reviews of
 1.1.5; open items are listed in `docs/quality/KNOWN_LIMITATIONS.md`.
 
+### Pilot rehearsal fixes and team accounts
+
+- Codex sandboxes each command in the CLI container (Docker's default seccomp
+  profile plus user namespaces, no AppArmor profile) on Docker Desktop and on
+  Linux hosts that allow unprivileged user namespaces. Ubuntu 23.10 and later
+  restrict them, so there the container keeps Docker's defaults and Codex still
+  asks before each command.
+- `restore` prints workspace paths in plain quotes (Windows paths no longer show
+  doubled backslashes).
+- Team accounts, off until the owner runs `user enable`: each invited user gets
+  a CLI container of their own (own keys, logins, Space Memory and workspaces),
+  `credentials set`, `workspace add` and `provider install` take `--user`, and
+  backups keep each user's CLI settings and Space Memory. See "Team accounts" in
+  `docs/operations.md`.
+
 ### Telemetry (only after the owner answers Yes)
 
 - The install wizard lists what telemetry sends before it asks; the default is
