@@ -468,7 +468,7 @@ export async function run(argv, {
     return credentialsCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
   }
   if (command === "user") {
-    return userCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
+    return userCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute, request, sleep });
   }
   if (command === "provider") {
     return providerCommand(args, { root, config, stdin, stdout, stderr, execute: runtimeExecute });
@@ -1941,7 +1941,31 @@ async function credentialsCommand(rawArgs, { root, config, stdin, stdout, stderr
 
 // Multi-user: "user enable" turns SpaceApp accounts on (invites); each invited user gets their own CLI container with
 // "user add <user-id>" (the id is in Settings -> Users). Until then that user's CLIs do not start.
-async function userCommand(args, { root, config, stdin, stdout, stderr, execute }) {
+const USER_CLI_READY_ATTEMPTS = 30;
+
+/** After "user add": the core is ready again with the new host map, and the user's own CLI host answers. */
+async function waitForUserCli({ root, config, userId, stdin, stdout, stderr, execute, request, sleep }) {
+  if (!await waitForApplicationReady({ url: `http://${config.bindHost}:${config.port}`, request, sleep })) {
+    stderr.write(`SpaceApp did not become ready after adding ${userId}. Run "${UNIVERSAL_COMMAND} status".\n`);
+    return 1;
+  }
+  const service = `spaceapp-cli-${userSlug(userId)}`;
+  for (let attempt = 0; attempt < USER_CLI_READY_ATTEMPTS; attempt++) {
+    const code = await execute(
+      composeCommand("cliHostReady", root, { profile: config.profile, companionsEnabled: config.companionsEnabled, service }),
+      { stdin, stdout: null, stderr: null }
+    ).catch(() => 1);
+    if (code === 0) {
+      stdout.write(`The CLI container of ${userId} is ready.\n`);
+      return 0;
+    }
+    await sleep(2_000);
+  }
+  stderr.write(`The CLI container of ${userId} does not answer yet. Run "${UNIVERSAL_COMMAND} logs" and look at ${service}.\n`);
+  return 1;
+}
+
+async function userCommand(args, { root, config, stdin, stdout, stderr, execute, request, sleep }) {
   const [action, userId, ...rest] = args;
   const apply = async (updated, message) => {
     await saveConfig(root, updated);
@@ -1966,7 +1990,8 @@ async function userCommand(args, { root, config, stdin, stdout, stderr, execute 
   if (action === "add" && userId && (rest.length === 0 || (rest.length === 2 && rest[0] === "--memory"))) {
     if (config.users === undefined) throw new Error(`SpaceApp accounts are off: run "${UNIVERSAL_COMMAND} user enable" first.`);
     const updated = addUser(config, userId, { memoryLimit: rest[1] });
-    return apply(updated, `User ${userId} gets the CLI container spaceapp-cli-${userSlug(userId)}. Add their keys with "${UNIVERSAL_COMMAND} credentials set <provider> --user ${userId}".\n`);
+    const code = await apply(updated, `User ${userId} gets the CLI container spaceapp-cli-${userSlug(userId)}. Add their keys with "${UNIVERSAL_COMMAND} credentials set <provider> --user ${userId}".\n`);
+    return code === 0 ? waitForUserCli({ root, config: updated, userId, stdin, stdout, stderr, execute, request, sleep }) : code;
   }
   if (action === "restore" && userId && rest.length === 0) {
     assertRegisteredUser(config, userId);
@@ -1983,15 +2008,19 @@ async function userCommand(args, { root, config, stdin, stdout, stderr, execute 
   throw new Error(`Usage: ${UNIVERSAL_COMMAND} user <enable|add <user-id> [--memory <2g>]|restore <user-id>|remove <user-id>|list>`);
 }
 
-async function providerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
+async function providerCommand(rawArgs, { root, config, stdin, stdout, stderr, execute }) {
+  const { userId, args } = takeUserOption(rawArgs);
   if (args.length !== 2 || args[0] !== "install") {
-    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider>`);
+    throw new Error(`Usage: ${UNIVERSAL_COMMAND} provider install <provider> [--user <user-id>]`);
   }
+  if (userId) assertRegisteredUser(config, userId);
   const provider=args[1];
-  stdout.write(`Installing optional provider ${provider} into this installation's private provider volume.\n`);
+  // A user's CLIs run in their own container, so an optional CLI goes into that container's volume.
+  const service = userId ? `spaceapp-cli-${userSlug(userId)}` : undefined;
+  stdout.write(`Installing optional provider ${provider} into ${userId ? `the private provider volume of ${userId}` : "this installation's private provider volume"}.\n`);
   // Keep the existing Claude path compatible with older runtime images.
   const action=provider === "claude" ? "installClaude" : "installProvider";
-  return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider }), { stdin, stdout, stderr });
+  return execute(composeCommand(action, root, { profile: config.profile, companionsEnabled: config.companionsEnabled, provider, service }), { stdin, stdout, stderr });
 }
 
 async function ownerCommand(args, { root, config, stdin, stdout, stderr, execute }) {
@@ -2707,7 +2736,7 @@ Usage: ${UNIVERSAL_COMMAND} <command>
   user add <user-id> [--memory 2g]  Give an invited user their own CLI container
   user restore <user-id>            Put a user's CLI settings and Space Memory back from the latest backup
   user remove <user-id> | user list
-  provider install <provider>       Install an optional CLI in its persistent volume
+  provider install <provider> [--user <id>]  Install an optional CLI in its persistent volume (or a user's)
                                     codex, gemini, qwen, kimi, grok, claude, deepseek,
                                     autohand, cursor, copilot (also installed on first use)
   owner reset-password              Read the new password from masked stdin

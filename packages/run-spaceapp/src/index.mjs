@@ -799,6 +799,9 @@ export function composeCommand(action, root, options = {}) {
     exportCliSettings: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "sh", "-c",
       `cd /var/lib/spaceapp-cli/providers && tar -czf - $(ls -d ${CLI_SETTINGS_FILES.join(" ")} 2>/dev/null)`],
     importCliSettings: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp-cli/providers", "-xzf", "-"],
+    // The CLI host answers on its socket (a user's container is ready only then, not when Docker starts it).
+    cliHostReady: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "node", "-e",
+      "require('node:net').connect('/run/spaceapp-cli/host.sock').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"],
     // A user's own Space Memory lives only in their CLI container (the owner's is in the core's portable backup).
     exportMemory: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp/memory", "-czf", "-", "."],
     importMemory: ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "tar", "-C", "/var/lib/spaceapp/memory", "-xzf", "-"],
@@ -810,7 +813,7 @@ export function composeCommand(action, root, options = {}) {
       "10001:10001",
       "--entrypoint",
       "npm",
-      "spaceapp-cli",
+      options.service ?? "spaceapp-cli",
       "install",
       "--prefix",
       "/var/lib/spaceapp-cli/vendor/claude",
@@ -853,7 +856,7 @@ export function composeCommand(action, root, options = {}) {
   };
   if (action === "installProvider") {
     assertProvider(options.provider);
-    actions.installProvider = ["exec", "-T", "--user", "10001:10001", "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
+    actions.installProvider = ["exec", "-T", "--user", "10001:10001", options.service ?? "spaceapp-cli", "node", "/app/deploy/docker/provider-install.mjs", options.provider];
   }
   let selected = actions[action];
   if (action === "restore") {

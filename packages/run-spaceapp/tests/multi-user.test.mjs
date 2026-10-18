@@ -47,7 +47,10 @@ test("user enable, add and remove give each user a CLI container and the core it
 
   assert.equal(await run(["user", "add", "user:Bob12345", "--memory", "1536m"], options), 0);
   const slug = userSlug("user:Bob12345");
-  assert.deepEqual(calls.at(-1).slice(-3), ["up", "-d", "--remove-orphans"]);
+  // "user add" brings the services up, then waits until the user's own CLI host answers on its socket.
+  assert.deepEqual(calls.at(-2).slice(-3), ["up", "-d", "--remove-orphans"]);
+  assert.ok(calls.at(-1).includes(`spaceapp-cli-${slug}`) && calls.at(-1).some((arg) => String(arg).includes("/run/spaceapp-cli/host.sock")));
+  assert.match(stdout.value(), /The CLI container of user:Bob12345 is ready/);
   compose = await readFile(join(root, "compose.workspaces.yml"), "utf8");
   assert.match(compose, new RegExp(`spaceapp-cli-${slug}:`));
   assert.match(compose, /mem_limit: "1536m"/);
@@ -177,4 +180,26 @@ test("a backup keeps each user's CLI settings and Space Memory, never their keys
   assert.equal(await run(["user", "restore", "user:Bob12345"], fixture.options), 0);
   assert.equal(imported.filter((line) => line.startsWith(`spaceapp-cli-${slug}`)).length, 2);
   await assert.rejects(run(["user", "restore", "user:Nobody99"], fixture.options));
+});
+
+test("user add reports a user's CLI container that never answers, and provider install --user targets that container", async () => {
+  const calls = [];
+  const { stdout, stderr, options } = await installation(async (spec) => {
+    calls.push(spec.args);
+    return spec.args?.some((arg) => String(arg).includes("host.sock")) ? 1 : 0;
+  });
+  await run(["user", "enable"], options);
+  assert.equal(await run(["user", "add", "user:Bob12345"], options), 1);
+  const slug = userSlug("user:Bob12345");
+  assert.equal(calls.filter((args) => args.some((arg) => String(arg).includes("host.sock"))).length, 30);
+  assert.match(stderr.value(), new RegExp(`does not answer yet[^]*spaceapp-cli-${slug}`));
+
+  calls.length = 0;
+  assert.equal(await run(["provider", "install", "claude", "--user", "user:Bob12345"], options), 0);
+  assert.ok(calls[0].includes(`spaceapp-cli-${slug}`) && calls[0].includes("@anthropic-ai/claude-code@2.1.301"));
+  assert.equal(calls[0].includes("spaceapp-cli"), false);
+  assert.equal(await run(["provider", "install", "gemini", "--user", "user:Bob12345"], options), 0);
+  assert.ok(calls[1].includes(`spaceapp-cli-${slug}`) && calls[1].includes("gemini"));
+  assert.match(stdout.value(), /private provider volume of user:Bob12345/);
+  await assert.rejects(run(["provider", "install", "claude", "--user", "user:Nobody99"], options));
 });
