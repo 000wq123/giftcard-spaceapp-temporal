@@ -20,6 +20,30 @@ for owners who opt in and the remaining fixes from the independent reviews of
   asks before each command.
 - `restore` prints workspace paths in plain quotes (Windows paths no longer show
   doubled backslashes).
+- `workspace add` and `workspace remove` apply at once: they recreate the core
+  and CLI services, and say to run `up` when that fails (pilot F1).
+- On Linux, `workspace add` checks whether the AI CLIs (uid 10001) can write to
+  the folder and, when they cannot, prints the `setfacl` command that gives them
+  access without changing its owner (pilot F3).
+- OpenCode also gets the Anthropic and OpenAI keys set with
+  `credentials set claude` and `credentials set codex` (pilot F4).
+- After `credentials set`, a CLI pane starts after one reload: the browser no
+  longer keeps an old login state (pilot F5).
+- Codex starts on public installs, on its own default model, instead of failing
+  with 503 `CLI_CODEX_DEFAULTS_UNRESOLVED` (pilot F6).
+- `backup` also saves the launcher configuration with the workspace list
+  (`spaceapp-config.json`) and the CLI settings (`cli-config.tar.gz`, mode 0600,
+  never logins or keys); `restore` puts the CLI settings back and prints the
+  `workspace add` commands to run again (pilot F8).
+- `uninstall --purge-data` runs unattended with the answer key `purgeConfirm`
+  (pilot F9).
+- Claude Code is pinned to 2.1.301 (2.1.206 started API-key users on Opus 4.8)
+  (pilot F11).
+- Space Memory files use the `space_memory` names; an installation that still
+  has `gemini_history*.md` files gets them moved once, with the old names kept
+  as links (pilot F13).
+- The CLI image includes `python3-minimal` (about 13 MB): agents often check
+  their work with a short Python script (pilot F18).
 - Team accounts, off until the owner runs `user enable`: each invited user gets
   a CLI container of their own (own keys, logins, Space Memory and workspaces),
   `credentials set`, `workspace add` and `provider install` take `--user`, and
