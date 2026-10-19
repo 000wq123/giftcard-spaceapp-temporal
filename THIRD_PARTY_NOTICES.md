@@ -1,6 +1,6 @@
 # Third-party CLI notices
 
-SpaceApp application source is BUSL-1.1. The run-spaceapp launcher is Apache-2.0.
+SpaceApp application source and the run-spaceapp launcher are MIT (from 1.1.7; earlier releases keep their license).
 The CLI image includes OpenCode and installs other independent packages on demand
 that retain their own licenses and terms. This inventory records the metadata
 reviewed for the pinned SpaceApp 0.1.0 build; it is not legal advice and does not

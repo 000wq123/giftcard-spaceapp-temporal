@@ -66,7 +66,7 @@ export const desktopActionDescriptions: Record<string, string> = {
   "widget-clock": "Floating desktop clock with 12h/24h format and date.",
   "widget-countdown-timer": "Floating countdown timer with Pomodoro presets.",
   "widget-pushup-reminder": "Floating periodic workout reminder for push-ups.",
-  "widget-spaceapp-promo": "Floating banner promoting SpaceApp.dev (free, source-available).",
+  "widget-spaceapp-promo": "Floating banner promoting SpaceApp.dev (free, open source).",
   "widget-ai-quota": "Which Codex, Antigravity and Claude accounts are ready, when the rest come back, and a chime when quota returns.",
   "widget-streaming-metrics": "Floating live streaming metrics monitor for active audio/video feeds.",
   "server-restart": "Setup, updates, cleanup, and guarded server operations.",

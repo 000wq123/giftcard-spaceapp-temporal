@@ -57,7 +57,7 @@ test("public container images identify their repository and license for GHCR", a
   );
   assert.match(
     dockerfile,
-    /^LABEL org\.opencontainers\.image\.licenses=BUSL-1\.1$/m
+    /^LABEL org\.opencontainers\.image\.licenses=MIT$/m
   );
 });
 

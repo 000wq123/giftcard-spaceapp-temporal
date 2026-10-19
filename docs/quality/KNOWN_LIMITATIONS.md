@@ -82,5 +82,5 @@ Known and kept, for the reason given.
 Scope choices, not defects.
 
 - **FS-004** (P0) Host-root risk. Trusted single-owner ADMIN/OPERATOR mode is intentional. Preserve existing opt-in; authenticated UI indicator proof remains. 2026-10-11: SPACE_FILES_HOST_MODE (enabled|disabled, default enabled for the single-owner install) is a server-side switch; disabled rejects Admin Mode for every role with HOST_MODE_DISABLED. User Mode additionally never exposes .env files, secrets/, backups/, .git/ or var/ runtime data (managed worktrees excepted).
-- **PRODUCT-001** (P2) Single-owner, multi-tenancy, HA and BSL limitations. Trusted self-hosted operator is declared scope. Multi-tenancy/Kubernetes/license changes excluded.
+- **PRODUCT-001** (P2) Single-owner, multi-tenancy and HA limitations. Trusted self-hosted operator is declared scope. Multi-tenancy/Kubernetes/license changes excluded.
 - **MU-006** (P3) An invite with the OPERATOR role gets owner-level access, including every room and the owner's CLI container. The operator's account model (plan step 3): OPERATOR is a trusted co-administrator; invite untrusted members as USER.

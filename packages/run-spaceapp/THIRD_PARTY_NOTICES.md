@@ -1,6 +1,6 @@
 # Third-party CLI notices
 
-The `run-spaceapp` launcher is Apache-2.0. SpaceApp images integrate independent
+The `run-spaceapp` launcher is MIT (from 1.1.7; up to 1.1.6 it was Apache-2.0). SpaceApp images integrate independent
 CLI packages that retain their own licenses and service terms:
 
 - `@openai/codex@0.145.0` — Apache-2.0
