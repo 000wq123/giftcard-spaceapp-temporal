@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "candidateDigest": "37cd85c8205fa2cd0968aadcb13011f99d57cc0c87a886e5d6f6fd56ded9b41c",
+  "candidateDigest": "30eb46ad4f80af9717484e90e60dbff3dc4f71f9e2abbe6331e40321e4c4d2d9",
   "sourceCommit": "e2be6abf8efcdcc32c7c012292afc22b2148734c",
   "launcherVersion": "1.1.6",
   "runtimeVersion": "1.1.6",
-  "createdAt": "2026-10-18T20:29:47.383Z",
+  "createdAt": "2026-10-19T02:04:16.583Z",
   "checks": [
     {
       "platform": "linux",
@@ -469,7 +469,7 @@
     "Fresh installer timings use preloaded local candidate images; they exclude network image downloads.",
     "The 1.1.5 -> 1.1.6 update ran on each retained original installation, rolled back to 1.1.5 before each full session.",
     "Windows desktop commands ran as interactive scheduled tasks in an owned RDP session; this is not keystroke coverage of every wizard prompt.",
-    "Known exception, one failed check per system (first-agent, the free-model first answer): OpenCode Zen refused every free model from the lab's address (upstream, known since 1.1.5). The Getting Started first prompt ran on opencode/big-pickle and did not complete; the first-run picker tried all five free tool-capable candidates in catalog order (big-pickle, nemotron-3.5-super-vl-free, beam-free, longcat-2.5-preview-free, space-bunny-free; macOS process samples taken on candidate 3f1f528 the same day, each check ended in seconds, well under its 40 s limit) and none completed a tool call. The release validator was not changed.",
+    "Known exception, one failed check per system (first-agent, the free-model first answer): OpenCode Zen refused every free model from the lab's address (upstream, known since 1.1.5). The Getting Started first prompt ran on opencode/big-pickle and did not complete; the first-run picker tried all five free tool-capable candidates in catalog order (big-pickle, nemotron-3.5-super-vl-free, beam-free, longcat-2.5-preview-free, space-bunny-free; macOS process samples taken on candidate 3f1f528 the same day, each check ended in seconds, well under its 40 s limit) and none completed a tool call. The release validator accepts this exception only for 1.1.6 and only where acceptance.json names the operator decision efc30984 (public commit b088389); every other version and check stays strict.",
     "Every other AI check ran on OpenCode with Claude Sonnet 5.5 through Space Gateway's Claude API-key account (the OpenAI API-key account had no credits; the operator chose to continue without it), on lab keys scoped to that one account, set with credentials set claude (pilot F4 path) and disabled afterwards: the installer task on all three systems (supplementary first-agent-claude) and the telemetry answers. Claude sometimes reads OpenCode's own config folder and OpenCode asks first; the harness answered Allow once and counted it.",
     "Every result in this file was executed on candidate e2be6ab (source f8803d5d96): Linux vm218, Windows vm219 and macOS vm221 main sessions and the small/medium/large profiles of all three. Earlier candidates (3f1f528, 3ccad66, 780759e) are not counted.",
     "Install telemetry Yes ran on Linux only, on a separate owned fixture purged afterwards; Telemetry No on all three systems: no install id, no marker, and no lab event at the collector over each No fixture's life.",
@@ -486,18 +486,21 @@
     {
       "platform": "linux",
       "scenario": "first-agent",
+      "decision": "efc30984",
       "reason": "OpenCode Zen upstream refusal, known since 1.1.5",
       "artifact": "linux-first-agent.json"
     },
     {
       "platform": "windows",
       "scenario": "first-agent",
+      "decision": "efc30984",
       "reason": "OpenCode Zen upstream refusal, known since 1.1.5",
       "artifact": "windows-first-agent.json"
     },
     {
       "platform": "macos",
       "scenario": "first-agent",
+      "decision": "efc30984",
       "reason": "OpenCode Zen upstream refusal, known since 1.1.5",
       "artifact": "macos-first-agent.json"
     }
