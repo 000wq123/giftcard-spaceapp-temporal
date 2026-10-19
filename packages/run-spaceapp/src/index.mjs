@@ -918,10 +918,21 @@ export async function selectLatestBackupId(root) {
   return backupId;
 }
 
+// mkdir keeps the mode of a secrets folder that already existed; the 0644 container secrets inside rely on it being
+// owner-only (review INT5-C-F21), so install, init and every command that writes the runtime files tighten it.
+// Windows has no POSIX modes.
+async function ensureOwnerOnlySecrets(root) {
+  if (process.platform === "win32") return;
+  const secrets = join(root, "secrets");
+  const info = await stat(secrets).catch(() => null);
+  if (info && (info.mode & 0o077) !== 0) await chmod(secrets, 0o700);
+}
+
 export async function writeRuntimeFiles(root, config) {
   validateHome(root);
   validateConfig(config);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  await ensureOwnerOnlySecrets(root);
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config));
   await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
   // The core reads it as uid 10001 through a read-only bind mount.
@@ -942,6 +953,7 @@ export async function prepareInstallation(root, {
     mkdir(join(root, "backups"), { recursive: true, mode: 0o700 }),
     mkdir(join(root, "secrets", "providers"), { recursive: true, mode: 0o700 })
   ]);
+  await ensureOwnerOnlySecrets(root);
   const resolvedProfile = profile === undefined
     ? undefined
     : resolveInstallProfile(profile, profile === "auto" ? await inspectSystemResources(root) : totalmem());
