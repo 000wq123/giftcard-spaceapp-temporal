@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -693,7 +694,7 @@ async function installLinuxDockerEngine({
     });
   }
   if (id === "fedora" || id === "rhel" || id === "centos") {
-    return installDnfDockerEngine({ id, stdin, stdout, stderr, execute });
+    return installDnfDockerEngine({ id, stdin, stdout, stderr, execute, download });
   }
   if (
     idFamily.has("arch") ||
@@ -726,6 +727,59 @@ function installPacmanDockerEngine({ stdin, stdout, stderr, execute }) {
   );
 }
 
+// Docker's repository signing keys (https://docs.docker.com/engine/install/): a downloaded key is trusted only when its
+// primary key has the published fingerprint (review INT5-C-F14).
+export const DOCKER_REPOSITORY_KEY_FINGERPRINTS = Object.freeze({
+  apt: "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+  rpm: "060A61C51B558A7F742B77AAC52FEB6B621E9F35"
+});
+
+/** OpenPGP v4 fingerprint of the first public-key packet of an ASCII-armored key (RFC 4880 12.2), or null. */
+export function openPgpFingerprint(armored) {
+  const lines = String(armored).split(/\r?\n/);
+  const begin = lines.findIndex((line) => line.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+  if (begin === -1) return null;
+  let index = begin + 1;
+  while (index < lines.length && lines[index].trim() !== "") index += 1;
+  const body = [];
+  for (index += 1; index < lines.length && !lines[index].startsWith("=") && !lines[index].startsWith("-----END"); index += 1) {
+    body.push(lines[index].trim());
+  }
+  const bytes = Buffer.from(body.join(""), "base64");
+  if (bytes.length < 3 || !(bytes[0] & 0x80)) return null;
+  let tag;
+  let length;
+  let offset;
+  if (bytes[0] & 0x40) {
+    tag = bytes[0] & 0x3f;
+    const first = bytes[1];
+    if (first < 192) [length, offset] = [first, 2];
+    else if (first < 224) [length, offset] = [((first - 192) << 8) + bytes[2] + 192, 3];
+    else if (first === 255 && bytes.length >= 6) [length, offset] = [bytes.readUInt32BE(2), 6];
+    else return null;
+  } else {
+    tag = (bytes[0] >> 2) & 0x0f;
+    const type = bytes[0] & 0x03;
+    if (type === 0) [length, offset] = [bytes[1], 2];
+    else if (type === 1) [length, offset] = [bytes.readUInt16BE(1), 3];
+    else if (type === 2 && bytes.length >= 5) [length, offset] = [bytes.readUInt32BE(1), 5];
+    else return null;
+  }
+  if (tag !== 6 || bytes[offset] !== 4 || length > 0xffff || offset + length > bytes.length) return null;
+  return createHash("sha1")
+    .update(Buffer.from([0x99, length >> 8, length & 0xff]))
+    .update(bytes.subarray(offset, offset + length))
+    .digest("hex")
+    .toUpperCase();
+}
+
+async function verifyDockerRepositoryKey(path, expected, stderr) {
+  const actual = openPgpFingerprint(await readFile(path, "utf8").catch(() => ""));
+  if (actual === expected) return true;
+  stderr.write(`Docker's repository signing key does not have its published fingerprint ${expected}. Installation was stopped.\n`);
+  return false;
+}
+
 async function installAptDockerEngine({
   arch,
   id,
@@ -747,6 +801,9 @@ async function installAptDockerEngine({
   const repositoryBase = `https://download.docker.com/linux/${id}`;
   try {
     await download(`${repositoryBase}/gpg`, signingKey);
+    if (!await verifyDockerRepositoryKey(signingKey, DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt, stderr)) {
+      return 1;
+    }
     await writeFile(
       repositoryFile,
       `deb [arch=${dockerArch} signed-by=/etc/apt/keyrings/docker.asc] ${repositoryBase} ${codename} stable\n`,
@@ -785,7 +842,7 @@ async function installAptDockerEngine({
   }
 }
 
-async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute }) {
+async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute, download }) {
   const repositoryUrl = `https://download.docker.com/linux/${id}/docker-ce.repo`;
   const repositoryArgs = id === "fedora"
     ? ["dnf", "config-manager", "addrepo", "--from-repofile", repositoryUrl]
@@ -796,6 +853,21 @@ async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute }) {
   );
   if (pluginCode !== 0) {
     return pluginCode;
+  }
+  // The repository's key is imported only after its fingerprint is checked, so dnf -y never accepts another key itself.
+  const keyRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
+  try {
+    const signingKey = join(keyRoot, "docker.asc");
+    await download(`https://download.docker.com/linux/${id}/gpg`, signingKey);
+    if (!await verifyDockerRepositoryKey(signingKey, DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm, stderr)) {
+      return 1;
+    }
+    const importCode = await execute({ command: "sudo", args: ["rpm", "--import", signingKey] }, { stdin, stdout, stderr });
+    if (importCode !== 0) {
+      return importCode;
+    }
+  } finally {
+    await rm(keyRoot, { recursive: true, force: true });
   }
 
   let repositoryCode = await execute(

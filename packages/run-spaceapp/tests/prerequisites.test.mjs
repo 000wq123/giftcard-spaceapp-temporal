@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import {
+  DOCKER_REPOSITORY_KEY_FINGERPRINTS,
   downloadFile,
   ensureDockerAvailable,
+  openPgpFingerprint,
   prepareDockerCliPath,
   windowsResumeScript,
   windowsPowerShellArgs
 } from "../src/prerequisites.mjs";
+
+// Docker's real public repository keys; a test "download" writes one to the requested path.
+const keyDownload = (fixture) => async (_url, destination) =>
+  writeFile(destination, await readFile(new URL(`./fixtures/${fixture}`, import.meta.url)));
 
 function capture() {
   let value = "";
@@ -682,7 +689,7 @@ test("Ubuntu installs Docker Engine from Docker's official repository and re-ent
       if (spec.command === "sg") return 0;
       return 0;
     },
-    download: async () => {},
+    download: keyDownload("docker-apt-key.asc"),
     launch: async () => 0,
     pathExists: async () => true,
     sleep: async () => {},
@@ -834,7 +841,7 @@ test("Fedora uses Docker's official DNF repository and starts the engine", async
       }
       return 0;
     },
-    download: async () => {},
+    download: keyDownload("docker-rpm-key.asc"),
     launch: async () => 0,
     pathExists: async () => true,
     sleep: async () => {},
@@ -853,6 +860,9 @@ test("Fedora uses Docker's official DNF repository and starts the engine", async
     spec.args.join(" ") ===
       "dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
   ));
+  const importIndex = calls.findIndex((spec) => spec.command === "sudo" && spec.args[0] === "rpm" && spec.args[1] === "--import");
+  const installIndex = calls.findIndex((spec) => spec.command === "sudo" && spec.args.join(" ").startsWith("dnf -y install docker-ce"));
+  assert.ok(importIndex !== -1 && importIndex < installIndex, "Docker's checked key is imported before the engine is installed");
 });
 
 test("Fedora falls back to the DNF4 repository command when DNF5 syntax is unavailable", async () => {
@@ -880,7 +890,7 @@ test("Fedora falls back to the DNF4 repository command when DNF5 syntax is unava
       }
       return 0;
     },
-    download: async () => {},
+    download: keyDownload("docker-rpm-key.asc"),
     launch: async () => 0,
     pathExists: async () => true,
     sleep: async () => {},
@@ -894,6 +904,39 @@ test("Fedora falls back to the DNF4 repository command when DNF5 syntax is unava
     spec.args.join(" ") ===
       "dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo"
   ));
+});
+
+test("Docker's repository keys are trusted only with their published fingerprints (review INT5-C-F14)", async () => {
+  const fixture = async (name) => readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  assert.equal(openPgpFingerprint(await fixture("docker-apt-key.asc")), DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt);
+  assert.equal(openPgpFingerprint(await fixture("docker-rpm-key.asc")), DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm);
+  assert.equal(openPgpFingerprint("not a key"), null);
+  for (const [osRelease, wrongKey, trusted] of [
+    [{ ID: "ubuntu", VERSION_CODENAME: "noble" }, "docker-rpm-key.asc", "/etc/apt/keyrings/docker.asc"],
+    [{ ID: "fedora", VERSION_ID: "42" }, "docker-apt-key.asc", "--import"]
+  ]) {
+    const calls = [];
+    const stderr = capture();
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: stderr.stream,
+      execute: async (spec) => { calls.push(spec); return spec.command === "docker" ? 127 : 0; },
+      download: keyDownload(wrongKey),
+      launch: async () => 0,
+      pathExists: async () => true,
+      sleep: async () => {},
+      osRelease,
+      installArgs: { requestedProfile: "auto", noOpen: true }
+    });
+    assert.equal(result.code, 1, osRelease.ID);
+    assert.match(stderr.value(), /does not have its published fingerprint/);
+    assert.equal(calls.some((spec) => spec.args?.includes(trusted)), false, osRelease.ID);
+    assert.equal(calls.some((spec) => spec.args?.includes("docker-ce")), false, osRelease.ID);
+  }
 });
 
 test("Linux rejects an unsafe username before granting docker-group access", async () => {
