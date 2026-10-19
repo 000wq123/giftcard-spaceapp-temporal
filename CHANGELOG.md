@@ -5,6 +5,16 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Known issues
+
+- The provenance check (`scripts/verify-export-provenance.mjs`) verifies the
+  files exported from the Space source; the public repository's own files
+  (launcher, Dockerfile, workflows) are not listed in the export manifest yet.
+  Planned for 1.1.8 (review INT5-C-F9).
+- Optional CLIs installed on first use are pinned to exact versions, but their
+  own npm dependencies are resolved when they install; per-provider lockfiles
+  are planned for 1.1.8 (review INT5-C-F14).
+
 ## [1.1.6] - 2026-10-18
 
 Source: sanitized Space app @ f8803d5d96 (4595 files). Adds install telemetry
