@@ -1639,12 +1639,17 @@ test("Claude installation is explicit, owner-initiated, and fixed to the reviewe
   await run(["init"], options);
 
   assert.equal(await run(["provider", "install", "claude"], options), 0);
-  assert.deepEqual(calls[0].slice(-14), [
+  assert.deepEqual(calls[0].slice(-12, -2), [
     "run", "--rm", "--no-deps", "--user", "10001:10001",
-    "--entrypoint", "npm", "spaceapp-cli", "install",
-    "--prefix", "/var/lib/spaceapp-cli/vendor/claude",
-    "--no-audit", "--no-fund", "@anthropic-ai/claude-code@2.1.301"
+    "--entrypoint", "sh", "spaceapp-cli", "-c", calls[0].at(-3)
   ]);
+  assert.deepEqual(calls[0].slice(-2), ["sh", "@anthropic-ai/claude-code@2.1.301"]);
+  // npm 11 warns about (and will block) install scripts not approved in package.json allowScripts; Claude Code's
+  // postinstall puts its native binary in place, so the vendor project approves exactly the pinned version first.
+  const script = calls[0].at(-3);
+  assert.match(script, /manifest\.allowScripts=\{\.\.\.manifest\.allowScripts,\[process\.argv\[1\]\]:true\}/);
+  assert.match(script, /" && exec npm install --prefix \/var\/lib\/spaceapp-cli\/vendor\/claude --no-audit --no-fund "\$1"$/);
+  assert.doesNotMatch(script, /--allow-scripts|--ignore-scripts/);
   assert.match(stdout.value(), /Installing optional provider claude/);
   assert.equal(await run(["provider", "install", "gemini"], options), 0);
   await assert.rejects(() => run(["provider", "install", "../escape"], options), /provider/i);

@@ -94,6 +94,16 @@ export function profileRuntimeSettings(profile) {
   return settings;
 }
 const SECRET_FIELD = /password|secret|token|api.?key|credential/i;
+// provider install claude: approve Claude Code's postinstall (its native binary) for exactly the pinned version in the vendor
+// project's package.json allowScripts, as deploy/docker/provider-install.mjs does on first use, then install with npm. $1 is the
+// package; npm 11 refuses --allow-scripts for an install with --prefix.
+const CLAUDE_INSTALL_SCRIPT = [
+  "node -e 'const fs=require(\"fs\");const dir=\"/var/lib/spaceapp-cli/vendor/claude\";const file=dir+\"/package.json\";",
+  "let manifest={private:true};try{manifest=JSON.parse(fs.readFileSync(file,\"utf8\"))}catch{}",
+  "manifest.allowScripts={...manifest.allowScripts,[process.argv[1]]:true};fs.mkdirSync(dir,{recursive:true});",
+  "fs.writeFileSync(file,JSON.stringify(manifest,null,2)+\"\\n\")' \"$1\"",
+  " && exec npm install --prefix /var/lib/spaceapp-cli/vendor/claude --no-audit --no-fund \"$1\""
+].join("");
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 export const BACKUP_ID_PATTERN = /^spaceapp-backup-\d{8}T\d{9}Z$/;
 const PROVIDERS = Object.freeze({
@@ -812,13 +822,11 @@ export function composeCommand(action, root, options = {}) {
       "--user",
       "10001:10001",
       "--entrypoint",
-      "npm",
+      "sh",
       options.service ?? "spaceapp-cli",
-      "install",
-      "--prefix",
-      "/var/lib/spaceapp-cli/vendor/claude",
-      "--no-audit",
-      "--no-fund",
+      "-c",
+      CLAUDE_INSTALL_SCRIPT,
+      "sh",
       "@anthropic-ai/claude-code@2.1.301"
     ],
     backup: ["exec", "-T", "--user", "0:0", "spaceapp-core", "node", "scripts/portable-backup.mjs"],
