@@ -235,20 +235,11 @@ test("temporary vulnerability ignores are narrow, documented, and expiring", asy
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"));
 
-  assert.deepEqual(activeEntries, [
-    "GHSA-4w2j-m93h-cj5j exp:2026-10-25",
-    "GHSA-2mjx-qc3c-rqvc exp:2026-11-10",
-    "CVE-2026-39244 exp:2026-10-25",
-    "CVE-2026-55388 exp:2026-10-25",
-    "CVE-2026-41907 exp:2026-10-25",
-    "CVE-2026-16732 exp:2026-10-25",
-    "CVE-2026-18504 exp:2026-10-25"
-  ]);
-  assert.match(ignoreFile, /unused Cargo\.lock entry/i);
-  assert.match(ignoreFile, /no dependency path/i);
-  assert.match(ignoreFile, /cursor-agent/i);
-  assert.match(ignoreFile, /trustProxy/i);
+  // An ignore that no longer matches is removed, not renewed (1.1.7, review INT5-C-F16): on 2026-10-19 Trivy 0.70.0 with
+  // that day's database found only this rustls advisory in the 1.1.6 core, CLI and browser images and nothing in the source.
+  assert.deepEqual(activeEntries, ["GHSA-2mjx-qc3c-rqvc exp:2026-11-10"]);
   assert.match(ignoreFile, /without TLS/i);
+  assert.doesNotMatch(ignoreFile, /trustProxy/i);
 });
 
 test("public policy files are present and point security reports to a private channel", async () => {
