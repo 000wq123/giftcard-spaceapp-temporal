@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { approveInstallScripts, providers } from "../../deploy/docker/provider-install.mjs";
+import { CURSOR_ARCHIVE_SHA256, approveInstallScripts, installProvider, providers, verifyCursorArchive } from "../../deploy/docker/provider-install.mjs";
 
 // npm 11 warns about install scripts that package.json allowScripts does not cover and is moving to blocking them
 // (1.1.6 rehearsal: an allow-scripts warning on Claude Code's first install). Claude Code's postinstall puts its native
@@ -28,5 +28,23 @@ test("the approval keeps what the vendor project's package.json already has", as
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the Cursor agent archive is pinned by checksum and refused with other bytes before it is unpacked (review INT5-C-F14)", async () => {
+  for (const arch of ["x64", "arm64"]) assert.match(CURSOR_ARCHIVE_SHA256[arch], /^[0-9a-f]{64}$/);
+  assert.equal(providers.cursor.archive, true);
+  assert.throws(() => verifyCursorArchive(Buffer.from("not the cursor agent"), "x64"), /pinned checksum/);
+  assert.throws(() => verifyCursorArchive(Buffer.from("not the cursor agent"), "riscv64"), /pinned checksum/);
+  if (!["x64", "arm64"].includes(process.arch)) return;
+  const root = await mkdtemp(join(tmpdir(), "provider-install-cursor-"));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("tampered archive");
+  try {
+    await assert.rejects(installProvider("cursor", root), /pinned checksum/);
+    assert.deepEqual((await readdir(join(root, "cursor"))).filter((name) => name !== ".install-lock"), []);
+  } finally {
+    globalThis.fetch = realFetch;
+    await rm(root, { recursive: true, force: true });
   }
 });
