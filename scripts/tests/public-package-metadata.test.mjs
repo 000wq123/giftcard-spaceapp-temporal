@@ -18,6 +18,8 @@ const publicTestModules = [
   "published-container-verification.test.mjs",
   "public-compose-config.test.mjs",
   "public-credential-install.test.mjs",
+  "embed-image-lock.test.mjs",
+  "provider-install.test.mjs",
   "public-docker-distribution.test.mjs",
   "public-export.test.mjs",
   "public-package-metadata.test.mjs",

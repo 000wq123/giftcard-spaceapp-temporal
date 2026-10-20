@@ -316,6 +316,11 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAACXBIWXM
     return text.replace("expect(delivered.assets.map((asset) => [asset.artifactId, asset.width])).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).reverse());",
       "expect(delivered.assets.map((asset) => [asset.artifactId, asset.width]).sort()).toEqual(assets.map((asset) => [asset.artifactId, asset.width]).sort());");
   }
+  if (path === "packages/browser-host/package.json") {
+    // MIT from 1.1.7 (operator decision e4498487): the source licence change could not touch packages/browser-host (it ships
+    // only with a guarded Browser Host restart), so the export sets this package's licence field too.
+    return text.replace('"license": "BUSL-1.1"', '"license": "MIT"');
+  }
   if (path === "apps/api/tests/setup.test.ts") {
     return text.replace('expect(login.cookies[0]?.name).toBe("space_session")', 'expect(login.cookies.find(cookie => cookie.name === "space_session")?.value).toBeTruthy()');
   }
