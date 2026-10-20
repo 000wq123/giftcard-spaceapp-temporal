@@ -2,8 +2,8 @@
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
   "sourceCommit": "b63d53e7d00fc402e93fba3c9973802511e6d03f",
-  "fileCount": 4699,
-  "transformations": 380,
+  "fileCount": 4722,
+  "transformations": 392,
   "files": [
     {
       "path": ".gitignore",
@@ -11820,6 +11820,18 @@
       "size": 4797
     },
     {
+      "path": "apps/api/tests/agent-tools-routes.test.ts",
+      "sourceObjectId": "ed2a476ddc4e5d1d5250e507a53fe134e1903c8f",
+      "sha256": "1857572f5a2598cdd1d9bb31dc22219711f58adea890e57c97bdbba656eb66b7",
+      "size": 22014
+    },
+    {
+      "path": "apps/api/tests/agent-tools.test.ts",
+      "sourceObjectId": "f00b4ecb49e8627ade5990582f3bb97308873177",
+      "sha256": "328987373087ea4a420ed9f5e0f17c011f71d06ff145276ccd64fbc58e4cce5b",
+      "size": 21586
+    },
+    {
       "path": "apps/api/tests/agents-dashboard-proof.test.ts",
       "sourceObjectId": "848ee21774893fe138abcaca917431ff4ff1ceca",
       "sha256": "0793f9afbce2dfb9c1c14d5ef1e3a452fa264a64dab6c56a2e62128484ae5b86",
@@ -11838,6 +11850,18 @@
       "size": 10018
     },
     {
+      "path": "apps/api/tests/api-provider-balance-services.test.ts",
+      "sourceObjectId": "75c2b05f1d74065240a93c4c31cff1752bc435bd",
+      "sha256": "aa05cf010b86e370d4167f9bdd78ccc77b3701c068c0da5831739d826accfcbc",
+      "size": 2107
+    },
+    {
+      "path": "apps/api/tests/api.test.ts",
+      "sourceObjectId": "7533d52029b9afba8243679bdbf8493f0108ffaf",
+      "sha256": "b60ae9dae5ca3cdbf46e805feddcbbbd99b6df66c62b8badb23cd111850a3685",
+      "size": 283425
+    },
+    {
       "path": "apps/api/tests/app-diagnostics-api.test.ts",
       "sourceObjectId": "ac72ad13508e104b8ae97f9f3b541ae8143fc0aa",
       "sha256": "88237530a2eb7801518143916a47cd369acc084e3c2a2a98264a168632dd7be0",
@@ -11854,6 +11878,12 @@
       "sourceObjectId": "a321662b4135e0aacb5b90d373f5a00df8e8372d",
       "sha256": "86fc1a121b5d9312a51518e9776fdd36a0fb2b83b7f5a9b935bd46fab1b833a1",
       "size": 18890
+    },
+    {
+      "path": "apps/api/tests/app-version.test.ts",
+      "sourceObjectId": "01ef59c92c248fbaa0f4b585d95b391f0d7f7cc5",
+      "sha256": "9f0cb928996783056833a6165fea521d6d3404593fefd938e039aae6bc59baf4",
+      "size": 6116
     },
     {
       "path": "apps/api/tests/artifact-deletion-security.test.ts",
@@ -12012,6 +12042,12 @@
       "size": 7556
     },
     {
+      "path": "apps/api/tests/claude-native-turns.test.ts",
+      "sourceObjectId": "7c2c6285d16e1ac6bdd5902e47a826403840ae0b",
+      "sha256": "ec112bc68a4216cb369ce1c836f15da73a31378da86274f51b79f20d9652dc93",
+      "size": 12832
+    },
+    {
       "path": "apps/api/tests/claude-usage.test.ts",
       "sourceObjectId": "29f9492466a28749630a080f4a9993c21236c3f7",
       "sha256": "69c5c0674ba6913eab8dfd6f8a169ec4a0974a57591307e117490e5574d64fc3",
@@ -12046,6 +12082,12 @@
       "sourceObjectId": "ded9ba980c69289e5e1adc44ebac0a901c406411",
       "sha256": "b06efd2e7e194dcdc58516998b9d6655902996a20d013d9106eafc3a727e820b",
       "size": 9916
+    },
+    {
+      "path": "apps/api/tests/cli-browser-accounts.test.ts",
+      "sourceObjectId": "55da135f20032471867a4fbd1b37676a50435351",
+      "sha256": "81b44502c067589afa36c74b24807f315951270b2fcfb4900a70aac491094181",
+      "size": 6921
     },
     {
       "path": "apps/api/tests/cli-browser-cdp.test.ts",
@@ -12198,6 +12240,12 @@
       "size": 9362
     },
     {
+      "path": "apps/api/tests/cli-runtime-settings.test.ts",
+      "sourceObjectId": "dfbf1caa415e97dab6b091a9cd1e13c3b225f915",
+      "sha256": "a0446d28f7f5007a327a616900096aba50f46951ea399b2c6e088be70410c0f1",
+      "size": 43378
+    },
+    {
       "path": "apps/api/tests/cli-runtime-visibility-file.test.ts",
       "sourceObjectId": "86c1e0f56d269c9ddb5df872e18bc6cb5c6ed3f8",
       "sha256": "3783464a99530f5129f4523b2f849a3b151d08db623398b5e020a5ee009cc3fb",
@@ -12280,6 +12328,12 @@
       "sourceObjectId": "0c1173f832192acb0d21ae937b2ccb12122dfa99",
       "sha256": "206dcac7d0abe5a51d5dd54e65faca981b7a604cf485949672e00bb71d3fa47e",
       "size": 3556
+    },
+    {
+      "path": "apps/api/tests/codex-parity.test.ts",
+      "sourceObjectId": "d1c2671cab9fc7bf190ee87ad132d6604ad3108e",
+      "sha256": "a9de411ae270eb66b4d472d07fd09c0aa4f0b76dbfcddb54119cec744173573c",
+      "size": 80492
     },
     {
       "path": "apps/api/tests/codex-public-update-prompt.test.ts",
@@ -12672,6 +12726,12 @@
       "size": 13335
     },
     {
+      "path": "apps/api/tests/gateway-stats-routes.test.ts",
+      "sourceObjectId": "e732872d33350df6d42b78a06f69fdeeecf6557e",
+      "sha256": "8cf202203464ccd8b2f969db63c54dee537bbbfda7aabb98dd642faaf22084eb",
+      "size": 22451
+    },
+    {
       "path": "apps/api/tests/gemini-input-readiness.test.ts",
       "sourceObjectId": "1ffcb87ddaec741f2ae64053f92b24ce98db3d92",
       "sha256": "47cd4f00d9a7bfe9f6e10cace7619945e1a6e652ed6e1547c4a6f1f3297426e0",
@@ -12708,6 +12768,12 @@
       "size": 4443
     },
     {
+      "path": "apps/api/tests/google-browser-account-routes.test.ts",
+      "sourceObjectId": "a41e5a712eb31ef5d52a70b84138e8b55c2ed10b",
+      "sha256": "0faa4fd85f0c75f24eacff8bed28cb25c12694d69b60ddcd1eca8c316756519e",
+      "size": 45551
+    },
+    {
       "path": "apps/api/tests/google-browser-session-check.test.ts",
       "sourceObjectId": "a06d4ab3780261d8b5bf1efb3fb11bcb57267b1e",
       "sha256": "31e423141a1bed613ba06b43be9586aa9ae993f6c7751c53395b88ec1de2fd4a",
@@ -12724,6 +12790,12 @@
       "sourceObjectId": "390a2a10b4e7cd1adb5b01e29cc9549e10d38023",
       "sha256": "18e82aa142101ecf2210c70bf4da912fba54f5ae43231541b052f060407f1d45",
       "size": 10987
+    },
+    {
+      "path": "apps/api/tests/harness-proxy.test.ts",
+      "sourceObjectId": "ecd88aea4844ea47becfb4c4ca07b543eb7396e3",
+      "sha256": "082cec39704a71956c500a31ac5408ea4da6dd39a15944ce80b4ca18768aeaea",
+      "size": 41571
     },
     {
       "path": "apps/api/tests/harness-shared-events.test.ts",
@@ -12934,6 +13006,12 @@
       "sourceObjectId": "7e5f569cc74e1d2b19e9aee059d64a0602f924a4",
       "sha256": "900745c69638c19daea19ba0758bde2921ec544e87a86e175f74b4752bbd67f1",
       "size": 5177
+    },
+    {
+      "path": "apps/api/tests/mcp.test.ts",
+      "sourceObjectId": "34685ffb3e74f8dc3eb0f90b6a428d0b45904ea2",
+      "sha256": "490f42819fd899b239d0d57c542995cefd1489d1d2b563f16c775a2eab58627d",
+      "size": 15997
     },
     {
       "path": "apps/api/tests/memory-calendar-routes.test.ts",
@@ -13284,6 +13362,12 @@
       "size": 14473
     },
     {
+      "path": "apps/api/tests/pane-title-generator.test.ts",
+      "sourceObjectId": "c1beefec880f6c96486c8a2222cb91a3e364a28a",
+      "sha256": "412950777441b7b8dd65d4031153535fc4e4b776f3bc6f29e094d210e98a7b0e",
+      "size": 27433
+    },
+    {
       "path": "apps/api/tests/pane-working-time.test.ts",
       "sourceObjectId": "d90e672bdf59cc9b5dd404d82715f29bde9a380f",
       "sha256": "fd9b18ce70c65c51a7b0b2d15a79343cf7292fa037a811c1c1df78de06fc6fcd",
@@ -13542,6 +13626,12 @@
       "size": 7635
     },
     {
+      "path": "apps/api/tests/room-agent-guardrails.test.ts",
+      "sourceObjectId": "d6bc8083d62939685a8698abfa2b0a17c7b442d1",
+      "sha256": "8e36eef95f0cf11447eb06a4bf606fe9b3b1d32c15b81f9ef7e5223b7806d9b8",
+      "size": 3525
+    },
+    {
       "path": "apps/api/tests/room-agent-mentions.test.ts",
       "sourceObjectId": "126b81f0da267ac95e1128f5dcc797ae1f7be574",
       "sha256": "be95b0d3fd81355098844daf65598b1409fd79a6038468a3258483c176516995",
@@ -13584,6 +13674,12 @@
       "size": 1670
     },
     {
+      "path": "apps/api/tests/room-agent.test.ts",
+      "sourceObjectId": "858ec43e3d99c3e87f4ecfa9004e2977060b8803",
+      "sha256": "7cefc799d6d94646ae542b3c7bc8a145d69d3caea9feeb5e5a28f81d74c218c7",
+      "size": 47375
+    },
+    {
       "path": "apps/api/tests/room-cli-menu.test.ts",
       "sourceObjectId": "051b8b6d14da10d50e6b62ede3febe30c85f3bf1",
       "sha256": "344b44605f523c3c7c739d301fe9d33389fd37df777422da0375971d0fba65dc",
@@ -13612,6 +13708,12 @@
       "sourceObjectId": "3369475d52c38eb0c3eb3a0e5bf2d4361a5a605a",
       "sha256": "5fd8cfec19e01d634d56c229ab7f961425cfe1e0db25439808d53098d18afd41",
       "size": 8593
+    },
+    {
+      "path": "apps/api/tests/room-pane-batch.test.ts",
+      "sourceObjectId": "6ab292d88e9d8c82ef03d0d7006b06de2465f01f",
+      "sha256": "8393056f282043779af191982e492525b3fc3fff69d535cf145914f1a6e72fe6",
+      "size": 25835
     },
     {
       "path": "apps/api/tests/room-pane-control.test.ts",
@@ -13768,6 +13870,12 @@
       "sourceObjectId": "eb40d6ff685cde9794f2cd420d856ad220160345",
       "sha256": "5fae3428a9ead9b0b8d30a65299ebcb6b1b63df0bec841b4413e553f41cde3af",
       "size": 5191
+    },
+    {
+      "path": "apps/api/tests/space-control-auth.test.ts",
+      "sourceObjectId": "b66690daec268d12da15f8d6337f0896fe543fe6",
+      "sha256": "26b13e466599f55c3b0cce6ac52d98c9466db3da68fc12256811a58a633ff3d3",
+      "size": 21086
     },
     {
       "path": "apps/api/tests/space-control-capture.test.ts",
@@ -19428,10 +19536,22 @@
       "size": 86174
     },
     {
+      "path": "apps/web/tests/agent-sessions-dock.test.tsx",
+      "sourceObjectId": "403d04551f2f4a1041a65ddd90fce252f0932e11",
+      "sha256": "48b8fde1e8c6578cecaf2ef2048e419670bdaa6572a43bc518163dcb67c9c205",
+      "size": 22068
+    },
+    {
       "path": "apps/web/tests/agent-settings-dock.test.tsx",
       "sourceObjectId": "56a4bbb02125588d19bacbbfee27f145b326a487",
       "sha256": "793fee53fc7f12e74d6ace73b171de170d18fea1edbb3503e226afb6d6462b63",
       "size": 12274
+    },
+    {
+      "path": "apps/web/tests/agents-dashboard.test.tsx",
+      "sourceObjectId": "d9995d89a27487f2159f9b3bcec9ec4caf52f33d",
+      "sha256": "09ef1b9d2faae169d8f86102d7cb1a87dbb3c44b7d083854fcc2777e8f154007",
+      "size": 31963
     },
     {
       "path": "apps/web/tests/ai-quota-widget.test.tsx",
@@ -20098,6 +20218,12 @@
       "sourceObjectId": "29e5370dbe78e3cde4625e8cf74ae8c357ffc982",
       "sha256": "4c1798e685d4c4e4bb79ec2703266b5e117cb962f5ff8790b90d2be886ab113e",
       "size": 5684
+    },
+    {
+      "path": "apps/web/tests/google-account-settings-card.test.tsx",
+      "sourceObjectId": "ca0b750bb2c218341921d3016fb89058155f5cb7",
+      "sha256": "9e1daac3c8780d76cc389873da535160903d4c05debbd3baae3ed62a104dbfd5",
+      "size": 3121
     },
     {
       "path": "apps/web/tests/google-accounts-manager.test.tsx",
@@ -20824,6 +20950,12 @@
       "sourceObjectId": "6733f9610b0655766ed0b8f56c10e8b3c1c95813",
       "sha256": "62423227f22ff685b6b4fd007127e9751acc20fec50e3e25e85c9e48b12b4817",
       "size": 1089
+    },
+    {
+      "path": "apps/web/tests/sensitive-data-mask.test.tsx",
+      "sourceObjectId": "791f230141d04acb8921e69636db6b5f8c18af16",
+      "sha256": "dae6e6df8754f5064d913a57921a0a904275826165d24856f065f2bc6fb3b4c1",
+      "size": 7008
     },
     {
       "path": "apps/web/tests/server-actions-menu.test.tsx",
@@ -22340,8 +22472,8 @@
     {
       "path": "package-lock.json",
       "sourceObjectId": "6d51195bdd74dda1dfd6810e2de5ac05c10e4a61",
-      "sha256": "87231075dfd51aa6f8e21d4924def92c12479a7f3f3e45d197d838f65894c49f",
-      "size": 419524
+      "sha256": "c0d26ac503d6255e91f6c5fdea4077fecaa3d5034e471fc2b9a068cee496a8dd",
+      "size": 419519
     },
     {
       "path": "package.json",
@@ -22352,8 +22484,8 @@
     {
       "path": "packages/browser-host/package.json",
       "sourceObjectId": "ff381af4d22d8ec67b7602bae6819c17b7e9492f",
-      "sha256": "0b2273a808643f49b5efbd4891812d6e435a71758ae290da7381ddad301a2027",
-      "size": 551
+      "sha256": "cbe2d53039eaac69399eb0a20684199d16fa07054892d32e81bb6f257ae7869f",
+      "size": 546
     },
     {
       "path": "packages/browser-host/src/client.ts",
@@ -27580,6 +27712,12 @@
       "sourceObjectId": "c4c9b628bb4ac8c38d8f1e6a0ee8109ba5fa67b6",
       "sha256": "8664a1ff07b52c56f41bcdf1894c05731592a4934e399176f9f83980eaf8efa1",
       "size": 1434
+    },
+    {
+      "path": "packages/memory-graph/tests/retrieval.test.ts",
+      "sourceObjectId": "3fa6cf703ead3f1559dd3e8e716d5d579d710083",
+      "sha256": "44a172df6b31784709df8c354be984c3e3b312ff1d5b982a82b37a7e226b587d",
+      "size": 7368
     },
     {
       "path": "packages/memory-graph/tsconfig.json",
