@@ -260,7 +260,7 @@ describe("Room Watchdog and Anti-Freeze Protection", () => {
 
     const recorded = await store.recordRoomEvent(watchdogEvent);
     expect(recorded.type).toBe("ROOM_WATCHDOG_ALERT");
-    expect(store.getLatestEvent(room.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
+    expect(store.listEvents(room.id).find((event) => event.id === recorded.id)?.type).toBe("ROOM_WATCHDOG_ALERT");
   });
 
   it("gives queued operations their full execution window without queue-wait timer bleed", async () => {
