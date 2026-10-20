@@ -7,9 +7,73 @@ Semantic Versioning.
 
 ## [1.1.7] - 2026-10-20
 
-- ship latest sanitized Space app source @ b63d53e7d0 (4699 files, sanitized);
-- cross-platform installer for Windows, macOS, and Linux (npm run-spaceapp + GHCR images).
+Source: sanitized Space app @ b63d53e7d0 (4699 files). Moves SpaceApp and the
+launcher to the MIT License, makes OpenCode 2 the first CLI, and ships the
+remaining fixes from the independent reviews; open items are listed in
+`docs/quality/KNOWN_LIMITATIONS.md`.
 
+### Licence
+
+- SpaceApp and the run-spaceapp launcher are released under the MIT License
+  from 1.1.7 (Copyright (c) 2026 INTRATRADE SINGLE MEMBER P.C.). Published
+  versions keep their licence: v0.1.3 to v1.0.2 Apache-2.0, v1.0.31 to 1.1.6
+  BSL 1.1; the launcher was Apache-2.0 up to 1.1.6.
+
+### OpenCode 2
+
+- OpenCode 2 (`@opencode/cli` 2.0.32) is the first CLI. Its panes attach to one
+  shared OpenCode server per CLI container, started once and restarted by the
+  next pane when it stopped or its keys or configuration changed; every other
+  OpenCode command runs `--standalone`, so no per-user background service
+  starts.
+- The core container no longer runs OpenCode or checks a CLI login itself:
+  those calls go to the CLI container's credential agent, each with fixed
+  inputs and size and time limits. Text-mode OpenCode answers there may only
+  read files.
+- The first-launch free-model check retries the model catalog after a server
+  error, a timeout or a lost connection (three tries).
+
+### Security and integrity
+
+- SpaceApp's own images are pulled by the digest the release records in the
+  npm package.
+- Docker's Linux repository keys are trusted only with Docker's published
+  fingerprints; on Fedora, RHEL and CentOS the checked key is imported before
+  Docker is installed. The Cursor agent download is pinned by checksum.
+- A secrets folder that already existed is made owner-only by `install`,
+  `update`, `up` and `repair`.
+- Six vulnerability-scan exceptions that no longer matched anything were
+  removed.
+
+### Backup and restore
+
+- `backup` pauses the core, CLI, browser and Temporal containers and also saves
+  the Temporal databases, so the database, files, memory and workflow history
+  are one moment; the backup's workspace list and CLI settings follow.
+- `restore` stages the files and restores every database in one transaction
+  before swapping them in: a restore that fails in the database leaves the
+  installation as it was. A backup made by 1.1.7 cannot be restored by an
+  older SpaceApp.
+
+### Fixes
+
+- Claude Code installs without npm's `allow-scripts` warning.
+- On a public install the room monitor sees a Codex pane's screen and turns
+  (the API reads Codex's session logs from their own read-only volume), and
+  Codex no longer stops a new pane at its own update prompt.
+- With telemetry Yes, `first_answer` is reported when an agent finishes its
+  first answer, not only while the agents dashboard is open.
+- The launcher tests skip their POSIX-only checks on Windows.
+
+### Also in this release
+
+- App Studio pane (build Android and iOS apps with Expo, phone previews) and a
+  Design pane for graphics requested by any agent; the Vault keeps an agent's
+  saved logins usable without unlocking.
+- CLI panes: a local draft field, and prompts that Space types are pasted as
+  one block so no CLI keeps them as an unsent draft.
+- Large folders no longer slow the Files view; Agent Files are shared by every
+  room.
 
 ### Known issues
 
