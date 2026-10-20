@@ -67,9 +67,10 @@ remaining fixes from the independent reviews; open items are listed in
 
 ### Also in this release
 
-- App Studio pane (build Android and iOS apps with Expo, phone previews) and a
-  Design pane for graphics requested by any agent; the Vault keeps an agent's
-  saved logins usable without unlocking.
+- Optional modules `app-studio` (build Android and iOS apps with Expo, with
+  phone previews) and `design` (graphics that any agent can request); like the
+  other optional modules they are off in new installations (enable them with
+  `optionalModules` in `config.json` and `spaceapp repair`).
 - CLI panes: a local draft field, and prompts that Space types are pasted as
   one block so no CLI keeps them as an unsent draft.
 - Large folders no longer slow the Files view; Agent Files are shared by every
