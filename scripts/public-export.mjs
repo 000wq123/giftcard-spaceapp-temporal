@@ -481,6 +481,13 @@ export function contributorGuideProblems(guide, scripts, hasFile) {
   return [...problems, ...documentLinkProblems("CONTRIBUTING.md", guide, hasFile)];
 }
 
+// The operator's own host skills, tracked in the source since 2026-10-19 (3cd14bbd7f): they release, deploy,
+// sync VMs and drive devtest VMs on the operator's hosts only, so they were never public.
+const operatorHostSkills = new Set([
+  "space-clipboard-ops", "space-cli-open-resume", "space-live-ops", "space-release-ops", "space-room-cli-status",
+  "space-sync-to-vm218", "spaceapp-devtest", "run-spaceapp-devtest", "spaceapp-setup-maintenance", "spaceapp-setup-release"
+]);
+
 export function isPublicExportPath(path) {
   const normalized = path.replaceAll("\\", "/");
   // Client binary releases are distributed separately, never inside the server installer.
@@ -488,6 +495,7 @@ export function isPublicExportPath(path) {
   // HyperFrames' vendored fonts, sound effects and textures carry mixed licences (OFL for some fonts
   // only, Pixabay, none stated); they stay private until the operator clears them. The skill starts off.
   if (/^agent-skills\/space-hyperframes\/.+\.(?:woff2|mp3|png)$/.test(normalized)) return false;
+  if (operatorHostSkills.has(normalized.match(/^agent-skills\/([^/]+)\//)?.[1])) return false;
   if (privateOnlyTests.has(normalized)) return false;
   // Tests named *-postgres* start a disposable PostgreSQL container (--pull=never) that public CI does not have.
   if (/\/(?:tests|__tests__)\/[^/]*-postgres[^/]*$/.test(normalized)) return false;
