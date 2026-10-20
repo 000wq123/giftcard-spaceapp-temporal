@@ -34,6 +34,8 @@ describe("Freelance Copilot contracts", () => {
     expect(freelanceWordingIssues("Call +66 81 234 5678", base)).toContain("phone-number");
     expect(freelanceWordingIssues("Ping me on Telegram", base)).toContain("messenger");
     expect(freelanceWordingIssues("Details at https://example.com/x", base)).toContain("outside-link");
+    expect(freelanceWordingIssues("See https://example.invalid/work and https://gist.github.com/x", base)).toEqual([]);
+    expect(freelanceWordingIssues("Demo at http://127.0.0.1:4911/x", base)).toContain("outside-link");
     expect(freelanceWordingIssues("A seamless integration", base)).toContain("seamless");
     expect(freelanceWordingIssues("Ping me on Telegram", { ...base, contracted: true })).toEqual([]);
     expect(freelanceWordingIssues("Fixed price, two milestones.", { ...base, bid: { type: "HOURLY", amount: 30 } })).toEqual(["below-rate-floor"]);

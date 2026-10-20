@@ -2,7 +2,7 @@ import type { Pane, RoomAgentEvent } from "@space/contracts";
 import type { RoomAgentMonitorRepository } from "@space/db";
 import { classifyPaneApproval } from "./room-agent-guardrails.js";
 import type { RoomPaneObservation } from "./room-pane-control.js";
-import { roomApprovalPromptCue } from "./room-terminal-screen.js";
+import { roomApprovalPromptCue, roomComposerEmpty } from "./room-terminal-screen.js";
 
 /**
  * The Room Agent answers its panes' questions and approval prompts by itself (operator decision 2026-10-13:
@@ -66,8 +66,7 @@ export function promptExcerpt(screen: string): string {
  * operator's half-written text, so only an empty prompt is ever typed into.
  */
 export function atEmptyPrompt(observed: RoomPaneObservation): observed is RoomPaneObservation & { sessionId: string; promptFingerprint: string } {
-  const tail = (observed.text ?? "").split("\n").filter((line) => line.trim()).slice(-6).join("\n");
-  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && /^[ \t\u00a0]*[❯›>][ \t\u00a0]*$/m.test(tail));
+  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && roomComposerEmpty(observed.text ?? ""));
 }
 
 export function parseAutopilotDecision(raw: string | null): AutopilotDecision | null {

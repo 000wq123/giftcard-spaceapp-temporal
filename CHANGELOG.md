@@ -5,6 +5,12 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-10-20
+
+- ship latest sanitized Space app source @ b63d53e7d0 (4699 files, sanitized);
+- cross-platform installer for Windows, macOS, and Linux (npm run-spaceapp + GHCR images).
+
+
 ### Known issues
 
 - The provenance check (`scripts/verify-export-provenance.mjs`) verifies the

@@ -16,12 +16,12 @@ const CLAUDE_TRANSCRIPT_TAIL_BYTES = 16 * 1024 * 1024;
 export const CLAUDE_LAST_ANSWER_MAX_CHARS = 6_000;
 export const claudeNativeSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** Claude Code's live per-process session status; `shell` runs a `!` command. */
+/** Claude Code's live per-process session status; `shell` is idle with background shells still running (2.1.303: `idle && shells ? "shell"`). */
 export type ClaudeSessionStatus = "busy" | "shell" | "waiting" | "idle";
 
 export interface ClaudeNativeTurns {
   nativeSessionId: string;
-  /** Busy or running a shell command, as Claude's own status line reports "working". */
+  /** A turn is running. A finished turn whose background shells run on ("shell") takes prompts, so it is not busy. */
   busy: boolean;
   status: ClaudeSessionStatus | null;
   /** What a waiting session needs from the user, e.g. "permission prompt". */
@@ -224,7 +224,7 @@ export async function readClaudeNativeTurns(
       }
     }
     const status = claudeSessionStatus(session.status);
-    const busy = status === "busy" || status === "shell";
+    const busy = status === "busy";
     const timeline = claudeTaskTimeline(lines ?? [], busy, (options.now?.() ?? new Date()).toISOString());
     const waitingFor = status === "waiting" ? text(session.waitingFor)?.replace(/\s+/g, " ").trim().slice(0, 80) || null : null;
     const statusUpdatedAt = typeof session.statusUpdatedAt === "number" && Number.isFinite(session.statusUpdatedAt) && session.statusUpdatedAt > 0

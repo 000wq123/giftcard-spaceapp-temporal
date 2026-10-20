@@ -20,6 +20,8 @@ export interface NousRouteDependencies {
   attachments?: NousAttachments;
   /** Away mode's Settings switch (plan clipboard:B7eTUHTJYg3X). */
   away?: Pick<NousAwayControl, "fromSettings">;
+  /** Where Nous works on its own, only a person turns an allowance (May promote, May approve Warm) on. */
+  assertAllowanceChange(request: FastifyRequest, owner: string, input: { mayPromote?: boolean; mayApproveWarm?: boolean }): Promise<void>;
 }
 
 const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
@@ -63,7 +65,9 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
 
   app.patch("/api/nous/settings", routeOptions, async (request) => {
     const owner = await deps.owner(request);
-    return { settings: await service.saveSettings(owner, parseBody(nousSettingsInputSchema, request.body)) };
+    const input = parseBody(nousSettingsInputSchema, request.body);
+    await deps.assertAllowanceChange(request, owner, input);
+    return { settings: await service.saveSettings(owner, input) };
   });
 
   app.post("/api/nous/away", routeOptions, async (request, reply) => {

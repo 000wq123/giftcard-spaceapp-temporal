@@ -172,8 +172,9 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
       };
       console.warn(JSON.stringify({level:40,time:Date.now(),event:"space_control.room_lock_timeout",roomId,blocked,holder,retrying:Boolean(owner.retrying),error:msg}));
       if (!owner.retrying) {
-        try { await store.recordRoomEvent(alertEvent); } catch {}
-        options.publishEvent?.(alertEvent);
+        // Publish the stored copy: it gets its own id, and a later latest-event republish must not raise a second URGENT card.
+        const recorded = await Promise.resolve(store.recordRoomEvent(alertEvent)).catch(() => null);
+        options.publishEvent?.(recorded ?? alertEvent);
       }
       throw new RoomLockTimeoutError(`Room watchdog prevented freeze on room "${roomId}": lock timed out (${holder?`held by ${describe(current!)} for ${holder.heldMs} ms`:"holder unknown"}).`);
     }
@@ -899,7 +900,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
        if(["EXITED","ERROR","UNKNOWN"].includes(observed.state))return {index,paneId,status:"UNKNOWN" as const,detail:"CLI readiness has not been confirmed.",evidence:{result:evidence}};
       }
      }else{
-      let observed=await controller.inspect(pane);
+      // An account switch restarts the CLI, so whether it waits for the turn is decided on a fresh read.
+      let observed=await controller.inspect(pane,spec.kind==="configure"&&spec.accountProfileId!==undefined?{fresh:true}:undefined);
       // The 15 s cached read may predate a CLI that just started: read once fresh before reporting no session.
       if(!observed.sessionId)observed=await controller.inspect(pane,{fresh:true});
       if(spec.kind==="pane"&&(spec.operation==="stop"||spec.operation==="cancel")){

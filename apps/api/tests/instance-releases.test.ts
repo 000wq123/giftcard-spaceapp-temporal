@@ -1,11 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { getApiConfig } from "../src/config.js";
 import { approveHotfix, promoteDev, readReleases, type ReleasesOptions } from "../src/instance-releases.js";
+import { configureQueueOperatorGrants } from "../src/queue-operator-grants.js";
+
+const secret = "test-secret-with-enough-length";
+const grantModule = resolve(__dirname, "../../../scripts/space-queue-operator-grant.mjs");
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -41,7 +45,15 @@ function fixture(queueOutput = "{\"id\":\"q-20261012-100000-abcd\"}") {
   writeFileSync(join(stableQueueRoot, "tickets", "q-20261012-080000-1111.json"), JSON.stringify(ticket("q-20261012-080000-1111", "DEPLOYED", "Promote dev 0123456789 to stable")));
   writeFileSync(join(stableQueueRoot, "tickets", "q-20261012-093000-2222.json"), JSON.stringify(ticket("q-20261012-093000-2222", "AWAITING_APPROVAL", "Urgent stable fix")));
   const queueScript = join(root, "fake-queue.mjs");
-  writeFileSync(queueScript, `process.stdout.write(${JSON.stringify(queueOutput)});\n`);
+  // Like space-queue, the operator-only commands need the operator grant the API signed (hardening plan step 5).
+  writeFileSync(join(root, ".env"), `SPACE_SESSION_SECRET=${secret}\n`);
+  writeFileSync(queueScript, `import { requireOperator } from ${JSON.stringify(grantModule)};
+const [command, ticket] = process.argv.slice(2);
+try {
+  await requireOperator(command === "approve" ? "approve:" + ticket : command, { SPACE_QUEUE_OPERATOR_GRANT: process.env.SPACE_QUEUE_OPERATOR_GRANT }, { uid: 1000, envFile: ${JSON.stringify(join(root, ".env"))} });
+} catch (error) { process.stderr.write("space-queue: " + error.message + "\\n"); process.exit(1); }
+process.stdout.write(${JSON.stringify(queueOutput)});
+`);
   const options: ReleasesOptions = {
     stableRepo, devRepo, stableQueueRoot, devQueueRoot, queueScript, nodeBin: process.execPath,
     stableUrl: "https://stable.test", devUrl: "https://dev.test", managedHere: true
@@ -73,6 +85,7 @@ describe("instance releases", () => {
   });
 
   it("queues a promotion through the merge queue and reports an already promoted dev", async () => {
+    configureQueueOperatorGrants(secret);
     const queued = fixture();
     await expect(promoteDev(queued.options)).resolves.toMatchObject({ status: "QUEUED", ticketId: "q-20261012-100000-abcd" });
     const already = fixture("Stable already contains dev 0123456789.\n");
@@ -80,6 +93,11 @@ describe("instance releases", () => {
     await expect(promoteDev({ ...queued.options, managedHere: false })).rejects.toThrow(/stable instance/);
     await expect(approveHotfix("q-bad", queued.options)).rejects.toThrow(/Invalid ticket id/);
     await expect(approveHotfix("q-20261012-093000-2222", queued.options)).resolves.toMatchObject({ status: "APPROVED" });
+    // A grant signed with another key opens nothing.
+    configureQueueOperatorGrants("another-secret-with-enough-length");
+    await expect(promoteDev(queued.options)).rejects.toThrow(/promote is the operator's/);
+    await expect(approveHotfix("q-20261012-093000-2222", queued.options)).rejects.toThrow(/approve is the operator's/);
+    configureQueueOperatorGrants(secret);
   });
 
   it("lets only an ADMIN read releases and refuses promotion on the dev instance", async () => {

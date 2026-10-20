@@ -29,7 +29,7 @@ export const desktopActionDescriptions: Record<string, string> = {
   "add-vault": "Open your encrypted Vault to add a login or generate a password.",
   "surface-clipboard": "Saved text, notes, and plans.",
   "surface-tasks": "Follow tasks and their progress.",
-  "surface-vault": "Your encrypted passwords, filled for you without agents ever seeing them.",
+  "surface-vault": "Encrypted passwords agents can use but never see.",
   "surface-links": "Bookmarks and browser connections.",
   "surface-settings": "Appearance, notifications, and preferences.",
   "surface-source-control": "Open projects, review changes and sync with your repository providers.",

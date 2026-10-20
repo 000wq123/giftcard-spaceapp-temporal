@@ -23,7 +23,7 @@ import {
   makeSpaceId, nowIso, pathIsMissing, redactMemoryText, SpaceConflictError, type SpaceEventBus, SpaceFeatureDisabledError,
   SpaceNotFoundError, type SpaceStore
 } from "@space/runtime";
-import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown } from "./agent-bootstrap.js";
+import { buildCliAgentBootstrapMarkdown, buildJobCopilotPersonaMarkdown, buildMailCopilotPersonaMarkdown, buildMarketingCopilotPersonaMarkdown, buildFreelanceCopilotPersonaMarkdown, buildDesignPersonaMarkdown, buildAppStudioPersonaMarkdown } from "./agent-bootstrap.js";
 import { pathInside, safeCliFilename, safeOriginalFilename, safeStorageSegment } from "./artifact-storage.js";
 import { safeBrowserObservationUrl } from "./browser-observation.js";
 import { claudeNativeSessionIdPattern, loadClaudeNativeTurns } from "./claude-native-turns.js";
@@ -234,6 +234,12 @@ async function writeCliWorkspaceBootstrap(
     await writeFile(
       join(sessionCwd, "CLAUDE.md"),
       buildDesignPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
+      { encoding: "utf8", mode: 0o640 }
+    );
+  } else if (input.paneMode === "APP_STUDIO") {
+    await writeFile(
+      join(sessionCwd, "CLAUDE.md"),
+      buildAppStudioPersonaMarkdown({ roomId: input.roomId, paneId: input.paneId, runtimeId: input.runtimeId }),
       { encoding: "utf8", mode: 0o640 }
     );
   }

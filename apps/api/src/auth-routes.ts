@@ -347,7 +347,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const forwardedProto = request.headers["x-forwarded-proto"];
     const forwardedHost = request.headers["x-forwarded-host"];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
     const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
 
     reply.setCookie("space_oauth_state", state, {
@@ -468,7 +468,7 @@ export function registerAuthRoutes(app: FastifyInstance, options: {
     const forwardedProto = request.headers["x-forwarded-proto"];
     const forwardedHost = request.headers["x-forwarded-host"];
     const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) ?? request.headers["host"] ?? `127.0.0.1:${config.port}`;
-    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies ? "https" : "http");
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) ?? (auth.secureCookies === true ? "https" : "http");
     const redirectUri = auth.googleRedirectUri || `${String(proto).split(",")[0]!.trim()}://${String(host).split(",")[0]!.trim()}/api/auth/google/callback`;
 
     try {
