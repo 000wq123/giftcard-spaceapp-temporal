@@ -9,11 +9,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Per action: the input it takes (bytes, 0 = none), its time limit and how much of its stdout goes back.
-// opencode-text/-models: the core image has no OpenCode (1.1.7, decision B); they run this container's.
+// credential-smoke/-observation, opencode-text/-models: the core image has no CLIs (1.1.7, decision B); they run this container's.
 const actions = new Map([
   ['credential-status', { input: 0, timeout: 120_000, stdout: 4096 }],
   ['credential-install', { input: 512 * 1024, timeout: 120_000, stdout: 4096 }],
   ['credential-smoke', { input: 0, timeout: 190_000, stdout: 4096 }],
+  ['credential-observation', { input: 0, timeout: 10_000, stdout: 256 }],
   ['opencode-text', { command: 'opencode-vscode-parity', input: 128 * 1024, timeout: 120_000, stdout: 1024 * 1024 }],
   ['opencode-models', { command: 'opencode-vscode-parity', input: 256, timeout: 60_000, stdout: 2 * 1024 * 1024 }]
 ]);

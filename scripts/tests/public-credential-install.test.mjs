@@ -96,6 +96,7 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
     assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-install', input: '{"files":{}}' }), { exitCode: 0, stdout: 'credential-install 12\n' });
     // 1.1.7 (decision B): the core image has no CLIs, so the smoke and the API's OpenCode calls run here too.
     assert.deepEqual(await ask(socketPath, { command: 'codex-vscode-parity', action: 'credential-smoke' }), { exitCode: 0, stdout: 'credential-smoke 0\n' });
+    assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'credential-observation' }), { exitCode: 0, stdout: 'credential-observation 0\n' });
     assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'opencode-text', input: '{"prompt":"hi"}' }), { exitCode: 0, stdout: 'opencode-text 15\n' });
     assert.deepEqual(await ask(socketPath, { command: 'opencode-vscode-parity', action: 'opencode-models', input: '{"provider":"opencode"}' }), { exitCode: 0, stdout: 'opencode-models 23\n' });
     for (const body of [
@@ -104,6 +105,7 @@ test('the credential agent runs only a wrapper\'s fixed credential actions, inpu
       { command: 'codex-vscode-parity', action: 'login' },
       { command: 'codex-vscode-parity', action: 'credential-status', input: 'unexpected' },
       { command: 'codex-vscode-parity', action: 'credential-smoke', input: 'unexpected' },
+      { command: 'opencode-vscode-parity', action: 'credential-observation', input: 'unexpected' },
       { command: 'codex-vscode-parity', action: 'credential-status', extra: 'field' },
       { command: 'codex-vscode-parity', action: 'opencode-text', input: '{}' },
       { command: 'opencode-vscode-parity', action: 'opencode-text', input: 'x'.repeat(128 * 1024 + 1) },

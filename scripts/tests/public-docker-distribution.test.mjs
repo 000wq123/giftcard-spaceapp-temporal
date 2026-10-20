@@ -241,8 +241,8 @@ test("core never runs OpenCode itself", async () => {
 
   const src = join(root, "apps", "api", "src");
   const read = (name) => readFile(join(src, name), "utf8");
-  // The only places that start OpenCode or a wrapper's credential-smoke in the API process.
-  const direct = /spawn\("opencode"|"\/usr\/local\/bin\/opencode"|\["credential-smoke"\]/;
+  // The only places that start OpenCode or a wrapper's credential-smoke or credential-observation in the API process.
+  const direct = /spawn\("opencode"|"\/usr\/local\/bin\/opencode"|\["credential-smoke"\]|\[definition\.credentialObservationAction\]/;
   const found = execFileSync("grep", ["-rlE", direct.source, "--include=*.ts", "--exclude-dir=__tests__", src], { encoding: "utf8" })
     .trim().split("\n").map((path) => path.slice(src.length + 1)).sort();
   assert.deepEqual(found, ["cli-runtimes.ts", "cli-terminal.ts", "opencode-model-bench.ts", "room-agent-model-resolver.ts"]);
@@ -251,10 +251,11 @@ test("core never runs OpenCode itself", async () => {
   assert.match(app, /const publicCredentialHost = createPublicCredentialHost\(config\);\n  const runOpenCode = publicCredentialHost\?\.openCodeText \?\? runOpenCodeText;/);
   assert.match(app, /new CliTerminalManager\(\{[^}]*?credentialHost: publicCredentialHost,/);
   assert.match(app, /checkCredential: \(runtime\) => checkCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
+  assert.match(app, /observeCredential: \(runtime\) => observeCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
   assert.match(app, /new OpencodeModelBenchService\(\{\n    execVerbose: publicCredentialHost\n      \? \(provider\) => publicCredentialHost\.openCodeModels\(provider\)/);
   assert.match(app, /createOpenCodeTextModel\(\{ run: runOpenCode \}\)/);
   assert.match(app, /completeRoomAgentPrompt\(\{[^}]*runOpenCode \}\)/);
-  assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)/);
+  assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)|observeCliRuntimeCredential\(runtime\)/);
   assert.match(await read("cli-terminal.ts"), /this\.options\.credentialHost\n\s+\? await this\.options\.credentialHost\.execute\(runtime\.detectedCommandPath, \["credential-smoke"\]/);
   assert.match(await read("room-agent.ts"), /runOpenCode = runOpenCodeText \} = input;/);
   assert.doesNotMatch(await read("room-agent.ts"), /await runOpenCodeText\(/);
