@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerOutput, isolatedEnvironment, main, opencodeCommand } from '../../deploy/docker/opencode-standalone.mjs';
@@ -50,5 +50,30 @@ test('runs this container\'s opencode in a throwaway home and hands back its out
     assert.deepEqual(await main('text', 'not json'), { exitCode: 64, stdout: '' });
   } finally {
     process.env.PATH = path;
+  }
+});
+
+test('a text answer runs with a config that denies every tool but read, at the default location', async () => {
+  const bin = await mkdtemp(join(tmpdir(), 'spaceapp-fake-opencode-'));
+  // The fake answers with whether a custom config path (refused by Zen) was set, then the config OpenCode 2 would load.
+  await writeFile(join(bin, 'opencode'), '#!/bin/sh\necho "${OPENCODE_CONFIG:-default}"\ncat "$XDG_CONFIG_HOME/opencode/opencode.json" 2>/dev/null\n');
+  await chmod(join(bin, 'opencode'), 0o755);
+  const owner = await mkdtemp(join(tmpdir(), 'spaceapp-owner-config-'));
+  const path = process.env.PATH, xdg = process.env.XDG_CONFIG_HOME;
+  process.env.PATH = `${bin}:${path}`;
+  process.env.XDG_CONFIG_HOME = owner;
+  try {
+    const answer = await main('text', JSON.stringify(text));
+    assert.equal(answer.exitCode, 0);
+    const [location, ...config] = answer.stdout.trim().split('\n');
+    assert.equal(location, 'default');
+    const { permission } = JSON.parse(config.join('\n'));
+    assert.deepEqual(permission, { '*': 'deny', read: 'allow' });
+    for (const tool of ['bash', 'execute', 'edit', 'write', 'webfetch', 'task']) assert.equal(permission[tool] ?? permission['*'], 'deny');
+    await main('models', JSON.stringify({ provider: 'opencode' }));
+    assert.deepEqual(await readdir(owner), [], 'models read the owner\'s config and get nothing written there');
+  } finally {
+    process.env.PATH = path;
+    if (xdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = xdg;
   }
 });

@@ -3,7 +3,7 @@
 // OpenCode wrapper it asks this container's OpenCode for a text answer (the Room Agent) or a provider's models
 // (the model bench). Every run is --standalone in a throwaway home, so it never opens the panes' store.
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,6 +79,12 @@ export async function main(mode, input) {
   if (!command) return { exitCode: 64, stdout: '' };
   const scratch = await mkdtemp(join(tmpdir(), 'spaceapp-opencode-'));
   try {
+    if (mode === 'text') {
+      // A text answer runs no tool but read, in its empty scratch folder: this container holds the owner's CLI logins.
+      // The default config location: Zen refuses its free tier with a custom OPENCODE_CONFIG path or with every tool denied.
+      await mkdir(join(scratch, 'config', 'opencode'), { recursive: true, mode: 0o700 });
+      await writeFile(join(scratch, 'config', 'opencode', 'opencode.json'), JSON.stringify({ permission: { '*': 'deny', read: 'allow' } }), { mode: 0o600 });
+    }
     const result = await runOpenCode(command.args, isolatedEnvironment(mode, scratch), scratch, command.timeoutMs, maxOutputBytes[mode]);
     if (result.code !== 0 && !result.stdout.trim()) return { exitCode: 1, stdout: '' };
     return { exitCode: result.code === 0 ? 0 : 1, stdout: answerOutput(mode, result.stdout, command.provider) };
