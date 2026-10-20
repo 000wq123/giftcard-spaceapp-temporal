@@ -188,9 +188,13 @@ esac
 ensure_runtime_dirs
 ensure_optional_provider
 # OpenCode 2 starts a per-user background service unless a command runs --standalone (help and version need neither).
+# A pane (a fresh or resumed TUI) attaches to the one shared server below with --server: two --standalone servers on this
+# provider store fail ("Standalone server exited before reporting readiness", two panes started together, VM218 2026-10-20).
+opencode_pane=0
 if [ "$runtime_name" = "opencode" ]; then
   case "${1:-}" in
     --help|-h|--version|-v) ;;
+    ""|--continue|-c) opencode_pane=1 ;;
     *) set -- "$@" --standalone ;;
   esac
 fi
@@ -207,6 +211,22 @@ fi
 if ! command -v "$command_name" >/dev/null 2>&1; then
   echo "$runtime_name could not be installed. Run spaceapp doctor for help." >&2
   exit 69
+fi
+
+if [ "$opencode_pane" = 1 ]; then
+  server_url=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      OPENCODE_SERVER_URL) server_url="$value" ;;
+      OPENCODE_SERVER_USERNAME) export OPENCODE_SERVER_USERNAME="$value" ;;
+      OPENCODE_SERVER_PASSWORD) export OPENCODE_SERVER_PASSWORD="$value" ;;
+    esac
+  done < <(node /app/deploy/docker/opencode-shared-server.mjs || true)
+  if [ -z "$server_url" ]; then
+    echo "SpaceApp could not start OpenCode. Reopen this pane; run spaceapp doctor if it keeps failing." >&2
+    exit 69
+  fi
+  set -- --server "$server_url" "$@" "$PWD"
 fi
 
 exec "$command_name" "$@"
