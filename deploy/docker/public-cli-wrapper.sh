@@ -35,6 +35,10 @@ case "$runtime_name" in
     export XDG_DATA_HOME="$state_root/data"
     export XDG_CACHE_HOME="$state_root/cache"
     export XDG_STATE_HOME="$state_root/state"
+    # The image pins OpenCode and run-spaceapp releases update it: OpenCode's own update check opened an "Update available"
+    # dialog over a new pane that took the user's first prompt, Enter choosing Update (1.1.7 devtest, VM219, 2026-10-20).
+    # The pane TUIs and the shared server inherit this; the standalone helpers set it in their own environments.
+    export OPENCODE_DISABLE_AUTOUPDATE=true
     export OPENCODE_API_KEY="$(cat "$credential_file" 2>/dev/null || true)"
     # OpenCode reaches Anthropic and OpenAI with the keys set for Claude Code and Codex (credentials set claude|codex).
     if [ -s "$credential_root/claude.key" ]; then export ANTHROPIC_API_KEY="$(cat "$credential_root/claude.key")"; fi

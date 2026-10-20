@@ -28,6 +28,7 @@ test('a text answer reads no config, models read the owner\'s; neither opens the
   assert.equal(textEnv.OPENCODE_API_KEY, undefined);
   assert.equal(modelsEnv.XDG_CONFIG_HOME, env.XDG_CONFIG_HOME);
   for (const isolated of [textEnv, modelsEnv]) {
+    assert.equal(isolated.OPENCODE_DISABLE_AUTOUPDATE, 'true');
     assert.equal(isolated.XDG_DATA_HOME, '/tmp/s/data');
     assert.equal(isolated.HOME, '/tmp/s');
   }

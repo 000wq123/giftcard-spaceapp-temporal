@@ -44,7 +44,7 @@ test('only a completed read tool call followed by the file token counts as worki
 test('a model that fails the tool cycle falls through to another free model without provider override',async()=>{
  const calls=[];
  const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
- calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined);
+ calls.push(args); assert.equal(env.OPENCODE_API_KEY,undefined); assert.equal(env.OPENCODE_DISABLE_AUTOUPDATE,'true');
  if(args[0]==='api')return {code:0,stdout:catalog(entry('unavailable'),entry('working'))};
  const token=readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim();
  assert.match(token,/^SPACEAPP-[0-9a-f]{12}$/);

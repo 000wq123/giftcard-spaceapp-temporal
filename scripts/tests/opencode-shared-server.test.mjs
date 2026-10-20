@@ -101,3 +101,12 @@ test('the wrapper attaches pane TUIs to the shared server; other OpenCode comman
   assert.match(launch, /set -- --server "\$server_url" "\$@" "\$PWD"/);
   assert.ok(launch.indexOf('opencode-shared-server.mjs') > launch.indexOf('opencode-first-run.mjs'), 'the server starts after the first-run model choice');
 });
+
+test('every OpenCode the CLI image starts has its own update check off (1.1.7 devtest: its dialog took a pane\'s first prompt)', async () => {
+  const wrapper = await readFile(new URL('../../deploy/docker/public-cli-wrapper.sh', import.meta.url), 'utf8');
+  const opencodeCase = wrapper.slice(wrapper.indexOf('\n  opencode)'), wrapper.indexOf(';;', wrapper.indexOf('\n  opencode)')));
+  assert.match(opencodeCase, /^\s+export OPENCODE_DISABLE_AUTOUPDATE=true$/m, 'the opencode case exports it before any OpenCode starts');
+  // Updates are run-spaceapp's job: no other case or path turns OpenCode's own update back on.
+  assert.doesNotMatch(wrapper, /OPENCODE_DISABLE_AUTOUPDATE=(?!true\b)/);
+  assert.doesNotMatch(wrapper, /unset OPENCODE_DISABLE_AUTOUPDATE/);
+});

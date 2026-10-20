@@ -92,7 +92,7 @@ export function preferDefault(candidates){
 const SELECTION_BUDGET_MS=100000;
 export async function selectWorkingFreeModel({env=process.env,executeNative=execute}={}) {
   const directory=await mkdtemp(join(tmpdir(),'spaceapp-free-model-'));
-  const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
+  const isolated={PATH:env.PATH,LANG:env.LANG,USER:env.USER,OPENCODE_DISABLE_AUTOUPDATE:'true',HOME:directory,XDG_CONFIG_HOME:join(directory,'config'),XDG_DATA_HOME:join(directory,'data'),XDG_CACHE_HOME:join(directory,'cache'),XDG_STATE_HOME:join(directory,'state')};
   try {
     const deadline=Date.now()+SELECTION_BUDGET_MS;
     // --standalone everywhere: without it OpenCode 2 starts its per-user background service.

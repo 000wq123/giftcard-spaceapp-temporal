@@ -39,7 +39,7 @@ export function answerOutput(mode, stdout, provider) {
 /** Scratch data, state and cache. Models read the owner's config (its providers); a text answer reads none. */
 export function isolatedEnvironment(mode, scratch, env = process.env) {
   return {
-    PATH: env.PATH, LANG: 'C.UTF-8', USER: env.USER, HOME: scratch, TMPDIR: scratch,
+    PATH: env.PATH, LANG: 'C.UTF-8', USER: env.USER, HOME: scratch, TMPDIR: scratch, OPENCODE_DISABLE_AUTOUPDATE: 'true',
     XDG_CONFIG_HOME: mode === 'models' && env.XDG_CONFIG_HOME ? env.XDG_CONFIG_HOME : join(scratch, 'config'),
     XDG_DATA_HOME: join(scratch, 'data'), XDG_STATE_HOME: join(scratch, 'state'), XDG_CACHE_HOME: join(scratch, 'cache'),
     ...(mode === 'models' && env.OPENCODE_API_KEY ? { OPENCODE_API_KEY: env.OPENCODE_API_KEY } : {})
