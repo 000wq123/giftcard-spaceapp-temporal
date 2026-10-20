@@ -334,7 +334,7 @@ npx.cmd --yes run-spaceapp@latest install
 
 ## 📄 License
 
-SpaceApp is licensed under the [MIT License](LICENSE). The copyright holder is oll4.com. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
+SpaceApp is licensed under the [MIT License](LICENSE). The copyright holder is INTRATRADE SINGLE MEMBER P.C. (Greek: INTRATRADE ΜΟΝΟΠΡΟΣΩΠΗ Ι.Κ.Ε.), the company that develops SpaceApp. This summary is not legal advice; the [LICENSE](LICENSE) text governs.
 
 - **Use**: You may use, copy, modify, merge, publish, distribute, sublicense and sell SpaceApp, including self-hosting and internal business operations, as long as the copyright and permission notice stay with every copy.
 - **Contributions**: Contributions are accepted under the MIT License (inbound = outbound) with a Developer Certificate of Origin 1.1 sign-off; see [CONTRIBUTING.md](CONTRIBUTING.md).
