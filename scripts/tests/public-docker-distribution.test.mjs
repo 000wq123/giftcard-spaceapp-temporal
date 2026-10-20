@@ -232,6 +232,34 @@ test("an OpenCode pane still starts when the first-run free-model check fails; c
   assert.match(wrapper, /^set -euo pipefail$/m);
 });
 
+test("core never runs OpenCode itself", async () => {
+  // 1.1.7 (decision B): CLIs live only in the CLI container; core asks its credential agent instead.
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = Object.fromEntries(dockerfile.split(/^(?=FROM )/m).map((stage) => [stage.match(/^FROM \S+ AS (\S+)/)?.[1], stage]));
+  assert.match(stages.cli, /@opencode\/cli@/);
+  for (const name of ["build", "runtime-base", "core", "browser"]) assert.doesNotMatch(stages[name], /@opencode\/cli|opencode-ai/, name);
+
+  const src = join(root, "apps", "api", "src");
+  const read = (name) => readFile(join(src, name), "utf8");
+  // The only places that start OpenCode or a wrapper's credential-smoke in the API process.
+  const direct = /spawn\("opencode"|"\/usr\/local\/bin\/opencode"|\["credential-smoke"\]/;
+  const found = execFileSync("grep", ["-rlE", direct.source, "--include=*.ts", "--exclude-dir=__tests__", src], { encoding: "utf8" })
+    .trim().split("\n").map((path) => path.slice(src.length + 1)).sort();
+  assert.deepEqual(found, ["cli-runtimes.ts", "cli-terminal.ts", "opencode-model-bench.ts", "room-agent-model-resolver.ts"]);
+  // Each one takes the public credential host's path when there is one.
+  const app = await read("app.ts");
+  assert.match(app, /const publicCredentialHost = createPublicCredentialHost\(config\);\n  const runOpenCode = publicCredentialHost\?\.openCodeText \?\? runOpenCodeText;/);
+  assert.match(app, /new CliTerminalManager\(\{[^}]*?credentialHost: publicCredentialHost,/);
+  assert.match(app, /checkCredential: \(runtime\) => checkCliRuntimeCredential\(runtime, publicCredentialHost\?\.execute\)/);
+  assert.match(app, /new OpencodeModelBenchService\(\{\n    execVerbose: publicCredentialHost\n      \? \(provider\) => publicCredentialHost\.openCodeModels\(provider\)/);
+  assert.match(app, /createOpenCodeTextModel\(\{ run: runOpenCode \}\)/);
+  assert.match(app, /completeRoomAgentPrompt\(\{[^}]*runOpenCode \}\)/);
+  assert.doesNotMatch(app, /createOpenCodeTextModel\(\)|checkCliRuntimeCredential\(runtime\)/);
+  assert.match(await read("cli-terminal.ts"), /this\.options\.credentialHost\n\s+\? await this\.options\.credentialHost\.execute\(runtime\.detectedCommandPath, \["credential-smoke"\]/);
+  assert.match(await read("room-agent.ts"), /runOpenCode = runOpenCodeText \} = input;/);
+  assert.doesNotMatch(await read("room-agent.ts"), /await runOpenCodeText\(/);
+});
+
 test("public CLI wrapper isolates provider state and supports protected DeepSeek setup", async () => {
   const wrapper = await readFile(join(root, "deploy", "docker", "public-cli-wrapper.sh"), "utf8");
   const credentialStatusBlock = wrapper.match(/credential-status\)[\s\S]*?;;/)?.[0] || "";

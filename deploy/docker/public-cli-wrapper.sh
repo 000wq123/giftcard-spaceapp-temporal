@@ -143,6 +143,15 @@ case "${1:-}" in
     ensure_runtime_dirs
     exec node /app/deploy/docker/credential-install.mjs "$runtime_name" "$state_root"
     ;;
+  opencode-text|opencode-models)
+    # The API's OpenCode calls (core has no OpenCode): a request on stdin, run --standalone in a throwaway home.
+    if [ "$runtime_name" != "opencode" ]; then
+      echo "This action is only for OpenCode." >&2
+      exit 64
+    fi
+    ensure_runtime_dirs
+    exec node /app/deploy/docker/opencode-standalone.mjs "${1#opencode-}"
+    ;;
   inspect-env)
     printf 'runtime=%s\nhome=isolated\ncredential=%s\n' \
       "$runtime_name" "$(credential_ready && printf present || printf absent)"
