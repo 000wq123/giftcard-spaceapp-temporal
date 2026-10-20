@@ -167,3 +167,27 @@ test('a lock left by a killed first run is broken instead of making every start 
   assert.equal(JSON.parse(readFileSync(join(config,'opencode','opencode.json'),'utf8')).model,'owner/model');
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+// VM219 2026-10-20: right after the owner claim several OpenCode starts overlap in the CLI container and the catalog answers 503.
+test('the catalog call is retried after a 503 from overlapping starts, then the selection goes on as before',async()=>{
+ const listings=[];
+ const selected=await selectWorkingFreeModel({executeNative:async(args,env,cwd)=>{
+  if(args[0]==='api'){listings.push(Date.now());return listings.length===1?{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable\n'}:{code:0,stdout:catalog(entry('big-pickle'))};}
+  return {code:0,stdout:toolRun(readFileSync(join(cwd,'spaceapp-check.txt'),'utf8').trim())};
+ }});
+ assert.equal(selected.id,'opencode/big-pickle');assert.equal(listings.length,2);
+ assert.ok(listings[1]-listings[0]>=2900,'3 s apart');
+});
+
+test('three failed catalog calls (503, timeout, connection) fail as before, within the budget',async()=>{
+ const answers=[{code:1,stdout:'',stderr:'HTTP 503 Service Unavailable'},{code:124,stdout:'',stderr:''},{code:1,stdout:'',stderr:'Error: connect ECONNREFUSED 127.0.0.1:4096'}];
+ let listings=0;const started=Date.now();
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api')return answers[listings++];throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,3);assert.ok(Date.now()-started<100000);
+});
+
+test('a 4xx catalog answer is not retried',async()=>{
+ let listings=0;
+ await assert.rejects(selectWorkingFreeModel({executeNative:async(args)=>{if(args[0]==='api'){listings++;return {code:1,stdout:'',stderr:'HTTP 401 Unauthorized'};}throw new Error('no model run');}}),/catalog could not be refreshed/);
+ assert.equal(listings,1);
+});

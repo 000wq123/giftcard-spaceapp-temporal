@@ -96,7 +96,14 @@ export async function selectWorkingFreeModel({env=process.env,executeNative=exec
   try {
     const deadline=Date.now()+SELECTION_BUDGET_MS;
     // --standalone everywhere: without it OpenCode 2 starts its per-user background service.
-    const listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,20000);
+    // Overlapping OpenCode starts after the owner claim answer 503 (VM219 2026-10-20): 3 tries, 3 s apart; never a 4xx.
+    let listed;
+    for(let attempt=1;;attempt++){
+      listed=await executeNative(['api','GET','/api/model','--standalone'],isolated,directory,20000);
+      const transient=listed.code===124||/\bHTTP 503\b|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up/i.test(listed.stderr??'');
+      if(listed.code===0||!transient||attempt===3||deadline-Date.now()<3000+20000)break;
+      await delay(3000);
+    }
     if(listed.code!==0)throw new Error('Native OpenCode catalog could not be refreshed. Retry when online.');
     const candidates=preferDefault(parseCatalog(listed.stdout));
     const work=join(directory,'work');await mkdir(work);
