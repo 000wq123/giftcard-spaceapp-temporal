@@ -107,7 +107,7 @@ services:
   # One-shot: Codex's session logs live in their own volume so the API can mount them alone. It gives the volume to the
   # CLI user and, while it is still empty, copies the sessions an earlier installation kept in spaceapp-cli-state.
   codex-sessions-init:
-    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}
+    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}
     restart: "no"
     user: "0:0"
     network_mode: none
