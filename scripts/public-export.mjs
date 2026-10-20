@@ -91,6 +91,10 @@ const publicScripts = new Set([
   "scripts/tests/release-evidence.test.mjs",
   "scripts/build-demo-projects.mjs",
   "scripts/tests/opencode-first-run.test.mjs",
+  // run-spaceapp 1.1.7: the provider install checks, and the release step that pins the published image digests.
+  "scripts/tests/provider-install.test.mjs",
+  "scripts/embed-image-lock.mjs",
+  "scripts/tests/embed-image-lock.test.mjs",
   "scripts/tests/opencode-standalone.test.mjs",
   "scripts/container-image-size-budget.mjs",
   "scripts/fix-build-permissions.mjs",
