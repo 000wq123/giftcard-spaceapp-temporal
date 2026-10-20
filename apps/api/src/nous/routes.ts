@@ -25,6 +25,7 @@ export interface NousRouteDependencies {
 }
 
 const decisionParams = z.object({ id: nousDecisionIdSchema }).strict();
+const vaultBrokerReinstallSchema = z.object({ reason: z.string().trim().min(1).max(1_000) }).strict();
 
 /** The Nous dock: state, conversation, settings, decisions and the overview. */
 export function registerNousRoutes(app: FastifyInstance, service: NousService, deps: NousRouteDependencies): void {
@@ -82,6 +83,15 @@ export function registerNousRoutes(app: FastifyInstance, service: NousService, d
   app.get("/api/nous/progress", routeOptions, async (request) => ({ progress: await deps.progress(await deps.owner(request)) }));
 
   app.get("/api/nous/decisions", routeOptions, async (request) => ({ decisions: await service.decisions(await deps.owner(request)) }));
+
+  // An agent asks for the Vault broker's reinstall (space-admin-action vault-broker-reinstall); only the operator's yes runs it.
+  app.post("/api/nous/decisions/vault-broker-reinstall", routeOptions, async (request) => {
+    const { reason } = parseBody(vaultBrokerReinstallSchema, request.body);
+    return { decision: await service.ask({ ownerUserId: await deps.owner(request), category: "RELEASE", title: "Reinstall the Vault broker from stable's code",
+      body: "Space builds the broker from stable's committed code (refused if /opt/spaceapp has local changes), installs it as root, keeps the old one "
+        + "as broker.mjs.previous and restarts space-vault-broker.service; if it does not come back, the old one is restored. Unlock the Vault once afterwards.",
+      options: [], recommendation: reason, refs: {}, action: { type: "VAULT_BROKER_REINSTALL" } }) };
+  });
 
   app.post("/api/nous/decisions/:id/answer", routeOptions, async (request) => {
     const owner = await deps.owner(request);

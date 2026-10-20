@@ -83,7 +83,7 @@ import { sweepExpiredBrowserArtifacts, localArtifactFilePath } from "./artifact-
 export { sweepExpiredBrowserArtifacts, type BrowserArtifactRetentionSweepResult } from "./artifact-storage.js";
 import { withStagedBufferUpload, withPersistedUpload } from "./multipart-upload.js";
 import { recordUploadedArtifact } from "./upload-record.js";
-import { createCliDashboardActivityReader, readDashboardActivity, type DashboardActivityDetail, type DashboardStatus } from "./agents-dashboard.js";
+import { cliUsageLimited, createCliDashboardActivityReader, readDashboardActivity, type DashboardActivityDetail, type DashboardStatus } from "./agents-dashboard.js";
 import { createRoomAgentSnapshotProvider } from "./room-agent-snapshot.js";
 import { createDashboardCliProofController } from "./agents-dashboard-proof.js";
 import { PostgresSessionRevocationRepository } from "@space/db";
@@ -375,7 +375,8 @@ import { verifyGeminiPaneSession } from "./gemini-session-verification.js";
 import { loadGeminiNativeTurns } from "./gemini-native-turns.js";
 import { QuietRequestLogController } from "./request-log-policy.js";
 import { createClaudeNativeRefRecorder, loadClaudeNativeTurns, type ClaudeNativeTurns } from "./claude-native-turns.js";
-import { switchClaudePaneAccount } from "./claude-account-switch.js";
+import { switchClaudePaneAccount, type ClaudeAccountSwitchDeps } from "./claude-account-switch.js";
+import { CLAUDE_GATEWAY_PROFILE, claudeLimitMoveDeps, createClaudeDirectPins, createClaudeLimitMove } from "./claude-limit-move.js";
 import { createCliPaneReopener } from "./cli-pane-reopen.js";
 import { createCliRuntimePaneRestorer } from "./cli-runtime-pane-restore.js";
 import {
@@ -652,6 +653,8 @@ export interface CreateAppOptions {
   /** Room Agent conversation model; tests inject a scripted stream. */
   roomAgentChatModel?: RoomAgentChatModel;
   nousRunner?: NousRunner;
+  /** The Vault broker's root reinstall a Nous decision runs (tests). */
+  vaultBrokerReinstall?: () => Promise<string>;
   /** The pane board's summary model (nous/pane-board.ts); tests inject one, the live instance uses stable's worker. */
   paneBoardRunner?: PaneSummaryRunner;
   /** Room Agent monitor storage; defaults to Postgres with a database URL, else memory. */
@@ -1419,6 +1422,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       return { status: identity.authStatus === "CONNECTED" ? "UNKNOWN" : "NOT_CONNECTED", plan: null, remainingPercent: null, resetAt: null, windows: [] };
     }
   });
+  const claudeDirectPins = createClaudeDirectPins(process.env.VITEST === "true" ? null : join(dirname(config.cliAccountBalancerStateFile), "claude-direct-pins.json"));
   const appDiagnosticsService =
     options.appDiagnosticsService ?? createDefaultAppDiagnosticsService(config, store);
   const activityLogService =
@@ -3263,8 +3267,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       }
       const updatedPane = await store.updatePane(
         pane.id,
-        // A Job Copilot pane keeps its own title; its name (e.g. "Cody") is the pane name either way.
-        { ...(pane.mode === "JOB_APPLY" ? {} : { title: paneTitle }), cwd: session.cwd, terminalRuntimeId: runtime.id },
+        // A copilot, Design or App Studio pane keeps its own title; its name (e.g. "Cody") is the pane name either way.
+        { ...(pane.mode === "TERMINAL" ? { title: paneTitle } : {}), cwd: session.cwd, terminalRuntimeId: runtime.id },
         traceId
       );
       const latestEvent = await getLatestRoomEvent(store, updatedPane.roomId);
@@ -3361,6 +3365,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     base.promptFingerprint = roomPromptFingerprint(base.text);
     base.commands = roomTerminalCommands(screen.text);
     const rawState = roomTerminalState(screen.text);
+    let claudeNative: Awaited<ReturnType<typeof loadClaudeNativeTurns>> = null;
     base.state = pane.isClosed || session.status === "EXITED" ? "EXITED" : session.status === "ERROR" ? "ERROR" : (rawState === "UNKNOWN" && screen.text.trim() === "" && session.runtimeId !== "cli:gemini" ? "IDLE" : rawState);
     if (isCodexDirectParityRuntime(session.runtimeId)) {
       base.tasks = session.codexThreadId ? await findCodexTaskTimeline({ codexHome: codexDirectParityCodexHome,
@@ -3491,7 +3496,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       base.modes = ["workspace", "read-only", "yolo", "plan"];
     } else if (isClaudeDirectParityRuntime(session.runtimeId)) {
       const pids = await cliTerminalManager.activeSessionPids([session]).catch(() => null);
-      const native = await loadClaudeNativeTurns({
+      const native = claudeNative = await loadClaudeNativeTurns({
         paneId: pane.id, sessionId: session.sessionId, rootPid: pids?.get(session.sessionId) ?? null
       }, { fresh: freshness?.fresh === true }).catch(() => null);
       if (native) {
@@ -3510,6 +3515,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (session.runtimeId === "cli:qoder") base.modes = ["yolo", "auto mode", "don't ask", "default", "accept edits", "plan"];
     base.modelId = await inspectedNativeModelId(session, readPaneNativeModelSettings, cliTerminalManager) ?? base.modelId;
     base.nativeMode = roomTerminalMode(session.runtimeId, screen.text, base.modes);
+    base.usageLimited = cliUsageLimited(screen.text, claudeNative, session.startedAt);
     roomCliObservationCache.set(pane.id, { expires: Date.now() + 15_000, data: base });
     return base;
   }
@@ -3630,6 +3636,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if ((await store.planExecutions.listActive()).some(execution => execution.paneId === paneId))
       throw new SpaceConflictError("This pane has a managed plan execution. Change the exact stage through its override endpoint.");
   };
+  const claudeAccountSwitchDeps: ClaudeAccountSwitchDeps = { store, inspect: (target) => inspectRoomCli(target, { fresh: true }), now: nowIso, interrupt: (id) => cliTerminalManager.interrupt(id),
+    resume: (target, input, trace) => resumePaneCliTask(target, input, trace, undefined, true), ensureReady: (target, trace, selection) => cliTerminalManager.ensurePaneControlReady(target, trace, selection) };
   const roomPaneController = createRoomPaneController({
     store, chat: spaceAgentAdapter, listRuntimes: () => cliTerminalManager.listRuntimes(),
     isEnabled: (runtimeId) => cliRuntimeVisibility.isEnabled(runtimeId),
@@ -3832,9 +3840,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             }
           }
         } else if (session.runtimeId === "cli:claude") {
-          if (await switchClaudePaneAccount({ store, inspect: (target) => inspectRoomCli(target, { fresh: true }), now: nowIso,
-            resume: (target, input, trace) => resumePaneCliTask(target, input, trace, undefined, true), interrupt: (id) => cliTerminalManager.interrupt(id),
-            ensureReady: (target, trace, selection) => cliTerminalManager.ensurePaneControlReady(target, trace, selection) }, pane, session, action.accountProfileId, traceId)) roomCliObservationCache.delete(pane.id);
+          if (await switchClaudePaneAccount(claudeAccountSwitchDeps, pane, session, action.accountProfileId, traceId)) roomCliObservationCache.delete(pane.id);
         } else {
           throw new SpaceConflictError("Account profile switching is supported on Gemini and Claude Code panes.");
         }
@@ -6994,7 +7000,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,
     spaceAgentAdapter, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
     cliRuntimeVisibility, resolveOpenCodeServerControl, resumePaneCliTask, spaceControl, assertRootAdmin,
-    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener,
+    assertPaneCliRuntimeEnabled, routeOptions: defaultRouteRateLimitOptions, cliAccountBalancer, cliPaneReopener, claudeDirectPins,
     onUserCliHost: cliUserHosting.onUserCliHost
   });
 
@@ -7056,10 +7062,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     },
     log: (event, detail) => app.log.info({ event, ...detail }, "CLI account Auto")
   });
+  // Operator order 2026-10-20: Claude panes at their account's usage limit move to Space Gateway and continue (claude-limit-move.ts).
+  const claudeLimitMove = createClaudeLimitMove(claudeLimitMoveDeps({ store, monitor: roomAgentMonitorRepository, pinnedDirect: (paneId) => claudeDirectPins.has(paneId),
+    inspect: (pane, fresh) => roomPaneController.inspect(pane, { fresh }), paneReports: () => nousRef.current?.paneReports, onEvent: roomAgentMonitorOnEvent,
+    gatewayProfileReady: async () => Boolean((await gatewayCliAccounts.gatewayProfile("cli:claude"))?.ready), gatewayAccounts: () => resolveGatewayAdminService().listAccounts(),
+    switchToGateway: async (pane, session) => { await switchClaudePaneAccount(claudeAccountSwitchDeps, pane, session, CLAUDE_GATEWAY_PROFILE, makeSpaceId("trace")); roomCliObservationCache.delete(pane.id); },
+    answer: (pane, input) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, ...input, when: "NOW" }, makeSpaceId("trace")),
+    onAttention: (event) => { void roomAgentAutopilot.handle(event); }, log: (event, detail) => app.log.info({ event, ...detail }, "Claude usage limit move") }));
   let cliAccountAutoSwitchTimer: NodeJS.Timeout | null = null;
   app.addHook("onReady", async () => {
     if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") return;
-    cliAccountAutoSwitchTimer = setInterval(() => void cliAccountAutoSwitch.tick(), 30_000);
+    cliAccountAutoSwitchTimer = setInterval(() => { void cliAccountAutoSwitch.tick(); void claudeLimitMove.tick(); }, 30_000);
     cliAccountAutoSwitchTimer.unref();
   });
   app.addHook("onClose", async () => { if (cliAccountAutoSwitchTimer) clearInterval(cliAccountAutoSwitchTimer); });
@@ -7632,7 +7645,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const { livePersonalMemory, liveHistory } = registerLiveRoutes(app, { config, auth, store, roomPaneController, roomAgentService, routeOptions: defaultRouteRateLimitOptions, assertRoomAccess, readDashboardAgents });
   const councilService = registerCouncil(app, { config, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, claudeUsageProvider, jobApplyRepository, jobApplyService, livePersonalMemory, canonicalMemory, notifications: notificationService });
   nousRef.current = registerNous(app, { config, vault, autonomous: config.instanceJobs.nous, auth, store, parseBody, parseQuery, routeOptions: defaultRouteRateLimitOptions, readActivity: readDashboardAgents,
-    roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, monitorEvents: roomAgentMonitorRepository,
+    roomTools: roomAgentTools, inspectPane: (pane) => roomPaneController.inspect(pane, { fresh: true }), releaseTrain: roomCoordination.releaseTrain, notifications: notificationService, runner: options.nousRunner, vaultBrokerReinstall: options.vaultBrokerReinstall, monitorEvents: roomAgentMonitorRepository,
     answerCli: (pane, input, traceId) => commandRoomCli(pane, { type: "cli_command", paneId: pane.id, expectedSessionId: input.sessionId, answer: input.answer, submit: true, ...(input.fingerprint ? { expectedPromptFingerprint: input.fingerprint } : {}), when: "NOW" }, traceId), activeSessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), ops: { health: healthMonitor, services: systemServicesProvider, tokenUsage: (range) => systemAnalyticsService.models(range, "all"), gateway: () => gatewayAdminService!.status(), ...(gatewayAdminService ? { gatewayAdmin: gatewayAdminService } : {}) },
     copilots: { mail: mailCopilotService, marketing: marketingCopilotService, freelance: freelanceCopilotService, job: jobApplyService, design: designService, appStudio: appStudioService }, invoke: controlInvoke, eventBus, health: healthMonitor, controlRepository, sessionPids: (sessions) => cliTerminalManager.activeSessionPids(sessions), apiBaseUrl: cliAgentFilesApiBaseUrl(config), claudeUsageProvider, paneBoardJob: config.instanceJobs["nous-pane-board"], paneBoardRunner: options.paneBoardRunner, council: councilService, liveHistory });
 

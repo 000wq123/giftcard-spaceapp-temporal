@@ -50,6 +50,7 @@ import { createNousAway } from "./away.js";
 import { createPaneBoard, renderPaneBoard, type PaneBoardSnapshot, type PaneSummaryRunner } from "./pane-board.js";
 import { registerNousPaneBoardRoutes } from "./pane-board-routes.js";
 import { allowPaneQueueCommand } from "../queue-operator-grants.js";
+import { reinstallVaultBroker } from "../service-restarts.js";
 import { createPaneReports, PANE_HEARTBEAT_MS, paneReportLine, paneReportsText, planReportLine, type PaneReports } from "../pane-reports.js";
 
 /** Rooms and CLI panes by state for the dock's live stats; a room whose panes could not be read counts as a room only. */
@@ -121,6 +122,8 @@ export interface NousWiringOptions {
   helperRunner?: NousSubagentDeps["run"];
   /** Space Memory; by default the canonical files the config names. */
   canonicalMemory?: CanonicalMemoryBridge;
+  /** The Vault broker's root reinstall (tests); default the oneshot unit (service-restarts.ts). */
+  vaultBrokerReinstall?: () => Promise<string>;
 }
 
 // 80 steps: a sweep over every pane (operator request 2026-10-17) hit error_max_turns at 40; TURN_MS still bounds the cost.
@@ -461,6 +464,7 @@ export function registerNous(app: FastifyInstance, options: NousWiringOptions): 
       if (!outcome.ok) throw new Error(outcome.refused ?? (outcome.result || outcome.display));
       return `${outcome.display} in ${room.name}.`;
     }
+    if (action.type === "VAULT_BROKER_REINSTALL") return (options.vaultBrokerReinstall ?? reinstallVaultBroker)();
     if (action.type === "RELEASE_APPROVE") {
       await options.releaseTrain({ op: "approve" as ReleaseTrainInput["op"], product: action.product }, { roomId: "", pane: null, paneSelf: false, operatorApproved: true });
       return `Approved the ${action.product} release train at its candidate commit.`;

@@ -59,6 +59,7 @@ function allPairs(nodes: MemoryGraphNode[], positions: Map<string, MemoryGraphPo
 }
 
 describe("memory graph collision removal", () => {
+  // The all-pairs reference over 1,500 nodes took 4.5 s alone and passed the default 5 s only without load (1.1.7 public suite).
   it("moves every node exactly like comparing all pairs, on a crowded layout with stacked nodes", () => {
     const nodes = Array.from({ length: 1_500 }, (_, index) => ({
       id: `node:${stableFraction(`id:${index}`).toString(36)}`,
@@ -75,5 +76,5 @@ describe("memory graph collision removal", () => {
 
     expect([...actual]).toEqual([...expected]);
     expect([...actual.values()].some((position, index) => position.x !== seed(true).get(nodes[index]!.id)!.x)).toBe(true);
-  });
+  }, 30_000);
 });

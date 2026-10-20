@@ -35,6 +35,8 @@ export interface ClaudeNativeTurns {
   titleManual: boolean;
   /** The latest answer broke on a transient server or connection error ("API Error: Connection lost"). */
   apiError: boolean;
+  /** The latest answer is the account's usage limit (429 rate_limit) and when it resets; absent from readers older than 2026-10-20. */
+  rateLimit?: { at: string | null; resetsAt: string | null } | null;
   /** Claude's last answer text from the transcript (its newest characters), null before the first one. */
   lastAnswer: string | null;
   tasks: NativeTaskExecution[];
@@ -70,6 +72,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   let aiTitle: string | null = null;
   let customTitle: string | null = null;
   let apiError = false;
+  let rateLimit: ClaudeNativeTurns["rateLimit"] = null;
   let lastAnswer: string | null = null;
   let lastAnswerId: string | null = null;
   const close = (status: "COMPLETED" | "INTERRUPTED", completedAt: string | null, durationMs?: number) => {
@@ -100,6 +103,9 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
       if (at) lastActivityAt = at;
       // Only server errors are worth a retry; rate, session, sign-in and billing limits are not.
       apiError = entry.isApiErrorMessage === true && entry.error === "server_error";
+      const resetsAt = record(entry.quotaLimits).resetsAt;
+      rateLimit = entry.isApiErrorMessage === true && entry.error === "rate_limit"
+        ? { at, resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) ? new Date(resetsAt * 1000).toISOString() : null } : null;
       // One answer may span several records of the same message id (text, tool use, more text).
       const message = record(entry.message);
       const content = message.content;
@@ -139,6 +145,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
     // a turn_duration record (killed or crashed CLI).
     close("INTERRUPTED", lastActivityAt ?? at);
     apiError = false;
+    rateLimit = null;
     open = {
       taskId: text(entry.promptId) ?? text(entry.uuid) ?? `claude-turn-${tasks.length + 1}`,
       title: (trimmed.startsWith("<task-notification>") ? "Background task notification" : prompt).slice(0, 2000),
@@ -151,7 +158,7 @@ export function claudeTaskTimeline(lines: Iterable<string>, busy: boolean, obser
   }
   if (open && !busy) close("INTERRUPTED", lastActivityAt);
   for (const task of tasks) task.timing.observedAt = observedAt;
-  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, lastAnswer };
+  return { tasks: tasks.slice(-256), modelId, reasoningEffort, title: customTitle ?? aiTitle, titleManual: customTitle !== null, apiError, rateLimit, lastAnswer };
 }
 
 async function readTail(path: string, maxBytes = CLAUDE_TRANSCRIPT_TAIL_BYTES): Promise<string[]> {

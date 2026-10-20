@@ -494,7 +494,10 @@ const FREELANCE_ALLOWED_LINK_DOMAINS = ["github.com", "loom.com", "npmjs.com"];
 const OFF_PLATFORM_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   { id: "email-address", pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { id: "phone-number", pattern: /(?:\+|\b00)\d[\d\s().-]{7,}\d|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b/ },
-  { id: "messenger", pattern: /\b(?:telegram|whats\s?app|skype|discord|wechat|viber)\b/i },
+  // "Telegram bot" is product wording (offer: an agent with a Telegram bot); "on Telegram", a handle or a t.me link is contact.
+  { id: "messenger", pattern: /\b(?:telegram\b(?!\s+bots?\b)|(?:whats\s?app|skype|discord|wechat|viber)\b)/i },
+  { id: "messenger-handle", pattern: /(?:^|[\s(,:;])@[A-Za-z][A-Za-z0-9_]{4,31}\b(?![/.@-])/ },
+  { id: "messenger-link", pattern: /\b(?:t\.me|telegram\.me|telegram\.dog)\/\S/i },
   { id: "off-platform-payment", pattern: /\b(?:pay(?:ment)?\s+(?:me\s+)?(?:directly|outside|off[- ]platform)|paypal|western union|wire (?:me|it) directly)\b/i }
 ];
 /**

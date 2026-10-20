@@ -65,6 +65,7 @@ export const adminActionRoutes: Readonly<Record<string, readonly string[]>> = {
   "release-train": ["POST /api/release-trains"],
   "room-agent-events": ["GET /api/rooms/:room/room-agent/events"],
   "nous-pane-board": ["GET /api/nous/pane-board"],
+  "vault-broker-reinstall": ["POST /api/nous/decisions/vault-broker-reinstall"],
   "proof-room-create": ["POST /api/proof-rooms"],
   "proof-room-agent": ["GET /api/rooms", "GET /api/rooms/:room/room-agent"],
   "proof-room-delete": ["DELETE /api/rooms/:room?kind=AGENT_PROOF"],

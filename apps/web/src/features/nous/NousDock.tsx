@@ -565,6 +565,7 @@ function describeAction(action: NonNullable<NousDecision["action"]>): string {
   if (action.type === "PANE_TEXT") return action.mode === "ANSWER" ? `answer “${action.text}” to the pane's prompt` : `send “${action.text.slice(0, 160)}” to the pane`;
   if (action.type === "RELEASE_APPROVE") return `approve the ${action.product} release at its candidate commit`;
   if (action.type === "SPACE_CONTROL") return `run in Space Control: ${action.actions.map((entry) => [entry.kind, entry.operation].filter(Boolean).join(" ")).join(", ")}`;
+  if (action.type === "VAULT_BROKER_REINSTALL") return "rebuild the Vault broker from stable's code and restart it, as root";
   return `${action.decision} the ${action.copilot.toLowerCase()} copilot's ${action.item.toLowerCase()}`;
 }
 

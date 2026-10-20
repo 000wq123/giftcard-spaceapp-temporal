@@ -948,4 +948,26 @@ describe("Nous API", () => {
     const missing = await app.inject({ method: "POST", url: "/api/nous/decisions/nous_decision:abcdef123456/answer", headers: operator, payload: { answer: "APPROVE" } });
     expect(missing.statusCode).toBe(404);
   });
+
+  it("lets an agent ask for the Vault broker's reinstall, which runs only on the operator's yes (operator request 2026-10-20)", async () => {
+    const vaultBrokerReinstall = vi.fn(async () => "Rebuilt the Vault broker from stable's code and restarted it.");
+    const app = await createApp({ store: new InMemorySpaceStore(), auth: { sessionSecret, devLogin: false, secureCookies: false },
+      nousRunner: async () => ({ text: "Ok.", isError: false }), vaultBrokerReinstall });
+    apps.push(app);
+    // What the auth broker signs for `space-admin-action vault-broker-reinstall`.
+    const token = signSessionWithTtl({ id: "user:operator-proof", email: "space@space.local", role: "ADMIN", brokerScope: "ADMIN_ACTION:vault-broker-reinstall" }, sessionSecret, 60);
+    const agent = { cookie: `space_session=${token}`, "x-space-csrf-token": createCsrfToken(token, sessionSecret)! };
+    const ask = () => app.inject({ method: "POST", url: "/api/nous/decisions/vault-broker-reinstall", headers: agent, payload: { reason: "The broker lacks delegate-pending." } });
+    const asked = await ask();
+    expect(asked.statusCode).toBe(200);
+    const decision = asked.json().decision;
+    expect(decision).toMatchObject({ category: "RELEASE", status: "OPEN", recommendation: "The broker lacks delegate-pending.", action: { type: "VAULT_BROKER_REINSTALL" } });
+    expect((await ask()).json().decision.id).toBe(decision.id);
+    const answer = (headers: Record<string, string>) => app.inject({ method: "POST", url: `/api/nous/decisions/${decision.id}/answer`, headers, payload: { answer: "APPROVE" } });
+    expect((await answer(agent)).statusCode).toBe(403);
+    expect(vaultBrokerReinstall).not.toHaveBeenCalled();
+    const approved = await answer(headers("user:operator"));
+    expect(approved.json().decision).toMatchObject({ status: "APPROVED", outcome: "Rebuilt the Vault broker from stable's code and restarted it." });
+    expect(vaultBrokerReinstall).toHaveBeenCalledTimes(1);
+  });
 });

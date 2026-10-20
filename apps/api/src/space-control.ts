@@ -12,6 +12,7 @@ import { controlExecuteSchema, controlLayoutSchema, controlOperationSchema, cont
 import type { ControlRecord, ControlRepository } from "@space/db";
 import { makeSpaceId, nowIso, SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/runtime";
 import type { RoomPaneController, RoomPaneObservation } from "./room-pane-control.js";
+import { isCliPane } from "./pane-guards.js";
 import { type ControlActor, resolveControlSettingsAction, executeControlPluginAction, restoreControlSettingsSnapshot, executeControlAppearanceAction, ALLOWED_APPEARANCE_THEMES, controlPluginActionSchema, controlRollbackSchema } from "./space-control-settings.js";
 import type { DecisionsService } from "./decisions-service.js";
 import type { ControlCaptureParams } from "./space-control-capture.js";
@@ -1218,7 +1219,8 @@ export function createSpaceControl(options:{store:SpaceStore;repository:ControlR
    if(!panes.length)throw new SpaceConflictError("No panes match this schedule.");
    for(const pane of panes){
     assertRuntime(pane);
-    if(pane.mode!=="CHAT"&&(pane.mode!=="TERMINAL"||!supportsRuntime(pane)))throw new SpaceConflictError("Schedules require Chat or supported CLI panes.");
+    // Copilot, Design and App Studio panes run the terminals' CLIs (operator order 2026-10-20: their account switch waits for the turn too).
+    if(pane.mode!=="CHAT"&&(!isCliPane(pane)||!supportsRuntime({...pane,mode:"TERMINAL"})))throw new SpaceConflictError("Schedules require Chat or supported CLI panes.");
     const observed=await controller.inspect(pane);
     const taskRef=observed.nativeTaskRef||observed.sessionId;
     const modelId=observed.modelId||pane.modelId;

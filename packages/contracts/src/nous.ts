@@ -94,7 +94,9 @@ export const nousDecisionActionSchema = z.discriminatedUnion("type", [
   /** Approves the product's release train at its current candidate commit. */
   z.object({ type: z.literal("RELEASE_APPROVE"), product: z.string().min(1).max(80) }).strict(),
   /** A Space Control batch (space_execute) in one of the owner's rooms that Nous may not run itself: deletes, publishing, settings. */
-  z.object({ type: z.literal("SPACE_CONTROL"), roomId: refId, actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20) }).strict()
+  z.object({ type: z.literal("SPACE_CONTROL"), roomId: refId, actions: z.array(z.record(z.string(), z.unknown())).min(1).max(20) }).strict(),
+  /** Rebuilds the Vault broker from stable's committed code and restarts it, as root (scripts/space-vault-broker-reinstall.mjs). */
+  z.object({ type: z.literal("VAULT_BROKER_REINSTALL") }).strict()
 ]);
 export type NousDecisionAction = z.infer<typeof nousDecisionActionSchema>;
 

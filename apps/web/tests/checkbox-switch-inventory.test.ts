@@ -20,12 +20,9 @@ describe("Space checkbox switch inventory", () => {
     // On/off settings use SpaceToggle. Native checkboxes are kept only where a checkbox is the right
     // control: picking several items from a list, or acknowledging a destructive action. A new
     // checkbox anywhere else has to be a SpaceToggle or be added here with its reason.
+    // The Gateway filters, key efforts/accounts and the CLI disable acknowledgement use SpaceToggle since 9c5fc521df.
     const allowed = [
-      "features/cli-runtime-settings/CliRuntimeSettingsCard.tsx", // acknowledge closing panes before disabling a CLI
-      "features/space-gateway/GatewayKeysTab.tsx", // reasoning efforts (multi-select)
-      "features/space-gateway/GatewayKeysTab.tsx", // accounts (multi-select)
-      "features/space-gateway/GatewayKeysTab.tsx", // accumulated usage view option
-      "features/space-gateway/GatewayLogsTab.tsx", // log filter values (multi-select)
+      "features/nous/NousDock.tsx", // Nous's On/Off power switch (role="switch", operator request 2026-10-17)
       "features/ui-controls/SpaceToggle.tsx"
     ].sort();
     expect(matches).toEqual(allowed);
@@ -34,7 +31,8 @@ describe("Space checkbox switch inventory", () => {
     const runtimeCard = readFileSync("src/features/cli-runtime-settings/CliRuntimeSettingsCard.tsx", "utf8");
     expect(runtimeCard).toContain("cli-runtime-vpn-switch");
     expect(runtimeCard).toContain("cli-runtime-enabled-switch");
-    expect(runtimeCard.match(/<SpaceToggle\b/g)).toHaveLength(2);
+    // VPN, on/off and (since 9c5fc521df) the acknowledgement before closing panes to disable a CLI.
+    expect(runtimeCard.match(/<SpaceToggle\b/g)).toHaveLength(3);
     expect(readFileSync("src/features/terminal-pane/CliShortcutVisibilitySettings.tsx", "utf8")).toContain("<SpaceToggle");
   });
 

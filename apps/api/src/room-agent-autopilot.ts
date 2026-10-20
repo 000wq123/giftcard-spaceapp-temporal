@@ -63,10 +63,11 @@ export function promptExcerpt(screen: string): string {
 
 /**
  * The CLI is idle at an empty prompt, so typed text starts a new turn. Typing into a draft would send the
- * operator's half-written text, so only an empty prompt is ever typed into.
+ * operator's half-written text, so only an empty prompt is ever typed into; a CLI at its usage limit would only
+ * answer with the limit again (the Design queue retyped its kickoff into such panes, task:L1ThKVBvDOnU).
  */
 export function atEmptyPrompt(observed: RoomPaneObservation): observed is RoomPaneObservation & { sessionId: string; promptFingerprint: string } {
-  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && roomComposerEmpty(observed.text ?? ""));
+  return Boolean(observed.sessionId && observed.promptFingerprint && observed.state === "IDLE" && !observed.usageLimited && roomComposerEmpty(observed.text ?? ""));
 }
 
 export function parseAutopilotDecision(raw: string | null): AutopilotDecision | null {

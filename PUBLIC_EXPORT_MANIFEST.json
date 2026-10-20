@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "b63d53e7d00fc402e93fba3c9973802511e6d03f",
-  "fileCount": 4722,
+  "sourceCommit": "77d00f6895bd5d5a2245af24f8166c70957f53b2",
+  "fileCount": 4721,
   "transformations": 392,
   "files": [
     {
@@ -7105,9 +7105,9 @@
     },
     {
       "path": "agent-skills/space-media-studio/SKILL.md",
-      "sourceObjectId": "992ae7812b8f19d8220ffb6260657d00ea6f72d0",
-      "sha256": "a492a89fe9da81b4013cd45ad9620486525eda663999df76aecbce2a97e71daa",
-      "size": 10546
+      "sourceObjectId": "96d9495dbb5bb592a1221dcb2f94515f0cd15653",
+      "sha256": "fdab09b33aba49ac713f5fb5e617cf02eae74e47e2e61b4bd545cef984ef1217",
+      "size": 11033
     },
     {
       "path": "agent-skills/space-media-studio/agents/openai.yaml",
@@ -8755,9 +8755,9 @@
     },
     {
       "path": "apps/api/src/agents-dashboard.ts",
-      "sourceObjectId": "0fdc99af95a58cc1a6810746935a5740c8853153",
-      "sha256": "975a43d9342ff0bdf3a6760f661fb2ccff0559f0ffe98349063a0ce04b2a59d4",
-      "size": 18789
+      "sourceObjectId": "981a302236ffd92b4675c8baf46ae47e49f68eda",
+      "sha256": "18a05a02ab22b5536f99549445ec7023b5a6a759cbee8d0c70977f3c41644a9e",
+      "size": 19766
     },
     {
       "path": "apps/api/src/antigravity-usage-services.ts",
@@ -8821,9 +8821,9 @@
     },
     {
       "path": "apps/api/src/app.ts",
-      "sourceObjectId": "757779cd7e3eeb9955d610842bd9ea9a864808bc",
-      "sha256": "0b547372ac50015766ead8c40aae1d871497352fd4d0eb237d2db0460d9aea8b",
-      "size": 459636
+      "sourceObjectId": "e203bffd9e1892fa93c8f4bb2221cfb026cd0288",
+      "sha256": "6dcb74d52773e976bef050648423c82dc6ad000d737fac93b99cdad381d16677",
+      "size": 461623
     },
     {
       "path": "apps/api/src/artifact-read-routes.ts",
@@ -9090,10 +9090,16 @@
       "size": 2873
     },
     {
+      "path": "apps/api/src/claude-limit-move.ts",
+      "sourceObjectId": "c285f293545b3a45e1ff770e52bf2d27fed140ec",
+      "sha256": "ec7176fd2c21ce2a2d57c28cc63d776bb89b8370b93c113b24dce51de2a7b878",
+      "size": 9790
+    },
+    {
       "path": "apps/api/src/claude-native-turns.ts",
-      "sourceObjectId": "e96c149e1cea9083e43b5b935e12d934ad274fa1",
-      "sha256": "4b8dd1c78cbfc2a903f6cdd56b6ef9c8979da27db2ac4982a1e6cac05872d11d",
-      "size": 15061
+      "sourceObjectId": "8a1b7ebc2fd25a0c2613939e7cc6a2737d297f21",
+      "sha256": "579dfd04f2e3af48a939bf2c8df679aff229c8331ddc0fa0396ebf15f50f6d25",
+      "size": 15640
     },
     {
       "path": "apps/api/src/claude-usage-services.ts",
@@ -10549,9 +10555,9 @@
     },
     {
       "path": "apps/api/src/nous/routes.ts",
-      "sourceObjectId": "a29d679cd337c5f5a3582d2478384c3b58c35cd2",
-      "sha256": "ccb8680841ee9c41245108a1d524050bfc73c87cfaea18839cb3ced8e77e719e",
-      "size": 5800
+      "sourceObjectId": "a60ba088795221ee4ce39eb56f6230a791bcbb12",
+      "sha256": "5f0413f4263d490e54a97542387cab78f8968ef5452609eb5e44823ddeac4875",
+      "size": 6785
     },
     {
       "path": "apps/api/src/nous/server-load.ts",
@@ -10591,9 +10597,9 @@
     },
     {
       "path": "apps/api/src/nous/wiring.ts",
-      "sourceObjectId": "98e862668ce73b5016a803fbab867268a58a884e",
-      "sha256": "272ce84821c2bcb7b6b358a10dfb01bd8165f7ccb6116ff29192c228a9411bcb",
-      "size": 63319
+      "sourceObjectId": "db0169c507f30a0a4f20a9a00613cc8889c9dd47",
+      "sha256": "d01789891ae28179e58bbd8382c58be724cd916a63daaa21ecdfad33a2debb0c",
+      "size": 63645
     },
     {
       "path": "apps/api/src/observability.ts",
@@ -10687,9 +10693,9 @@
     },
     {
       "path": "apps/api/src/pane-cli-session-routes.ts",
-      "sourceObjectId": "eac1d07272f7cc02a104e2f87fc5a22b0baf6618",
-      "sha256": "689e16140224606ce5fa08a9b716d595a286d5f397f43c2ce01739393631fd2c",
-      "size": 52953
+      "sourceObjectId": "f6f3c41ded7f08f517f55239343a1d0bde44b741",
+      "sha256": "284b4315e170a2fca1bcba0f41026a3319ea341df8f5a78872920b1d96a9b03d",
+      "size": 53635
     },
     {
       "path": "apps/api/src/pane-guards.ts",
@@ -10705,9 +10711,9 @@
     },
     {
       "path": "apps/api/src/pane-reports.ts",
-      "sourceObjectId": "1e344b86e5721eb83efb90f247f09b31bb598f83",
-      "sha256": "dd4bc934428627a27fe4389e2d2d6f1629632e762231daad8aba456e6aafb9c8",
-      "size": 14995
+      "sourceObjectId": "3c2317960a32392535ce5d38d963c8508c4f2610",
+      "sha256": "e2d464abc12afe9a24a4f82ad4ee95d00f176e9d099a097eef22669a109a4f05",
+      "size": 15401
     },
     {
       "path": "apps/api/src/pane-routes.ts",
@@ -10897,9 +10903,9 @@
     },
     {
       "path": "apps/api/src/room-agent-autopilot.ts",
-      "sourceObjectId": "35c8afc6b9355265459059ed9c9214f2dd994ef3",
-      "sha256": "af07bb63540c07796ee0d97846c109a9c22d9c77a24b77e6c585ea763f7cc1e0",
-      "size": 13839
+      "sourceObjectId": "d6e50fa699bb383cc6f1915aa78c1a3f82688fa8",
+      "sha256": "8694b7f99fac449556728ec36a179e20e47900b8da851675adc2047075762c0c",
+      "size": 14007
     },
     {
       "path": "apps/api/src/room-agent-chat.ts",
@@ -11005,9 +11011,9 @@
     },
     {
       "path": "apps/api/src/room-pane-control.ts",
-      "sourceObjectId": "e271b1e867ab8fdc0239f72e4b15451b9116c97e",
-      "sha256": "7201fbe305a1e64f169144a3e5b078956a81ec7e69ce5227c32f56977cd606fc",
-      "size": 10867
+      "sourceObjectId": "45dd76883619ad46e822d12542d57b5c21fc3684",
+      "sha256": "79456b8e2af0d98a2a12040532097415eecd08286f0a3bf9d878a37d5d9eb484",
+      "size": 11011
     },
     {
       "path": "apps/api/src/room-plan-inventory.ts",
@@ -11089,9 +11095,9 @@
     },
     {
       "path": "apps/api/src/service-restarts.ts",
-      "sourceObjectId": "95a5fecb9bf6c1e77240ffce4a30e0c7cd1ab1b7",
-      "sha256": "e34f8fc183d0a746743d04d7164cc635241afe0f3c2b13587729cf99958dd08e",
-      "size": 4404
+      "sourceObjectId": "6fe2fbb9638f7776008cd02baf2c51c778a797a1",
+      "sha256": "687f0dbba93d5cc6371a492dcd07867311fa303090ae2d1f706bfd11a1c1270c",
+      "size": 6726
     },
     {
       "path": "apps/api/src/service-services.ts",
@@ -11305,9 +11311,9 @@
     },
     {
       "path": "apps/api/src/space-control.ts",
-      "sourceObjectId": "13566e85e36955425e63745889012d7dc4702e06",
-      "sha256": "584439a3dae8ba850c00c5efc84ea096cb8c393da41ca2c2d6b21fe3714be24c",
-      "size": 124306
+      "sourceObjectId": "3152406ba32fcdaeeb9b5a6fac12ba84d871bdd3",
+      "sha256": "5faec3e57b04c4c97ddbeefeb7dcca1138acff89ac860dde95c05867f651d828",
+      "size": 124509
     },
     {
       "path": "apps/api/src/sse.ts",
@@ -11839,9 +11845,9 @@
     },
     {
       "path": "apps/api/tests/agents-dashboard.test.ts",
-      "sourceObjectId": "6e8798d0cc065052810e4712ecc8f7ca7f4f2e7f",
-      "sha256": "5d3f8b07bdb5548eba36c96af87dab058989ef22b175d5db51087c17ff56cf60",
-      "size": 30402
+      "sourceObjectId": "b2f98a79f1ea47edc79e6b66c17b3f06aee5cfd8",
+      "sha256": "eeb39e37296943b13176b9967dc304eedc370159efd1fbf164a04d8d40cda814",
+      "size": 31977
     },
     {
       "path": "apps/api/tests/antigravity-usage-services.test.ts",
@@ -12037,15 +12043,21 @@
     },
     {
       "path": "apps/api/tests/claude-account-switch.test.ts",
-      "sourceObjectId": "bea378151b8341d008e5b3ad3c46dd0e6483674b",
-      "sha256": "ecdf41b0409c41256635e81f95735fe89f1c413b5ffac87d8e01a2739750b7ae",
-      "size": 7556
+      "sourceObjectId": "559b4bc060c93d9b34be343adeaa98b82fd16096",
+      "sha256": "54bcb6170d1acbf7c2e53e324b184865ec18189188f29b64ee0394c6c5e10a65",
+      "size": 9248
+    },
+    {
+      "path": "apps/api/tests/claude-limit-move.test.ts",
+      "sourceObjectId": "75dd6b4428f5e10034bb36c86380c4a36f157959",
+      "sha256": "bd0e2e7f429093213c4442aab32d05e11c80790986b6861d7d68497839a164c8",
+      "size": 7727
     },
     {
       "path": "apps/api/tests/claude-native-turns.test.ts",
-      "sourceObjectId": "7c2c6285d16e1ac6bdd5902e47a826403840ae0b",
-      "sha256": "ec112bc68a4216cb369ce1c836f15da73a31378da86274f51b79f20d9652dc93",
-      "size": 12832
+      "sourceObjectId": "73b62a6bb0f6d2922a3f379968bb3293bb22bf87",
+      "sha256": "81eb8c1aba6647d1bd3d0d3f2e4365e70a2667324ca0577c0e51cd4cabf57d8a",
+      "size": 14065
     },
     {
       "path": "apps/api/tests/claude-usage.test.ts",
@@ -12834,12 +12846,6 @@
       "size": 10512
     },
     {
-      "path": "apps/api/tests/instance-releases.test.ts",
-      "sourceObjectId": "3c019a50acf61418599737c95621b2eea758862b",
-      "sha256": "e130876530e3824f428ed926f71e2dfc31ab8322722073ebb0d0c9f48db99264",
-      "size": 7857
-    },
-    {
       "path": "apps/api/tests/job-apply-agent.test.ts",
       "sourceObjectId": "b06300c3665ef86f1134d3f5e08c468f1e0f4dba",
       "sha256": "2ef77ca1c56b57f3f0778d440078b2704302466d4e80bfe8e30a1eae25e69da7",
@@ -13110,12 +13116,6 @@
       "size": 2390
     },
     {
-      "path": "apps/api/tests/native-tunnel-origin.test.ts",
-      "sourceObjectId": "681b6ee1b6b516f9e304b7684909d9a528f3417d",
-      "sha256": "921d4239bc3bc64862b4eb20d92ed5759eca05d52e00a7c393f5ebe0f05b2b7e",
-      "size": 3157
-    },
-    {
       "path": "apps/api/tests/notifications.test.ts",
       "sourceObjectId": "96cba0425d8257cbd4153f2013b94879ee4482f1",
       "sha256": "412c9706a3d0ab481ba2541731aa1880fb2220abd3e7e32e3b015d1bd83ccb37",
@@ -13261,9 +13261,9 @@
     },
     {
       "path": "apps/api/tests/nous.test.ts",
-      "sourceObjectId": "2f592ff608cb70379b1e95f86d74682e9f2ede0f",
-      "sha256": "56d3ace2b4574498e5c5150b5f86656f83f455b58b4b3bd0f712e011942b103b",
-      "size": 72807
+      "sourceObjectId": "e4508ee92fee4b68e036226dfe7b580477295742",
+      "sha256": "bcd574f72fa07a2808fd619be112ce8fe9feb54229933b35bb724af7ab86c83c",
+      "size": 74794
     },
     {
       "path": "apps/api/tests/observability-cardinality.test.ts",
@@ -13480,12 +13480,6 @@
       "sourceObjectId": "e370eda737e265dad9961a2d84b6c48f1fadc7f0",
       "sha256": "b8e5c5e85d3887238c073aa4c80b16e9dfb939b7f216bf2656256d18b46e52e6",
       "size": 1618
-    },
-    {
-      "path": "apps/api/tests/queue-operator-grants.test.ts",
-      "sourceObjectId": "f0858aca189d71788cefcb21207f04b4dca809ea",
-      "sha256": "3ce7a48987dfb6b3b43110c0d02f0fccdcac7f1644e59b3ba7d5bce4b077afe6",
-      "size": 2756
     },
     {
       "path": "apps/api/tests/qwen-native-resume-ref.test.ts",
@@ -17533,9 +17527,9 @@
     },
     {
       "path": "apps/web/src/features/nous/NousDock.tsx",
-      "sourceObjectId": "cafbaca3377b9fa58576e1e12e2d5d628fa5b267",
-      "sha256": "848d80a35f1178f6ea5fc7b21371705297e5125683d742db00b666cc2737fe67",
-      "size": 38931
+      "sourceObjectId": "12a21087d15bd65a216d8e243db652837fcf5a91",
+      "sha256": "61cce69a1ea3e7e4741b89a14523fe27fde2c74fd1358aa7c4d6d20bcc879be6",
+      "size": 39057
     },
     {
       "path": "apps/web/src/features/nous/NousFiles.tsx",
@@ -19753,9 +19747,9 @@
     },
     {
       "path": "apps/web/tests/checkbox-switch-inventory.test.ts",
-      "sourceObjectId": "a8c4707ae21245a61ccc2b5b6c3422a990841deb",
-      "sha256": "a33dbec02b35012da286e7683cad697a368acd979aa87f4352564ba9edac87c6",
-      "size": 3059
+      "sourceObjectId": "2302bc6690250d0193b25969714477d08a488318",
+      "sha256": "bea55089914dc729d61ed825b26e2da5c942366b85b52c464bb061e213683850",
+      "size": 2936
     },
     {
       "path": "apps/web/tests/chess-benchmark.test.tsx",
@@ -22333,9 +22327,9 @@
     },
     {
       "path": "docs/quality/KNOWN_LIMITATIONS.md",
-      "sourceObjectId": "be32cd8a801fec52f7bd985c24526f5e2e30e879",
-      "sha256": "4205179e16802af8df8d2a3026ac4b7116f3d38759d0bf443dc27a5785ab893c",
-      "size": 43395
+      "sourceObjectId": "3c95bde1e3b3a2e5679f1fd315b5d7c4ec220018",
+      "sha256": "2735258021d4a3f1592cac4a2d9406de941695110c822a2707e53dec84a68111",
+      "size": 43896
     },
     {
       "path": "docs/quality/README.md",
@@ -22429,9 +22423,9 @@
     },
     {
       "path": "docs/quality/review-findings.json",
-      "sourceObjectId": "5ae15b8a27c2168dde2a12601a7ec084c27ff2e7",
-      "sha256": "c5af10995bdce9a726a3dc18753db06163bbf95ad2323269ddee3cc46d754ee2",
-      "size": 201245
+      "sourceObjectId": "a486b081e367781f97ea0a52fcb65e66ad761727",
+      "sha256": "0b3269f621b0174d33b68c7856662f636623a39fbb9973f25ce16ae7a17a73c6",
+      "size": 202853
     },
     {
       "path": "docs/quality/review-pack.md",
@@ -22759,9 +22753,9 @@
     },
     {
       "path": "packages/contracts/src/broker-scopes.ts",
-      "sourceObjectId": "41bb2ed6860668576cf8d8f28572cb067ed4b4c5",
-      "sha256": "dab7a229082af61ee8206a70fda97dc49303a168357789fe035d040de23f3ebf",
-      "size": 10709
+      "sourceObjectId": "46c0bf7a6a3e4b0e4e17f39f435ac7b9500e9cbb",
+      "sha256": "d213c3ecf59a113ae05e83693278e527a38600ff5af3c564c1f69e78ca488677",
+      "size": 10790
     },
     {
       "path": "packages/contracts/src/cli-adapter.ts",
@@ -22885,9 +22879,9 @@
     },
     {
       "path": "packages/contracts/src/freelance-copilot.ts",
-      "sourceObjectId": "9fa839f7ed7a6f10611ee8c69d25b9759275d338",
-      "sha256": "74ef5c2e88e9fb11ca57fc9fd09c5fe38058ead2d287ca5bbcc344e96638a108",
-      "size": 34884
+      "sourceObjectId": "3184c1442a9d0787d5cb16ae7019b7d75cdee272",
+      "sha256": "0a0057c65a7c3a2f7f5a39dac8999e1ec8fb1df3a5c2e4720d6eee60310c3bd9",
+      "size": 35213
     },
     {
       "path": "packages/contracts/src/gateway-capacity.ts",
@@ -22987,9 +22981,9 @@
     },
     {
       "path": "packages/contracts/src/nous.ts",
-      "sourceObjectId": "f4f9ee6e8bfe76963aa16ce286cd4d89e816b911",
-      "sha256": "93bdfaf4ab7603f0902318a8971e7538144203eb8e39e5c15f10184342a319cb",
-      "size": 16092
+      "sourceObjectId": "c51e4c3af576bd4623abf31b6bb6ef0431a0c118",
+      "sha256": "cba4b17cc885c812c9108e388a48a758e1435a488fc8b7f6a3597648f5314e1d",
+      "size": 16293
     },
     {
       "path": "packages/contracts/src/observability.ts",
@@ -23317,9 +23311,9 @@
     },
     {
       "path": "packages/contracts/tests/freelance-copilot.test.ts",
-      "sourceObjectId": "d4244bc35fbaff4713f24125424200a47a30e73b",
-      "sha256": "5a90a075d8eb8e121dd7536f773024f94881e64803199b403d57062a85ea92c1",
-      "size": 7525
+      "sourceObjectId": "2488676ca807d84824ec166a5e33cde61cd50f28",
+      "sha256": "06a73733939653b032466e5bcc5d5a82357d318d128c28a3babc9b9b2508f3a3",
+      "size": 8245
     },
     {
       "path": "packages/contracts/tests/gateway-capacity.test.ts",
@@ -27697,9 +27691,9 @@
     },
     {
       "path": "packages/memory-graph/tests/layout-collisions.test.ts",
-      "sourceObjectId": "ff98fab87efdb4502d01b1bacd968db67e0bb754",
-      "sha256": "b11c0d5fe97058c2301be0529e70e05a1afe632426cc0286e7f02fd31e283854",
-      "size": 3648
+      "sourceObjectId": "87efb96f0f5b61ed4dd3fc5c6a79ea0e224913c4",
+      "sha256": "84bac5ab6342d17d43c73b496bc1f41b127bd172c9adc4b9781d675ae983943b",
+      "size": 3786
     },
     {
       "path": "packages/memory-graph/tests/memory-graph.test.ts",

@@ -26,7 +26,7 @@ const headers = () => {
   return { cookie: `space_session=${session}`, "x-space-csrf-token": createCsrfToken(session, sessionSecret)! };
 };
 
-async function setup(options: { busy?: boolean } = {}) {
+async function setup(options: { busy?: boolean; mode?: "TERMINAL" | "DESIGN" } = {}) {
   const root = await mkdtemp(join(tmpdir(), "space-claude-account-switch-"));
   roots.push(root);
   if (options.busy) await writeFile(join(root, "busy"), "", "utf8");
@@ -71,6 +71,8 @@ async function setup(options: { busy?: boolean } = {}) {
   // Start the allocated CLI the way Space Control starts an active pane session.
   await execute("request:start", { kind: "pane", operation: "reopen" });
   await launchArgs(first.sessionId);
+  // Space Control starts only terminal CLIs, so a copilot pane's running CLI is a terminal's that becomes the copilot's.
+  if (options.mode) (store as unknown as { panes: Map<string, { mode: string }> }).panes.get(pane.id)!.mode = options.mode;
   return { root, store, app, pane, first, execute, configure, launchArgs };
 }
 
@@ -109,5 +111,24 @@ describe("Claude Code pane account switch (Space Control configure accountProfil
     const later = await f.configure("space-gateway", "AFTER_TURN", "request:busy-after-turn");
     expect(later.results?.[0]).toMatchObject({ status: "PENDING", detail: "Change scheduled after the current native turn." });
     expect(f.store.getActivePaneCliSession(f.pane.id)).toMatchObject({ sessionId: busy.sessionId, accountProfileId: null });
+  });
+
+  // Operator order 2026-10-20: a copilot pane's Claude CLI (Design here, also Job, Mail, Marketing, Freelance, App Studio) switches the same way.
+  it("switches a copilot pane's Claude CLI on the same conversation and keeps the copilot's title", async () => {
+    const f = await setup({ mode: "DESIGN" });
+    // Claude's own title for the conversation names the task, not the copilot.
+    f.store.updateCliTaskRevision(f.first.cliTaskRevisionId!, { displayTitle: "Make the launch banner" });
+    const moved = await f.configure("space-gateway", "NOW", "request:design-to-gateway");
+    expect(moved.results?.[0]).toMatchObject({ status: "COMPLETED" });
+    const gateway = f.store.getActivePaneCliSession(f.pane.id)!;
+    expect(gateway).toMatchObject({ accountProfileId: "space-gateway", cliTaskId: f.first.cliTaskId, isActive: true });
+    expect(await f.launchArgs(gateway.sessionId)).toBe(`--resume ${conversation}`);
+    expect(f.store.getPane(f.pane.id)).toMatchObject({ title: "Paul", mode: "DESIGN" });
+  });
+
+  it("defers a working copilot pane's switch until its turn ends instead of refusing it", async () => {
+    const f = await setup({ mode: "DESIGN", busy: true });
+    const later = await f.configure("space-gateway", "AFTER_TURN", "request:design-after-turn");
+    expect(later.results?.[0]).toMatchObject({ status: "PENDING", detail: "Change scheduled after the current native turn." });
   });
 });

@@ -84,6 +84,18 @@ it("flags a turn cut off by a server error until the next prompt, but not rate o
   expect(claudeTaskTimeline([cut[0]!, apiError("2026-10-15T06:26:04.841Z", "rate_limit")], false, observedAt).apiError).toBe(false);
 });
 
+// Operator order 2026-10-20: a pane stopped at its account's usage limit moves to Space Gateway (claude-limit-move.ts).
+it("records the latest answer's account usage limit (429) with its reset, until the next prompt or answer", () => {
+  const limit = line({ type: "assistant", timestamp: "2026-10-20T13:55:00.000Z", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429,
+    quotaLimits: { status: "rejected", resetsAt: 1792258200, rateLimitType: "five_hour" },
+    message: { model: "<synthetic>", content: [{ type: "text", text: "You've hit your session limit · resets 8:30pm (Europe/Athens)" }] } });
+  const stopped = [prompt("2026-10-20T13:50:00.000Z", "build it"), assistant("2026-10-20T13:54:00.000Z"), limit];
+  expect(claudeTaskTimeline(stopped, false, observedAt).rateLimit).toEqual({ at: "2026-10-20T13:55:00.000Z", resetsAt: new Date(1792258200_000).toISOString() });
+  expect(claudeTaskTimeline(stopped, false, observedAt).apiError).toBe(false);
+  expect(claudeTaskTimeline([...stopped, prompt("2026-10-20T14:01:00.000Z", "continue")], true, observedAt).rateLimit).toBeNull();
+  expect(claudeTaskTimeline([...stopped, assistant("2026-10-20T14:02:00.000Z")], false, observedAt).rateLimit).toBeNull();
+});
+
 async function fixture(options: { environ?: string; procStart?: string; ancestors?: number[]; session?: Record<string, unknown> } = {}) {
   const root = await mkdtemp(join(tmpdir(), "claude-native-turns-"));
   roots.push(root);

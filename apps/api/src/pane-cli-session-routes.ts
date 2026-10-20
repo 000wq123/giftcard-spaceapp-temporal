@@ -58,6 +58,7 @@ import type { SpaceControl } from "./space-control.js";
 import { isAllowedImageMime, sniffImageMime } from "./upload-media.js";
 import { recordUploadedArtifact } from "./upload-record.js";
 import { descriptorPath, openWorkspacePath } from "./workspace-filesystem.js";
+import { CLAUDE_GATEWAY_PROFILE } from "./claude-limit-move.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -287,6 +288,8 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
   cliPaneReopener?: Pick<CliPaneReopener, "settled">;
   /** Multi-user: true when the pane's CLI runs in its user's own container (cli-user-hosts.ts). */
   onUserCliHost?: (paneId: string) => Promise<boolean>;
+  /** A Claude pane the operator put on a direct account stays there at a usage limit (claude-limit-move.ts). */
+  claudeDirectPins?: { set(paneId: string, pinned: boolean): Promise<void> };
 }) {
   const { config, deletingCliAccountProfileKeys, cliAccountProfileKey, store, eventBus, codexCliModeDefaultsService,
     spaceAgentAdapter, cliRuntimeRegistryCache, cliTerminalManager, assertCliHttpMutationControl,
@@ -392,6 +395,11 @@ export function registerPaneCliSessionRoutes(app: FastifyInstance, options: {
     const requestedAccountProfileId = isCliAccountProfileRuntimeId(runtime.id) && input.accountProfileId !== "main"
       ? input.accountProfileId ?? null
       : null;
+    // The operator's own pick of another Claude account in the pane (its account picker restarts the CLI): a direct one is kept.
+    if (runtime.id === "cli:claude" && input.forceRestart && input.accountProfileId !== undefined && active
+      && (active.accountProfileId ?? null) !== requestedAccountProfileId) {
+      await options.claudeDirectPins?.set(pane.id, requestedAccountProfileId !== CLAUDE_GATEWAY_PROFILE);
+    }
     if (input.resume && (!input.forceRestart || !supportsNativeCliResume(runtime.id))) {
       throw new SpaceConflictError(
         input.forceRestart
