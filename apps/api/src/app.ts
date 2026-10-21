@@ -1157,7 +1157,7 @@ function requiresCsrf(request: FastifyRequest): boolean {
   return (
     routeUrl.startsWith("/api/") &&
     routeUrl !== "/api/auth/login" &&
-    routeUrl !== "/api/auth/google/credential" &&
+    routeUrl !== "/api/auth/google/credential" && routeUrl !== "/api/auth/desktop-handoff" &&
     routeUrl !== "/api/voice/realtime/history/search" &&
     routeUrl !== "/api/voice/realtime/logs" &&
     routeUrl !== "/api/voice/client-error" &&

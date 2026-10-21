@@ -1,8 +1,8 @@
 {
   "format": "spaceapp-public-export",
   "schemaVersion": 2,
-  "sourceCommit": "77d00f6895bd5d5a2245af24f8166c70957f53b2",
-  "fileCount": 4721,
+  "sourceCommit": "7619ef952387dba2480afecdb1ae332a0dc489ff",
+  "fileCount": 4729,
   "transformations": 393,
   "files": [
     {
@@ -34,6 +34,48 @@
       "sourceObjectId": "a3e90d971f5ada354b39003717054228d83af97e",
       "sha256": "78a8facb4e5871d94e1326e22d189b9208c75aa1ee5698f6d207f3f207ad73ec",
       "size": 24931
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/caveman.txt",
+      "sourceObjectId": "1b482f11a13fdb89b4c5dc532dafe07bfc94d4eb",
+      "sha256": "011a77e083092af8774c74c8351d629e0b111c3255fb308c6a9cd46bdade7823",
+      "size": 14347
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/codex-lb.txt",
+      "sourceObjectId": "5c04dbd787f805212e38f0b498a663d01c8b040b",
+      "sha256": "4b5776e1f0fc8e87ae06b207b29d5c1d495694a7785f02a75ed5d8029ff2b09a",
+      "size": 1454
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/google-material-symbols.txt",
+      "sourceObjectId": "93d0008cc44359aebbc310d80bd5f548586cea81",
+      "sha256": "917c3e72b3f54147beb4912bbab7b4bbef4287b78a89b0c0c062a12c623a4675",
+      "size": 11640
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/headroom.txt",
+      "sourceObjectId": "210152d7b238c3f7884a28d11134d7ae74a6ad0e",
+      "sha256": "db2b817ecc04c139a7a62ba2d2ebdf82596b96a39ab156a226bbe32f7cff7049",
+      "size": 13513
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/ponytail.txt",
+      "sourceObjectId": "79ee101909076f21c51fb04438858db080a779c8",
+      "sha256": "916e5f3af739f03ff7ebf5a276d8d24b978b32d201e96568100988e0d97bb6fc",
+      "size": 1449
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/tree-sitter-grammars.txt",
+      "sourceObjectId": "654414787d876290d2111e1f00d537e17ef45c91",
+      "sha256": "09f262f08426edddfe08525956c44fbfd871ae6db362a16642c3f9f1916318b7",
+      "size": 2802
+    },
+    {
+      "path": "THIRD_PARTY_LICENSES/unidiff-rs.txt",
+      "sourceObjectId": "5658fc4cd77e8766417c639796370f6bc5b452c7",
+      "sha256": "e60c783cac3401b6b51870135027e660c3e91bb85fca02ab0fcb78b7741e0f7c",
+      "size": 1379
     },
     {
       "path": "agent-skills/job-applications/SKILL.md",
@@ -8821,9 +8863,9 @@
     },
     {
       "path": "apps/api/src/app.ts",
-      "sourceObjectId": "e203bffd9e1892fa93c8f4bb2221cfb026cd0288",
-      "sha256": "6dcb74d52773e976bef050648423c82dc6ad000d737fac93b99cdad381d16677",
-      "size": 461623
+      "sourceObjectId": "c26637144f8193f3a1a4a7fbb9fc393aed9cbf90",
+      "sha256": "d159a1e25221022c84a12e4775f81ccfd7f53f5658049a9f16a91a69a67733b6",
+      "size": 461667
     },
     {
       "path": "apps/api/src/artifact-read-routes.ts",
@@ -8899,9 +8941,9 @@
     },
     {
       "path": "apps/api/src/auth-routes.ts",
-      "sourceObjectId": "b4024becd61c315e0cf21b34280600cb3c8cb393",
-      "sha256": "1dab7861b764418e2a4ca64a0b975c3759ea25a26e495c79e8d1e77f494b7340",
-      "size": 33125
+      "sourceObjectId": "dcc7923a5f8bf5a3978958f454f065741b778dae",
+      "sha256": "a495491b341392abb4a315c9c987a8d3490a9287eb3a92b90af0890a00a00abe",
+      "size": 32461
     },
     {
       "path": "apps/api/src/auth.ts",
@@ -9721,9 +9763,9 @@
     },
     {
       "path": "apps/api/src/desktop-auth-handoffs.ts",
-      "sourceObjectId": "9cc5922751ed01785d82d5e75f0c16e6f3327eca",
-      "sha256": "c0add56e0ee40b3e65f19924bba8c2af1206c8b2889a7692efc8ad0454f8dc1a",
-      "size": 2454
+      "sourceObjectId": "c378bfb018bd8dbc9eda4de818902d332e96a56f",
+      "sha256": "3b63365f7352341ad8e06e4355580d65bf2aa823e81acf8e1004daf9cef62343",
+      "size": 5890
     },
     {
       "path": "apps/api/src/desktop-release-routes.ts",
@@ -12528,10 +12570,16 @@
       "size": 23473
     },
     {
+      "path": "apps/api/tests/desktop-auth-handoff-binding.test.ts",
+      "sourceObjectId": "58671cf6d4a845b6b5a8b1a3c1bac58eef586343",
+      "sha256": "ace3f2d7809fc417aa6ed4a07d0f3d3a6d8b47ba428e83799e2b58101c868f9c",
+      "size": 7034
+    },
+    {
       "path": "apps/api/tests/desktop-auth-handoffs.test.ts",
-      "sourceObjectId": "de18490349a90d8061f42594ed11679a86dd25ad",
-      "sha256": "9b38a30f54ede7c8e4054d73a10f1a36ef3475fa6c6fc5c3633c177696baf6a1",
-      "size": 2064
+      "sourceObjectId": "952cd08057eef22c8696788ada0d5a38ad9afe57",
+      "sha256": "7ec42afd3daa09cb4bd369f025f72c6ec520734d8e45624e98d07caec77523fc",
+      "size": 4924
     },
     {
       "path": "apps/api/tests/desktop-release.test.ts",
@@ -12667,9 +12715,9 @@
     },
     {
       "path": "apps/api/tests/fixtures/routes-without-session.json",
-      "sourceObjectId": "db496ec5b8f2ae51fb8a23d31d7ee736070a56f1",
-      "sha256": "3103f384caa15945779074a75209de5614ff221898132cfb70e43235dbabb241",
-      "size": 2646
+      "sourceObjectId": "0e9f57dbbe71e6be11ac84545ca2486064618344",
+      "sha256": "5877346fef1e349d4fe5c75752ad3401c50f9dc982632bb84fc2ed1b3b65ecc6",
+      "size": 2647
     },
     {
       "path": "apps/api/tests/fixtures/stdio-mcp-server.mjs",
@@ -22327,9 +22375,9 @@
     },
     {
       "path": "docs/quality/KNOWN_LIMITATIONS.md",
-      "sourceObjectId": "3c95bde1e3b3a2e5679f1fd315b5d7c4ec220018",
-      "sha256": "2735258021d4a3f1592cac4a2d9406de941695110c822a2707e53dec84a68111",
-      "size": 43896
+      "sourceObjectId": "b51a15c8a90b7a829892b519d4e83f7b65f1fe6c",
+      "sha256": "6adb9e227914358eef8a65511bb9aed759da47e852277e6a6b8dd7c88887e877",
+      "size": 45186
     },
     {
       "path": "docs/quality/README.md",
@@ -22423,9 +22471,9 @@
     },
     {
       "path": "docs/quality/review-findings.json",
-      "sourceObjectId": "a486b081e367781f97ea0a52fcb65e66ad761727",
-      "sha256": "0b3269f621b0174d33b68c7856662f636623a39fbb9973f25ce16ae7a17a73c6",
-      "size": 202853
+      "sourceObjectId": "0c9219284395ed0f32827325054cd85ea6b28716",
+      "sha256": "45e56d021820718948194e4838a06e1818058691d18a09f122acadd2858224dd",
+      "size": 205671
     },
     {
       "path": "docs/quality/review-pack.md",

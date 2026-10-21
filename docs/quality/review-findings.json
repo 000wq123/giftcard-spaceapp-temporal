@@ -431,7 +431,7 @@
       "status": "confirmed",
       "reproduction": "failure-matrix.md",
       "evidence": "docs/quality/restore-and-migrations.md; scripts/restore-drill.mjs (+ scripts/tests/restore-drill.test.mjs); scripts/space-db-backup.mjs (+ tests); reports /var/lib/spaceapp-user/agent-workspace/reports/20261011-restore-drill/",
-      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8. External review 2026-10-16 #3: the portable backup runs while writers continue and leaves out the Temporal databases; the installer change (pause, Temporal dumps, staged restore) is planned for the next run-spaceapp release. Public overlay 56ceb06 (did not ship in 1.1.6: the 1.1.6 re-cut from f8803d5d96 did not take it; ships in run-spaceapp 1.1.7): spaceapp backup pauses core, CLI, browser and Temporal and also dumps the Temporal databases; restore stages the files and restores every database in one transaction before swapping them in. Drill 2026-10-16 with spaceapp-core 1.1.6, PostgreSQL 17 with pgvector and Temporal 1.29: backup and restore exact; a restore that fails in the database leaves database, Temporal and files untouched, where the 1.1.6 restore had already replaced the files. A schemaVersion 2 backup cannot be restored by an older SpaceApp.",
+      "disposition": "Resolved 2026-10-11. Restore drill of live PostgreSQL into a separate container: 148/148 tables with matching counts and checksums, 217 foreign keys with 0 orphans, identical migration history, store opens with 0 pending migrations; temporal and temporal_visibility match. RTO measured 28.1/13.5/18.4 s (median 18.4 s, declared conditions in the doc). RPO was up to 7 days (weekly VM snapshot; 21 days observed after two failed runs). A daily validated logical backup (pg_dump custom format, TOC + full-decompress validation, SHA-256 manifest, 7 daily + 4 weekly) now runs from a user systemd timer, giving RPO <= 1 day for the database; a fresh backup restored into a disposable container matched live (158/158 tables, 155/155 migrations). Limits: both copies live on public-host; the 132-142 GB VM backup restore was never drilled. 2026-10-16: daily dumps copied off public-host to the StorageBox and read back (b4bf5c90ae). A full qmrestore boot needs storage no production guest uses (local-zfs 74% used); it stays an operator step. Also internal review 1.1.5 Codex #8. External review 2026-10-16 #3: the portable backup runs while writers continue and leaves out the Temporal databases; the installer change (pause, Temporal dumps, staged restore) is planned for the next run-spaceapp release. Public overlay 56ceb06 (did not ship in 1.1.6: the 1.1.6 re-cut from f8803d5d96 did not take it; ships in run-spaceapp 1.1.7): spaceapp backup pauses core, CLI, browser and Temporal and also dumps the Temporal databases; restore stages the files and restores each database in its own transaction before swapping them in; run-spaceapp 1.1.7 (rc3) first copies the current databases aside and, when a later database or the file swap fails, puts every database and the files back, or prints the command per database when that fails too (internal review 1.1.7, Codex #2: separate transactions are not one restore). Drill 2026-10-16 with spaceapp-core 1.1.6, PostgreSQL 17 with pgvector and Temporal 1.29: backup and restore exact; a restore that fails in the database leaves database, Temporal and files untouched, where the 1.1.6 restore had already replaced the files. A schemaVersion 2 backup cannot be restored by an older SpaceApp.",
       "resolution": "partial"
     },
     {
@@ -3253,6 +3253,46 @@
       "status": "confirmed",
       "disposition": "80967e68aa (2026-10-18): /api/cli/control/mcp refuses the token with 403 CONTROL_PANE_NOT_GRANTED unless the pane's opener (its recorded owner, else the room's owner) is unset, the grant actor, or an ADMIN/OPERATOR account. A member's pane in a shared room and a USER's own room no longer get the operator's identity. The operator's rooms (owner user:operator or none) and panes are unchanged.",
       "resolution": "fixed"
+    },
+    {
+      "id": "IR117-C-F6",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/portable-restore.mjs (public launcher), docs/operations.md (rollback, then restore the pre-update backup)",
+      "reproduction": null,
+      "evidence": "Reasoned from PostgreSQL semantics by the reviewer; not executed",
+      "observation": "Restoring a backup from an older SpaceApp onto a newer, already-migrated database fails when the newer release added tables that reference existing ones: pg_restore --clean cannot drop the referenced tables",
+      "disposition": "Open (1.1.8, task:X9Sc-Jou67Nh). The failed restore changes nothing (1.1.7 rc3 puts every database back), but 'rollback, then restore the pre-update backup' does not work across such releases. 1.1.7 rc3 records the SpaceApp version in each backup; restoring into an emptied schema is planned."
+    },
+    {
+      "id": "IR117-C-F7",
+      "reviewerSection": "Internal review run-spaceapp 1.1.7 (c725562)",
+      "observationSource": "reviews/final-1.1.7-c725562/claude.md, 2026-10-21",
+      "reviewedShas": {
+        "source": "77d00f6895"
+      },
+      "verifiedSourceSha": null,
+      "owner": "maintainer",
+      "reviewer": "Claude Opus 5.5 (claude-opus-5-5)",
+      "dependency": null,
+      "severity": "P2",
+      "status": "confirmed",
+      "resolution": "open",
+      "affected": "scripts/release-evidence.mjs, scripts/embed-image-lock.mjs, scripts/verify-published-containers.mjs (public release workflow)",
+      "reproduction": null,
+      "evidence": "release/acceptance.json limitations; reviewer read of the release workflow",
+      "observation": "The release gate binds the acceptance evidence to the source digest; the published images are rebuilt by the release workflow and pinned by the digests it resolves afterwards, not the image IDs the lab tested, and attestation checks verify predicate types only",
+      "disposition": "Open (1.1.8, task:6sCDD1rdjPyC). Users run images built from the tested source, not the tested image bytes; recording the tested digests and refusing or re-testing on a mismatch is planned."
     }
   ]
 }

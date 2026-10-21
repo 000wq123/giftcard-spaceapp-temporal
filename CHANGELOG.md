@@ -5,9 +5,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
-## [1.1.7] - 2026-10-20
+## [1.1.7] - 2026-10-21
 
-Source: sanitized Space app @ b63d53e7d0 (4699 files). Moves SpaceApp and the
+Source: sanitized Space app @ 7619ef9523 (4729 files: SpaceApp 77d00f6895 with
+the reviewed fixes of the 1.1.7 internal review). Moves SpaceApp and the
 launcher to the MIT License, makes OpenCode 2 the first CLI, and ships the
 remaining fixes from the independent reviews; open items are listed in
 `docs/quality/KNOWN_LIMITATIONS.md`.
