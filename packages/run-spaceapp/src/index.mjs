@@ -698,7 +698,8 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     const slug = userSlug(user.id);
     return [
       `  spaceapp-cli-${slug}:`,
-      "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}",
+      // The owner's pinned CLI image (runtime.env sets the digest; 1.1.7 review: a moved tag cannot change a user's).
+      "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
       "    restart: unless-stopped",
       "    init: true",
       "    security_opt:",

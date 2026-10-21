@@ -77,6 +77,23 @@ test('a dead shared server is started again by the next pane start', async () =>
   } finally { await f.close(); }
 });
 
+test('a recorded PID that another process now has is never stopped (1.1.7 review: the record survives a container restart)', async () => {
+  const f = await fixture();
+  const { spawn } = await import('node:child_process');
+  const other = spawn('sleep', ['300'], { stdio: 'ignore' });
+  try {
+    await import('node:fs/promises').then((fs) => fs.mkdir(join(f.env.XDG_STATE_HOME, 'opencode'), { recursive: true }));
+    await writeFile(join(f.env.XDG_STATE_HOME, 'opencode', 'spaceapp-shared-server.json'),
+      JSON.stringify({ pid: other.pid, port: f.port, fingerprint: 'from-before-the-restart', password: 'x'.repeat(64) }), { mode: 0o600 });
+    const server = await f.ensure();
+    assert.notEqual(server.pid, other.pid);
+    assert.equal(await f.serves(), 1);
+    assert.equal(other.exitCode, null);
+    assert.equal(other.signalCode, null);
+    process.kill(other.pid, 0);
+  } finally { other.kill('SIGKILL'); await f.close(); }
+});
+
 test('changed OpenCode credentials or config restart the shared server; an unchanged start reuses it', async () => {
   const f = await fixture();
   try {

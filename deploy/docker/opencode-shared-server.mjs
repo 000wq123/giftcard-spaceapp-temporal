@@ -15,6 +15,16 @@ const LOCK_STALE_MS = 60_000;
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+// The record lives on the CLI state volume and survives a container restart, after which its PID can belong to any other
+// process of the CLI user (pane host, credential agent): only a process that is this port's `opencode serve` is ours to
+// reuse or stop (1.1.7 review). Without /proc nothing is ours.
+async function ourServer(pid, port) {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return false;
+  const args = (await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '')).split('\0');
+  const portAt = args.indexOf('--port');
+  return args.includes('serve') && portAt !== -1 && args[portAt + 1] === String(port) && args.some((arg) => /(^|\/)opencode$/.test(arg));
+}
+
 async function healthy(port, password) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/info`, { signal: AbortSignal.timeout(2_000),
@@ -63,14 +73,15 @@ export async function ensureSharedServer({ env = process.env, port = 47047, time
   const wanted = await fingerprint(env);
   return withLock(directory, timeoutMs, async () => {
     const record = JSON.parse(await readFile(recordPath, 'utf8').catch(() => 'null'));
-    if (record?.port === port && record.fingerprint === wanted && alive(record.pid)) {
+    const ours = record?.port === port && await ourServer(record.pid, port);
+    if (ours && record.fingerprint === wanted) {
       for (let i = 0; i < 20; i++) {
         if (await healthy(port, record.password)) return { url, username: USERNAME, password: record.password, pid: record.pid };
         if (!alive(record.pid)) break;
         await delay(250);
       }
     }
-    if (record?.pid) await stop(record.pid);
+    if (ours) await stop(record.pid);
     const password = randomBytes(32).toString('hex');
     const log = await open(join(directory, 'spaceapp-shared-server.log'), 'a', 0o600);
     // `serve` is the server itself (no client of a per-user background service); it binds to loopback only.
