@@ -1,10 +1,27 @@
-# Third-party CLI notices
+# Third-party notices
 
 SpaceApp application source and the run-spaceapp launcher are MIT (from 1.1.7; earlier releases keep their license).
 The CLI image includes OpenCode and installs other independent packages on demand
 that retain their own licenses and terms. This inventory records the metadata
 reviewed for the pinned SpaceApp 0.1.0 build; it is not legal advice and does not
 grant rights beyond the upstream terms.
+
+## Third-party code in SpaceApp
+
+Parts of SpaceApp's own source are taken or ported from other projects. They keep their licence and notices; the full
+texts are in `THIRD_PARTY_LICENSES/` in the repository and in every SpaceApp image (`/app/THIRD_PARTY_LICENSES`).
+
+| Work | Licence | Used by | Text |
+| --- | --- | --- | --- |
+| Google Material Symbols | Apache-2.0 | `packages/icons` (Material Rounded icon pack) | `THIRD_PARTY_LICENSES/google-material-symbols.txt` |
+| Headroom 0.37.0 | Apache-2.0 | `packages/gateway` context compression (TypeScript ports) | `THIRD_PARTY_LICENSES/headroom.txt` |
+| unidiff-rs 0.4.1 | MIT | `packages/gateway` diff compressor (reduced TypeScript port) | `THIRD_PARTY_LICENSES/unidiff-rs.txt` |
+| tree-sitter grammars (eight) | MIT | `packages/gateway/grammars/*.wasm` | `THIRD_PARTY_LICENSES/tree-sitter-grammars.txt` |
+| codex-lb | MIT | `packages/gateway` (TypeScript ports) | `THIRD_PARTY_LICENSES/codex-lb.txt` |
+| caveman 3.2.0 | Apache-2.0 | `packages/gateway` output policy CONCISE | `THIRD_PARTY_LICENSES/caveman.txt` |
+| ponytail 5.2.0 | MIT | `packages/gateway` output policy LEAN | `THIRD_PARTY_LICENSES/ponytail.txt` |
+
+## CLI packages
 
 | CLI package | Version | Published license/terms | Source or terms | Release status |
 | --- | --- | --- | --- | --- |

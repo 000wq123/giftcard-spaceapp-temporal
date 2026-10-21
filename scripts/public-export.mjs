@@ -525,6 +525,8 @@ export function isPublicExportPath(path) {
     normalized.startsWith("starter-memory/") ||
     normalized.startsWith("demos/") ||
     normalized.startsWith("deploy/docker/") ||
+    // Licence texts of third-party code in apps/ and packages/ (Claude review 1.1.7 F5).
+    normalized.startsWith("THIRD_PARTY_LICENSES/") ||
     normalized.startsWith("agent-skills/") ||
     // The quality evidence ships with the code it describes, so a review reads both at one commit.
     normalized.startsWith("docs/quality/") ||

@@ -18,6 +18,10 @@ remaining fixes from the independent reviews; open items are listed in
   from 1.1.7 (Copyright (c) 2026 INTRATRADE SINGLE MEMBER P.C.). Published
   versions keep their licence: v0.1.3 to v1.0.2 Apache-2.0, v1.0.31 to 1.1.6
   BSL 1.1; the launcher was Apache-2.0 up to 1.1.6.
+- The licence texts of third-party code inside SpaceApp (Material Symbols,
+  Headroom, unidiff-rs, the tree-sitter grammars, codex-lb, caveman, ponytail)
+  ship in `THIRD_PARTY_LICENSES/` in the repository and in every image, and
+  `THIRD_PARTY_NOTICES.md` lists them.
 
 ### OpenCode 2
 
@@ -32,15 +36,22 @@ remaining fixes from the independent reviews; open items are listed in
   read files.
 - The first-launch free-model check retries the model catalog after a server
   error, a timeout or a lost connection (three tries).
+- After a CLI container restart the shared server's helper no longer stops
+  whatever process took the old server's process number; it stops only its own
+  `opencode serve`.
+- OpenCode's own update check is off: the image pins OpenCode and run-spaceapp
+  releases update it (its update dialog took a new pane's first prompt).
 
 ### Security and integrity
 
 - SpaceApp's own images are pulled by the digest the release records in the
-  npm package.
+  npm package, including the CLI containers of team accounts.
 - Docker's Linux repository keys are trusted only when the downloaded key file
-  holds Docker's published key and no other primary key; on Fedora, RHEL and
-  CentOS the checked key is imported before Docker is installed. The Cursor
-  agent download is pinned by checksum.
+  holds Docker's published key and no other primary key. On Fedora, RHEL and
+  CentOS the launcher writes Docker's repository file itself, with that checked
+  key as the only key (Docker's own repository file is no longer downloaded), so
+  `dnf` accepts only packages signed with it. The Cursor agent download is
+  pinned by checksum.
 - Desktop Google sign-in hands the session only to the desktop app that started
   it: the browser returns a one-time code to the app's own loopback address and
   the app redeems it with a secret it kept (RFC 8252 with PKCE). A sign-in link
@@ -65,7 +76,8 @@ remaining fixes from the independent reviews; open items are listed in
   once more). If putting a database back fails too, it keeps the copies, names
   each database left at the backup's state and prints the command that puts it
   back; running the same restore again finishes the restore instead. A backup
-  made by 1.1.7 cannot be restored by an older SpaceApp.
+  made by 1.1.7 cannot be restored by an older SpaceApp, and it records the
+  SpaceApp version it was made with.
 
 ### Fixes
 

@@ -260,6 +260,29 @@ test("public policy files are present and point security reports to a private ch
   }
 });
 
+test("every THIRD_PARTY_LICENSES file the code names ships in the tree, the images and the notices (Claude review 1.1.7 F5)", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const shipped = new Set(await readdir(join(root, "THIRD_PARTY_LICENSES")));
+  const named = new Set();
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (/\.(?:ts|tsx|mjs|js|md)$/.test(entry.name)) {
+        for (const match of (await readFile(path, "utf8")).matchAll(/THIRD_PARTY_LICENSES\/([\w.-]+\.txt)/g)) named.add(match[1]);
+      }
+    }
+  };
+  for (const dir of ["apps", "packages"]) await walk(join(root, dir));
+  assert.ok(named.size >= 3, [...named].join(", "));
+  for (const name of named) assert.ok(shipped.has(name), `THIRD_PARTY_LICENSES/${name} is named in the code but missing`);
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  assert.match(dockerfile, /^COPY --from=build --chown=spaceapp:spaceapp \/app\/THIRD_PARTY_LICENSES \.\/THIRD_PARTY_LICENSES$/m);
+  const notices = await readFile(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
+  for (const name of shipped) assert.match(notices, new RegExp(`THIRD_PARTY_LICENSES/${name.replace(".", "\\.")}`), name);
+});
+
 test("public docs provide one-command installation for Linux, macOS, and Windows", async () => {
   const readme = await readFile(join(root, "README.md"), "utf8");
   const gettingStarted = await readFile(

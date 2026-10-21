@@ -865,19 +865,25 @@ async function installAptDockerEngine({
   }
 }
 
+export const DOCKER_DNF_KEY_PATH = "/etc/pki/rpm-gpg/spaceapp-docker-ce.asc";
+
+/**
+ * The Docker CE repository written locally: its packages are checked against the key whose fingerprint was verified,
+ * so a tampered repository file or key URL at the download origin cannot add another key or host (1.1.7 review).
+ */
+export function dockerDnfRepository(id) {
+  return [
+    "[docker-ce-stable]",
+    "name=Docker CE Stable - $basearch",
+    `baseurl=https://download.docker.com/linux/${id}/$releasever/$basearch/stable`,
+    "enabled=1",
+    "gpgcheck=1",
+    `gpgkey=file://${DOCKER_DNF_KEY_PATH}`,
+    ""
+  ].join("\n");
+}
+
 async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute, download }) {
-  const repositoryUrl = `https://download.docker.com/linux/${id}/docker-ce.repo`;
-  const repositoryArgs = id === "fedora"
-    ? ["dnf", "config-manager", "addrepo", "--from-repofile", repositoryUrl]
-    : ["dnf", "config-manager", "--add-repo", repositoryUrl];
-  const pluginCode = await execute(
-    { command: "sudo", args: ["dnf", "-y", "install", "dnf-plugins-core"] },
-    { stdin, stdout, stderr }
-  );
-  if (pluginCode !== 0) {
-    return pluginCode;
-  }
-  // The repository's key is imported only after its fingerprint is checked, so dnf -y never accepts another key itself.
   const keyRoot = await mkdtemp(join(tmpdir(), "spaceapp-docker-"));
   try {
     const signingKey = join(keyRoot, "docker.asc");
@@ -885,30 +891,18 @@ async function installDnfDockerEngine({ id, stdin, stdout, stderr, execute, down
     if (!await verifyDockerRepositoryKey(signingKey, DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm, stderr)) {
       return 1;
     }
-    const importCode = await execute({ command: "sudo", args: ["rpm", "--import", signingKey] }, { stdin, stdout, stderr });
-    if (importCode !== 0) {
-      return importCode;
+    const repositoryFile = join(keyRoot, "docker-ce.repo");
+    await writeFile(repositoryFile, dockerDnfRepository(id));
+    for (const args of [
+      ["install", "-D", "-m", "0644", signingKey, DOCKER_DNF_KEY_PATH],
+      ["rpm", "--import", DOCKER_DNF_KEY_PATH],
+      ["install", "-D", "-m", "0644", repositoryFile, "/etc/yum.repos.d/docker-ce.repo"]
+    ]) {
+      const code = await execute({ command: "sudo", args }, { stdin, stdout, stderr });
+      if (code !== 0) return code;
     }
   } finally {
     await rm(keyRoot, { recursive: true, force: true });
-  }
-
-  let repositoryCode = await execute(
-    { command: "sudo", args: repositoryArgs },
-    { stdin, stdout, stderr }
-  );
-  if (repositoryCode !== 0 && id === "fedora") {
-    stdout.write("The DNF5 repository command was unavailable; retrying with DNF4 syntax...\n");
-    repositoryCode = await execute(
-      {
-        command: "sudo",
-        args: ["dnf", "config-manager", "--add-repo", repositoryUrl]
-      },
-      { stdin, stdout, stderr }
-    );
-  }
-  if (repositoryCode !== 0) {
-    return repositoryCode;
   }
 
   return execute(

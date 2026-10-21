@@ -199,12 +199,14 @@ test("backup dumps the Temporal databases that exist next to the app database", 
   await chmod(join(shims, "psql"), 0o755);
   await chmod(join(shims, "pg_dump"), 0o755);
   const target = await createPortableBackup({
-    env: { PATH: `${shims}:${process.env.PATH}`, SPACE_DATABASE_URL: "postgresql://spaceapp:pw@postgres:5432/spaceapp" },
+    env: { PATH: `${shims}:${process.env.PATH}`, SPACE_DATABASE_URL: "postgresql://spaceapp:pw@postgres:5432/spaceapp", SPACE_APP_VERSION: "1.1.7" },
     stdout: { write() {} }, now: new Date("2026-10-16T12:00:00.000Z"),
     backupRoot: join(work, "backups"), dataRoot, memoryRoot: join(dataRoot, "memory")
   });
   const manifest = JSON.parse(await readFile(join(target, "manifest.json"), "utf8"));
   assert.equal(manifest.schemaVersion, 2);
+  // The core's own version (Claude review 1.1.7 F6: it was always "unknown").
+  assert.equal(manifest.appVersion, "1.1.7");
   assert.deepEqual(Object.keys(manifest.files).sort(),
     ["data.tar.gz", "database.dump", "memory.tar.gz", "temporal.dump", "temporal_visibility.dump"]);
   assert.equal((await readFile(join(target, "temporal_visibility.dump"), "utf8")).trim(), "temporal_visibility");

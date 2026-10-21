@@ -187,7 +187,7 @@ export async function createPortableBackup({
       format: "spaceapp-portable-backup",
       schemaVersion: 2,
       createdAt: now.toISOString(),
-      appVersion: env.npm_package_version || "unknown",
+      appVersion: env.SPACE_APP_VERSION || env.npm_package_version || "unknown",
       files
     };
     await writeFile(

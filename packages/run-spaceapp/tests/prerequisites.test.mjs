@@ -8,6 +8,8 @@ import {
   ensureDockerAvailable,
   openPgpFingerprint,
   openPgpPrimaryFingerprints,
+  dockerDnfRepository,
+  DOCKER_DNF_KEY_PATH,
   prepareDockerCliPath,
   windowsResumeScript,
   windowsPowerShellArgs
@@ -823,10 +825,10 @@ test("CachyOS and Arch-family derivatives install Docker through fixed pacman ar
   }
 });
 
-test("Fedora uses Docker's official DNF repository and starts the engine", async () => {
+async function dnfInstall(osRelease) {
   const calls = [];
   let serviceStarted = false;
-
+  const written = {};
   const result = await ensureDockerAvailable({
     platform: "linux",
     arch: "x64",
@@ -836,75 +838,46 @@ test("Fedora uses Docker's official DNF repository and starts the engine", async
     stderr: capture().stream,
     execute: async (spec) => {
       calls.push(spec);
+      // The repository file is written to a temporary folder that is removed afterwards: keep what sudo installs.
+      if (spec.command === "sudo" && spec.args[0] === "install") written[spec.args.at(-1)] = await readFile(spec.args.at(-2), "utf8");
       if (spec.command === "docker") return serviceStarted ? 0 : 127;
-      if (spec.command === "sudo" && spec.args.includes("systemctl")) {
-        serviceStarted = true;
-      }
+      if (spec.command === "sudo" && spec.args.includes("systemctl")) serviceStarted = true;
       return 0;
     },
     download: keyDownload("docker-rpm-key.asc"),
     launch: async () => 0,
     pathExists: async () => true,
     sleep: async () => {},
-    osRelease: { ID: "fedora", VERSION_ID: "42" },
+    osRelease,
     installArgs: { requestedProfile: "auto", noOpen: true }
   });
+  return { result, calls, written, lines: calls.filter((spec) => spec.command === "sudo").map((spec) => spec.args.join(" ")) };
+}
 
+test("Fedora installs Docker from a locally written repository that trusts only the checked key (1.1.7 review)", async () => {
+  const { result, calls, written, lines } = await dnfInstall({ ID: "fedora", VERSION_ID: "42" });
   assert.deepEqual(result, { code: 0, reexecuted: false });
-  assert.ok(calls.some((spec) =>
-    spec.command === "sudo" &&
-    spec.args.join(" ") ===
-      "dnf config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo"
-  ));
-  assert.ok(calls.some((spec) =>
-    spec.command === "sudo" &&
-    spec.args.join(" ") ===
-      "dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-  ));
-  const importIndex = calls.findIndex((spec) => spec.command === "sudo" && spec.args[0] === "rpm" && spec.args[1] === "--import");
-  const installIndex = calls.findIndex((spec) => spec.command === "sudo" && spec.args.join(" ").startsWith("dnf -y install docker-ce"));
-  assert.ok(importIndex !== -1 && importIndex < installIndex, "Docker's checked key is imported before the engine is installed");
+  // Docker's own .repo file is never downloaded: its gpgkey= URLs would let dnf -y import another key.
+  assert.equal(lines.some((line) => line.includes("config-manager") || line.includes("docker-ce.repo") && line.startsWith("dnf")), false);
+  assert.equal(written[DOCKER_DNF_KEY_PATH], await readFile(new URL("./fixtures/docker-rpm-key.asc", import.meta.url), "utf8"));
+  assert.equal(written["/etc/yum.repos.d/docker-ce.repo"], dockerDnfRepository("fedora"));
+  assert.match(dockerDnfRepository("fedora"), /^baseurl=https:\/\/download\.docker\.com\/linux\/fedora\/\$releasever\/\$basearch\/stable$/m);
+  assert.match(dockerDnfRepository("fedora"), /^gpgcheck=1$/m);
+  assert.deepEqual(dockerDnfRepository("fedora").match(/^gpgkey=.*$/gm), [`gpgkey=file://${DOCKER_DNF_KEY_PATH}`]);
+  const importIndex = lines.indexOf(`rpm --import ${DOCKER_DNF_KEY_PATH}`);
+  const repositoryIndex = lines.findIndex((line) => line.endsWith(" /etc/yum.repos.d/docker-ce.repo"));
+  const installIndex = lines.indexOf("dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin");
+  assert.ok(importIndex !== -1 && repositoryIndex > importIndex && installIndex > repositoryIndex, lines.join("\n"));
+  assert.ok(calls.some((spec) => spec.command === "sudo" && spec.args.includes("systemctl")));
 });
 
-test("Fedora falls back to the DNF4 repository command when DNF5 syntax is unavailable", async () => {
-  const calls = [];
-  let serviceStarted = false;
-
-  const result = await ensureDockerAvailable({
-    platform: "linux",
-    arch: "x64",
-    env: { USER: "spaceuser" },
-    stdin: Readable.from([]),
-    stdout: capture().stream,
-    stderr: capture().stream,
-    execute: async (spec) => {
-      calls.push(spec);
-      if (spec.command === "docker") return serviceStarted ? 0 : 127;
-      if (
-        spec.command === "sudo" &&
-        spec.args.join(" ").startsWith("dnf config-manager addrepo")
-      ) {
-        return 1;
-      }
-      if (spec.command === "sudo" && spec.args.includes("systemctl")) {
-        serviceStarted = true;
-      }
-      return 0;
-    },
-    download: keyDownload("docker-rpm-key.asc"),
-    launch: async () => 0,
-    pathExists: async () => true,
-    sleep: async () => {},
-    osRelease: { ID: "fedora", VERSION_ID: "40" },
-    installArgs: { requestedProfile: "auto", noOpen: true }
-  });
-
-  assert.deepEqual(result, { code: 0, reexecuted: false });
-  assert.ok(calls.some((spec) =>
-    spec.command === "sudo" &&
-    spec.args.join(" ") ===
-      "dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo"
-  ));
+test("RHEL and CentOS use the same local repository with their own path", async () => {
+  for (const id of ["rhel", "centos"]) {
+    const { result, written } = await dnfInstall({ ID: id, VERSION_ID: "9" });
+    assert.deepEqual(result, { code: 0, reexecuted: false }, id);
+    assert.equal(written["/etc/yum.repos.d/docker-ce.repo"], dockerDnfRepository(id));
+    assert.match(written["/etc/yum.repos.d/docker-ce.repo"], new RegExp(`linux/${id}/\\$releasever/`));
+  }
 });
 
 test("Docker's repository keys are trusted only with their published fingerprints (review INT5-C-F14)", async () => {
