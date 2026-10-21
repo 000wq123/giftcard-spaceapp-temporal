@@ -160,6 +160,8 @@ export async function createPortableBackup({
       `--directory=${dataRoot}`,
       "--exclude=./memory",
       "--exclude=./.spaceapp-restore-staging",
+      "--exclude=./.spaceapp-restore-rollback",
+      "--exclude=./.spaceapp-restore-previous",
       "--exclude=./artifacts/browser-profiles",
       "--exclude=./browser-profiles",
       ...hostSecretEntries.map((name) => `--exclude=./${name}`),
@@ -171,6 +173,7 @@ export async function createPortableBackup({
       `--file=${memoryArchive}`,
       `--directory=${memoryRoot}`,
       "--exclude=./.spaceapp-restore-staging",
+      "--exclude=./.spaceapp-restore-previous",
       "."
     ]);
 

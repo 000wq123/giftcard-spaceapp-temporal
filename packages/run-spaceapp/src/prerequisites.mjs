@@ -734,11 +734,16 @@ export const DOCKER_REPOSITORY_KEY_FINGERPRINTS = Object.freeze({
   rpm: "060A61C51B558A7F742B77AAC52FEB6B621E9F35"
 });
 
-/** OpenPGP v4 fingerprint of the first public-key packet of an ASCII-armored key (RFC 4880 12.2), or null. */
-export function openPgpFingerprint(armored) {
-  const lines = String(armored).split(/\r?\n/);
+/**
+ * OpenPGP v4 fingerprints of every primary public-key packet in a file holding exactly one ASCII-armored key block
+ * (RFC 4880 4.2 and 12.2), or null when the file is anything else. Subkeys need a binding signature by their primary key,
+ * so the primary keys are the ones that can add trust; gpg and APT import every one of them (1.1.7 review).
+ */
+export function openPgpPrimaryFingerprints(armored) {
+  const text = String(armored);
+  if ((text.match(/-----BEGIN PGP PUBLIC KEY BLOCK-----/g) ?? []).length !== 1) return null;
+  const lines = text.split(/\r?\n/);
   const begin = lines.findIndex((line) => line.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
-  if (begin === -1) return null;
   let index = begin + 1;
   while (index < lines.length && lines[index].trim() !== "") index += 1;
   const body = [];
@@ -746,37 +751,55 @@ export function openPgpFingerprint(armored) {
     body.push(lines[index].trim());
   }
   const bytes = Buffer.from(body.join(""), "base64");
-  if (bytes.length < 3 || !(bytes[0] & 0x80)) return null;
-  let tag;
-  let length;
-  let offset;
-  if (bytes[0] & 0x40) {
-    tag = bytes[0] & 0x3f;
-    const first = bytes[1];
-    if (first < 192) [length, offset] = [first, 2];
-    else if (first < 224) [length, offset] = [((first - 192) << 8) + bytes[2] + 192, 3];
-    else if (first === 255 && bytes.length >= 6) [length, offset] = [bytes.readUInt32BE(2), 6];
-    else return null;
-  } else {
-    tag = (bytes[0] >> 2) & 0x0f;
-    const type = bytes[0] & 0x03;
-    if (type === 0) [length, offset] = [bytes[1], 2];
-    else if (type === 1) [length, offset] = [bytes.readUInt16BE(1), 3];
-    else if (type === 2 && bytes.length >= 5) [length, offset] = [bytes.readUInt32BE(1), 5];
-    else return null;
+  const fingerprints = [];
+  let position = 0;
+  while (position < bytes.length) {
+    const header = bytes[position];
+    if (!(header & 0x80)) return null;
+    let tag;
+    let length;
+    let offset;
+    if (header & 0x40) {
+      tag = header & 0x3f;
+      const first = bytes[position + 1];
+      if (first === undefined) return null;
+      if (first < 192) [length, offset] = [first, position + 2];
+      else if (first < 224 && position + 2 < bytes.length) [length, offset] = [((first - 192) << 8) + bytes[position + 2] + 192, position + 3];
+      else if (first === 255 && position + 6 <= bytes.length) [length, offset] = [bytes.readUInt32BE(position + 2), position + 6];
+      else return null;
+    } else {
+      tag = (header >> 2) & 0x0f;
+      const type = header & 0x03;
+      if (type === 0 && position + 2 <= bytes.length) [length, offset] = [bytes[position + 1], position + 2];
+      else if (type === 1 && position + 3 <= bytes.length) [length, offset] = [bytes.readUInt16BE(position + 1), position + 3];
+      else if (type === 2 && position + 5 <= bytes.length) [length, offset] = [bytes.readUInt32BE(position + 1), position + 5];
+      else return null;
+    }
+    if (offset + length > bytes.length) return null;
+    if (tag === 6) {
+      if (bytes[offset] !== 4 || length > 0xffff) return null;
+      fingerprints.push(createHash("sha1")
+        .update(Buffer.from([0x99, length >> 8, length & 0xff]))
+        .update(bytes.subarray(offset, offset + length))
+        .digest("hex")
+        .toUpperCase());
+    }
+    position = offset + length;
   }
-  if (tag !== 6 || bytes[offset] !== 4 || length > 0xffff || offset + length > bytes.length) return null;
-  return createHash("sha1")
-    .update(Buffer.from([0x99, length >> 8, length & 0xff]))
-    .update(bytes.subarray(offset, offset + length))
-    .digest("hex")
-    .toUpperCase();
+  return fingerprints.length ? fingerprints : null;
+}
+
+/** OpenPGP v4 fingerprint of the first primary key of an ASCII-armored key, or null. */
+export function openPgpFingerprint(armored) {
+  return openPgpPrimaryFingerprints(armored)?.[0] ?? null;
 }
 
 async function verifyDockerRepositoryKey(path, expected, stderr) {
-  const actual = openPgpFingerprint(await readFile(path, "utf8").catch(() => ""));
-  if (actual === expected) return true;
-  stderr.write(`Docker's repository signing key does not have its published fingerprint ${expected}. Installation was stopped.\n`);
+  const fingerprints = openPgpPrimaryFingerprints(await readFile(path, "utf8").catch(() => ""));
+  if (fingerprints?.length === 1 && fingerprints[0] === expected) return true;
+  stderr.write(fingerprints?.includes(expected)
+    ? `Docker's repository signing key file must hold only Docker's published key ${expected}; it also carries other keys. Installation was stopped.\n`
+    : `Docker's repository signing key does not have its published fingerprint ${expected}. Installation was stopped.\n`);
   return false;
 }
 

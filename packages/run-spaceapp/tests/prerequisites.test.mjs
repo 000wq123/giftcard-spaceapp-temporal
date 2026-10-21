@@ -7,6 +7,7 @@ import {
   downloadFile,
   ensureDockerAvailable,
   openPgpFingerprint,
+  openPgpPrimaryFingerprints,
   prepareDockerCliPath,
   windowsResumeScript,
   windowsPowerShellArgs
@@ -936,6 +937,51 @@ test("Docker's repository keys are trusted only with their published fingerprint
     assert.match(stderr.value(), /does not have its published fingerprint/);
     assert.equal(calls.some((spec) => spec.args?.includes(trusted)), false, osRelease.ID);
     assert.equal(calls.some((spec) => spec.args?.includes("docker-ce")), false, osRelease.ID);
+  }
+});
+
+test("a Docker key file is trusted only when every primary key in it is the published one (1.1.7 review)", async () => {
+  const fixture = async (name) => readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  const dearmor = (armored) => {
+    const lines = armored.split(/\r?\n/);
+    let index = lines.findIndex((line) => line.startsWith("-----BEGIN")) + 1;
+    while (lines[index].trim() !== "") index += 1;
+    const body = [];
+    for (index += 1; !lines[index].startsWith("=") && !lines[index].startsWith("-----END"); index += 1) body.push(lines[index].trim());
+    return Buffer.from(body.join(""), "base64");
+  };
+  const armor = (bytes) => ["-----BEGIN PGP PUBLIC KEY BLOCK-----", "", ...bytes.toString("base64").match(/.{1,64}/g), "-----END PGP PUBLIC KEY BLOCK-----", ""].join("\n");
+  const apt = await fixture("docker-apt-key.asc"), rpm = await fixture("docker-rpm-key.asc");
+  assert.deepEqual(openPgpPrimaryFingerprints(apt), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt]);
+  assert.deepEqual(openPgpPrimaryFingerprints(rpm), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm]);
+  // The published certificate with another primary key appended in the same block, or in a second block: gpg imports both.
+  const sameBlock = armor(Buffer.concat([dearmor(apt), dearmor(rpm)]));
+  assert.deepEqual(openPgpPrimaryFingerprints(sameBlock), [DOCKER_REPOSITORY_KEY_FINGERPRINTS.apt, DOCKER_REPOSITORY_KEY_FINGERPRINTS.rpm]);
+  assert.equal(openPgpPrimaryFingerprints(`${apt}\n${rpm}`), null);
+  assert.equal(openPgpPrimaryFingerprints(armor(dearmor(apt).subarray(0, 40))), null);
+  assert.equal(openPgpPrimaryFingerprints("not a key"), null);
+  for (const [extra, message] of [[sameBlock, /must hold only Docker's published key/], [`${apt}\n${rpm}`, /does not have its published fingerprint/]]) {
+    const calls = [];
+    const stderr = capture();
+    const result = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      env: { USER: "spaceuser" },
+      stdin: Readable.from([]),
+      stdout: capture().stream,
+      stderr: stderr.stream,
+      execute: async (spec) => { calls.push(spec); return spec.command === "docker" ? 127 : 0; },
+      download: async (_url, destination) => writeFile(destination, extra),
+      launch: async () => 0,
+      pathExists: async () => true,
+      sleep: async () => {},
+      osRelease: { ID: "ubuntu", VERSION_CODENAME: "noble" },
+      installArgs: { requestedProfile: "auto", noOpen: true }
+    });
+    assert.equal(result.code, 1);
+    assert.match(stderr.value(), message);
+    assert.equal(calls.some((spec) => spec.args?.includes("/etc/apt/keyrings/docker.asc")), false);
+    assert.equal(calls.some((spec) => spec.args?.includes("docker-ce")), false);
   }
 });
 

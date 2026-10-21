@@ -37,9 +37,16 @@ remaining fixes from the independent reviews; open items are listed in
 
 - SpaceApp's own images are pulled by the digest the release records in the
   npm package.
-- Docker's Linux repository keys are trusted only with Docker's published
-  fingerprints; on Fedora, RHEL and CentOS the checked key is imported before
-  Docker is installed. The Cursor agent download is pinned by checksum.
+- Docker's Linux repository keys are trusted only when the downloaded key file
+  holds Docker's published key and no other primary key; on Fedora, RHEL and
+  CentOS the checked key is imported before Docker is installed. The Cursor
+  agent download is pinned by checksum.
+- Desktop Google sign-in hands the session only to the desktop app that started
+  it: the browser returns a one-time code to the app's own loopback address and
+  the app redeems it with a secret it kept (RFC 8252 with PKCE). A sign-in link
+  started by someone else no longer gives them the session. Desktop builds older
+  than this need an update to sign in with Google; password sign-in is
+  unchanged.
 - A secrets folder that already existed is made owner-only by `install`,
   `update`, `up` and `repair`.
 - Six vulnerability-scan exceptions that no longer matched anything were
@@ -50,10 +57,15 @@ remaining fixes from the independent reviews; open items are listed in
 - `backup` pauses the core, CLI, browser and Temporal containers and also saves
   the Temporal databases, so the database, files, memory and workflow history
   are one moment; the backup's workspace list and CLI settings follow.
-- `restore` stages the files and restores every database in one transaction
-  before swapping them in: a restore that fails in the database leaves the
-  installation as it was. A backup made by 1.1.7 cannot be restored by an
-  older SpaceApp.
+- `restore` stages the files, saves a copy of the current databases and then
+  restores each database of the backup in its own transaction, swapping the
+  files in only after every database restored. If a database or the file swap
+  fails, it puts every database and file back as they were before the restore
+  and says so (the copy needs free space on the data volume for the databases
+  once more). If putting a database back fails too, it keeps the copies, names
+  each database left at the backup's state and prints the command that puts it
+  back; running the same restore again finishes the restore instead. A backup
+  made by 1.1.7 cannot be restored by an older SpaceApp.
 
 ### Fixes
 
