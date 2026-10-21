@@ -4,7 +4,7 @@
   "sourceCommit": "adbb7a204d224fb2518e494c31c2312148a3e957",
   "launcherVersion": "1.1.7",
   "runtimeVersion": "1.1.7",
-  "createdAt": "2026-10-21T05:24:18.748Z",
+  "createdAt": "2026-10-21T06:56:14.035Z",
   "checks": [
     {
       "platform": "linux",
@@ -436,6 +436,51 @@
       "pass": true,
       "artifact": "macos-original-restored.json",
       "artifactSha256": "98bde235e0259e970c77e33b0721cafac5e1222d1b1b0bc90647ad85d6cef634"
+    },
+    {
+      "platform": "windows",
+      "scenario": "launcher-tests-windows",
+      "pass": true,
+      "tests": 192,
+      "fail": 0,
+      "artifact": "windows-supplementary.json",
+      "artifactSha256": "67d0939a6473600a48d4165319e4e94df34b3d436b7848c87966753ac87d56ab"
+    },
+    {
+      "platform": "windows",
+      "scenario": "claude-code-install-no-allow-scripts-warning",
+      "pass": true,
+      "version": "2.1.301 (Claude Code)",
+      "artifact": "windows-supplementary.json",
+      "artifactSha256": "67d0939a6473600a48d4165319e4e94df34b3d436b7848c87966753ac87d56ab"
+    },
+    {
+      "platform": "windows",
+      "scenario": "backup-restore-temporal",
+      "pass": true,
+      "fixtureProfile": "medium",
+      "artifact": "windows-supplementary.json",
+      "artifactSha256": "67d0939a6473600a48d4165319e4e94df34b3d436b7848c87966753ac87d56ab"
+    },
+    {
+      "platform": "all",
+      "scenario": "codex-start-no-update-menu",
+      "pass": true,
+      "coverage": "unit-test",
+      "vmExercised": false,
+      "note": "pane start not exercised on the VM219 lab: no Codex sign-in (placeholder credential, no turn)",
+      "artifact": "windows-supplementary.json",
+      "artifactSha256": "67d0939a6473600a48d4165319e4e94df34b3d436b7848c87966753ac87d56ab"
+    },
+    {
+      "platform": "all",
+      "scenario": "codex-turn-state-public",
+      "pass": true,
+      "coverage": "unit-test",
+      "vmExercised": false,
+      "note": "pane start not exercised on the VM219 lab: no Codex sign-in (placeholder credential, no turn)",
+      "artifact": "windows-supplementary.json",
+      "artifactSha256": "67d0939a6473600a48d4165319e4e94df34b3d436b7848c87966753ac87d56ab"
     }
   ],
   "limitations": [
@@ -450,6 +495,7 @@
     "The Zen exception code from the 1.1.7 candidate (scripts/release-evidence.mjs, label zen-refusal-1.1.7) is unused: this file names no known exception, so the release check verifies first-agent strictly on every platform. It stays in the 1.1.7 tree because removing it would change the tested candidate; the 1.1.8 export removes it.",
     "Every result in this file was executed on candidate adbb7a2 (source 77d00f6895): Linux vm218, Windows vm219 and macOS vm221 main sessions and the small/medium/large profiles of all three. rc1 (8ab12f2) results are not counted.",
     "Every AI check ran on OpenCode's free model through OpenCode Zen; no paid model and no lab key was used.",
+    "Codex on public installs: the start without Codex's own update menu and the turn state in the room monitor are covered by the candidate's unit tests (codex-public-update-prompt, codex-home-public-install, codex-sessions-mount); pane start not exercised on the VM219 lab: no Codex sign-in (placeholder credential, no turn). VM219's backup/restore with Temporal ran on a medium-profile fixture (the small profile has no Temporal): writers paused, temporal and temporal_visibility dumps and the CLI settings in the backup, marker and settings back after restore.",
     "Install telemetry Yes ran on Linux only, on a separate owned fixture purged afterwards; Telemetry No on all three systems: no install id, no marker, and no lab event at the collector over each No fixture's life.",
     "Profiles ran one VM boot per sequence under the 20 GiB host memory floor (large profiles on 16 GiB VMs, started only with at least 30 GiB available on the host); every runner was reverted to 8 GiB/4 CPU.",
     "Automatic browser opening was evidenced on Linux (lab Chrome CDP page list right after the install) and macOS (console capture); Windows ran the install with open=yes in the signed-in desktop, but no desktop capture was taken.",
