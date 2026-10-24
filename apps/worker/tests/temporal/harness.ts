@@ -4,7 +4,6 @@ import { resolve, dirname } from "node:path";
 import { bundleWorkflowCode, Worker, type WorkflowBundle } from "@temporalio/worker";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { temporal } from "@temporalio/proto";
-import { historyToJSON } from "@temporalio/common/lib/proto-utils.js";
 import { MEMORY_MUTATION_TASK_QUEUE } from "@space/contracts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,21 +47,33 @@ export async function createHarness() {
   // Attach handlers immediately so a worker startup error cannot become an unhandled rejection.
   const finished = Promise.allSettled(running);
   let serial = 0;
+  const executions = new Set<string>();
   return {
     env, current,
     setStubs(next: Stubs) { stubs = next; },
     async start(type: string, input: unknown, legacy = false, id?: string) {
       const started = await env.client.workflow.start(type, { taskQueue: legacy ? legacyQueue : currentQueue,
         workflowId: id ?? `synthetic-${type}-${++serial}`, args: [input] });
+      executions.add(started.workflowId);
       return env.client.workflow.getHandle(started.workflowId, started.firstExecutionRunId, { followRuns: false });
     },
     async capture(name: string, handle: { fetchHistory(): Promise<temporal.api.history.v1.IHistory> }) {
       const history = await handle.fetchHistory();
       if (process.env.TEMPORAL_RECORD_HISTORIES === "1") {
         await mkdir(historiesDir, { recursive: true });
-        await writeFile(resolve(historiesDir, `${name}.json`), historyToJSON(history) + "\n");
+        const json = temporal.api.history.v1.History.toObject(temporal.api.history.v1.History.fromObject(history), {
+          bytes: String, longs: String, enums: String
+        });
+        await writeFile(resolve(historiesDir, `${name}.json`), JSON.stringify(json, null, 2) + "\n");
       }
       return history;
+    },
+    async cleanup() {
+      for (const workflowId of executions) {
+        const handle = env.client.workflow.getHandle(workflowId);
+        if ((await handle.describe()).status.name === "RUNNING") await handle.terminate("Synthetic test cleanup");
+      }
+      executions.clear();
     },
     async close() {
       for (const worker of workers) worker.shutdown();
@@ -78,7 +89,9 @@ export async function* frozenHistories() {
   const files = (await readdir(historiesDir)).filter(name => name.endsWith(".json")).sort();
   if (files.length < 9) throw new Error("Missing frozen Temporal histories; do not generate them during ordinary tests");
   for (const file of files) {
-    yield { workflowId: file, history: JSON.parse(await readFile(resolve(historiesDir, file), "utf8")) };
+    // Restore longs, bytes, enums and timestamps before handing the history to
+    // the SDK. Plain JSON objects cannot represent protobuf byte payloads.
+    yield { workflowId: file, history: temporal.api.history.v1.History.fromObject(JSON.parse(await readFile(resolve(historiesDir, file), "utf8"))) };
   }
 }
 

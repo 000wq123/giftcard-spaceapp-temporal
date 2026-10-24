@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
 import { Context } from "@temporalio/activity";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
@@ -9,6 +9,7 @@ import { createHarness, frozenHistories, historiesDir, replayErrors } from "./te
 let h: Awaited<ReturnType<typeof createHarness>>;
 beforeAll(async () => { h = await createHarness(); }, 60_000);
 afterAll(async () => { await h?.close(); }, 20_000);
+afterEach(async () => { await h?.cleanup(); }, 10_000);
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
