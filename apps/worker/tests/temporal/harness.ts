@@ -21,6 +21,16 @@ const activityNames = [
   "prepareMemoryConsolidation", "executePersistedMemoryChangeSet", "finalizeMemoryRepair"
 ] as const;
 export type Stubs = Partial<Record<typeof activityNames[number], (...args: any[]) => any>>;
+let bundles: Promise<{ current: WorkflowBundle; legacy: WorkflowBundle }> | undefined;
+
+async function workflowBundles() {
+  const current = await bundleWorkflowCode({ workflowsPath });
+  const legacy = await bundleWorkflowCode({ workflowsPath, webpackConfigHook(config) {
+    config.module!.rules!.push({ test: /[\\/]src[\\/]workflows\.ts$/, enforce: "pre", use: [{ loader: resolve(here, "pre-patch-loader.cjs") }] });
+    return config;
+  } });
+  return { current, legacy };
+}
 
 export async function createHarness() {
   const env = await TestWorkflowEnvironment.createTimeSkipping();
@@ -30,11 +40,7 @@ export async function createHarness() {
     if (!stub) throw new Error(`Missing synthetic activity stub: ${name}`);
     return stub(...args);
   }]));
-  const current = await bundleWorkflowCode({ workflowsPath });
-  const legacy = await bundleWorkflowCode({ workflowsPath, webpackConfigHook(config) {
-    config.module!.rules!.push({ test: /[\\/]src[\\/]workflows\.ts$/, enforce: "pre", use: [{ loader: resolve(here, "pre-patch-loader.cjs") }] });
-    return config;
-  } });
+  const { current, legacy } = await (bundles ??= workflowBundles());
   const workers: Worker[] = [];
   try {
     for (const taskQueue of [currentQueue, legacyQueue, maintenanceQueue, MEMORY_MUTATION_TASK_QUEUE]) {

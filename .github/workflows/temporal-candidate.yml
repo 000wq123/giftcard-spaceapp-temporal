@@ -20,8 +20,8 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci
-      - name: Build workflow contracts
-        run: npm run build -w @space/contracts
+      - name: Build and check workspace dependencies
+        run: npm run check
       - name: Record synthetic histories with all sandbox assertions
         env:
           TEMPORAL_RECORD_HISTORIES: '1'

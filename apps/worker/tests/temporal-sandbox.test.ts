@@ -1,15 +1,16 @@
-import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
-import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ApplicationFailure, defaultPayloadConverter, TimeoutFailure, TimeoutType } from "@temporalio/common";
 import { Context } from "@temporalio/activity";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { fileURLToPath } from "node:url";
-import { ROOM_AGENT_ENQUEUE_SIGNAL, ROOM_AGENT_STOP_SIGNAL, DOT_GOAL_SIGNAL } from "@space/contracts";
+import { ROOM_AGENT_ENQUEUE_SIGNAL, ROOM_AGENT_STOP_SIGNAL, DOT_GOAL_SIGNAL, roomAgentSupervisorInputSchema } from "@space/contracts";
 import { createHarness, frozenHistories, historiesDir, replayErrors } from "./temporal/harness.js";
+import { continuationFixture } from "./room-continuation-fixture.js";
+import { discardSupervisorTurn, finishSupervisorTurn, prepareBackgroundContinuation, supervisorTurnState } from "../src/room-background-continuation.js";
 
 let h: Awaited<ReturnType<typeof createHarness>>;
-beforeAll(async () => { h = await createHarness(); }, 60_000);
-afterAll(async () => { await h?.close(); }, 20_000);
-afterEach(async () => { await h?.cleanup(); }, 10_000);
+beforeEach(async () => { h = await createHarness(); }, 60_000);
+afterEach(async () => { try { await h?.cleanup(); } finally { await h?.close(); } }, 20_000);
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -33,13 +34,15 @@ it("dummy turn retries a failed activity and returns the completion", async () =
   await h.capture("dummyTurnWorkflow", handle);
 }, 30_000);
 
-it.each(["opencode", "claude", "codex"])("routes the %s turn to the real workflow's activity", async providerId => {
+it.each(["opencode", "cli:claude", "codex"])("routes the %s turn to the real workflow's activity", async providerId => {
   let attempts = 0;
   const run = vi.fn(async () => { if (providerId === "codex" && ++attempts < 2) throw Error("Retry turn"); return verified; });
-  h.setStubs({ runOpenCodeAgentTurn: run, runCliAgentTurn: run, runCodexAppServerTurn: run });
+  const openCode = vi.fn(run), cli = vi.fn(run), codex = vi.fn(run);
+  h.setStubs({ runOpenCodeAgentTurn: openCode, runCliAgentTurn: cli, runCodexAppServerTurn: codex });
   const handle = await h.start("codexAppServerTurnWorkflow", { ...turn(providerId), providerId });
   expect(await handle.result()).toEqual(verified);
-  expect(run).toHaveBeenCalled();
+  expect(providerId === "opencode" ? openCode : providerId === "cli:claude" ? cli : codex).toHaveBeenCalled();
+  expect(providerId === "opencode" ? cli : openCode).not.toHaveBeenCalled();
   if (providerId === "codex") { expect(attempts).toBe(2); await h.capture("codexAppServerTurnWorkflow", handle); }
 }, 30_000);
 
@@ -181,6 +184,143 @@ it.each([false, true])("supervisor (%s pre-patch) enqueues a mission and cancels
   expect(persist).toHaveBeenCalledWith(expect.objectContaining({ status: "INTERRUPTED", statusReason: "Synthetic stop" }));
   await handle.terminate("Synthetic test cleanup");
   await h.capture(`supervisor-cancel-${legacy ? "legacy" : "current"}`, handle);
+}, 30_000);
+
+function continuationDriver() {
+  const c = continuationFixture();
+  const finished = deferred();
+  const prepared: any[] = [];
+  const activities = {
+    prepareRoomAgentBackgroundContinuation: vi.fn(async (value: any) => {
+      const result = await prepareBackgroundContinuation(value, c.store);
+      if (result.state === "READY") prepared.push(result.item);
+      return result;
+    }),
+    checkRoomAgentSupervisorTurn: vi.fn((value: any) => supervisorTurnState(value, c.store)),
+    discardRoomAgentSupervisorTurn: vi.fn(async ({ item, reason, errorCode }: any) => discardSupervisorTurn(item, reason, c.store, errorCode)),
+    finishRoomAgentSupervisorTurn: vi.fn(async (value: any) => { await finishSupervisorTurn(value, c.store); finished.resolve(); }),
+    runCodexAppServerTurn: vi.fn(async (value: any) => { c.store.updateSpaceAgentRun(value.agentRunId, { status: "COMPLETED" }); return verified; })
+  };
+  h.setStubs(activities);
+  const workflowInput = roomAgentSupervisorInputSchema.parse({ roomId: c.room.id, monitoringMissionIds: [c.initial.mission.id] });
+  return { ...c, activities, workflowInput, finished, prepared };
+}
+
+it("real sandbox executes allocation, send and verification in one durable mission", async () => {
+  const c = continuationDriver();
+  c.activities.runCodexAppServerTurn.mockImplementationOnce(async value => {
+    expect(value.prompt).toContain("Open CLI and Chat, then send a story");
+    c.store.createRoomAgentAction({ ...c.action, actionId: "action:send", idempotencyKey: "send-once", actionType: "SEND",
+      evidence: { cli: "Story complete", chat: "Story complete" }, statusReason: "Both tasks completed." });
+    c.store.updateSpaceAgentRun(value.agentRunId, { status: "COMPLETED" });
+    return { ...verified, roomAgentOutcome: { ...verified.roomAgentOutcome, pendingActionIds: ["action:send"] } };
+  });
+  const handle = await h.start("roomAgentSupervisorWorkflow", c.workflowInput);
+  const end = handle.result().catch(() => undefined);
+  await c.finished.promise;
+  expect(c.activities.runCodexAppServerTurn).toHaveBeenCalledTimes(2);
+  expect(c.store.listRoomAgentActions(c.initial.mission.id).filter(action => action.actionType === "SEND")).toHaveLength(1);
+  expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("COMPLETED");
+  expect(c.activities.finishRoomAgentSupervisorTurn).toHaveBeenCalledOnce();
+  await handle.terminate("Synthetic test cleanup"); await end;
+  await h.capture("supervisor-allocation-send-verification", handle);
+}, 30_000);
+
+it.each([
+  ["plain error", () => Error("Synthetic child failure"), "ROOM_AGENT_SUPERVISOR_FAILED"],
+  ["timeout", () => new TimeoutFailure("Synthetic timeout", undefined, TimeoutType.START_TO_CLOSE), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
+  ["application failure", () => ApplicationFailure.nonRetryable("Synthetic turn timeout", "CODEX_APP_SERVER_TURN_TIMEOUT"), "CODEX_APP_SERVER_TURN_TIMEOUT"]
+] as const)("real sandbox preserves %s as a failed turn with its cause code", async (_, error, code) => {
+  const c = continuationDriver();
+  c.activities.runCodexAppServerTurn.mockImplementation(async () => { throw error(); });
+  const handle = await h.start("roomAgentSupervisorWorkflow", c.workflowInput);
+  const end = handle.result().catch(() => undefined);
+  await c.finished.promise;
+  const prepared = c.prepared[0];
+  expect(c.store.getRoomAgentTurn(c.initial.mission.id, prepared.turn.agentRunId)?.run).toMatchObject({ status: "FAILED", errorCode: code });
+  expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("FAILED");
+  expect(c.activities.finishRoomAgentSupervisorTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED", errorCode: code }));
+  await handle.terminate("Synthetic test cleanup"); await end;
+  await h.capture(`supervisor-failure-${code}`, handle);
+}, 30_000);
+
+it.each(["stop", "follow-up"])("real sandbox retires prepared work when %s arrives before the activity response", async kind => {
+  const c = continuationDriver();
+  const discarded = deferred();
+  const originalDiscard = c.activities.discardRoomAgentSupervisorTurn.getMockImplementation()!;
+  c.activities.discardRoomAgentSupervisorTurn.mockImplementation(async value => { await originalDiscard(value); discarded.resolve(); });
+  let handle: Awaited<ReturnType<typeof h.start>>;
+  c.activities.prepareRoomAgentBackgroundContinuation.mockImplementationOnce(async value => {
+    const result = await prepareBackgroundContinuation(value, c.store);
+    if (result.state === "READY") c.prepared.push(result.item);
+    if (kind === "stop") {
+      c.store.updateRoomAgentMission(c.initial.mission.id, { status: "INTERRUPTED" });
+      await handle.signal(ROOM_AGENT_STOP_SIGNAL, { missionId: null, reason: "Synthetic stop" });
+    } else {
+      const followUp = c.enqueue("follow-up", "Only inspect the room.");
+      await handle.signal(ROOM_AGENT_ENQUEUE_SIGNAL, followUp.queueItem);
+    }
+    return result;
+  });
+  handle = await h.start("roomAgentSupervisorWorkflow", c.workflowInput);
+  const end = handle.result().catch(() => undefined);
+  await discarded.promise;
+  expect(c.store.getRoomAgentTurn(c.initial.mission.id, c.prepared[0].turn.agentRunId)?.run.status).toBe("INTERRUPTED");
+  if (kind === "stop") expect(c.activities.runCodexAppServerTurn).not.toHaveBeenCalled();
+  else {
+    await c.finished.promise;
+    expect(c.activities.runCodexAppServerTurn.mock.calls[0]![0].roomAgentOperatorRequest).toBe("Only inspect the room.");
+  }
+  await handle.terminate("Synthetic test cleanup"); await end;
+  await h.capture(`supervisor-prepare-race-${kind}`, handle);
+}, 30_000);
+
+it("real sandbox carries a prepared continuation and starts it exactly once", async () => {
+  const c = continuationDriver();
+  const handle = await h.start("roomAgentSupervisorWorkflow", { ...c.workflowInput, processedCount: 50 });
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
+  const history = await h.capture("supervisor-prepared-rollover", handle);
+  const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  const carried = roomAgentSupervisorInputSchema.parse(defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!));
+  expect(carried.pending).toHaveLength(1);
+  expect(history.events!.some(event => event.startChildWorkflowExecutionInitiatedEventAttributes)).toBe(false);
+  const next = h.env.client.workflow.getHandle(handle.workflowId);
+  const end = next.result().catch(() => undefined);
+  await c.finished.promise;
+  expect(c.activities.runCodexAppServerTurn).toHaveBeenCalledOnce();
+  expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("COMPLETED");
+  await next.terminate("Synthetic test cleanup"); await end;
+}, 30_000);
+
+it("real sandbox drains excess signals until the carried queue fits the schema", async () => {
+  let flooded = false;
+  let handle: Awaited<ReturnType<typeof h.start>>;
+  const pending = (index: number) => ({ ...item(`bound-${index}`), missionId: "mission:carry-bound" });
+  h.setStubs({ checkRoomAgentSupervisorTurn: async () => {
+    if (!flooded) { flooded = true; for (let index = 1; index <= 105; index++) await handle.signal(ROOM_AGENT_ENQUEUE_SIGNAL, pending(index)); }
+    return "SKIP";
+  }, discardRoomAgentSupervisorTurn: async () => undefined });
+  handle = await h.start("roomAgentSupervisorWorkflow", input({ pending: [pending(0)], processedCount: 49 }));
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
+  const history = await h.capture("supervisor-bounded-rollover", handle);
+  const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  const carried = roomAgentSupervisorInputSchema.parse(defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!));
+  expect(carried.pending).toEqual(Array.from({ length: 100 }, (_, index) => roomAgentSupervisorInputSchema.parse(input({ pending: [pending(index + 6)] })).pending[0]));
+  expect(history.events!.filter(event => event.activityTaskScheduledEventAttributes?.activityType?.name === "checkRoomAgentSupervisorTurn")).toHaveLength(6);
+  await h.env.client.workflow.getHandle(handle.workflowId).terminate("Synthetic test cleanup");
+}, 30_000);
+
+it("real pre-patch sandbox uses the boolean settle contract", async () => {
+  const settled = deferred();
+  const legacy = vi.fn(async () => { settled.resolve(); return true; });
+  const current = vi.fn();
+  h.setStubs({ settleRoomAgentBackgroundMission: legacy, prepareRoomAgentBackgroundContinuation: current });
+  const handle = await h.start("roomAgentSupervisorWorkflow", input({ monitoringMissionIds: ["mission:legacy"] }), true);
+  const end = handle.result().catch(() => undefined);
+  await settled.promise;
+  expect(legacy).toHaveBeenCalledOnce(); expect(current).not.toHaveBeenCalled();
+  await handle.terminate("Synthetic test cleanup"); await end;
+  await h.capture("supervisor-pre-patch-boolean", handle);
 }, 30_000);
 
 it("replays every frozen history against production workflows", async () => {
