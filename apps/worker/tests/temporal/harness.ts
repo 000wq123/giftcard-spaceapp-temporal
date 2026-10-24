@@ -4,6 +4,7 @@ import { resolve, dirname } from "node:path";
 import { bundleWorkflowCode, Worker, type WorkflowBundle } from "@temporalio/worker";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { temporal } from "@temporalio/proto";
+import { historyToJSON } from "@temporalio/common/lib/proto-utils.js";
 import { MEMORY_MUTATION_TASK_QUEUE } from "@space/contracts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,8 +60,7 @@ export async function createHarness() {
       const history = await handle.fetchHistory();
       if (process.env.TEMPORAL_RECORD_HISTORIES === "1") {
         await mkdir(historiesDir, { recursive: true });
-        const json = temporal.api.history.v1.History.toObject(temporal.api.history.v1.History.fromObject(history), { json: true });
-        await writeFile(resolve(historiesDir, `${name}.json`), JSON.stringify(json, null, 2) + "\n");
+        await writeFile(resolve(historiesDir, `${name}.json`), historyToJSON(history) + "\n");
       }
       return history;
     },

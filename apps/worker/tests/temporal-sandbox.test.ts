@@ -47,14 +47,14 @@ it("wakes a paused goal without waiting an hour", async () => {
   let steps = 0;
   h.setStubs({ dotGoalStep: async () => { if (++steps === 1) { entered.resolve(); return { state: "PAUSED", runId: null, goalStatus: "PAUSED" }; }
     return { state: "DONE", runId: null, goalStatus: "COMPLETED" }; } });
-  const before = await h.env.currentTimeMs();
   const handle = await h.start("dotGoalWorkflow", { goalId: "goal:wake" });
   await entered.promise;
   await handle.signal(DOT_GOAL_SIGNAL);
   expect(await handle.result()).toEqual({ goalStatus: "COMPLETED" });
-  expect(await h.env.currentTimeMs() - before).toBeLessThan(60_000);
   expect(steps).toBe(2);
-  await h.capture("dotGoalWorkflow", handle);
+  const history = await h.capture("dotGoalWorkflow", handle);
+  expect(history.events!.some(event => event.workflowExecutionSignaledEventAttributes)).toBe(true);
+  expect(history.events!.some(event => event.timerFiredEventAttributes)).toBe(false);
 });
 
 it("skips real goal polling timers and observes a completed turn", async () => {
@@ -73,7 +73,7 @@ it("continues an unfinished goal as new at the iteration limit", async () => {
   let steps = 0;
   h.setStubs({ dotGoalStep: async () => ++steps <= 300 ? { state: "WAITING", runId: null, goalStatus: "ACTIVE" } : { state: "DONE", runId: null, goalStatus: "COMPLETED" } });
   const handle = await h.start("dotGoalWorkflow", { goalId: "goal:carried" });
-  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
   const history = await h.capture("dotGoalWorkflow-continue", handle);
   const continued = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
   expect(defaultPayloadConverter.fromPayload(continued.input!.payloads![0]!)).toEqual({ goalId: "goal:carried" });
@@ -137,7 +137,7 @@ it.each([false, true])("supervisor (%s pre-patch) carries queued work through th
   h.setStubs({ [check]: async () => { checked.resolve(); return "RUN"; }, [finished]: calls, runCodexAppServerTurn: async () => verified });
   const first = item(`carry-${legacy}-1`), second = item(`carry-${legacy}-2`);
   const handle = await h.start("roomAgentSupervisorWorkflow", input({ pending: [first, second], processedCount: 49 }), legacy);
-  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
   const history = await h.capture(legacy ? "roomAgentSupervisorWorkflow-pre-patch" : "roomAgentSupervisorWorkflow", handle);
   const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
   const carried = defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any;
@@ -152,7 +152,7 @@ it.each([false, true])("supervisor (%s pre-patch) polls for 250 seconds and carr
   h.setStubs({ settleRoomAgentBackgroundMission: async () => { ++polls; return false; }, prepareRoomAgentBackgroundContinuation: async () => { ++polls; return { state: "WAITING" }; } });
   const before = await h.env.currentTimeMs();
   const handle = await h.start("roomAgentSupervisorWorkflow", input({ monitoringMissionIds: ["mission:monitor"] }), legacy);
-  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
   const history = await h.capture(`supervisor-polls-${legacy ? "legacy" : "current"}`, handle);
   const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
   expect((defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any).monitoringMissionIds).toEqual(["mission:monitor"]);
@@ -164,14 +164,19 @@ it.each([false, true])("supervisor (%s pre-patch) enqueues a mission and cancels
   const running = deferred(); const stopped = deferred();
   const persist = vi.fn(async () => { stopped.resolve(); });
   h.setStubs({ checkRoomAgentSupervisorTurn: async () => "RUN", markRoomAgentMissionStarted: async () => undefined,
-    runCodexAppServerTurn: async () => { const context = Context.current(); context.heartbeat(); running.resolve(); await context.cancelled; },
+    runCodexAppServerTurn: async () => {
+      const context = Context.current();
+      const heartbeat = setInterval(() => context.heartbeat(), 20);
+      running.resolve();
+      try { await context.cancelled; } finally { clearInterval(heartbeat); }
+    },
     markRoomAgentMissionFinished: persist, finishRoomAgentSupervisorTurn: persist, discardRoomAgentSupervisorTurn: async () => undefined });
   const handle = await h.start("roomAgentSupervisorWorkflow", input(), legacy);
   const mission = item(`cancel-${legacy}`);
   await handle.signal(ROOM_AGENT_ENQUEUE_SIGNAL, mission);
   await running.promise;
   await handle.signal(ROOM_AGENT_STOP_SIGNAL, { missionId: mission.missionId, reason: "Synthetic stop" });
-  await h.env.sleep("20 seconds"); await stopped.promise;
+  await stopped.promise;
   expect(persist).toHaveBeenCalledWith(expect.objectContaining({ status: "INTERRUPTED", statusReason: "Synthetic stop" }));
   await handle.terminate("Synthetic test cleanup");
   await h.capture(`supervisor-cancel-${legacy ? "legacy" : "current"}`, handle);
