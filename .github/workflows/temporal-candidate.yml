@@ -1,0 +1,44 @@
+name: Temporal candidate verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: temporal-time-skipping
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+      - name: Resolve matching testing dependency
+        run: npm install --package-lock-only --ignore-scripts --save-exact -D -w @space/worker @temporalio/testing@1.24.0
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: npm ci
+      - name: Build workflow contracts
+        run: npm run build -w @space/contracts
+      - name: Record synthetic histories with all sandbox assertions
+        env:
+          TEMPORAL_RECORD_HISTORIES: '1'
+        run: npm exec -w @space/worker -- vitest run tests/temporal-sandbox.test.ts --reporter=verbose
+      - name: Verify frozen histories without recording
+        run: npm exec -w @space/worker -- vitest run tests/temporal-sandbox.test.ts --reporter=verbose
+      - name: Preserve tested lockfile and synthetic history fixtures
+        run: |
+          git config user.name 'Davor Petrovski'
+          git config user.email 'davor7282@gmail.com'
+          git add apps/worker/package.json package-lock.json apps/worker/tests/fixtures/workflow-histories
+          npm run hygiene:preflight
+          if ! git diff --cached --quiet; then
+            git commit -s -m 'test(worker): record real sandbox histories and pin testing SDK'
+            git push origin HEAD:temporal-time-skipping
+          fi
+      - name: Check workspace
+        run: npm run check
+      - name: Worker suite
+        run: npm test -w @space/worker

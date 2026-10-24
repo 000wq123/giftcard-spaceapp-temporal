@@ -1,0 +1,192 @@
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
+import { Context } from "@temporalio/activity";
+import { bundleWorkflowCode, Worker } from "@temporalio/worker";
+import { fileURLToPath } from "node:url";
+import { ROOM_AGENT_ENQUEUE_SIGNAL, ROOM_AGENT_STOP_SIGNAL, DOT_GOAL_SIGNAL } from "@space/contracts";
+import { createHarness, frozenHistories, historiesDir, replayErrors } from "./temporal/harness.js";
+
+let h: Awaited<ReturnType<typeof createHarness>>;
+beforeAll(async () => { h = await createHarness(); }, 60_000);
+afterAll(async () => { await h?.close(); }, 20_000);
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+const turn = (id: string) => ({ roomId: "room:synthetic", paneId: "pane:synthetic", prompt: "Synthetic test task",
+  artifactIds: [], agentRunId: `agent_run:${id}`, permissionMode: null, collaborationMode: "default", traceId: `trace:${id}` });
+const item = (id: string) => ({ missionId: `mission:${id}`, turn: turn(id) });
+const verified = { status: "COMPLETED", message: "Synthetic success", roomAgentOutcome: { status: "VERIFIED", executedActionCount: 1, statusReason: "Synthetic evidence" } };
+const input = (extra = {}) => ({ roomId: "room:synthetic", pending: [], interrupted: [], processedCount: 0, monitoringMissionIds: [], ...extra });
+const failed = () => ApplicationFailure.nonRetryable("Synthetic expected failure", "SYNTHETIC_FAILURE");
+
+it("dummy turn retries a failed activity and returns the completion", async () => {
+  let attempts = 0;
+  const completed = { ...turn("dummy"), status: "COMPLETED", message: "Synthetic completion" };
+  h.setStubs({ recordDummyTurnStarted: async () => { if (++attempts < 3) throw Error("Retry me"); }, recordDummyTurnCompleted: async () => completed });
+  const handle = await h.start("dummyTurnWorkflow", turn("dummy"));
+  expect(await handle.result()).toEqual(completed);
+  expect(attempts).toBe(3);
+  await h.capture("dummyTurnWorkflow", handle);
+}, 30_000);
+
+it.each(["opencode", "claude", "codex"])("routes the %s turn to the real workflow's activity", async providerId => {
+  let attempts = 0;
+  const run = vi.fn(async () => { if (providerId === "codex" && ++attempts < 2) throw Error("Retry turn"); return verified; });
+  h.setStubs({ runOpenCodeAgentTurn: run, runCliAgentTurn: run, runCodexAppServerTurn: run });
+  const handle = await h.start("codexAppServerTurnWorkflow", { ...turn(providerId), providerId });
+  expect(await handle.result()).toEqual(verified);
+  expect(run).toHaveBeenCalled();
+  if (providerId === "codex") { expect(attempts).toBe(2); await h.capture("codexAppServerTurnWorkflow", handle); }
+}, 30_000);
+
+it("wakes a paused goal without waiting an hour", async () => {
+  const entered = deferred();
+  let steps = 0;
+  h.setStubs({ dotGoalStep: async () => { if (++steps === 1) { entered.resolve(); return { state: "PAUSED", runId: null, goalStatus: "PAUSED" }; }
+    return { state: "DONE", runId: null, goalStatus: "COMPLETED" }; } });
+  const before = await h.env.currentTimeMs();
+  const handle = await h.start("dotGoalWorkflow", { goalId: "goal:wake" });
+  await entered.promise;
+  await handle.signal(DOT_GOAL_SIGNAL);
+  expect(await handle.result()).toEqual({ goalStatus: "COMPLETED" });
+  expect(await h.env.currentTimeMs() - before).toBeLessThan(60_000);
+  expect(steps).toBe(2);
+  await h.capture("dotGoalWorkflow", handle);
+});
+
+it("skips real goal polling timers and observes a completed turn", async () => {
+  let steps = 0;
+  const observe = vi.fn(async () => ({ run: "COMPLETED", goalStatus: "ACTIVE" }));
+  h.setStubs({ dotGoalStep: async () => ++steps === 1 ? { state: "STARTED", runId: "run:synthetic", goalStatus: "ACTIVE" } : { state: "DONE", runId: null, goalStatus: "COMPLETED" }, dotGoalObserve: observe });
+  const before = await h.env.currentTimeMs();
+  const handle = await h.start("dotGoalWorkflow", { goalId: "goal:timeout" });
+  expect(await handle.result()).toEqual({ goalStatus: "COMPLETED" });
+  expect(await h.env.currentTimeMs() - before).toBeGreaterThanOrEqual(15_000);
+  expect(observe).toHaveBeenCalledExactlyOnceWith("goal:timeout", "run:synthetic");
+  await h.capture("dotGoalWorkflow-timeout", handle);
+});
+
+it("continues an unfinished goal as new at the iteration limit", async () => {
+  let steps = 0;
+  h.setStubs({ dotGoalStep: async () => ++steps <= 300 ? { state: "WAITING", runId: null, goalStatus: "ACTIVE" } : { state: "DONE", runId: null, goalStatus: "COMPLETED" } });
+  const handle = await h.start("dotGoalWorkflow", { goalId: "goal:carried" });
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  const history = await h.capture("dotGoalWorkflow-continue", handle);
+  const continued = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  expect(defaultPayloadConverter.fromPayload(continued.input!.payloads![0]!)).toEqual({ goalId: "goal:carried" });
+  expect(await h.env.client.workflow.getHandle(handle.workflowId).result()).toEqual({ goalStatus: "COMPLETED" });
+}, 45_000);
+
+it("persists background action failure after retries and uses the legacy action id", async () => {
+  let attempts = 0;
+  const persist = vi.fn(async () => undefined);
+  h.setStubs({ runRoomAgentBackgroundAction: async () => { ++attempts; throw Error("Synthetic transport failure"); }, failRoomAgentBackgroundAction: persist });
+  const handle = await h.start("roomAgentActionWorkflow", { bridge: { roomId: "room:synthetic", missionId: "mission:synthetic" }, traceId: "trace:synthetic" }, false, "space-room-action:action:legacy");
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowFailedError" });
+  expect(attempts).toBe(5);
+  expect(persist).toHaveBeenCalledExactlyOnceWith({ roomId: "room:synthetic", missionId: "mission:synthetic", actionId: "action:legacy", cancelled: false });
+  await h.capture("roomAgentActionWorkflow", handle);
+}, 30_000);
+
+it("memory maintenance survives auxiliary failures and executes consolidation as a child", async () => {
+  const snapshot = { sourceHash: "synthetic-source", nodes: 0, edges: 0 };
+  const refresh = vi.fn(async () => { throw failed(); });
+  const reconcile = vi.fn(async () => { throw failed(); });
+  const prepare = vi.fn(async () => ({ changeSetId: "change:synthetic", run: { id: "audit:synthetic" } }));
+  const finalize = vi.fn(async () => ({ id: "audit:synthetic", status: "COMPLETED" }));
+  let mutations = 0;
+  h.setStubs({ refreshMemoryGraphSnapshot: async () => snapshot, refreshAllMonthsMemoryGraphSnapshot: refresh,
+    reconcileStaleSpaceAgentSessions: reconcile, createScheduledMemoryAudit: async () => ({ id: "audit:synthetic", workflowId: "synthetic-consolidation-child" }),
+    prepareMemoryConsolidation: prepare, executePersistedMemoryChangeSet: async () => { if (++mutations < 3) throw Error("Retry mutation"); return { status: "APPLIED" }; }, finalizeMemoryRepair: finalize });
+  const handle = await h.start("memoryMaintenanceWorkflow", { traceId: "trace:memory" });
+  expect(await handle.result()).toEqual(snapshot);
+  expect(refresh).toHaveBeenCalledOnce(); expect(reconcile).toHaveBeenCalledOnce();
+  expect(prepare).toHaveBeenCalledExactlyOnceWith({ runId: "audit:synthetic", traceId: "trace:memory" });
+  expect(mutations).toBe(3); expect(finalize).toHaveBeenCalledOnce();
+  await h.capture("memoryMaintenanceWorkflow", handle);
+  await h.capture("memoryConsolidationWorkflow", h.env.client.workflow.getHandle("synthetic-consolidation-child"));
+}, 30_000);
+
+it("consolidation without a change set does not mutate", async () => {
+  const run = { id: "audit:no-change", status: "COMPLETED" };
+  const mutate = vi.fn();
+  h.setStubs({ prepareMemoryConsolidation: async () => ({ changeSetId: null, run }), executePersistedMemoryChangeSet: mutate });
+  const handle = await h.start("memoryConsolidationWorkflow", { runId: run.id, traceId: "trace:memory" });
+  expect(await handle.result()).toEqual(run); expect(mutate).not.toHaveBeenCalled();
+});
+
+it("mutation retries activity errors and propagates terminal failure", async () => {
+  let attempts = 0;
+  h.setStubs({ executePersistedMemoryChangeSet: async () => { if (++attempts < 3) throw Error("Retry mutation"); return { status: "APPLIED" }; } });
+  const handle = await h.start("memoryMutationWorkflow", { changeSetId: "change:standalone", traceId: "trace:mutation" });
+  expect(await handle.result()).toEqual({ status: "APPLIED" }); expect(attempts).toBe(3);
+  await h.capture("memoryMutationWorkflow", handle);
+  h.setStubs({ executePersistedMemoryChangeSet: async () => { throw failed(); } });
+  const failure = await h.start("memoryMutationWorkflow", { changeSetId: "change:failed", traceId: "trace:mutation" });
+  await expect(failure.result()).rejects.toMatchObject({ name: "WorkflowFailedError" });
+});
+
+it.each([false, true])("supervisor (%s pre-patch) carries queued work through the 50-item rollover", async legacy => {
+  const checked = deferred();
+  const finished = legacy ? "markRoomAgentMissionFinished" : "finishRoomAgentSupervisorTurn";
+  const check = legacy ? "markRoomAgentMissionStarted" : "checkRoomAgentSupervisorTurn";
+  const calls = vi.fn(async () => undefined);
+  h.setStubs({ [check]: async () => { checked.resolve(); return "RUN"; }, [finished]: calls, runCodexAppServerTurn: async () => verified });
+  const first = item(`carry-${legacy}-1`), second = item(`carry-${legacy}-2`);
+  const handle = await h.start("roomAgentSupervisorWorkflow", input({ pending: [first, second], processedCount: 49 }), legacy);
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  const history = await h.capture(legacy ? "roomAgentSupervisorWorkflow-pre-patch" : "roomAgentSupervisorWorkflow", handle);
+  const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  const carried = defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any;
+  expect(carried.pending).toEqual([second]); expect(carried.processedCount).toBe(0); expect(carried.monitoringMissionIds).toEqual([]);
+  // New runs use the current implementation, including when continuing old histories.
+  await h.env.client.workflow.getHandle(handle.workflowId).terminate("Synthetic test cleanup");
+  expect(calls).toHaveBeenCalled();
+}, 30_000);
+
+it.each([false, true])("supervisor (%s pre-patch) polls for 250 seconds and carries monitoring state", async legacy => {
+  let polls = 0;
+  h.setStubs({ settleRoomAgentBackgroundMission: async () => { ++polls; return false; }, prepareRoomAgentBackgroundContinuation: async () => { ++polls; return { state: "WAITING" }; } });
+  const before = await h.env.currentTimeMs();
+  const handle = await h.start("roomAgentSupervisorWorkflow", input({ monitoringMissionIds: ["mission:monitor"] }), legacy);
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowContinuedAsNewError" });
+  const history = await h.capture(`supervisor-polls-${legacy ? "legacy" : "current"}`, handle);
+  const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  expect((defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any).monitoringMissionIds).toEqual(["mission:monitor"]);
+  expect(polls).toBeGreaterThanOrEqual(250); expect(await h.env.currentTimeMs() - before).toBeGreaterThanOrEqual(250_000);
+  await h.env.client.workflow.getHandle(handle.workflowId).terminate("Synthetic test cleanup");
+}, 45_000);
+
+it.each([false, true])("supervisor (%s pre-patch) enqueues a mission and cancels its running child", async legacy => {
+  const running = deferred(); const stopped = deferred();
+  const persist = vi.fn(async () => { stopped.resolve(); });
+  h.setStubs({ checkRoomAgentSupervisorTurn: async () => "RUN", markRoomAgentMissionStarted: async () => undefined,
+    runCodexAppServerTurn: async () => { const context = Context.current(); context.heartbeat(); running.resolve(); await context.cancelled; },
+    markRoomAgentMissionFinished: persist, finishRoomAgentSupervisorTurn: persist, discardRoomAgentSupervisorTurn: async () => undefined });
+  const handle = await h.start("roomAgentSupervisorWorkflow", input(), legacy);
+  const mission = item(`cancel-${legacy}`);
+  await handle.signal(ROOM_AGENT_ENQUEUE_SIGNAL, mission);
+  await running.promise;
+  await handle.signal(ROOM_AGENT_STOP_SIGNAL, { missionId: mission.missionId, reason: "Synthetic stop" });
+  await h.env.sleep("20 seconds"); await stopped.promise;
+  expect(persist).toHaveBeenCalledWith(expect.objectContaining({ status: "INTERRUPTED", statusReason: "Synthetic stop" }));
+  await handle.terminate("Synthetic test cleanup");
+  await h.capture(`supervisor-cancel-${legacy ? "legacy" : "current"}`, handle);
+}, 30_000);
+
+it("replays every frozen history against production workflows", async () => {
+  expect(await replayErrors(h.current), `Frozen history replay failed in ${historiesDir}`).toEqual([]);
+}, 30_000);
+
+it("rejects an added timer with a determinism error naming the frozen history", async () => {
+  const bundle = await bundleWorkflowCode({ workflowsPath: fileURLToPath(new URL("./temporal/extra-timer.ts", import.meta.url)) });
+  const selected = async function* () { for await (const history of frozenHistories()) if (history.workflowId === "dotGoalWorkflow.json") yield history; };
+  const failures = [];
+  for await (const result of Worker.runReplayHistories({ workflowBundle: bundle }, selected())) if (result.error) failures.push(result);
+  expect(failures).toHaveLength(1);
+  expect(failures[0]!.workflowId).toBe("dotGoalWorkflow.json");
+  expect(failures[0]!.error?.name).toBe("DeterminismViolationError");
+}, 30_000);
