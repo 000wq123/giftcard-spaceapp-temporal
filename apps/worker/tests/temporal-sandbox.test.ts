@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
+import { ApplicationFailure, defaultPayloadConverter, TimeoutFailure, TimeoutType } from "@temporalio/common";
 import { Context } from "@temporalio/activity";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { fileURLToPath } from "node:url";
@@ -51,7 +51,11 @@ it.each([
   expect(providerId === "opencode" ? cli : openCode).not.toHaveBeenCalled();
   const history = await h.capture(native ? "turn-native" : providerId === "codex" ? "codexAppServerTurnWorkflow" : `turn-${providerId.replace(":", "-")}`, handle);
   const scheduled = history.events!.find(event => event.activityTaskScheduledEventAttributes)!.activityTaskScheduledEventAttributes!;
-  expect(Number(scheduled.startToCloseTimeout!.seconds)).toBe(timeout);
+  const started = history.events!.find(event => event.workflowExecutionStartedEventAttributes)!.workflowExecutionStartedEventAttributes!;
+  const runLimit = Number(started.workflowRunTimeout!.seconds);
+  expect(runLimit).toBeGreaterThan(0);
+  // The Java time-skipping server caps long activity timeouts at the run limit.
+  expect(Number(scheduled.startToCloseTimeout!.seconds)).toBe(Math.min(timeout, runLimit));
   if (providerId === "codex") expect(attempts).toBe(2);
 }, 30_000);
 
@@ -149,11 +153,10 @@ it("mutation retries activity errors and propagates terminal failure", async () 
 });
 
 it.each([false, true])("supervisor (%s pre-patch) carries queued work through the 50-item rollover", async legacy => {
-  const checked = deferred();
   const finished = legacy ? "markRoomAgentMissionFinished" : "finishRoomAgentSupervisorTurn";
   const check = legacy ? "markRoomAgentMissionStarted" : "checkRoomAgentSupervisorTurn";
   const calls = vi.fn(async () => undefined);
-  h.setStubs({ [check]: async () => { checked.resolve(); return "RUN"; }, [finished]: calls, runCodexAppServerTurn: async () => verified });
+  h.setStubs({ [check]: async () => "RUN", [finished]: calls, runCodexAppServerTurn: async () => verified });
   const first = item(`carry-${legacy}-1`), second = item(`carry-${legacy}-2`);
   const handle = await h.start("roomAgentSupervisorWorkflow", input({ pending: [first, second], processedCount: 49 }), legacy);
   await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
@@ -161,7 +164,7 @@ it.each([false, true])("supervisor (%s pre-patch) carries queued work through th
   const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
   const carried = defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any;
   expect(carried.pending).toEqual([second]); expect(carried.processedCount).toBe(0); expect(carried.monitoringMissionIds).toEqual([]);
-  // New runs use the current implementation, including when continuing old histories.
+  // Terminate the next run only after inspecting the first run's durable input.
   await h.env.client.workflow.getHandle(handle.workflowId).terminate("Synthetic test cleanup");
   expect(calls).toHaveBeenCalled();
 }, 30_000);
@@ -173,6 +176,9 @@ it.each([false, true])("supervisor (%s pre-patch) polls for 250 seconds and carr
   const handle = await h.start("roomAgentSupervisorWorkflow", input({ monitoringMissionIds: ["mission:monitor"] }), legacy);
   await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
   const history = await h.capture(`supervisor-polls-${legacy ? "legacy" : "current"}`, handle);
+  const pollActivity = legacy ? "settleRoomAgentBackgroundMission" : "prepareRoomAgentBackgroundContinuation";
+  expect(history.events!.filter(event => event.activityTaskScheduledEventAttributes?.activityType?.name === pollActivity)).toHaveLength(250);
+  expect(history.events!.filter(event => event.timerFiredEventAttributes)).toHaveLength(250);
   const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
   expect((defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!) as any).monitoringMissionIds).toEqual(["mission:monitor"]);
   expect(polls).toBeGreaterThanOrEqual(250); expect(await h.env.currentTimeMs() - before).toBeGreaterThanOrEqual(250_000);
@@ -243,19 +249,12 @@ it("real sandbox executes allocation, send and verification in one durable missi
 
 it.each([
   ["plain error", () => Error("Synthetic child failure"), "ROOM_AGENT_SUPERVISOR_FAILED"],
-  ["timeout", () => Error("Synthetic heartbeat timeout"), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
+  ["serialized timeout cause", () => ApplicationFailure.create({ message: "Synthetic transport failure", type: "SYNTHETIC_TRANSPORT_FAILURE", nonRetryable: true,
+    cause: new TimeoutFailure("Synthetic timeout cause", undefined, TimeoutType.HEARTBEAT) }), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
   ["application failure", () => ApplicationFailure.nonRetryable("Synthetic turn timeout", "CODEX_APP_SERVER_TURN_TIMEOUT"), "CODEX_APP_SERVER_TURN_TIMEOUT"]
 ] as const)("real sandbox preserves %s as a failed turn with its cause code", async (kind, error, code) => {
   const c = continuationDriver();
-  c.activities.runCodexAppServerTurn.mockImplementation(async () => {
-    if (kind === "timeout") {
-      // Expire the actual 15-second heartbeat deadline on the test server.
-      // Throwing a TimeoutFailure in an activity would be an application error.
-      await h.env.sleep("16 seconds");
-      return verified;
-    }
-    throw error();
-  });
+  c.activities.runCodexAppServerTurn.mockImplementation(async () => { throw error(); });
   const handle = await h.start("roomAgentSupervisorWorkflow", c.workflowInput);
   const end = handle.result().catch(() => undefined);
   await c.finished.promise;
@@ -264,7 +263,13 @@ it.each([
   expect(c.store.getRoomAgentMission(c.room.id, c.initial.mission.id)?.status).toBe("FAILED");
   expect(c.activities.finishRoomAgentSupervisorTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED", errorCode: code }));
   await handle.terminate("Synthetic test cleanup"); await end;
-  await h.capture(`supervisor-failure-${code}`, handle);
+  const history = await h.capture(`supervisor-failure-${code}`, handle);
+  if (kind === "serialized timeout cause") {
+    let failure = history.events!.find(event => event.childWorkflowExecutionFailedEventAttributes)!.childWorkflowExecutionFailedEventAttributes!.failure;
+    let timeoutCause = false;
+    while (failure) { if (failure.timeoutFailureInfo) timeoutCause = true; failure = failure.cause; }
+    expect(timeoutCause).toBe(true);
+  }
 }, 30_000);
 
 it.each(["stop", "follow-up"])("real sandbox retires prepared work when %s arrives before the activity response", async kind => {

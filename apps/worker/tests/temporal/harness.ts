@@ -12,6 +12,11 @@ export const workflowsPath = resolve(here, "workflows.ts");
 export const currentQueue = "synthetic-workflows";
 export const legacyQueue = "synthetic-pre-patch";
 export const maintenanceQueue = "space-memory-maintenance";
+const requiredBaselines = [
+  "dotGoalWorkflow", "dummyTurnWorkflow", "codexAppServerTurnWorkflow",
+  "roomAgentSupervisorWorkflow", "roomAgentSupervisorWorkflow-pre-patch", "roomAgentActionWorkflow",
+  "memoryMaintenanceWorkflow", "memoryConsolidationWorkflow", "memoryMutationWorkflow"
+];
 const activityNames = [
   "recordDummyTurnStarted", "recordDummyTurnCompleted", "runOpenCodeAgentTurn", "runCliAgentTurn", "runCodexAppServerTurn",
   "dotGoalStep", "dotGoalObserve", "markRoomAgentMissionStarted", "markRoomAgentMissionFinished", "markRoomAgentMissionContinued",
@@ -33,6 +38,7 @@ async function workflowBundles() {
 }
 
 export async function createHarness() {
+  const { current, legacy } = await (bundles ??= workflowBundles());
   const env = await TestWorkflowEnvironment.createTimeSkipping();
   let stubs: Stubs = {};
   const activities = Object.fromEntries(activityNames.map(name => [name, (...args: any[]) => {
@@ -40,7 +46,6 @@ export async function createHarness() {
     if (!stub) throw new Error(`Missing synthetic activity stub: ${name}`);
     return stub(...args);
   }]));
-  const { current, legacy } = await (bundles ??= workflowBundles());
   const workers: Worker[] = [];
   try {
     for (const taskQueue of [currentQueue, legacyQueue, maintenanceQueue, MEMORY_MUTATION_TASK_QUEUE]) {
@@ -66,11 +71,16 @@ export async function createHarness() {
     async capture(name: string, handle: { fetchHistory(): Promise<temporal.api.history.v1.IHistory> }) {
       const history = await handle.fetchHistory();
       if (process.env.TEMPORAL_RECORD_HISTORIES === "1") {
+        const revision = process.env.TEMPORAL_HISTORY_REVISION ?? "";
+        if (revision && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(revision)) throw new Error("Invalid TEMPORAL_HISTORY_REVISION");
         await mkdir(historiesDir, { recursive: true });
         const json = temporal.api.history.v1.History.toObject(temporal.api.history.v1.History.fromObject(history), {
           bytes: String, longs: String, enums: String
         });
-        await writeFile(resolve(historiesDir, `${name}.json`), JSON.stringify(json, null, 2) + "\n");
+        // Preserve every old replay input. A patched change adds a versioned
+        // history; it must not erase the history proving the old branch.
+        const filename = `${name}${revision ? `--${revision}` : ""}.json`;
+        await writeFile(resolve(historiesDir, filename), JSON.stringify(json, null, 2) + "\n", { flag: "wx" });
       }
       return history;
     },
@@ -93,7 +103,8 @@ export async function createHarness() {
 
 export async function* frozenHistories() {
   const files = (await readdir(historiesDir)).filter(name => name.endsWith(".json")).sort();
-  if (files.length < 9) throw new Error("Missing frozen Temporal histories; do not generate them during ordinary tests");
+  const missing = requiredBaselines.filter(name => !files.includes(`${name}.json`));
+  if (missing.length) throw new Error(`Missing required frozen Temporal histories: ${missing.join(", ")}. Do not generate them during ordinary tests.`);
   for (const file of files) {
     // Restore longs, bytes, enums and timestamps before handing the history to
     // the SDK. Plain JSON objects cannot represent protobuf byte payloads.

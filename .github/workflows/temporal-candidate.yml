@@ -6,7 +6,7 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -23,6 +23,7 @@ jobs:
       - name: Build and check workspace dependencies
         run: npm run check
       - name: Record synthetic histories with all sandbox assertions
+        if: hashFiles('apps/worker/tests/fixtures/workflow-histories/dotGoalWorkflow.json') == ''
         env:
           TEMPORAL_RECORD_HISTORIES: '1'
         run: npm exec -w @space/worker -- vitest run tests/temporal-sandbox.test.ts --reporter=verbose
@@ -38,7 +39,17 @@ jobs:
             git commit -s -m 'test(worker): record real sandbox histories and pin testing SDK'
             git push origin HEAD:temporal-time-skipping
           fi
-      - name: Check workspace
-        run: npm run check
       - name: Worker suite
         run: npm test -w @space/worker
+      - name: Full public test suite
+        run: |
+          if npm test > "$RUNNER_TEMP/spaceapp-public-tests.txt" 2>&1; then
+            tail -n 100 "$RUNNER_TEMP/spaceapp-public-tests.txt"
+          else
+            tail -n 180 "$RUNNER_TEMP/spaceapp-public-tests.txt"
+            exit 1
+          fi
+      - name: Production build
+        run: npm run build
+      - name: Final hygiene preflight
+        run: npm run hygiene:preflight
