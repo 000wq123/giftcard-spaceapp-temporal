@@ -4,82 +4,53 @@ on:
 permissions:
   contents: read
 jobs:
-  candidate:
+  documentation:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 81104cfad49d86483d1926376e81be99d27d2f07
+          ref: 9aa8f2de7c043d9321c24bce44ce4d6a091ada78
           fetch-depth: 2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.22.0
-      - name: Install documented public test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ripgrep ffmpeg
       - name: Install frozen dependencies
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci
+      - name: Prove documentation changes preserve emitted code
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import ts from 'typescript';
+          const parent = '81104cfad49d86483d1926376e81be99d27d2f07';
+          const expected = [
+            'apps/api/tests/space-control-capture.test.ts',
+            'apps/worker/tests/temporal-sandbox.test.ts',
+            'apps/worker/tests/temporal/extra-timer.ts',
+            'apps/worker/tests/temporal/harness.ts',
+            'apps/worker/tests/temporal/pre-patch-loader.cjs'
+          ];
+          const files = execFileSync('git', ['diff', '--name-only', parent, 'HEAD'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+          assert.deepEqual(files.sort(), expected.sort());
+          const compilerOptions = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX, allowJs: true, checkJs: false, removeComments: true, sourceMap: false, inlineSourceMap: false };
+          function emit(source, fileName) {
+            const result = ts.transpileModule(source, { fileName, compilerOptions, reportDiagnostics: true });
+            const errors = (result.diagnostics ?? []).filter(item => item.category === ts.DiagnosticCategory.Error);
+            assert.equal(errors.length, 0, errors.map(item => ts.flattenDiagnosticMessageText(item.messageText, '\n')).join('\n'));
+            return result.outputText;
+          }
+          for (const file of files) {
+            const before = execFileSync('git', ['show', `${parent}:${file}`], { encoding: 'utf8' });
+            const after = readFileSync(file, 'utf8');
+            assert.equal(emit(after, file), emit(before, file), `Executable output changed: ${file}`);
+            console.log(`Identical emitted code: ${file}`);
+          }
+          NODE
       - name: Build and check workspace dependencies
         run: npm run check
-      - name: Prove notice lifecycle regression and fix
-        run: |
-          notice_source=apps/web/src/features/app-notices/useAppNotices.ts
-          cp "$notice_source" "$RUNNER_TEMP/useAppNotices-fixed.ts"
-          trap 'cp "$RUNNER_TEMP/useAppNotices-fixed.ts" "$notice_source"' EXIT
-          git show c7a7648785d74e476c089079dd876fd5aaa03c37:"$notice_source" > "$notice_source"
-          if npm exec -w @space/web -- vitest run tests/app-notices-lifecycle.test.tsx > "$RUNNER_TEMP/notice-baseline.txt" 2>&1; then
-            cat "$RUNNER_TEMP/notice-baseline.txt"
-            exit 1
-          fi
-          cat "$RUNNER_TEMP/notice-baseline.txt"
-          node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
-          const log = readFileSync(`${process.env.RUNNER_TEMP}/notice-baseline.txt`, 'utf8').replace(/\u001b\[[0-9;]*m/g, '');
-          if (!log.includes('UNMOUNTED_NOTICE_TIMER_LEAK') || !/Tests\s+1 failed\s*\|\s*1 passed/.test(log)) throw new Error('Baseline did not fail the intended lifecycle assertion');
-          NODE
-          cp "$RUNNER_TEMP/useAppNotices-fixed.ts" "$notice_source"
-          trap - EXIT
-          npm exec -w @space/web -- vitest run tests/app-notices-lifecycle.test.tsx
-          git diff --exit-code -- "$notice_source"
-      - name: Repeat capture regression
-        run: |
-          for capture_iteration in 1 2 3 4 5; do
-            npm exec -w @space/api -- vitest run tests/space-control-capture.test.ts --maxWorkers=2
-          done
-      - name: Production build
-        id: build
-        run: npm run build
-      - name: Full public test suite including frozen replay
-        run: |
-          if npm test > "$RUNNER_TEMP/spaceapp-public-tests.txt" 2>&1; then
-            tail -n 100 "$RUNNER_TEMP/spaceapp-public-tests.txt"
-          else
-            node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
-          const lines = readFileSync(`${process.env.RUNNER_TEMP}/spaceapp-public-tests.txt`, 'utf8').replace(/\u001b\[[0-9;]*m/g, '').split('\n');
-          const selected = new Set();
-          for (let i = 0; i < lines.length; i++) {
-            if (/FAIL |Failed Tests|AssertionError|ReferenceError:|^not ok |npm error|Error: spawn|Test Files.*failed|Errors.*error/.test(lines[i])) {
-              for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 20); j++) selected.add(j);
-            }
-          }
-          for (const i of [...selected].sort((a, b) => a - b).slice(0, 1200)) console.log(lines[i]);
-          NODE
-            tail -n 100 "$RUNNER_TEMP/spaceapp-public-tests.txt"
-            exit 1
-          fi
-      - name: Final hygiene preflight
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      - name: Hygiene preflight
         run: npm run hygiene:preflight
-      - name: Preserve full public test output
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: public-test-output
-          path: ${{ runner.temp }}/spaceapp-public-tests.txt
-          retention-days: 3
-          if-no-files-found: ignore
