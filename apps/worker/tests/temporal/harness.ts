@@ -28,6 +28,7 @@ const activityNames = [
 export type Stubs = Partial<Record<typeof activityNames[number], (...args: any[]) => any>>;
 let bundles: Promise<{ current: WorkflowBundle; legacy: WorkflowBundle }> | undefined;
 
+/** Bundle real current workflows and the pre-patch variant used by legacy sandbox cases. */
 async function workflowBundles() {
   const current = await bundleWorkflowCode({ workflowsPath });
   const legacy = await bundleWorkflowCode({ workflowsPath, webpackConfigHook(config) {
@@ -37,6 +38,7 @@ async function workflowBundles() {
   return { current, legacy };
 }
 
+/** Create an isolated time-skipping server and real workers; reuse only compiled bundles. */
 export async function createHarness() {
   const { current, legacy } = await (bundles ??= workflowBundles());
   const env = await TestWorkflowEnvironment.createTimeSkipping();
@@ -61,13 +63,16 @@ export async function createHarness() {
   const executions = new Set<string>();
   return {
     env, current,
+    /** Replace synthetic activity implementations; an unconfigured activity fails explicitly. */
     setStubs(next: Stubs) { stubs = next; },
+    /** Start a production workflow and pin its handle to this run before any continuation. */
     async start(type: string, input: unknown, legacy = false, id?: string) {
       const started = await env.client.workflow.start(type, { taskQueue: legacy ? legacyQueue : currentQueue,
         workflowId: id ?? `synthetic-${type}-${++serial}`, args: [input] });
       executions.add(started.workflowId);
       return env.client.workflow.getHandle(started.workflowId, started.firstExecutionRunId, { followRuns: false });
     },
+    /** Fetch real history and optionally append a new immutable, versioned recording. */
     async capture(name: string, handle: { fetchHistory(): Promise<temporal.api.history.v1.IHistory> }) {
       const history = await handle.fetchHistory();
       if (process.env.TEMPORAL_RECORD_HISTORIES === "1") {
@@ -84,6 +89,7 @@ export async function createHarness() {
       }
       return history;
     },
+    /** Terminate tracked executions still running, including their latest continued runs. */
     async cleanup() {
       for (const workflowId of executions) {
         const handle = env.client.workflow.getHandle(workflowId);
@@ -91,6 +97,7 @@ export async function createHarness() {
       }
       executions.clear();
     },
+    /** Drain all workers, tear down the server and surface background worker failures. */
     async close() {
       for (const worker of workers) worker.shutdown();
       const results = await finished;
@@ -101,6 +108,7 @@ export async function createHarness() {
   };
 }
 
+/** Yield decoded immutable fixtures in stable order, rejecting a missing workflow baseline. */
 export async function* frozenHistories() {
   const files = (await readdir(historiesDir)).filter(name => name.endsWith(".json")).sort();
   const missing = requiredBaselines.filter(name => !files.includes(`${name}.json`));
@@ -112,6 +120,7 @@ export async function* frozenHistories() {
   }
 }
 
+/** Replay every frozen fixture and collect SDK failures together with their fixture names. */
 export async function replayErrors(bundle: WorkflowBundle) {
   const errors: Array<{ workflowId: string; error: Error }> = [];
   for await (const result of Worker.runReplayHistories({ workflowBundle: bundle }, frozenHistories())) {

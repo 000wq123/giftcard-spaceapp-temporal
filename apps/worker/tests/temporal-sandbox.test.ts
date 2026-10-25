@@ -12,16 +12,21 @@ let h: Awaited<ReturnType<typeof createHarness>>;
 beforeEach(async () => { h = await createHarness(); }, 60_000);
 afterEach(async () => { try { await h?.cleanup(); } finally { await h?.close(); } }, 20_000);
 
+/** Synchronize signals with observed activity progress without a wall-clock sleep. */
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
+/** Build a deterministic turn input containing only synthetic identifiers and content. */
 const turn = (id: string) => ({ roomId: "room:synthetic", paneId: "pane:synthetic", prompt: "Synthetic test task",
   artifactIds: [], agentRunId: `agent_run:${id}`, permissionMode: null, collaborationMode: "default", traceId: `trace:${id}` });
+/** Wrap a synthetic turn in the supervisor's queued-mission shape. */
 const item = (id: string) => ({ missionId: `mission:${id}`, turn: turn(id) });
 const verified = { status: "COMPLETED", message: "Synthetic success", roomAgentOutcome: { status: "VERIFIED", executedActionCount: 1, statusReason: "Synthetic evidence" } };
+/** Build empty supervisor state with per-case continuation fields applied explicitly. */
 const input = (extra = {}) => ({ roomId: "room:synthetic", pending: [], interrupted: [], processedCount: 0, monitoringMissionIds: [], ...extra });
+/** Produce a terminal SDK failure so a test can exercise exhausted activity retries. */
 const failed = () => ApplicationFailure.nonRetryable("Synthetic expected failure", "SYNTHETIC_FAILURE");
 
 it("dummy turn retries a failed activity and returns the completion", async () => {
@@ -207,6 +212,7 @@ it.each([false, true])("supervisor (%s pre-patch) enqueues a mission and cancels
   await h.capture(`supervisor-cancel-${legacy ? "legacy" : "current"}`, handle);
 }, 30_000);
 
+/** Connect real in-memory continuation helpers to the sandbox and observe prepared/finished work. */
 function continuationDriver() {
   const c = continuationFixture();
   const finished = deferred();

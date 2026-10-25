@@ -1,5 +1,7 @@
-// Recording only: reproduce the code before the supervisor patch was introduced.
-// All Temporal APIs remain real. Never use this loader for the replay gate.
+/**
+ * Reproduce the pre-patch supervisor for legacy cases and synthetic history recording.
+ * All Temporal APIs remain real; the replay gate always uses the unmodified current bundle.
+ */
 module.exports = function (source) {
   const marker = 'patched("room-background-continuation-v1")';
   if (source.split(marker).length !== 2) throw new Error("Supervisor baseline changed; review the pre-patch recorder");

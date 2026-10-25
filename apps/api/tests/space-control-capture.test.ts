@@ -14,6 +14,7 @@ const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
+/** Exercise the real capture adapter with synthetic engine replies and temporary artifacts. */
 async function adapter(answer: (request: Record<string, unknown>) => unknown | Promise<unknown>) {
   const artifactRoot = await mkdtemp(join(tmpdir(), "space-control-capture-"));
   dirs.push(artifactRoot);
