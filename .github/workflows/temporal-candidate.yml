@@ -2,7 +2,7 @@ name: Temporal candidate verification
 on:
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   candidate:
     runs-on: ubuntu-latest
@@ -10,46 +10,50 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: temporal-time-skipping
+          ref: ac9c7464b7faa0a70e07971ae9732c112d2daa50
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.22.0
-      - name: Resolve matching testing dependency
-        run: npm install --package-lock-only --ignore-scripts --save-exact -D -w @space/worker @temporalio/testing@1.24.0
-      - name: Install dependencies
+      - name: Install documented public test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep ffmpeg
+      - name: Install frozen dependencies
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci
       - name: Build and check workspace dependencies
         run: npm run check
-      - name: Record synthetic histories with all sandbox assertions
-        if: hashFiles('apps/worker/tests/fixtures/workflow-histories/dotGoalWorkflow.json') == ''
-        env:
-          TEMPORAL_RECORD_HISTORIES: '1'
-        run: npm exec -w @space/worker -- vitest run tests/temporal-sandbox.test.ts --reporter=verbose
-      - name: Verify frozen histories without recording
-        run: npm exec -w @space/worker -- vitest run tests/temporal-sandbox.test.ts --reporter=verbose
-      - name: Preserve tested lockfile and synthetic history fixtures
-        run: |
-          git config user.name 'Davor Petrovski'
-          git config user.email 'davor7282@gmail.com'
-          git add apps/worker/package.json package-lock.json apps/worker/tests/fixtures/workflow-histories
-          npm run hygiene:preflight
-          if ! git diff --cached --quiet; then
-            git commit -s -m 'test(worker): record real sandbox histories and pin testing SDK'
-            git push origin HEAD:temporal-time-skipping
-          fi
-      - name: Worker suite
-        run: npm test -w @space/worker
-      - name: Full public test suite
+      - name: Production build
+        id: build
+        run: npm run build
+      - name: Full public test suite including frozen replay
         run: |
           if npm test > "$RUNNER_TEMP/spaceapp-public-tests.txt" 2>&1; then
             tail -n 100 "$RUNNER_TEMP/spaceapp-public-tests.txt"
           else
-            tail -n 180 "$RUNNER_TEMP/spaceapp-public-tests.txt"
+            node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const lines = readFileSync(`${process.env.RUNNER_TEMP}/spaceapp-public-tests.txt`, 'utf8').replace(/\u001b\[[0-9;]*m/g, '').split('\n');
+          const selected = new Set();
+          for (let i = 0; i < lines.length; i++) {
+            if (/FAIL |Failed Tests|AssertionError|ReferenceError:|^not ok |npm error|Error: spawn|Test Files.*failed|Errors.*error/.test(lines[i])) {
+              for (let j = Math.max(0, i - 3); j < Math.min(lines.length, i + 20); j++) selected.add(j);
+            }
+          }
+          for (const i of [...selected].sort((a, b) => a - b).slice(0, 1200)) console.log(lines[i]);
+          NODE
+            tail -n 100 "$RUNNER_TEMP/spaceapp-public-tests.txt"
             exit 1
           fi
-      - name: Production build
-        run: npm run build
       - name: Final hygiene preflight
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run hygiene:preflight
+      - name: Preserve full public test output
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-test-output
+          path: ${{ runner.temp }}/spaceapp-public-tests.txt
+          retention-days: 3
+          if-no-files-found: ignore
