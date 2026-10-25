@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ac9c7464b7faa0a70e07971ae9732c112d2daa50
+          ref: c7a7648785d74e476c089079dd876fd5aaa03c37
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.22.0
@@ -24,6 +24,11 @@ jobs:
         run: npm ci
       - name: Build and check workspace dependencies
         run: npm run check
+      - name: Repeat capture regression
+        run: |
+          for capture_iteration in 1 2 3 4 5; do
+            npm exec -w @space/api -- vitest run tests/space-control-capture.test.ts --maxWorkers=2
+          done
       - name: Production build
         id: build
         run: npm run build
