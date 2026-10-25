@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApplicationFailure, defaultPayloadConverter, TimeoutFailure, TimeoutType } from "@temporalio/common";
+import { ApplicationFailure, defaultPayloadConverter } from "@temporalio/common";
 import { Context } from "@temporalio/activity";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { fileURLToPath } from "node:url";
@@ -34,16 +34,25 @@ it("dummy turn retries a failed activity and returns the completion", async () =
   await h.capture("dummyTurnWorkflow", handle);
 }, 30_000);
 
-it.each(["opencode", "cli:claude", "codex"])("routes the %s turn to the real workflow's activity", async providerId => {
+it.each([
+  { providerId: "opencode", native: false, timeout: 40 * 60 },
+  { providerId: "cli:claude", native: false, timeout: 30 * 60 },
+  { providerId: "codex", native: false, timeout: 24 * 60 * 60 },
+  { providerId: "codex", native: true, timeout: 36500 * 24 * 60 * 60 }
+])("routes $providerId (native=$native) with its production timeout", async ({ providerId, native, timeout }) => {
   let attempts = 0;
-  const run = vi.fn(async () => { if (providerId === "codex" && ++attempts < 2) throw Error("Retry turn"); return verified; });
+  const run = async () => { if (providerId === "codex" && ++attempts < 2) throw Error("Retry turn"); return verified; };
   const openCode = vi.fn(run), cli = vi.fn(run), codex = vi.fn(run);
   h.setStubs({ runOpenCodeAgentTurn: openCode, runCliAgentTurn: cli, runCodexAppServerTurn: codex });
-  const handle = await h.start("codexAppServerTurnWorkflow", { ...turn(providerId), providerId });
+  const handle = await h.start("codexAppServerTurnWorkflow", { ...turn(providerId), providerId,
+    ...(native ? { agentSessionId: "session:synthetic", agentAssistantMessageId: "message:synthetic" } : {}) });
   expect(await handle.result()).toEqual(verified);
   expect(providerId === "opencode" ? openCode : providerId === "cli:claude" ? cli : codex).toHaveBeenCalled();
   expect(providerId === "opencode" ? cli : openCode).not.toHaveBeenCalled();
-  if (providerId === "codex") { expect(attempts).toBe(2); await h.capture("codexAppServerTurnWorkflow", handle); }
+  const history = await h.capture(native ? "turn-native" : providerId === "codex" ? "codexAppServerTurnWorkflow" : `turn-${providerId.replace(":", "-")}`, handle);
+  const scheduled = history.events!.find(event => event.activityTaskScheduledEventAttributes)!.activityTaskScheduledEventAttributes!;
+  expect(Number(scheduled.startToCloseTimeout!.seconds)).toBe(timeout);
+  if (providerId === "codex") expect(attempts).toBe(2);
 }, 30_000);
 
 it("wakes a paused goal without waiting an hour", async () => {
@@ -70,7 +79,10 @@ it("skips real goal polling timers and observes a completed turn", async () => {
   expect(await handle.result()).toEqual({ goalStatus: "COMPLETED" });
   expect(await h.env.currentTimeMs() - before).toBeGreaterThanOrEqual(15_000);
   expect(observe).toHaveBeenCalledExactlyOnceWith("goal:timeout", "run:synthetic");
-  await h.capture("dotGoalWorkflow-timeout", handle);
+  const history = await h.capture("dotGoalWorkflow-timeout", handle);
+  const timer = history.events!.find(event => event.timerStartedEventAttributes)!.timerStartedEventAttributes!;
+  expect(Number(timer.startToFireTimeout!.seconds)).toBe(15);
+  expect(history.events!.some(event => event.timerFiredEventAttributes)).toBe(true);
 });
 
 it("continues an unfinished goal as new at the iteration limit", async () => {
@@ -99,16 +111,19 @@ it("memory maintenance survives auxiliary failures and executes consolidation as
   const snapshot = { sourceHash: "synthetic-source", nodes: 0, edges: 0 };
   const refresh = vi.fn(async () => { throw failed(); });
   const reconcile = vi.fn(async () => { throw failed(); });
-  const prepare = vi.fn(async () => ({ changeSetId: "change:synthetic", run: { id: "audit:synthetic" } }));
+  let preparationAttempts = 0, snapshotAttempts = 0;
+  const prepare = vi.fn(async () => { if (++preparationAttempts < 3) throw Error("Retry consolidation preparation"); return { changeSetId: "change:synthetic", run: { id: "audit:synthetic" } }; });
   const finalize = vi.fn(async () => ({ id: "audit:synthetic", status: "COMPLETED" }));
   let mutations = 0;
-  h.setStubs({ refreshMemoryGraphSnapshot: async () => snapshot, refreshAllMonthsMemoryGraphSnapshot: refresh,
+  h.setStubs({ refreshMemoryGraphSnapshot: async () => { if (++snapshotAttempts < 3) throw Error("Retry live snapshot"); return snapshot; }, refreshAllMonthsMemoryGraphSnapshot: refresh,
     reconcileStaleSpaceAgentSessions: reconcile, createScheduledMemoryAudit: async () => ({ id: "audit:synthetic", workflowId: "synthetic-consolidation-child" }),
     prepareMemoryConsolidation: prepare, executePersistedMemoryChangeSet: async () => { if (++mutations < 3) throw Error("Retry mutation"); return { status: "APPLIED" }; }, finalizeMemoryRepair: finalize });
   const handle = await h.start("memoryMaintenanceWorkflow", { traceId: "trace:memory" });
   expect(await handle.result()).toEqual(snapshot);
   expect(refresh).toHaveBeenCalledOnce(); expect(reconcile).toHaveBeenCalledOnce();
-  expect(prepare).toHaveBeenCalledExactlyOnceWith({ runId: "audit:synthetic", traceId: "trace:memory" });
+  expect(prepare).toHaveBeenCalledTimes(3);
+  expect(prepare).toHaveBeenCalledWith({ runId: "audit:synthetic", traceId: "trace:memory" });
+  expect(snapshotAttempts).toBe(3);
   expect(mutations).toBe(3); expect(finalize).toHaveBeenCalledOnce();
   await h.capture("memoryMaintenanceWorkflow", handle);
   await h.capture("memoryConsolidationWorkflow", h.env.client.workflow.getHandle("synthetic-consolidation-child"));
@@ -228,11 +243,19 @@ it("real sandbox executes allocation, send and verification in one durable missi
 
 it.each([
   ["plain error", () => Error("Synthetic child failure"), "ROOM_AGENT_SUPERVISOR_FAILED"],
-  ["timeout", () => new TimeoutFailure("Synthetic timeout", undefined, TimeoutType.START_TO_CLOSE), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
+  ["timeout", () => Error("Synthetic heartbeat timeout"), "ROOM_AGENT_SUPERVISOR_TIMEOUT"],
   ["application failure", () => ApplicationFailure.nonRetryable("Synthetic turn timeout", "CODEX_APP_SERVER_TURN_TIMEOUT"), "CODEX_APP_SERVER_TURN_TIMEOUT"]
-] as const)("real sandbox preserves %s as a failed turn with its cause code", async (_, error, code) => {
+] as const)("real sandbox preserves %s as a failed turn with its cause code", async (kind, error, code) => {
   const c = continuationDriver();
-  c.activities.runCodexAppServerTurn.mockImplementation(async () => { throw error(); });
+  c.activities.runCodexAppServerTurn.mockImplementation(async () => {
+    if (kind === "timeout") {
+      // Expire the actual 15-second heartbeat deadline on the test server.
+      // Throwing a TimeoutFailure in an activity would be an application error.
+      await h.env.sleep("16 seconds");
+      return verified;
+    }
+    throw error();
+  });
   const handle = await h.start("roomAgentSupervisorWorkflow", c.workflowInput);
   const end = handle.result().catch(() => undefined);
   await c.finished.promise;
@@ -321,6 +344,20 @@ it("real pre-patch sandbox uses the boolean settle contract", async () => {
   expect(legacy).toHaveBeenCalledOnce(); expect(current).not.toHaveBeenCalled();
   await handle.terminate("Synthetic test cleanup"); await end;
   await h.capture("supervisor-pre-patch-boolean", handle);
+}, 30_000);
+
+it("supervisor preserves interrupted work, pending work and monitors through rollover", async () => {
+  h.setStubs({ discardRoomAgentSupervisorTurn: async () => undefined, finishRoomAgentSupervisorTurn: async () => undefined });
+  const first = { item: item("interrupted-first"), reason: "Synthetic first stop" };
+  const second = { item: item("interrupted-second"), reason: "Synthetic second stop" };
+  const pending = item("still-pending");
+  const handle = await h.start("roomAgentSupervisorWorkflow", input({ interrupted: [first, second], pending: [pending], monitoringMissionIds: ["mission:monitor"], processedCount: 49 }));
+  await expect(handle.result()).rejects.toMatchObject({ name: "WorkflowExecutionContinuedAsNewError" });
+  const history = await h.capture("supervisor-interrupted-rollover", handle);
+  const attributes = history.events!.find(event => event.workflowExecutionContinuedAsNewEventAttributes)!.workflowExecutionContinuedAsNewEventAttributes!;
+  const carried = roomAgentSupervisorInputSchema.parse(defaultPayloadConverter.fromPayload(attributes.input!.payloads![0]!));
+  expect(carried).toEqual(roomAgentSupervisorInputSchema.parse(input({ interrupted: [second], pending: [pending], monitoringMissionIds: ["mission:monitor"] })));
+  await h.env.client.workflow.getHandle(handle.workflowId).terminate("Synthetic test cleanup");
 }, 30_000);
 
 it("replays every frozen history against production workflows", async () => {
